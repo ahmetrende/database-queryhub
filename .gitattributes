@@ -1,0 +1,30 @@
+# Line endings: normalise text in the repo, check out native. Without this a
+# Windows contributor's editor can rewrite whole files to CRLF and every diff
+# becomes unreadable.
+* text=auto eol=lf
+
+# Binary assets — never diffed, never line-ending-converted.
+*.woff2 binary
+*.woff  binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.xlsx  binary
+*.zip   binary
+
+# Shell scripts must keep LF or they fail to run.
+*.sh text eol=lf
+
+# NOTE for contributors on Windows: QueryHubWeb/app/src/ contains 14 SYMLINKS
+# into QueryHubWeb/ (the frontend sources are shared with the design prototype
+# rather than duplicated). git checks these out as plain text files containing
+# the link target unless symlinks are enabled, which makes the build fail in a
+# confusing way. Either enable them once:
+#
+#     git config --global core.symlinks true      # then re-clone
+#
+# (on Windows this needs Developer Mode or an elevated shell), or run the build
+# from WSL. Documented in CONTRIBUTING.md.

@@ -1,0 +1,20 @@
+# Base (vanilla) profile — web-only approval + in-app notifications.
+# Slack is optional: `pip install '.[slack]'` (slack-bolt + slack-sdk) to
+# run the /sql bot and Slack approval/notification/delivery. SQL Server:
+# `.[mssql]`. AWS Secrets Manager: `.[aws]`.
+psycopg[binary]>=3.2.0
+psycopg-pool>=3.2.0
+cryptography>=42.0.0
+python-dotenv>=1.0.0
+sqlparse>=0.5.0
+sqlglot>=30.0.0,<31          # safety-critical parser — see pyproject.toml
+openpyxl>=3.1.0
+# Upper bounds mirror pyproject.toml on purpose. Without them this file
+# resolves to whatever is newest — a fresh `pip install -r requirements.txt`
+# pulled a FastAPI/Starlette generation past the tested baseline while
+# pyproject deliberately capped it, so the two install paths disagreed and
+# the documented upgrade flow used the uncapped one. Widen both together.
+fastapi>=0.115.0,<0.140
+uvicorn[standard]>=0.30.0,<0.52
+PyJWT[crypto]>=2.9.0
+httpx>=0.27.0

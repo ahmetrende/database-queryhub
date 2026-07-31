@@ -1,0 +1,92 @@
+# WHERE/ON predicates that do NOT filter rows. Every line here must be BLOCKED
+# by query_safety.analyze().
+#
+# This file is a regression corpus, not a wish list: each entry either was a
+# live bypass at some point or is an anchor proving a still-working rule. Add a
+# line whenever a new phrasing is found — that is what turns a one-off audit
+# into a permanent gate. `#` starts a comment; blank lines ignored.
+
+# --- literal tautologies (text layer) ---
+UPDATE t SET a=1 WHERE 1=1
+UPDATE t SET a=1 WHERE 2=2
+UPDATE t SET a=1 WHERE true
+UPDATE t SET a=1 WHERE TRUE
+UPDATE t SET a=1 WHERE 'a'='a'
+UPDATE t SET a=1 WHERE 1<2
+UPDATE t SET a=1 WHERE 1!=2
+UPDATE t SET a=1 WHERE 1<>2
+UPDATE t SET a=1 WHERE true=true
+UPDATE t SET a=1 WHERE NOT false
+UPDATE t SET a=1 WHERE NOT 1=2
+UPDATE t SET a=1 WHERE id=id
+UPDATE t SET a=1 WHERE t.id=t.id
+
+# --- normalization: comments, parens, spacing, case must not help ---
+UPDATE t SET a=1 WHERE 1=1--x
+UPDATE t SET a=1 WHERE /*c*/1=1
+UPDATE t SET a=1 WHERE (((1=1)))
+UPDATE t SET a=1 WHERE 1   =   1
+UPDATE t SET a=1 WHERE nOt FaLsE
+
+# --- one always-true branch in an OR is enough ---
+UPDATE t SET a=1 WHERE id = 5 OR 'x'='x'
+UPDATE t SET a=1 WHERE id = 5 OR 1=1
+DELETE FROM t WHERE status = 'x' OR true
+
+# --- padding a tautology with a real predicate under AND does not save it ---
+UPDATE t SET a=1 WHERE 1=1 AND 2=2
+
+# --- no column reference: evaluates the same for every row (AST layer) ---
+UPDATE t SET a=1 WHERE EXISTS (SELECT 1)
+UPDATE t SET a=1 WHERE 1 BETWEEN 0 AND 2
+UPDATE t SET a=1 WHERE random() < 2
+UPDATE t SET a=1 WHERE COALESCE(NULL,1)=1
+UPDATE t SET a=1 WHERE length('abc') = 3
+DELETE FROM t WHERE EXISTS (SELECT 1 FROM other_table)
+
+# --- complementary null checks cover every row (AST layer) ---
+UPDATE t SET a=1 WHERE id IS NOT NULL OR id IS NULL
+UPDATE t SET a=1 WHERE id IS NULL OR id IS NOT NULL
+UPDATE t SET a=1 WHERE users.id IS NULL OR users.id IS NOT NULL
+
+# --- membership in an unfiltered subquery on the same column (AST layer) ---
+UPDATE t SET a=1 WHERE id IN (SELECT id FROM t)
+DELETE FROM t WHERE id IN (SELECT id FROM other_table)
+
+# --- MERGE: the ON condition is its row selector ---
+MERGE INTO t USING s ON true WHEN MATCHED THEN UPDATE SET a = 1
+MERGE INTO t USING s ON 1=1 WHEN MATCHED THEN UPDATE SET a = 1
+
+# --- self-comparison, in every wrapping (AST rule 4) ---
+# The text layer caught the bare `id = id` with a backreference, which made the
+# guard look finished. Eleven of thirteen probe payloads walked through it: the
+# backreference only matches a plain identifier, so any cast, function, paren or
+# ordering-operator form was invisible. `WHERE id::text = id::text` deletes every
+# row whose id is not null — on a primary key, the whole table.
+DELETE FROM t WHERE id::text = id::text
+DELETE FROM t WHERE (id) = (id)
+UPDATE t SET a=1 WHERE ((id)) = (id)
+DELETE FROM t WHERE upper(name) = upper(name)
+UPDATE t SET a=1 WHERE lower(trim(name)) = lower(trim(name))
+DELETE FROM t WHERE abs(id) = abs(id)
+DELETE FROM t WHERE COALESCE(id,0) = COALESCE(id,0)
+DELETE FROM t WHERE CAST(id AS text) = CAST(id AS text)
+DELETE FROM t WHERE id >= id
+DELETE FROM t WHERE id <= id
+DELETE FROM t WHERE id IS NOT DISTINCT FROM id
+UPDATE t SET a=1 WHERE id = 5 OR upper(x) = upper(x)
+
+# --- a pattern that matches everything (AST rule 5) ---
+DELETE FROM t WHERE id::text LIKE '%'
+DELETE FROM t WHERE name SIMILAR TO '%'
+UPDATE t SET a=1 WHERE name ILIKE '%'
+
+# --- boolean structure: OR spreads a tautology to the whole predicate ---
+# A tautology anywhere in a disjunction matches every row, however real the
+# other branches look.
+DELETE FROM t WHERE id = id OR status = 'active'
+DELETE FROM t WHERE status = 'active' OR id::text = id::text
+UPDATE t SET a=1 WHERE name LIKE '%' OR id = 5
+# ...and an AND of nothing but tautologies is still one.
+DELETE FROM t WHERE id = id AND name = name
+DELETE FROM t WHERE upper(x) = upper(x) AND y >= y

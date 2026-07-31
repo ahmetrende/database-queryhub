@@ -1,0 +1,38 @@
+version: 2
+updates:
+  # Python (bot + web core)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      python-deps:
+        patterns: ["*"]
+
+  # Frontend build toolchain (Vite / esbuild live here)
+  - package-ecosystem: "npm"
+    directory: "/QueryHubWeb/app"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      frontend-deps:
+        patterns: ["*"]
+
+  # GitHub Actions used by CI
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # Container base images. The Dockerfile pins them by digest for reproducible,
+  # tamper-evident builds — which only stays safe if something keeps the pins
+  # moving. Without this entry a digest pin quietly freezes base-image CVEs, so
+  # the two changes belong together.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

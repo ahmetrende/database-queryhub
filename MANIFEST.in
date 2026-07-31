@@ -1,0 +1,45 @@
+# Source-distribution completeness. The runtime needs files that live
+# outside the Python package (which is under src/): the SQL migrations, the
+# web frontend, the deploy templates, and the docs. Without this they are
+# absent from an `sdist`, so a fresh checkout built from the tarball can't
+# migrate the schema or serve the web UI.
+include LICENSE
+include NOTICE
+include THIRD_PARTY_NOTICES.md
+include README.md
+include CHANGELOG.md
+include pyproject.toml
+
+recursive-include migrations *.sql
+recursive-include deploy *.sql *.service *.env *.sh
+recursive-include docs *.md
+# ...but not the screenshot gallery. It is documentation for the repository, not
+# for the installed package: several megabytes of PNGs plus an index that only
+# means anything next to them. `recursive-include docs *.md` was pulling the
+# index in by itself, which is worse than shipping both or neither.
+prune docs/screenshots
+
+graft QueryHubWeb
+
+# Build output — never ship these. scripts/check_sdist_clean.py verifies
+# the built artifact rather than trusting this list.
+prune QueryHubWeb/brand/png
+# Build output. Not in git either: a bundle in an sdist is stale by definition,
+# and the install builds it (scripts/install.sh, Dockerfile).
+prune QueryHubWeb/app/dist
+prune QueryHubWeb/app/node_modules
+# The design canvas's saved state is a dotfile, so easy to miss.
+recursive-exclude QueryHubWeb .design-canvas*
+
+# And the other direction: the self-hosted OFL webfonts are load-bearing (the
+# built UI 404s on them otherwise) and `graft` was not picking the directory up,
+# so say it explicitly. The OFL notice travels with them, as the licence requires.
+recursive-include QueryHubWeb/fonts *.woff2 *.txt
+# Design-tool scaffolding: a canvas harness and the page that generates the
+# logo. Neither is imported by the app, and `graft QueryHubWeb` was shipping
+# both to anyone who pip-installed the sdist.
+exclude QueryHubWeb/design-canvas.jsx
+recursive-exclude QueryHubWeb *Logo.html
+global-exclude __pycache__ *.py[cod] *.so
+global-exclude node_modules
+recursive-exclude QueryHubWeb/app/node_modules *

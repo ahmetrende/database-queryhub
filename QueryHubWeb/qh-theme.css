@@ -1,0 +1,76 @@
+/**
+ * QueryHub — Warm theme (terracotta on ivory)
+ * The brand color + type layer, active under <html data-brand="warm"> (the
+ * default in this build). Base structural tokens live in theme/tokens.css.
+ *
+ * Warm, editorial palette: terracotta/coral accent, cream/ivory neutrals, warm ink.
+ * Structure: theme-agnostic (fonts) + light + dark. Fonts via Google <link> in QueryHub.html.
+ */
+
+/* ---------- fonts (same in light + dark) ---------- */
+:root[data-brand='warm']{
+  --font-sans: 'Manrope', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --qh-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+/* ---------- LIGHT ---------- */
+:root[data-brand='warm']:not([data-theme='dark']){
+  /* brand → Claude-like coral */
+  --brand-green:#C4603F; --brand-green-medium:#A24628; --brand-green-strong:#B0512F;
+  --brand-solid-light:#D97757; --brand-solid-medium:#C4603F; --brand-solid-strong:#AD4F30;
+  --brand-adaptive-light:rgba(217,119,87,0.12); --brand-adaptive-medium:rgba(217,119,87,0.22); --brand-adaptive-strong:rgba(217,119,87,0.32);
+  --fg-accent:#B0512F; --fg-accent-native:#C4603F; --stroke-accent:#D97757;
+
+  /* neutrals → warm cream / ivory (claude.ai) */
+  /* --fg-tertiary at 0.48 measured 3.13:1 white / 3.08 light / 3.06 regular,
+     below the 4.5:1 AA floor for normal text. 0.64 -> 5.17 / 5.03 / 4.96.
+     Keep the ratios here so a palette tweak has to face them. */
+  --fg-primary:#1B1A17; --fg-secondary:rgba(27,26,23,0.68); --fg-tertiary:rgba(27,26,23,0.64);
+  --bg-white:#FDFCFA; --bg-light:#F6F4EE; --bg-regular:#F3F0E8; --bg-medium:#ECE8DE; --bg-strong:#E1DBCD;
+  --stroke-light:rgba(27,26,23,0.05); --stroke-medium:rgba(27,26,23,0.085); --stroke-strong:rgba(27,26,23,0.14);
+  --adaptive-light:rgba(27,26,23,0.02); --adaptive-medium:rgba(27,26,23,0.04); --adaptive-strong:rgba(27,26,23,0.08); --adaptive-bold:rgba(27,26,23,0.11);
+
+  /* success (RO / done) → sage; danger (DDL / errors) → warm brick red */
+  --sup-green-light:#EAF0E4; --sup-green-medium:#5E8A4E; --sup-green-strong:#2F4A24;
+  --fg-danger:#B23A2E; --danger-solid-light:#C0473A; --danger-solid-medium:#A5342A; --danger-solid-strong:#7E241C;
+  --danger-adaptive-light:rgba(178,58,46,0.11); --danger-adaptive-medium:rgba(178,58,46,0.20); --danger-adaptive-strong:rgba(178,58,46,0.30); --stroke-danger:#C0473A;
+
+  /* syntax + rail (warm editorial) */
+  /* --tk-com at 0.45 measured 2.87:1 on the editor surface. 0.64 -> 5.17. */
+  --tk-kw:#AD4F30; --tk-str:#5E7A3E; --tk-num:#3F6079; --tk-fn:#7C4A63; --tk-com:rgba(27,26,23,0.64);
+  --qh-rail:var(--bg-light);
+}
+
+/* ---------- DARK (warm charcoal + cream) ---------- */
+:root[data-brand='warm'][data-theme='dark']{
+  /* 0.50 measured 4.25 / 4.05 / 4.38 — fails on all three. 0.58 -> 5.20 /
+     4.92 / 5.41. */
+  --fg-primary:#EDE7DB; --fg-secondary:rgba(237,231,219,0.72); --fg-tertiary:rgba(237,231,219,0.58);
+  --bg-white:#26241F; --bg-light:#2E2B25; --bg-regular:#201E19; --bg-medium:#37332C; --bg-strong:#454034;
+  --stroke-light:rgba(237,231,219,0.05); --stroke-medium:rgba(237,231,219,0.09); --stroke-strong:rgba(237,231,219,0.16);
+  --adaptive-light:rgba(237,231,219,0.03); --adaptive-medium:rgba(237,231,219,0.05); --adaptive-strong:rgba(237,231,219,0.09); --adaptive-bold:rgba(237,231,219,0.14);
+
+  --brand-green:#D07454; --brand-green-medium:#B85A3B; --brand-green-strong:#C0603D;
+  --brand-solid-light:#E08A68; --brand-solid-medium:#D07454; --brand-solid-strong:#B85A3B;
+  --brand-adaptive-light:rgba(217,119,87,0.16); --brand-adaptive-medium:rgba(217,119,87,0.26); --brand-adaptive-strong:rgba(217,119,87,0.36);
+  --fg-accent:#E39072; --fg-accent-native:#E39072; --stroke-accent:#D07454;
+
+  --sup-green-light:#20301C; --sup-green-medium:#7FA96A; --sup-green-strong:#CBE0B8;
+  --fg-danger:#E08072; --danger-solid-light:#D2685A; --danger-solid-medium:#E08072; --danger-solid-strong:#EEA093;
+  --danger-adaptive-light:rgba(224,128,114,0.14); --danger-adaptive-medium:rgba(224,128,114,0.24); --danger-adaptive-strong:rgba(224,128,114,0.34); --stroke-danger:#D2685A;
+
+  /* 0.42 measured 3.42:1. 0.58 -> 5.20. */
+  --tk-kw:#E39072; --tk-str:#AEC97F; --tk-num:#8FB3D9; --tk-fn:#C89BB4; --tk-com:rgba(237,231,219,0.58);
+  --qh-rail:#1B1915;
+}
+
+/* ---------- tier badges (semantic, independent of the terracotta accent) ---------- */
+/* RO = sage (safe), RW = denim (write), DDL = warm red (follows --danger tokens) */
+:root[data-brand='warm'] .tier-ro{color:#4E7A44;background:rgba(78,122,68,0.14)}
+:root[data-brand='warm'] .qh-tab-dot.tier-ro{background:#5E8A4E}
+:root[data-brand='warm'] .tier-fill-ro{background:#5E8A4E}
+:root[data-brand='warm'] .tier-rw{color:#3F6079;background:rgba(63,96,121,0.13)}
+:root[data-brand='warm'] .qh-tab-dot.tier-rw{background:#3F6079}
+:root[data-brand='warm'] .tier-fill-rw{background:#3F6079}
+:root[data-brand='warm'][data-theme='dark'] .tier-ro{color:#9CC286;background:rgba(126,169,106,0.16)}
+:root[data-brand='warm'][data-theme='dark'] .tier-rw{color:#8FB3D9;background:rgba(63,96,121,0.24)}

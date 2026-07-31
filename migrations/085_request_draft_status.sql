@@ -1,0 +1,14 @@
+-- A 'draft' request status: the row that exists from the moment someone opens a
+-- query tab, so the id they see at the start is the id the request keeps.
+--
+-- Why the id has to be reserved rather than shown afterwards: an operator
+-- tracking a slow query in a second window, or quoting it in a chat, needs the
+-- number before they submit. Handing out a separate "session id" and a request
+-- id later means two numbers for one thing.
+--
+-- Deliberately its own migration. `ALTER TYPE ... ADD VALUE` may run inside a
+-- transaction, but the new label CANNOT BE USED in that same transaction
+-- ("unsafe use of new value of enum type"), and 086 uses it in a CHECK
+-- constraint and a view. The runner commits per file, so splitting them is what
+-- makes 086 legal.
+ALTER TYPE request_status ADD VALUE IF NOT EXISTS 'draft';

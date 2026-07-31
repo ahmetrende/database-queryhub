@@ -1,0 +1,202 @@
+name: Release
+
+# Tag-driven. RELEASING.md is the checklist that comes before pushing the tag;
+# this is everything that should be automatic once it exists.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write        # to create the GitHub Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # the changelog extract wants history
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,slack]" build
+
+      # A tag is not exempt from the gates. If main was green and the tag points
+      # at it, these pass in a couple of minutes; if someone tagged a working
+      # tree, they do not.
+      - name: Lint
+        run: ruff check src tests scripts
+
+      - name: Tests
+        run: pytest
+
+      - name: Source distribution contents
+        run: python scripts/check_sdist_clean.py
+
+      - name: Frontend builds from a clean tree
+        run: |
+          cd QueryHubWeb/app
+          npm ci --no-audit --no-fund
+          npm run build
+          test -s dist/index.html
+
+      - name: Build sdist + wheel
+        run: python -m build
+
+      - name: Version matches the tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(python -c "import tomllib,pathlib; \
+            print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          echo "tag=$TAG pyproject=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag $TAG does not match pyproject version $PKG"
+            exit 1
+          fi
+
+      - name: Extract this version's changelog section
+        run: |
+          python scripts/release_notes.py "$GITHUB_REF_NAME" | tee release-notes.md
+
+      - name: Create the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: |
+            dist/*.tar.gz
+            dist/*.whl
+          # A tag containing a hyphen (v0.2.0-rc1) is a prerelease.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Keep the artifacts on the run too
+        # A convenience SECOND copy — the Release above already carries the
+        # sdist and the wheel, and it is the copy anyone actually downloads.
+        # So this must never fail the job: artifact storage is an ACCOUNT-wide
+        # quota, spent by every other repository, and v0.1.0 died here with
+        # "Artifact storage quota has been hit" AFTER the Release had been
+        # published — which skipped publish-image and left a release with no
+        # container image, for a reason that had nothing to do with this
+        # repository.
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          # Short retention: this copy exists to look at a failed run, not to
+          # archive anything, so it should not be what fills the quota either.
+          retention-days: 7
+
+  # Off for TWO reasons. The second is the blocking one, so do not flip `if:`
+  # just because the first has been satisfied:
+  #
+  #   1. PyPI trusted publishing is not configured yet — see RELEASING.md.
+  #      Trusted publishing (OIDC) rather than an API token, so there is no
+  #      long-lived secret in this repository to leak.
+  #   2. The wheel cannot run the product. `[tool.setuptools.packages.find]`
+  #      collects `src/` only and MANIFEST.in affects the sdist, so the wheel
+  #      carries no migrations, no built frontend and no ops scripts — and those
+  #      scripts resolve their paths relative to a checkout anyway. Publishing it
+  #      would put a `pip install` on a public index that cannot start, and a
+  #      PyPI version can never be re-uploaded. The container is the supported
+  #      install (docker-compose.install.yml); `pip install -e .` is the
+  #      contributor path. Fix packaging first, then turn this on.
+  publish-pypi:
+    needs: release
+    if: false
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Container image to GHCR. `docker compose up` and the Dockerfile already
+  # exist, but building from source is not the same offer as `docker run` — an
+  # evaluator who has to clone and build first is being asked for more than the
+  # README implies.
+  #
+  # Tagged, never `latest`-only: a SQL gateway is not something to auto-upgrade
+  # by moving tag. `latest` is published as a convenience but every release also
+  # gets its immutable version tag, which is what a deployment should reference.
+  #
+  # GITHUB_TOKEN with packages:write — no long-lived registry secret in this
+  # repository, same reasoning as PyPI trusted publishing above.
+  publish-image:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags from the git tag
+        id: meta
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "tags=${image}:${version},${image}:latest" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # arm64 as well as amd64: an Apple-silicon laptop is a normal place to
+          # evaluate this, and an amd64-only image emulates badly there.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the pushed image
+        # Pushing an image that cannot start is worse than not publishing one:
+        # it fails for the evaluator instead of for us.
+        #
+        # The BOT_DB_* values are load-bearing, not decoration. config.py builds
+        # `ENV` at MODULE level, so importing anything under the package raises
+        # `Missing required env var: BOT_DB_HOST` before a single line of app
+        # code runs. Nothing here connects to anything — the pool is lazy and
+        # create_app() only wires routes — so no database is needed, only the
+        # variables that let the modules load.
+        #
+        # This step failed on the first release that ever reached it, which is
+        # the whole argument for having it: the image was fine (13 routes, pulled
+        # and run by hand to confirm) and the check around it was not. An
+        # untested check is a check that reports on itself.
+        run: |
+          docker run --rm --entrypoint python \
+            -e BOT_DB_HOST=localhost -e BOT_DB_NAME=smoke \
+            -e BOT_DB_USER=smoke -e BOT_DB_PASSWORD=smoke \
+            -e MASTER_KEY_PATH=/tmp/nonexistent-key \
+            "ghcr.io/${GITHUB_REPOSITORY,,}:${{ steps.meta.outputs.version }}" \
+            -c "import queryhub, queryhub.web.app as a; \
+                app = a.create_app(); \
+                assert app.routes, 'create_app() produced no routes'; \
+                print('image OK —', len(app.routes), 'routes')"

@@ -1,0 +1,104 @@
+# QueryHub, installed. Two commands:
+#
+#     cp .env.example .env && $EDITOR .env
+#     docker compose -f docker-compose.install.yml up -d
+#
+# The first `up` BUILDS the image from this checkout, which takes a few
+# minutes. That is deliberate: a SQL approval gateway should not change what it
+# runs because a shared tag moved somewhere else. Released images do exist
+# (ghcr.io/ahmetrende/database-queryhub), and `QH_IMAGE` below is how you use one —
+# pull it first so compose finds it locally instead of rebuilding.
+#
+# This file once pulled a version tag that had never been published, so the
+# README's primary install command failed for everyone who tried it. Hence the
+# order: build by default, opt in to an image by name.
+#
+# Then open the UI, sign in as the admin the first start created, and do the
+# rest there: add a connection, test it, create a team, grant it. Nothing below
+# seeds, invents or assumes anything — the difference from docker-compose.yml
+# (the demo) is that this file has no published passwords, no throwaway target
+# database and no demo data.
+#
+# What you still need, and why it is not in this file:
+#   - a Postgres for QueryHub's own metadata (config, grants, requests, the
+#     audit log). Point BOT_DB_* at it. It holds the audit trail, so it wants
+#     the backups and retention your other databases get — which is exactly
+#     what a volume in this file would not give it. For a quick evaluation,
+#     uncomment COMPOSE_PROFILES=bundled-db in .env and one is started here.
+#   - per-tier login roles on each database you expose (queryhub_ro / _rw /
+#     _ddl). Templates: deploy/grant_readonly.sql, grant_readwrite.sql,
+#     grant_ddl.sql, grant_mssql.sql — walk-through in deploy/NEW_TARGET.md.
+#     This is the product's security model, not install ceremony: the tier a
+#     query needs decides which credential runs it.
+#   - TLS. The port below binds to loopback only, so the normal shape is a
+#     reverse proxy terminating TLS in front of it. Set WEB_BASE_URL to the
+#     URL users actually type, and web_cookie_secure=on once it is https.
+#
+# To run a prebuilt image, pull it first so compose finds it locally and does
+# not rebuild:
+#     docker pull ghcr.io/ahmetrende/database-queryhub:1.0.0
+#     QH_IMAGE=ghcr.io/ahmetrende/database-queryhub:1.0.0 docker compose -f docker-compose.install.yml up -d
+
+name: queryhub
+
+services:
+  app:
+    # Built from this checkout, and tagged so `up` is idempotent: the second
+    # start reuses the image instead of rebuilding. Rebuild deliberately with
+    # `docker compose -f docker-compose.install.yml build` — a SQL gateway is
+    # not something to upgrade by surprise.
+    build:
+      context: .
+    image: ${QH_IMAGE:-queryhub:local}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # These win over anything in .env, and they have to: .env doubles as the
+      # host install's environment file, where the same three variables point at
+      # paths on a VM (/etc/<service>/…, a checkout's dist directory). Inside the
+      # image they are fixed — the key volume is mounted at /etc/queryhub, and a
+      # key written anywhere else would be generated fresh on every start,
+      # silently orphaning every credential encrypted with the previous one.
+      MASTER_KEY_PATH: /etc/queryhub/master.key
+      QH_RESULTS_DIR: /var/lib/queryhub/results
+      QH_WEB_STATIC_DIR: /app/QueryHubWeb/app/dist
+      # QH_DEMO is deliberately empty — with it the entrypoint would seed demo
+      # accounts with published passwords.
+      QH_DEMO: ""
+    # Loopback by default. Change QH_BIND only when something else terminates
+    # TLS; binding 0.0.0.0 here publishes an approval gateway on plain HTTP.
+    ports:
+      - "${QH_BIND:-127.0.0.1:8080}:8080"
+    volumes:
+      # The master key decrypts every stored target credential. Losing this
+      # volume means re-entering all of them; copying it off the host is the
+      # backup (docs/KEY_ROTATION.md, docs/DISASTER_RECOVERY.md).
+      - keys:/etc/queryhub
+      # Result files, purged on the results_ttl_hours schedule.
+      - results:/var/lib/queryhub
+    # No depends_on: the metadata database is normally external, and the
+    # entrypoint already waits for BOT_DB_HOST to accept connections before
+    # applying migrations.
+
+  # Evaluation only, off unless COMPOSE_PROFILES=bundled-db. Then set
+  # BOT_DB_HOST=metadata-db and BOT_DB_PASSWORD to whatever you put here.
+  metadata-db:
+    profiles: ["bundled-db"]
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${BOT_DB_NAME:-queryhub}
+      POSTGRES_USER: ${BOT_DB_USER:-queryhub}
+      POSTGRES_PASSWORD: ${BOT_DB_PASSWORD:?set BOT_DB_PASSWORD in .env}
+    volumes:
+      - metadata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${BOT_DB_USER:-queryhub}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  keys:
+  results:
+  metadata:

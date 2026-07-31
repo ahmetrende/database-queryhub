@@ -1,0 +1,387 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        # Full profile: base + dev + Slack, so the whole suite (which
+        # exercises the Slack adapters) runs.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,slack]"
+
+      # Blocking gates: lint + unit tests. The test suite is pure-logic
+      # (no live DB / no bot env), so it runs as-is in CI.
+      - name: Lint (ruff)
+        run: ruff check src tests scripts
+
+      - name: Tests (pytest, with coverage)
+        run: pytest --cov=queryhub --cov-report=term-missing:skip-covered
+
+      # Two gates, because one number would be either useless or unpayable.
+      #
+      # The global floor is a ratchet: the suite is honest about being mostly
+      # pure-logic, so the point is that overall coverage cannot silently fall,
+      # not that 40% is good. Raise it when it is comfortably exceeded.
+      #
+      # The second gate is the one that matters. These are the modules that
+      # decide who may run what: the safety classifier, the AST second pass,
+      # the shared approve/reject state machine, granting and revoking, the
+      # per-submission grant resolution, and the web session layer. A change
+      # that drops coverage here is a change to an access decision that nothing
+      # checks, so it blocks the build.
+      #
+      # It is PER-FILE, and that is the whole point. This used to be
+      # `coverage report --fail-under=80 --include=<the list>`, which measures
+      # the aggregate — so it reported 88% and passed while grants.py sat at
+      # 59% with revoke() and both grantee notifications never executed. The
+      # gate protecting the access decisions was being satisfied by
+      # query_safety.py's 642 well-covered statements. The script enforces the
+      # floor on each file separately, and fails if a gated module disappears
+      # from the coverage data rather than letting a rename drop it silently.
+      - name: Coverage floor (global ratchet)
+        run: coverage report --fail-under=40
+
+      - name: Coverage gate (access-deciding modules, per-file)
+        run: python scripts/check_coverage_floor.py
+
+      # Advisory: surfaced in the log but not blocking. The codebase is
+      # not fully typed, and we don't want a dependency CVE to wedge an
+      # unrelated PR — review these, don't gate on them.
+      - name: Type check (mypy, advisory)
+        continue-on-error: true
+        run: mypy src --ignore-missing-imports
+
+      # The package is not the repository: `graft QueryHubWeb` walks the
+      # filesystem, so it picks up gitignored directories and follows symlinks.
+      # Twelve copies of four licensed font files reached a PyPI-bound sdist that
+      # way, past a MANIFEST prune that named one of the three paths they lived
+      # at. This checks the built artifact, in both directions.
+      - name: Source distribution contents
+        run: |
+          pip install build
+          python scripts/check_sdist_clean.py
+
+      - name: Dependency audit (pip-audit, advisory)
+        continue-on-error: true
+        run: |
+          pip install pip-audit
+          pip-audit
+
+  # The real-DB tests have been in the repo behind QH_RUN_INTEGRATION since
+  # they were written, and the variable was never set anywhere — so all of them
+  # were permanently skipped and the mocked suite was the only thing that ever
+  # ran. A throwaway Postgres service container costs one job.
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: queryhub_test
+        ports:
+          - 5432:5432
+        # Without a health check the job races the server's first accept().
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,slack]"
+      - name: Apply migrations against the throwaway database
+        env:
+          BOT_DB_HOST: localhost
+          BOT_DB_PORT: "5432"
+          BOT_DB_NAME: queryhub_test
+          BOT_DB_USER: postgres
+          BOT_DB_PASSWORD: postgres
+          MASTER_KEY_PATH: /tmp/ci-master.key
+        run: |
+          python -c "from cryptography.fernet import Fernet; \
+            open('/tmp/ci-master.key','w').write(Fernet.generate_key().decode())"
+          chmod 600 /tmp/ci-master.key
+          python scripts/apply_migrations.py
+      - name: Integration tests
+        env:
+          QH_RUN_INTEGRATION: "1"
+          BOT_DB_HOST: localhost
+          BOT_DB_PORT: "5432"
+          BOT_DB_NAME: queryhub_test
+          BOT_DB_USER: postgres
+          BOT_DB_PASSWORD: postgres
+          MASTER_KEY_PATH: /tmp/ci-master.key
+        # The `grep -q skipped` check is the point of this job: these tests
+        # skip themselves when QH_RUN_INTEGRATION is absent, so without the
+        # check a dropped env var would turn the whole job into a green no-op —
+        # which is how they came to never run in the first place.
+        run: |
+          set -o pipefail
+          pytest -m integration -rs | tee /tmp/integration.log
+          if grep -q "skipped" /tmp/integration.log; then
+            echo "::error::integration tests skipped — they must run in this job"
+            exit 1
+          fi
+
+  # The [mssql] and [aws] extras were never installed anywhere in CI, so the
+  # pyodbc and boto3 code paths were not even imported — a syntax error or a
+  # bad import in either would have shipped. This job does not need a SQL
+  # Server or an AWS account: importing the modules and running the tests that
+  # exercise them with mocks is what was missing.
+  optional-extras:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install unixODBC (pyodbc build dependency)
+        run: sudo apt-get update && sudo apt-get install -y unixodbc-dev
+      - name: Install with every optional extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,slack,mssql,aws]"
+      - name: Assert the optional modules import
+        env:
+          BOT_DB_HOST: localhost
+          BOT_DB_NAME: x
+          BOT_DB_USER: x
+          BOT_DB_PASSWORD: x
+          MASTER_KEY_PATH: /tmp/nonexistent-key
+        run: |
+          python -c "import pyodbc, boto3; import queryhub.mssql_exec; \
+            print('optional extras import OK')"
+      - name: Tests with the extras present
+        run: pytest
+
+  # Regression guard for the vanilla (no-Slack) profile: the base install
+  # must import the web + core + executor without slack-bolt / slack-sdk.
+  # If a top-level Slack import creeps back in, this job goes red.
+  vanilla-import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install base only (no [slack])
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Assert Slack is not installed
+        run: |
+          ! pip show slack-sdk 2>/dev/null && ! pip show slack-bolt 2>/dev/null
+      - name: Import web + core + executor without Slack
+        env:
+          BOT_DB_HOST: localhost
+          BOT_DB_NAME: x
+          BOT_DB_USER: x
+          BOT_DB_PASSWORD: x
+          MASTER_KEY_PATH: /tmp/nonexistent-key
+        run: |
+          python -c "import queryhub.config; import queryhub.web.app, queryhub.executor, queryhub.core_submit, queryhub.core_decide, queryhub.slack_app.notifications; assert not queryhub.config.ENV.slack_enabled; print('vanilla import OK')"
+
+  # CI never touched the frontend, so a JSX syntax error, a missing import, or a
+  # broken symlink into the prototype tree was only discovered when a human happened
+  # to run `npm run build` — and the committed `app/dist` would keep serving the
+  # LAST good build in the meantime, which hides the breakage rather than showing
+  # it.
+  #
+  # This builds it. No ESLint: the .jsx files are refreshed wholesale rather than
+  # edited line by line, so a style ruleset would generate churn without catching
+  # anything. A build that must succeed catches the errors that actually break
+  # the page.
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: QueryHubWeb/app/package-lock.json
+      - name: Build the frontend bundle
+        working-directory: QueryHubWeb/app
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Assert the build produced something servable
+        # An empty or missing dist is the failure mode that shipped once already:
+        # a fresh clone that skipped the build served a blank page.
+        run: |
+          test -f QueryHubWeb/app/dist/index.html
+          test -d QueryHubWeb/app/dist/assets
+          # A bundle this small means the entry chunk did not get emitted.
+          size=$(du -sk QueryHubWeb/app/dist | cut -f1)
+          echo "dist is ${size} KiB"
+          test "$size" -gt 100
+      - name: Assert no CDN or external origin crept into the built page
+        # The CSP is script-src 'self' with no inline allowance, so anything
+        # loaded from another origin would be blocked at runtime — silently, and
+        # only in the browser. Cheaper to catch here.
+        run: |
+          ! grep -rEo 'https?://[a-zA-Z0-9.-]+' QueryHubWeb/app/dist/index.html \
+            | grep -vE '://(localhost|127\.0\.0\.1)' \
+            | grep -v 'www\.w3\.org' \
+            || (echo "external origin in the built index.html"; exit 1)
+
+  # The compose stack is the product's front door — if it breaks, the first
+  # thing a visitor tries is broken. This job builds it and drives a real
+  # submit -> approve -> execute round trip against the seeded demo target,
+  # which is also the "CI beyond unit tests" item: it exercises the pieces the
+  # mocked suite cannot (credential decryption, a real query, PII masking on the
+  # way out, and the tier gate refusing a write).
+  #
+  # Two bugs were found writing it, both of which shipped past the unit suite:
+  # a hardcoded results directory that left a request stuck in 'executing' with
+  # nothing logged, and target_ssl_mode=require against a TLS-less container.
+  demo-stack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start the stack
+        run: docker compose up -d --build
+
+      - name: Wait for the app to report healthy
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/healthz >/dev/null 2>&1; then
+              echo "healthy after ${i}0s at most"; exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::the app never became healthy"
+          docker compose logs --no-color | tail -100
+          exit 1
+
+      - name: Submit -> approve -> execute, and assert the result is masked
+        # The assertions live in a script rather than inline YAML: it is
+        # runnable by hand against any demo stack, and a heredoc inside a
+        # `run: |` block cannot terminate (the closing token gets indented).
+        run: python scripts/ci_demo_roundtrip.py --base-url http://localhost:8080
+
+      - name: Stack logs (always, for diagnosis)
+        if: always()
+        run: docker compose logs --no-color | tail -120
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+  # demo-stack covers the front door. This covers what people deploy: the
+  # install compose file, an .env, no demo seeding. It runs the commands the
+  # README prints, so the README cannot drift away from a working install
+  # without turning this job red.
+  #
+  # The property most worth a CI job is step 3 of the check script — the
+  # bootstrap password the first start prints into the container logs must be
+  # good for nothing except changing itself. If the must_change_pw gate ever
+  # stopped applying to a fresh install, those logs would quietly become a
+  # working admin credential and nothing would look broken.
+  install-stack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image the compose file will run
+        # QH_IMAGE is the documented override; a real install pulls the released
+        # image from GHCR instead. Building here also means this job tests the
+        # tree it runs on rather than an artifact from an earlier commit.
+        run: docker build -t queryhub:ci .
+
+      - name: Write the .env the README tells you to write
+        run: |
+          cp .env.example .env
+          # Appended rather than edited in place: a later occurrence of a key
+          # wins, so these override the host-install placeholders above them.
+          {
+            echo "BOT_DB_HOST=metadata-db"
+            echo "BOT_DB_PASSWORD=ci-metadata-password"
+            echo "QH_ADMIN_USER=ci-admin"
+            echo "QH_ADMIN_PASSWORD=ci-bootstrap-password"
+            echo "COMPOSE_PROFILES=bundled-db"
+          } >> .env
+
+      - name: Bring up the install stack
+        run: QH_IMAGE=queryhub:ci docker compose -f docker-compose.install.yml up -d
+
+      - name: Wait for the app to report healthy
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/healthz >/dev/null 2>&1; then
+              echo "healthy after ${i}0s at most"; exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::the app never became healthy"
+          docker compose -f docker-compose.install.yml logs --no-color | tail -100
+          exit 1
+
+      - name: The install is usable, and clean
+        run: |
+          python scripts/ci_install_check.py --base-url http://localhost:8080 \
+            --username ci-admin --password ci-bootstrap-password
+
+      - name: A restart leaves the admin account alone
+        # The failure this guards: create_local_user RESETS the password of an
+        # account that already exists, so an unconditional bootstrap would undo
+        # the operator's own password change on every restart. The check above
+        # has just changed it, so the old password must no longer work.
+        run: |
+          docker compose -f docker-compose.install.yml restart app
+          for i in $(seq 1 60); do
+            curl -fsS http://localhost:8080/healthz >/dev/null 2>&1 && break
+            sleep 5
+          done
+          docker compose -f docker-compose.install.yml logs --no-color app \
+            | grep -q "already exists, leaving it alone" \
+            || (echo "::error::the restart re-ran the admin bootstrap"; exit 1)
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'content-type: application/json' \
+            -H 'origin: http://localhost:8080' \
+            -d '{"username":"ci-admin","password":"ci-bootstrap-password"}' \
+            http://localhost:8080/api/auth/local/login)
+          test "$code" = "401" || (echo "::error::the bootstrap password still works after a restart ($code)"; exit 1)
+
+      - name: Stack logs (always, for diagnosis)
+        if: always()
+        run: docker compose -f docker-compose.install.yml logs --no-color | tail -120
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.install.yml down -v

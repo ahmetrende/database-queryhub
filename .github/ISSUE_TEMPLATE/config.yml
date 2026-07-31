@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  # Without this, every question becomes an issue in a tracker that only has
+  # bug and feature templates — which reads as noise and discourages the next
+  # person from asking at all.
+  - name: Questions and setup help
+    url: https://github.com/ahmetrende/database-queryhub/discussions
+    about: Install trouble, "how do I", "is this the right tool for X" — ask here rather than opening an issue.
+  - name: Security vulnerability
+    url: https://github.com/ahmetrende/database-queryhub/security/advisories/new
+    about: Please report security issues privately, not as a public issue. See SECURITY.md.

@@ -1,0 +1,46 @@
+## Template — replace __USER__ and __INSTALL_PATH__ before installing.
+##   sudo cp deploy/queryhub.service /etc/systemd/system/queryhub.service
+##   sudo sed -i "s|__USER__|$USER|g;        s|__INSTALL_PATH__|$(pwd)|g" \
+##        /etc/systemd/system/queryhub.service
+##   sudo systemctl daemon-reload
+##   sudo systemctl enable --now queryhub
+##
+## __INSTALL_PATH__ is the absolute path to the cloned repo. The bot runs
+## as __USER__ — typically a normal login user that owns the repo and the
+## /etc/queryhub directory. /etc/queryhub/{env,master.key,secrets.enc}
+## must be readable by __USER__ (mode 0600, owned by __USER__).
+
+[Unit]
+Description=QueryHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__INSTALL_PATH__
+EnvironmentFile=/etc/queryhub/env
+ExecStart=__INSTALL_PATH__/.venv/bin/python -m queryhub.main
+Restart=on-failure
+RestartSec=5
+# Graceful restart: on SIGTERM the bot enters drain (refuses NEW submissions)
+# and waits for in-flight query executions to finish before exiting, so a
+# restart never kills a running query and orphans it. This cap must exceed the
+# longest a query can run (bot_config.query_timeout_sec, default 300s) so real
+# queries finish; idle restarts still exit immediately (the cap is only a
+# ceiling, not a fixed wait).
+TimeoutStopSec=330s
+StandardOutput=journal
+StandardError=journal
+
+# Hardening — bot runs as a normal user, so keep this lightweight.
+# /, /usr, /boot, /etc become read-only via ProtectSystem=strict; we only
+# need write access to the dirs systemd doesn't lock by default.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/queryhub /var/log/queryhub
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

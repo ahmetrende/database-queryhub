@@ -1,0 +1,1 @@
+../../qh-admin-config.jsx

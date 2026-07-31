@@ -1,0 +1,48 @@
+# Slack app manifest for QueryHub (Socket Mode).
+#
+# This is a starting point for standing up the Slack app in a new
+# workspace, NOT an export of the live app. The bot scopes below were
+# derived from the Slack Web API methods the code actually calls
+# (see the mapping in comments); verify against your live app before
+# relying on it. Import via: Slack API dashboard -> Create New App ->
+# "From an app manifest".
+#
+# Socket Mode needs a SEPARATE app-level token with `connections:write`
+# (set SLACK_APP_TOKEN); it is not part of the bot OAuth scopes here.
+# After creating the app, install it and copy the Bot User OAuth Token
+# into SLACK_BOT_TOKEN.
+_metadata:
+  major_version: 1
+  minor_version: 1
+
+display_information:
+  name: QueryHub
+  description: Admin-approved SQL gateway for Postgres, driven from Slack.
+  background_color: "#1b1f24"
+
+features:
+  bot_user:
+    display_name: QueryHub
+    always_online: true
+  slash_commands:
+    - command: /sql
+      description: Submit a SQL query for admin-approved execution
+      usage_hint: "[help | whoami | history | pending | ...]"
+      should_escape: false
+
+oauth_config:
+  scopes:
+    bot:
+      - commands          # slash command /sql
+      - chat:write        # chat_postMessage / chat_update (admin DMs, status)
+      - im:write          # conversations_open (open a DM with the requester)
+      - files:write       # files_upload_v2 (deliver CSV/XLSX results)
+      - files:read        # files_info (inspect uploaded result files)
+      - users:read        # users_info (resolve requester display info)
+
+settings:
+  interactivity:
+    is_enabled: true      # 29 actions / 11 view submissions / 9 options handlers
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

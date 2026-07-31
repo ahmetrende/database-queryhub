@@ -1,0 +1,48 @@
+# Legitimate row filters. Every line here must be ALLOWED — this half of the
+# corpus is what stops the tautology guard from being "fixed" into a blunt
+# instrument that blocks ordinary work.
+
+UPDATE t SET a=1 WHERE id = 42
+UPDATE t SET a=1 WHERE id = 42 OR id = 43
+UPDATE t SET a=1 WHERE created_at < now() - interval '7 days'
+UPDATE t SET a=1 WHERE status IN ('new','old')
+UPDATE t SET a=1 WHERE id IS NOT NULL
+UPDATE t SET a=1 WHERE id IS NULL
+UPDATE t SET a=1 WHERE amount BETWEEN 10 AND 20
+UPDATE t SET a=1 WHERE id IN (SELECT user_id FROM banned)
+UPDATE t SET a=1 WHERE id IN (SELECT id FROM t WHERE flagged)
+UPDATE t SET a=1 WHERE EXISTS (SELECT 1 FROM other o WHERE o.id = t.id)
+UPDATE t SET a=1 WHERE name = 'a;b'
+UPDATE t SET a=1 WHERE note LIKE '%1=1%'
+UPDATE t SET a=1 WHERE id = 1 AND status = 'x'
+UPDATE t SET a=1 WHERE 1=0
+DELETE FROM t WHERE id = 1
+DELETE FROM t WHERE tenant_id = 7 AND deleted_at IS NULL
+MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET a = 1
+
+# Reflexive-operator false-positive controls: two DIFFERENT expressions compared
+# with the same operators rule 4 looks at, plus the always-FALSE forms, which
+# must stay allowed (they touch nothing — calling them always-true would be a
+# lie, and blocking them would be a false positive).
+UPDATE t SET a=1 WHERE id = other_id
+UPDATE t SET a=1 WHERE a.id = b.id
+UPDATE t SET a=1 WHERE upper(name) = upper(surname)
+UPDATE t SET a=1 WHERE id::text = other::text
+UPDATE t SET a=1 WHERE COALESCE(id,0) = COALESCE(other,0)
+UPDATE t SET a=1 WHERE id >= min_id
+UPDATE t SET a=1 WHERE created_at >= now() - interval '1 day'
+UPDATE t SET a=1 WHERE id <> id
+UPDATE t SET a=1 WHERE id IS DISTINCT FROM other
+# Real patterns: only an all-wildcard literal is a non-filter.
+UPDATE t SET a=1 WHERE name LIKE '%abc%'
+UPDATE t SET a=1 WHERE name LIKE 'a%'
+UPDATE t SET a=1 WHERE name SIMILAR TO '(a|b)%'
+# Boolean structure, the other direction: one real conjunct constrains the
+# statement, so tautological padding beside it is harmless. `WHERE 1=1 AND ...`
+# is ordinary generated-SQL practice. A first cut of the AST rules scanned for a
+# matching node anywhere in the tree and rejected all of these.
+UPDATE t SET a=1 WHERE 1=1 AND id = 5
+DELETE FROM t WHERE 1=1 AND status = 'old'
+DELETE FROM t WHERE id = id AND status = 'old'
+UPDATE t SET a=1 WHERE name LIKE '%' AND id = 5
+DELETE FROM t WHERE id::text = id::text AND created_at < NOW() - INTERVAL '1 day'

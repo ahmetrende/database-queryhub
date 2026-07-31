@@ -1,0 +1,240 @@
+/**
+ * QueryHub — base design tokens (colors + type).
+ * The Warm theme layer (qh-theme.css) overrides the accent tokens under
+ * <html data-brand="warm"> (the default). Fonts: Manrope + IBM Plex Mono
+ * via the Google Fonts <link> in the page head.
+ */
+
+/* ---------- LIGHT THEME (default) ---------- */
+:root, [data-theme='light'] {
+  /* --- Brand --- */
+  --brand-green: #C4603F;
+  --brand-green-medium: #A24628;
+  --brand-green-strong: #B0512F;
+
+  /* --- Foreground (text) --- */
+  --fg-primary: #1F2229;
+  --fg-secondary: rgba(31,34,41,0.80);
+  --fg-tertiary: rgba(31,34,41,0.60);
+  --fg-accent: #A24628;            /* small text/links — darker for contrast */
+  --fg-accent-native: #C4603F;     /* large emphatic text */
+  --fg-danger: #E53D3D;
+  --fg-warning: #D97706;
+  --fg-fix-white: #FFFFFF;
+  --fg-fix-dark: #1F2229;
+
+  /* --- Background --- */
+  --bg-white: #FFFFFF;
+  --bg-light: #F9FAFB;
+  --bg-regular: #F5F6F8;
+  --bg-medium: #F0F2F5;
+  --bg-strong: #ECEDF0;
+  --bg-fix-white: #FFFFFF;
+  --bg-fix-dark: #181A20;
+
+  /* --- Stroke (border) --- */
+  --stroke-light: rgba(31,34,41,0.04);
+  --stroke-medium: rgba(31,34,41,0.08);
+  --stroke-strong: rgba(31,34,41,0.15);
+  --stroke-accent: #C4603F;
+  --stroke-danger: #E53D3D;
+  --stroke-warning: #F59E0B;
+
+  /* --- Adaptive (interactive state layers) --- */
+  --adaptive-light: rgba(31,34,41,0.02);
+  --adaptive-medium: rgba(31,34,41,0.04);
+  --adaptive-strong: rgba(31,34,41,0.08);
+  --adaptive-bold: rgba(31,34,41,0.10);
+
+  /* --- Theme: Brand (green) --- */
+  --brand-solid-light: #C4603F;
+  --brand-solid-medium: #A24628;
+  --brand-solid-strong: #B0512F;
+  --brand-adaptive-light: rgba(155,186,60,0.10);
+  --brand-adaptive-medium: rgba(155,186,60,0.20);
+  --brand-adaptive-strong: rgba(155,186,60,0.30);
+
+  /* --- Theme: Danger --- */
+  --danger-solid-light: #E53D3D;
+  --danger-solid-medium: #C32A2A;
+  --danger-solid-strong: #7F0E0E;
+  --danger-adaptive-light: rgba(229,61,61,0.10);
+  --danger-adaptive-medium: rgba(229,61,61,0.20);
+  --danger-adaptive-strong: rgba(229,61,61,0.30);
+
+  /* --- Theme: Warning --- */
+  --warning-solid-light: #F59E0B;
+  --warning-solid-medium: #D97706;
+  --warning-solid-strong: #92400E;
+  --warning-adaptive-light: rgba(245,158,11,0.10);
+  --warning-adaptive-medium: rgba(245,158,11,0.20);
+  --warning-adaptive-strong: rgba(245,158,11,0.30);
+
+  /* --- Theme: System (neutral) --- */
+  --system-solid-light: #5A6170;
+  --system-solid-medium: #434954;
+  --system-solid-strong: #1F2229;
+
+  /* --- Passive states --- */
+  --disabled-bg: rgba(31,34,41,0.08);
+  --disabled-fg: rgba(31,34,41,0.30);
+  --disabled-stroke: rgba(31,34,41,0.02);
+  --skeleton-base: rgba(0,0,0,0.06);
+
+  /* --- Overlay --- */
+  --overlay-light: rgba(0,0,0,0.30);
+  --overlay-medium: rgba(0,0,0,0.60);
+  --overlay-strong: rgba(0,0,0,0.80);
+
+  /* --- Supportive palette (data viz / categorical) --- */
+  --sup-green-light: #F7EAE4;   --sup-green-medium: #C4603F;   --sup-green-strong: #7E2E1A;
+  --sup-blue-light: #E1F2FA;    --sup-blue-medium: #66CCFF;    --sup-blue-strong: #144A66;
+  --sup-purple-light: #E5E1FA;  --sup-purple-medium: #BFB2FF;  --sup-purple-strong: #332966;
+  --sup-pink-light: #FBE5EF;    --sup-pink-medium: #FF66B2;    --sup-pink-strong: #66143D;
+  --sup-orange-light: #F0E4D8;  --sup-orange-medium: #FF9933;  --sup-orange-strong: #66380A;
+  --sup-yellow-light: #FBF4EE;  --sup-yellow-medium: #FFFF80;  --sup-yellow-strong: #66660A;
+
+  /* --- Spacing (4px grid) --- */
+  --sp-2xs: 2px;  --sp-xs: 4px;  --sp-sm: 6px;   --sp-ms: 8px;   --sp-md: 12px;
+  --sp-ml: 16px;  --sp-lg: 20px; --sp-xl: 24px;  --sp-2xl: 32px; --sp-3xl: 40px;
+  --sp-4xl: 48px; --sp-5xl: 64px; --sp-6xl: 80px;
+
+  /* --- Radius --- */
+  --r-2xs: 4px; --r-xs: 6px; --r-sm: 8px; --r-md: 12px; --r-lg: 16px;
+  --r-xl: 20px; --r-2xl: 24px; --r-3xl: 32px; --r-full: 999px;
+
+  /* --- Shadow (bottom) --- */
+  --shadow-xsmall: 0 1px 2px rgba(24,27,31,0.08);
+  --shadow-small:  0 1px 4px rgba(24,27,31,0.08);
+  --shadow-regular:0 4px 6px rgba(24,27,31,0.08);
+  --shadow-medium: 0 8px 16px rgba(24,27,31,0.12);
+  --shadow-large:  0 20px 24px rgba(24,27,31,0.12);
+  --shadow-xlarge: 0 24px 48px rgba(24,27,31,0.24);
+
+  /* --- Typography: family + weights --- */
+  --font-sans: 'Manrope', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600; --fw-bold: 700;
+
+  /* --- Typography: title scale --- */
+  --t64-size: 64px; --t64-lh: 80px;
+  --t48-size: 48px; --t48-lh: 60px;
+  --t40-size: 40px; --t40-lh: 48px;
+  --t32-size: 32px; --t32-lh: 40px;
+  --t28-size: 28px; --t28-lh: 28px;
+  --t24-size: 24px; --t24-lh: 32px;
+  --t20-size: 20px; --t20-lh: 24px;
+
+  /* --- Typography: body scale (reading text, looser line-height) --- */
+  --b16-size: 16px; --b16-lh: 22px;
+  --b14-size: 14px; --b14-lh: 22px;
+  --b12-size: 12px; --b12-lh: 16px;
+
+  /* --- Typography: utility scale (UI labels, tighter line-height) --- */
+  --u16-size: 16px; --u16-lh: 20px;
+  --u14-size: 14px; --u14-lh: 20px;
+  --u12-size: 12px; --u12-lh: 14px;
+  --u10-size: 10px; --u10-lh: 12px;
+
+  /* --- Motion --- */
+  --d-fast-01: 80ms; --d-fast-02: 120ms;
+  --d-mod-01: 160ms; --d-mod-02: 240ms;
+  --d-slow-01: 480ms; --d-slow-02: 640ms; --d-slow-03: 800ms;
+  --ease-standard: cubic-bezier(0.55, 0, 0, 1);
+  --ease-entrance: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --ease-exit:     cubic-bezier(0.3, 0, 0.8, 0.15);
+
+  /* --- Container / breakpoints --- */
+  --container-max: 1200px;
+  --container-max-full: 1440px;
+  --container-pad-mobile: 16px;
+  --container-pad-tablet: 24px;
+  --container-pad-desktop: 120px;
+}
+
+/* ---------- DARK THEME ---------- */
+[data-theme='dark'] {
+  --fg-primary: #FFFFFF;
+  --fg-secondary: rgba(255,255,255,0.80);
+  --fg-tertiary: rgba(255,255,255,0.50);
+  --fg-accent: #C4603F;
+  --fg-warning: #F59E0B;
+
+  --bg-white: #181A20;
+  --bg-light: #1F2229;
+  --bg-regular: #232A31;
+  --bg-medium: #2D3138;
+  --bg-strong: #434954;
+
+  --stroke-light:  rgba(255,255,255,0.04);
+  --stroke-medium: rgba(255,255,255,0.08);
+  --stroke-strong: rgba(255,255,255,0.15);
+
+  --adaptive-light:  rgba(255,255,255,0.02);
+  --adaptive-medium: rgba(255,255,255,0.04);
+  --adaptive-strong: rgba(255,255,255,0.08);
+  --adaptive-bold:   rgba(255,255,255,0.15);
+
+  --brand-solid-medium: #D07454;
+  --brand-solid-strong: #E08A68;
+  --danger-solid-medium: #FF5151;
+  --danger-solid-strong: #FF7878;
+  --warning-solid-medium: #FBBF24;
+  --warning-solid-strong: #FCD34D;
+  --system-solid-light: #BFC4CF;
+  --system-solid-medium: #D1D3DA;
+  --system-solid-strong: #F9FAFB;
+
+  --disabled-bg: rgba(255,255,255,0.08);
+  --disabled-fg: rgba(255,255,255,0.20);
+
+  --overlay-light: rgba(0,0,0,0.50);
+  --overlay-medium: rgba(0,0,0,0.70);
+  --overlay-strong: rgba(0,0,0,0.90);
+
+  --shadow-xsmall: 0 1px 2px rgba(16,18,20,0.64);
+  --shadow-small:  0 1px 4px rgba(16,18,20,0.64);
+  --shadow-regular:0 4px 6px rgba(16,18,20,0.64);
+  --shadow-medium: 0 8px 16px rgba(16,18,20,0.64);
+  --shadow-large:  0 20px 24px rgba(16,18,20,0.64);
+  --shadow-xlarge: 0 24px 48px rgba(16,18,20,0.80);
+}
+
+/* ---------- BASE RESET ---------- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body {
+  font-family: var(--font-sans);
+  color: var(--fg-primary);
+  background: var(--bg-white);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ---------- SEMANTIC TYPE CLASSES ---------- */
+.t-hero    { font-size: var(--t64-size); line-height: var(--t64-lh); font-weight: 600; letter-spacing: -0.01em; }
+.t-h1      { font-size: var(--t48-size); line-height: var(--t48-lh); font-weight: 600; letter-spacing: -0.005em; }
+.t-h2      { font-size: var(--t40-size); line-height: var(--t40-lh); font-weight: 600; }
+.t-h3      { font-size: var(--t32-size); line-height: var(--t32-lh); font-weight: 600; } /* screen title */
+.t-h4      { font-size: var(--t24-size); line-height: var(--t24-lh); font-weight: 600; } /* card title */
+.t-h5      { font-size: var(--t20-size); line-height: var(--t20-lh); font-weight: 600; } /* section heading */
+
+.t-body-lg { font-size: var(--b16-size); line-height: var(--b16-lh); font-weight: 400; }
+.t-body    { font-size: var(--b14-size); line-height: var(--b14-lh); font-weight: 400; } /* default body */
+.t-body-em { font-size: var(--b14-size); line-height: var(--b14-lh); font-weight: 500; }
+.t-caption { font-size: var(--b12-size); line-height: var(--b12-lh); font-weight: 500; }
+.t-fine    { font-size: var(--b12-size); line-height: var(--b12-lh); font-weight: 400; }
+
+.t-label   { font-size: var(--u14-size); line-height: var(--u14-lh); font-weight: 500; } /* UI label */
+.t-button  { font-size: var(--u14-size); line-height: var(--u14-lh); font-weight: 600; } /* button label */
+.t-tag     { font-size: var(--u10-size); line-height: var(--u10-lh); font-weight: 500; letter-spacing: 0.02em; }
+
+/* ---------- SEMANTIC ELEMENT DEFAULTS ---------- */
+h1 { font-size: var(--t48-size); line-height: var(--t48-lh); font-weight: 600; margin: 0; }
+h2 { font-size: var(--t32-size); line-height: var(--t32-lh); font-weight: 600; margin: 0; }
+h3 { font-size: var(--t24-size); line-height: var(--t24-lh); font-weight: 600; margin: 0; }
+h4 { font-size: var(--t20-size); line-height: var(--t20-lh); font-weight: 600; margin: 0; }
+h5 { font-size: var(--b16-size); line-height: var(--b16-lh); font-weight: 600; margin: 0; }
+p  { font-size: var(--b14-size); line-height: var(--b14-lh); font-weight: 400; margin: 0; }
+small { font-size: var(--b12-size); line-height: var(--b12-lh); }
+a  { color: var(--fg-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; }

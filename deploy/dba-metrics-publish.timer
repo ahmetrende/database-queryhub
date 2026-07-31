@@ -1,0 +1,16 @@
+[Unit]
+Description=DBA Slack Bot — publish metrics dashboard every hour
+
+[Timer]
+# Top of every hour. To run more often, change to e.g. *:0/15 (every
+# 15 minutes). RandomizedDelaySec staggers fleet-wide; harmless here
+# since we have one host, but kept for symmetry with the cleanup
+# timer.
+OnCalendar=hourly
+RandomizedDelaySec=60
+
+# Catch up if the host was down at the scheduled tick.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

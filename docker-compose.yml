@@ -1,0 +1,105 @@
+# QueryHub, running in one command — for evaluation, never for production.
+#
+#     docker compose up
+#     open http://localhost:8080     (demo-admin / queryhub-demo)
+#
+# Three containers:
+#   db      the metadata database (config, grants, requests, audit log)
+#   target  a throwaway "production" database with a seeded shop schema —
+#           this is what you query THROUGH QueryHub
+#   app     the web app (vanilla profile: no Slack, local accounts)
+#
+# Why this file exists: the install path assumes a pre-provisioned Postgres, a
+# separate target with per-tier roles, an encrypted credential row and a first
+# admin — perhaps forty minutes of reading before the first SELECT. Nobody
+# evaluates a tool that way, and nobody contributes to code they cannot run.
+#
+# What makes it a DEMO and not a deployment:
+#   - fixed, published passwords (below, in plain sight)
+#   - the master key is generated into a volume with no backup or custody plan
+#   - the app is plain HTTP on localhost; a real install runs behind TLS
+#   - the demo target is disposable and full of generated data
+# Read deploy/INSTALL.md for the real thing.
+
+name: queryhub-demo
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: queryhub
+      POSTGRES_USER: queryhub
+      POSTGRES_PASSWORD: queryhub-demo
+    # No published port: nothing outside the compose network needs the
+    # metadata database, and exposing it is how demo credentials become an
+    # incident.
+    volumes:
+      - metadata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U queryhub -d queryhub"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  target:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: shop
+      POSTGRES_USER: shop_owner
+      POSTGRES_PASSWORD: shop-demo
+    volumes:
+      - target:/var/lib/postgresql/data
+      # Postgres runs *.sql in this directory once, on first initialisation:
+      # the schema, ~10k generated rows, and the three per-tier login roles.
+      - ./deploy/demo_seed.sql:/docker-entrypoint-initdb.d/10-demo-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop_owner -d shop"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      target:
+        condition: service_healthy
+    environment:
+      # --- metadata database ---
+      BOT_DB_HOST: db
+      BOT_DB_PORT: "5432"
+      BOT_DB_NAME: queryhub
+      BOT_DB_USER: queryhub
+      BOT_DB_PASSWORD: queryhub-demo
+      # --- demo bootstrap (entrypoint skips all of this without QH_DEMO=1) ---
+      QH_DEMO: "1"
+      QH_DEMO_ADMIN_USER: demo-admin
+      QH_DEMO_DEV_USER: demo-dev
+      QH_DEMO_ADMIN_PASSWORD: queryhub-demo
+      QH_DEMO_TARGET_ALIAS: demo-postgres
+      QH_DEMO_TARGET_HOST: target
+      QH_DEMO_TARGET_DB: shop
+      QH_DEMO_RO_PASSWORD: demo-ro
+      QH_DEMO_RW_PASSWORD: demo-rw
+      QH_DEMO_DDL_PASSWORD: demo-ddl
+      # --- web ---
+      # http, not https: a self-signed certificate in a demo teaches people to
+      # click through certificate warnings. Localhost only.
+      WEB_BASE_URL: http://localhost:8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # The master key survives a restart; delete the volume and every stored
+      # target credential becomes unreadable, which is the real lesson about
+      # key custody (see docs/OPERATIONS.md).
+      - keys:/etc/queryhub
+      - results:/var/lib/queryhub
+
+volumes:
+  metadata:
+  target:
+  keys:
+  results:

@@ -1,0 +1,1 @@
+../../qh-admin-insights.jsx

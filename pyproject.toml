@@ -1,0 +1,126 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "queryhub"
+version = "1.0.0"
+description = "QueryHub — admin-approved, audited SQL gateway (Slack + web) for PostgreSQL and SQL Server"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "Ahmet Rende" }]
+keywords = ["sql", "postgresql", "sql-server", "slack", "dba", "audit", "rbac"]
+classifiers = [
+    # No "License ::" classifier: PEP 639 forbids pairing one with the SPDX
+    # `license` expression above, and setuptools >= 77 errors on the combo
+    # (which broke `pip install` in CI).
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: System Administrators",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Database",
+]
+dependencies = [
+    "psycopg[binary]>=3.2.0",
+    "psycopg-pool>=3.2.0",
+    "cryptography>=42.0.0",
+    "python-dotenv>=1.0.0",
+    "sqlparse>=0.5.0",
+    # Upper-bounded for the same reason as FastAPI below, with more at stake:
+    # sqlglot is what the SQL-safety guards read. 30.11 re-spelled
+    # `IS NOT NULL` in the AST and the always-true check quietly stopped
+    # recognising `WHERE id IS NOT NULL OR id IS NULL`, so a full-table UPDATE
+    # was no longer blocked. Nothing about that upgrade looked like a security
+    # change. Keep the range to a line the suite is verified against and widen
+    # it deliberately, with CI green, rather than on whatever a fresh install
+    # happens to resolve.
+    "sqlglot>=30.0.0,<31",
+    "openpyxl>=3.1.0",
+    # Upper-bounded on purpose: the unpinned range resolves to whatever is
+    # newest, and a fresh install already pulls fastapi 0.139 / starlette 1.3
+    # — a big jump from the tested baseline. These are the versions QueryHub
+    # is verified against; widen the cap deliberately after testing a newer
+    # FastAPI/Starlette, not implicitly on every fresh install.
+    "fastapi>=0.115.0,<0.140",
+    "uvicorn[standard]>=0.30.0,<0.52",
+    "PyJWT[crypto]>=2.9.0",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    # Coverage is measured and gated in CI (see .github/workflows/ci.yml):
+    # a global floor plus a high bar on the modules that decide access.
+    "pytest-cov>=5.0",
+    # Property-based tests for the SQL safety boundary. A hand-written case
+    # list cannot find "this payload stops being caught once it is dressed up
+    # in comments and parens", which is the bug class that matters there.
+    "hypothesis>=6.100",
+    # Pin below 0.16: ruff 0.16 widened the default rule set (RUF100 on
+    # noqa for globally-ignored codes, EXE001, …) and flags ~350 pre-existing
+    # style choices, which would break CI on every push. Keep the linter
+    # deterministic here; adopting 0.16's rules is a separate, deliberate
+    # cleanup.
+    "ruff>=0.6,<0.16",
+    "mypy>=1.10",
+]
+# Slack transport (the /sql bot + Slack approval/notification/delivery
+# adapters). Optional: the base install runs the "vanilla" profile —
+# web-only approval + in-app notifications — and needs no Slack workspace.
+# `pip install '.[slack]'` on a host that runs the Slack bot. Without it,
+# every Slack call no-ops and the Slack bot entrypoint (main.py) refuses
+# to start.
+slack = [
+    "slack-bolt>=1.20.0",
+    "slack-sdk>=3.30.0",
+]
+# SQL Server (MSSQL) targets. Optional: the base install stays Postgres-only,
+# so the Microsoft ODBC driver (msodbcsql18) + pyodbc are pulled in only on a
+# host that actually serves MSSQL targets. `pip install '.[mssql]'` — the host
+# also needs the system ODBC driver (see deploy/grant_mssql_*.sql header).
+mssql = [
+    "pyodbc>=5.1.0",
+]
+# AWS Secrets Manager credential provider (target_servers.secrets_provider =
+# 'awssm'). Optional: the base install fetches target credentials from the
+# local Fernet vault and needs no cloud SDK. `pip install '.[aws]'` only on a
+# host that points a target at Secrets Manager.
+aws = [
+    "boto3>=1.34",
+]
+
+[project.urls]
+Homepage = "https://github.com/ahmetrende/database-queryhub"
+Repository = "https://github.com/ahmetrende/database-queryhub"
+Issues = "https://github.com/ahmetrende/database-queryhub/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# --strict-markers rejects a marker that was never registered, so a typo in a
+# @pytest.mark.* decorator is an error rather than a decoration that silently
+# does nothing. (A typo in a `-m` EXPRESSION is caught differently: pytest
+# exits 5 for "no tests collected", which fails the CI step.)
+addopts = "-q --strict-markers"
+markers = [
+    "integration: needs a real control database (set QH_RUN_INTEGRATION=1)",
+]
+
+[tool.ruff]
+# Default rule set (E/F/W). The ignores below are intentional house
+# style, not debt: compact one-line statements (E701/E702/E704),
+# deliberate late imports to break cycles or defer heavy deps (E402),
+# and placeholder-free f-strings kept for block-text consistency
+# (F541). Removing them would churn the codebase without value.
+target-version = "py311"
+lint.ignore = ["E402", "E701", "E702", "F541"]
+
+[tool.mypy]
+# Advisory in CI (not blocking) — the codebase is not fully typed yet.
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = true

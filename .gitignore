@@ -1,0 +1,46 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+*.key
+master.key
+results/
+*.csv
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# Personal / session-local artifacts not part of the repo.
+.claude/
+CLAUDE.local.md
+dba-slack-bot-handoff.md
+slack_token_rotation_audit.md
+metrics_dashboard.html
+# design-canvas tool state (not part of the handoff)
+QueryHubWeb/.design-canvas.state.json
+QueryHubWeb/.thumbnail
+# design-tool component-library export (not needed to run the frontend)
+QueryHubWeb/_ds/
+
+# Vite frontend: deps AND build output stay out of git. The deploy builds
+# dist/ (scripts/install.sh does it; deploy/INSTALL.md documents it), and the
+# web app now serves an explicit "frontend not built" page instead of silently
+# falling back to a CDN prototype its own CSP blocks.
+QueryHubWeb/app/node_modules/
+QueryHubWeb/app/.vite/
+QueryHubWeb/app/dist/
+
+# local reference copy of the previous prototype drop
+QueryHubWeb_old/
+
+# Python build artifacts (setuptools)
+build/
+
+# Coverage artifacts (CI measures coverage; the data file is local).
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/

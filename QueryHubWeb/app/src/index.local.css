@@ -1,0 +1,141 @@
+/* CODE-owned CSS layered ON TOP of the design CSS.
+   Generated index.css = QueryHub.html <style> + this file (this file wins on
+   conflicts — it is concatenated last).
+
+   Design CSS lives in QueryHub.html and is refreshed wholesale from the design
+   project on each sync. As of the 2026-07-20 sync the Teams/access-control,
+   config-search and What's-new styling all live there, so they were removed
+   from here (they had been hand-copied at the 2026-07-18 drop and are now
+   byte-identical in QueryHub.html). Keep this file only for styling the code is
+   ahead of the design on — currently just the system-config inputs, whose raw
+   bot_config keys and long string values need wider fields than the design mock
+   carries. */
+
+  /* System configuration: the screen edits the real bot_config, so each row
+     shows its raw key and string values can be long (patterns, messages). */
+  .qh-cfg-key { font-family: var(--qh-mono); font-size: 10.5px; font-weight: 400; color: var(--fg-tertiary); margin-left: 8px; }
+  .qh-cfg-strin { width: 300px; max-width: 100%; }
+  .qh-cfg-textarea { width: 340px; max-width: 100%; font-family: var(--qh-mono); font-size: 12px; line-height: 1.5; resize: vertical; }
+
+/* Error-boundary screen. A render error used to unmount the tree and leave a
+   blank page; this is what replaces that. Theme tokens only, no new colours. */
+.qh-crash {
+  max-width: 46rem;
+  margin: 12vh auto;
+  padding: 0 1.5rem;
+  font-family: var(--qh-sans, system-ui, sans-serif);
+  color: var(--fg-1, #1c1c1c);
+}
+.qh-crash h1 { font-size: 1.35rem; margin: 0 0 .75rem; }
+.qh-crash p { line-height: 1.55; margin: .6rem 0; }
+.qh-crash-detail {
+  font-family: var(--qh-mono, ui-monospace, monospace);
+  font-size: .82rem;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  padding: .75rem .9rem;
+  border-radius: 8px;
+  background: var(--bg-2, rgba(0,0,0,.05));
+}
+.qh-crash button {
+  font: inherit;
+  padding: .5rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-1, rgba(0,0,0,.2));
+  background: var(--bg-2, transparent);
+  color: inherit;
+  cursor: pointer;
+}
+.qh-crash-hint { font-size: .85rem; opacity: .75; }
+
+/* "No sign-in method enabled" notice — a vanilla install with both auth
+   toggles off used to show a title and nothing else. */
+.qh-login-none {
+  margin: 4px 0 2px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--warning-adaptive-light, rgba(200,140,0,.12));
+  color: var(--fg-warning, inherit);
+}
+.qh-login-none code {
+  font-family: var(--qh-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+
+/* ---- Result grid: honour dragged column widths -------------------------
+   The grid sets explicit <col> widths, but the default `table-layout: auto`
+   re-measures cell content on every render and overrides them, so dragging a
+   column border appeared to do nothing. Fixed layout makes the colgroup
+   authoritative. Every column gets a computed default width in JS, so the
+   table still looks content-sized on first paint. */
+.qh-table-grid { table-layout: fixed; }
+.qh-table-grid th { position: sticky; top: 0; }   /* containing block for .qh-col-grip */
+
+/* ---- Cell peek ---------------------------------------------------------
+   Cells ellipsise and the grid disables text selection (drag-select owns the
+   mouse), so a long value could not be read or partially copied. Double-click
+   opens the whole value here: real text selection, and a copy button. */
+.qh-peek {
+  position: fixed;
+  z-index: 60;
+  max-width: min(680px, 90vw);
+  background: var(--surface-raised, var(--surface, #fff));
+  border: 1px solid var(--stroke-strong, rgba(0,0,0,.18));
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.18);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.qh-peek-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--fg-secondary, #666);
+}
+.qh-peek-head .qh-flex1 { flex: 1; }
+.qh-peek textarea {
+  width: 100%;
+  min-width: 320px;
+  min-height: 92px;
+  max-height: 40vh;
+  resize: vertical;
+  user-select: text;              /* the grid sets user-select:none */
+  font-family: var(--qh-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 8px;
+  border: 1px solid var(--stroke-light, rgba(0,0,0,.12));
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: inherit;
+}
+
+/* ---- Approval detail: stop the stat cards spanning the whole page --------
+   `repeat(4, 1fr)` stretches each card to a quarter of however wide the
+   detail pane is, so on a wide screen five short values (RO, 1, —, —, a
+   timestamp) were spread across ~2000px. Cap the row and let the cards keep
+   a readable size; they wrap instead of stretching. Design should fold this
+   into the prototype — see CODE_TO_DESIGN_BRIEF. */
+.qh-adetail-analysis {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 240px));
+  justify-content: start;
+  max-width: 1100px;
+}
+
+/* ---- What's new: the approver-only opt-in -------------------------------
+   Approver entries are hidden by default (see qh-whatsnew.jsx). The checkbox
+   only renders when the server sent some, i.e. only for admins, so this never
+   appears for a requester. Kept quiet — it is a filter, not a feature. */
+.qh-wn-audtoggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted, rgba(0,0,0,.55));
+  cursor: pointer;
+  user-select: none;
+}
+.qh-wn-audtoggle input { cursor: pointer; margin: 0; }

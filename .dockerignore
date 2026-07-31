@@ -1,0 +1,19 @@
+# Keep the build context small and free of anything host-specific. The image
+# builds the frontend itself, so a local node_modules/dist must not leak in —
+# they would shadow the build and could carry a stale bundle.
+.git
+.github
+.venv
+**/node_modules
+**/dist
+**/__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+tests
+docs/screenshots
+metrics_dashboard.html
+*.log
