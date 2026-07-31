@@ -14,7 +14,7 @@ openpyxl>=3.1.0
 # pulled a FastAPI/Starlette generation past the tested baseline while
 # pyproject deliberately capped it, so the two install paths disagreed and
 # the documented upgrade flow used the uncapped one. Widen both together.
-fastapi>=0.115.0,<0.140
+fastapi>=0.115.0,<0.141
 uvicorn[standard]>=0.30.0,<0.52
 PyJWT[crypto]>=2.9.0
 httpx>=0.27.0

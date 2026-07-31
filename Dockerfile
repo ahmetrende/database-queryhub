@@ -24,7 +24,7 @@
 #
 # Digests resolved 2026-07-25. They are the multi-arch INDEX digests, not a
 # single platform's manifest, so an arm64 build still works.
-FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS frontend
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS frontend
 WORKDIR /build
 
 # The build reads QueryHub.html (design CSS) and the shared .jsx files through
@@ -34,7 +34,7 @@ WORKDIR /build/QueryHubWeb/app
 RUN npm ci --no-audit --no-fund && npm run build
 
 # ---------------------------------------------------------------- runtime
-FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS runtime
+FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS runtime
 
 # libpq for psycopg, and nothing else. No compiler: psycopg[binary] ships wheels.
 RUN apt-get update \

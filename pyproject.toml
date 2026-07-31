@@ -42,7 +42,7 @@ dependencies = [
     # — a big jump from the tested baseline. These are the versions QueryHub
     # is verified against; widen the cap deliberately after testing a newer
     # FastAPI/Starlette, not implicitly on every fresh install.
-    "fastapi>=0.115.0,<0.140",
+    "fastapi>=0.115.0,<0.141",
     "uvicorn[standard]>=0.30.0,<0.52",
     "PyJWT[crypto]>=2.9.0",
     "httpx>=0.27.0",
@@ -63,7 +63,7 @@ dev = [
     # style choices, which would break CI on every push. Keep the linter
     # deterministic here; adopting 0.16's rules is a separate, deliberate
     # cleanup.
-    "ruff>=0.6,<0.16",
+    "ruff>=0.6,<0.17",
     "mypy>=1.10",
 ]
 # Slack transport (the /sql bot + Slack approval/notification/delivery
@@ -111,12 +111,25 @@ markers = [
 ]
 
 [tool.ruff]
-# Default rule set (E/F/W). The ignores below are intentional house
-# style, not debt: compact one-line statements (E701/E702/E704),
-# deliberate late imports to break cycles or defer heavy deps (E402),
-# and placeholder-free f-strings kept for block-text consistency
-# (F541). Removing them would churn the codebase without value.
+# The rule set is SELECTED explicitly, not inherited.
+#
+# With only `lint.ignore` set, the gate enforced whatever the installed ruff
+# turned on by default — so a routine ceiling bump (ruff <0.16 -> <0.17) reported
+# 467 findings on source that had not changed, and a blocking check changed its
+# verdict because a dependency changed its mind. A gate whose definition moves
+# underneath it is not a gate.
+#
+# The families below are ruff's own default (E4/E7/E9/F) — measured, not assumed:
+# with them the tree is clean, and widening to the full E plus W raises 427
+# findings, which is what "the default" quietly meant all along. Taking on a
+# family (SIM, B, UP, or the rest of E) is therefore a deliberate commit with the
+# churn it implies, rather than something a version bump decides.
+#
+# The ignores are intentional house style, not debt: compact one-line statements
+# (E701/E702/E704), deliberate late imports to break cycles or defer heavy deps
+# (E402), and placeholder-free f-strings kept for block-text consistency (F541).
 target-version = "py311"
+lint.select = ["E4", "E7", "E9", "F"]
 lint.ignore = ["E402", "E701", "E702", "F541"]
 
 [tool.mypy]
