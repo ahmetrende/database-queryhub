@@ -629,7 +629,23 @@ def classify_query(body: ClassifyIn, claims: dict = Depends(deps.current_user)):
         "grantedTier": (current_mode or "").upper() or None,
         "tierExceedsGrant": exceeds,
         "willAutoApprove": will_auto,
-        "requiresJustification": required == "ddl",
+        # Whether the submit path will demand a justification, answered exactly
+        # as core_submit answers it — this endpoint exists so the editor never
+        # has to guess, and it was guessing wrong in two directions: it said
+        # DDL-only when the server requires one for RW as well, and it ignored
+        # `will_auto` two lines above even though an auto-approved request has no
+        # approver to read the text. A field built against the old value would
+        # have appeared for the wrong statements and demanded prose nobody reads.
+        #
+        # Two answers because scheduling changes it. A scheduled request is never
+        # exempt: its grant may expire before the run time, in which case
+        # core_submit falls back to normal approval and the reason is needed
+        # after all. The client knows whether the user has picked a schedule and
+        # this endpoint does not, so it reports both and the UI picks.
+        "requiresJustification":
+            core_submit.needs_justification(required, will_auto),
+        "requiresJustificationWhenScheduled":
+            core_submit.needs_justification(required, False),
     }
 
 

@@ -104,6 +104,26 @@ class Outcome:
 
 # ---- Step 1: validation ---------------------------------------------------
 
+def needs_justification(required_mode: str, will_auto_approve: bool) -> bool:
+    """Will the submit path demand a justification for this request?
+
+    The single authority for that question. `POST /classify` publishes the answer
+    so the editor can render the field only when it is actually needed, and the
+    editor must not have its own copy of the rule: it had one, and it was wrong
+    in two directions at once — DDL-only when RW needs one too, and blind to
+    auto-approval.
+
+    `will_auto_approve` must be the SUBMIT-TIME verdict. A scheduled request is
+    never exempt (its grant may lapse before the run time, which puts a human
+    back in the loop), so callers pass False for the scheduled case.
+    """
+    if will_auto_approve:
+        return False
+    if required_mode != "ro":
+        return True
+    return cfg.get_bool("require_justification", False)
+
+
 def validate_submission(
     user_id: str,
     user_name: str | None,
@@ -210,16 +230,50 @@ def validate_submission(
                    f"issued individually by the DBA team.")
         return Rejection("query", msg, reason="tier_exceeds")
 
-    # Mandatory justification for write/DDL queries (audit hygiene).
+    # Mandatory justification for write/DDL queries (audit hygiene) — unless the
+    # request is going to be auto-approved anyway.
+    #
+    # The field has two readers. The first is the approver, deciding; an
+    # auto-approved request has no approver, so requiring prose there asks for
+    # something nobody reads at decision time. The second reader is whoever opens
+    # the audit log later asking why a write ran, and that one still gets an
+    # answer: an auto-approved submission records `grant_id`, and the grant
+    # carries its own `reason`, written by the admin who issued it. So the intent
+    # is recorded once, by the person best placed to state it, instead of
+    # re-typed per query by someone who has already been exempted from review.
+    #
+    # Resolved here with its own lookup rather than reusing the one the caller
+    # does, because that happens ~300 lines below — after the pre-flight EXPLAIN
+    # and the rate-limit and duplicate checks. A second indexed read is cheaper
+    # than moving this rejection past all of them and changing which error a user
+    # meets first.
+    #
+    # Fail closed on both counts. A SCHEDULED request is never exempt: its grant
+    # may expire before the run time, in which case the caller falls back to
+    # normal approval and the reason is needed after all. And any error resolving
+    # the grant leaves the requirement in place.
     justification = (justification or "").strip() or None
-    if required_mode != "ro" and not justification:
+    auto_approve_exempt = False
+    if not justification and not (schedule_date or schedule_time):
+        try:
+            auto_approve_exempt = (
+                admins.is_super_admin(user_id)
+                or auto_approve.effective_grant(
+                    user_id, required_mode,
+                    target_server_id=target_server_id,
+                    database_name=database) is not None)
+        except Exception:
+            log.exception(
+                "auto-approve lookup failed while deciding whether a "
+                "justification is required for %s on target %s/%s — requiring "
+                "one", user_id, target_server_id, database)
+            auto_approve_exempt = False
+
+    if not justification and needs_justification(required_mode, auto_approve_exempt):
         return Rejection(
             "justification",
-            f"Justification is required for {required_mode.upper()} queries.")
-    # Read queries: respect the global require_justification config.
-    if required_mode == "ro" and cfg.get_bool("require_justification", False) \
-            and not justification:
-        return Rejection("justification", "Justification is required.")
+            f"Justification is required for {required_mode.upper()} queries."
+            if required_mode != "ro" else "Justification is required.")
 
     # Pre-flight EXPLAIN: parse + plan against the target without executing.
     # RO ONLY — see pre_flight.py for why RW/DDL are never EXPLAIN'd here.
