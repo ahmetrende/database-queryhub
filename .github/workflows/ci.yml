@@ -21,7 +21,7 @@ jobs:
         # nobody has tested, however green the container jobs look.
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v7
@@ -115,7 +115,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -166,7 +166,7 @@ jobs:
   optional-extras:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -196,7 +196,7 @@ jobs:
   vanilla-import:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -231,7 +231,7 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           # Matches the Dockerfile's base image. When they drift, the
@@ -278,7 +278,7 @@ jobs:
   demo-stack:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build and start the stack
         run: docker compose up -d --build
@@ -322,7 +322,7 @@ jobs:
   install-stack:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the image the compose file will run
         # QH_IMAGE is the documented override; a real install pulls the released
