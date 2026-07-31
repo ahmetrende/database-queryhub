@@ -65,7 +65,7 @@ jobs:
           python scripts/release_notes.py "$GITHUB_REF_NAME" | tee release-notes.md
 
       - name: Create the GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body_path: release-notes.md
           files: |
