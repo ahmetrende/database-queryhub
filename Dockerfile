@@ -34,7 +34,7 @@ WORKDIR /build/QueryHubWeb/app
 RUN npm ci --no-audit --no-fund && npm run build
 
 # ---------------------------------------------------------------- runtime
-FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS runtime
+FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS runtime
 
 # libpq for psycopg, and nothing else. No compiler: psycopg[binary] ships wheels.
 RUN apt-get update \
