@@ -288,8 +288,8 @@ runs because a shared tag moved. To skip the build, pull a released image and
 name it:
 
 ```bash
-docker pull ghcr.io/ahmetrende/database-queryhub:1.0.2
-QH_IMAGE=ghcr.io/ahmetrende/database-queryhub:1.0.2 docker compose -f docker-compose.install.yml up -d
+docker pull ghcr.io/ahmetrende/database-queryhub:1.0.3
+QH_IMAGE=ghcr.io/ahmetrende/database-queryhub:1.0.3 docker compose -f docker-compose.install.yml up -d
 ```
 
 Every release publishes its own immutable tag alongside `:latest`. Reference the

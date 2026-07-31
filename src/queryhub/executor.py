@@ -16,6 +16,7 @@ import re
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+import dataclasses
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -928,15 +929,57 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
         cur = conn.cursor()
         stmt_results: list[_StmtResult] = []
         for i, s in enumerate(main_stmts, start=1):
-            res = _execute_main_statement(
-                cur, s, i, request_id,
-                request["wants_result"], max_rows, max_csv_bytes,
-                result_format=result_format,
-                target_id=target.id,
-                database=request["database_name"],
-                engine=target.engine,
-                capture_plan=False,   # no PG-style EXPLAIN plan on SQL Server
-            )
+            # geography / geometry / hierarchyid come back as SQL Server's own
+            # serialisation, which pyodbc hands over as opaque bytes and we render
+            # as hex. Only the server can turn that into `POINT (28.9784
+            # 41.0082)` or `/1/2/3/`, so ask it to: describe the result shape
+            # without running anything, and if a UDT column is in there, run a
+            # re-projection that calls .ToString() on exactly those columns.
+            #
+            # RO only, and the server is the judge of whether the wrap is legal.
+            # A top-level ORDER BY makes the query unwrappable ("The ORDER BY
+            # clause is invalid in views, inline functions…" — measured), and
+            # deciding that ourselves would mean parsing T-SQL. So we try the
+            # wrapped form and fall back to the original on any error. That retry
+            # is only free because RO statements have no effects; never do this
+            # for RW/DDL, where a first attempt may already have changed data.
+            s_run, wrapped = s, None
+            if mode == "ro":
+                try:
+                    cols = mssql_exec.describe_columns(cur, s.rewritten)
+                    wrapped = (mssql_exec.wrap_udt_projection(s.rewritten, cols)
+                               if cols else None)
+                except Exception:
+                    log.info("Request %s: UDT describe failed — running the "
+                             "statement unchanged", request_id, exc_info=True)
+                    wrapped = None
+            if wrapped:
+                s_run = dataclasses.replace(s, rewritten=wrapped)
+            try:
+                res = _execute_main_statement(
+                    cur, s_run, i, request_id,
+                    request["wants_result"], max_rows, max_csv_bytes,
+                    result_format=result_format,
+                    target_id=target.id,
+                    database=request["database_name"],
+                    engine=target.engine,
+                    capture_plan=False,   # no PG-style EXPLAIN plan on SQL Server
+                )
+            except Exception:
+                if not wrapped:
+                    raise
+                log.info("Request %s: the server refused the UDT re-projection "
+                         "— running the original; those columns stay hex.",
+                         request_id, exc_info=True)
+                res = _execute_main_statement(
+                    cur, s, i, request_id,
+                    request["wants_result"], max_rows, max_csv_bytes,
+                    result_format=result_format,
+                    target_id=target.id,
+                    database=request["database_name"],
+                    engine=target.engine,
+                    capture_plan=False,
+                )
             stmt_results.append(res)
         conn.commit()
         elapsed = time.monotonic() - t_start

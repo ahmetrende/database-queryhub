@@ -560,8 +560,23 @@ def build_modal(target_id: int | None = None,
             {
                 "type": "input",
                 "block_id": B_JUSTIFICATION,
+                # `optional` stays True and the label no longer says "optional".
+                #
+                # Block Kit can only be required or not for the whole modal, and
+                # this modal is built before anyone has typed a statement — so
+                # Slack cannot know whether a reason is needed. Marking it
+                # required would block every read; the label saying "(optional)"
+                # told a write submitter the opposite and then the server
+                # rejected them. Both were wrong in the same place, in opposite
+                # directions.
+                #
+                # So the requirement stays where it can be evaluated — the server
+                # — and the hint states the rule instead of guessing at it.
                 "optional": True,
-                "label": {"type": "plain_text", "text": "Justification (optional)"},
+                "label": {"type": "plain_text", "text": "Justification"},
+                "hint": {"type": "plain_text",
+                         "text": "Required for write/DDL, unless an auto-approve "
+                                 "grant covers it. Optional for reads."},
                 "element": {
                     "type": "plain_text_input",
                     "action_id": A_JUSTIFICATION,
@@ -1036,9 +1051,15 @@ def build_batch_modal(
     justification_input: dict = {
         "type": "input",
         "block_id": BATCH_B_JUSTIFICATION,
+        # Same reasoning as the single-query block: server-evaluated, so the hint
+        # states the rule. A batch is the case where it is almost always needed —
+        # one bundle is one approval round, so a human reads this text.
         "optional": True,
         "label": {"type": "plain_text",
                   "text": "Justification (applies to whole batch)"},
+        "hint": {"type": "plain_text",
+                 "text": "A batch goes to one approval round, so this is what "
+                         "the approver reads. Required if any query writes."},
         "element": {
             "type": "plain_text_input",
             "action_id": BATCH_A_JUSTIFICATION,

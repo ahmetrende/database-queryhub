@@ -217,6 +217,13 @@ def queue_item(row: dict, alias_of: "callable") -> dict:
         "piiCols": pii_preview(query)["columns"],
         "estRows": None,
         "estTables": [],
+        # Same field, two names, and only one of them is honest. The write side
+        # takes `justification` (POST /queries); this mapper invented `reason`
+        # because it was written separately, so the approver's UI reads
+        # `it.reason` for a value the requester submitted as `justification`.
+        # Both are emitted while the frontend moves over; ADMIN_API.md documents
+        # `reason` as the deprecated alias.
+        "justification": row.get("justification"),
         "reason": row.get("justification"),
         "riskSummary": web_text(row.get("risk_summary")),
         "submittedAt": iso(row.get("created_at")),

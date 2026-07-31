@@ -85,7 +85,8 @@ def test_classify_reports_the_scheduled_case_separately():
     from queryhub.web import routes_queries
 
     src = inspect.getsource(routes_queries.classify_query)
-    assert "requiresJustificationWhenScheduled" in src
+    assert "requiresJustificationWhenReviewed" in src
+    assert "requiresJustificationWhenScheduled" in src   # deprecated alias
     # ...and it must be the non-exempt answer: `will_auto` must not be passed
     # through for the scheduled variant.
     assert "needs_justification(required, False)" in src

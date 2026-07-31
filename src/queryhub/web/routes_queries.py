@@ -644,6 +644,15 @@ def classify_query(body: ClassifyIn, claims: dict = Depends(deps.current_user)):
         # this endpoint does not, so it reports both and the UI picks.
         "requiresJustification":
             core_submit.needs_justification(required, will_auto),
+        # Named for the question it answers: will a human read this? Design read
+        # the old key correctly — with auto-approval off, the answer coincides
+        # with "an approver will see it" — but the NAME said `scheduled`, and a
+        # bundle is the other case that always meets an approver. A field whose
+        # name and meaning coincide only by accident is one rename away from a
+        # silent bug, so the meaning gets the name.
+        "requiresJustificationWhenReviewed":
+            core_submit.needs_justification(required, False),
+        # Deprecated alias, one release, so a client mid-round does not break.
         "requiresJustificationWhenScheduled":
             core_submit.needs_justification(required, False),
     }

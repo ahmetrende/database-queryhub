@@ -47,11 +47,19 @@ const TICN = {
   role: (r) => r && r.kind === 'user'
     ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0112 0v1"/></svg>
     : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="8" r="3.2"/><circle cx="16.5" cy="9" r="2.6"/><path d="M3 20v-1a5 5 0 019-3M14.5 20v-1a4 4 0 016.5-3"/></svg>,
+  // Disabled target. Icon-only inside a tree row: the word is 65px of uppercase
+  // chip, which outranked the row's own name at every sidebar width. The glyph is
+  // ~14px and the sentence lives in the row's hover title.
+  off: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.9 5.9l12.2 12.2"/></svg>,
   sys: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6h.09A1.65 1.65 0 0010 3.09V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>,
 };
 
-function TreeRow({ depth, expandable, open, onToggle, icon, label, tier, right, active, muted, strong, pii, drag, connDrag, dbDrag, onClick, onCtx, onDbl, title, nodeId }) {
+function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, right, active, muted, strong, pii, drag, connDrag, dbDrag, onClick, onCtx, onDbl, title, nodeId }) {
   const handle = onClick || (expandable ? onToggle : undefined);
+  // Names ellipsize in a narrow sidebar, so every row hovers its own full name —
+  // rows with something more to say (a db's server/host, a server's engine/env)
+  // pass an explicit title that already opens with the name.
+  const rowTitle = title || (typeof label === 'string' ? label : undefined);
   const draggable = !!drag || !!connDrag || !!dbDrag;
   // A database row in the flat view carries BOTH payloads: the SQL text (drop on
   // the editor inserts it) and its organizer key (drop on a group files it).
@@ -64,7 +72,7 @@ function TreeRow({ depth, expandable, open, onToggle, icon, label, tier, right, 
     }
     : undefined;
   return (
-    <div title={title} data-node={nodeId} className={'qh-tr' + (active ? ' is-active' : '') + (muted ? ' is-muted' : '') + (strong ? ' is-strong' : '') + (pii ? ' is-pii' : '') + (drag ? ' is-drag' : '') + (connDrag ? ' is-conn-drag' : '')}
+    <div title={rowTitle} data-node={nodeId} className={'qh-tr' + (active ? ' is-active' : '') + (muted ? ' is-muted' : '') + (strong ? ' is-strong' : '') + (pii ? ' is-pii' : '') + (drag ? ' is-drag' : '') + (connDrag ? ' is-conn-drag' : '') + (sub ? ' is-two' : '')}
       style={{ paddingLeft: (6 + depth * 14) + 'px' }} onClick={handle} onContextMenu={onCtx} onDoubleClick={onDbl}
       draggable={draggable}
       onDragStart={onDragStart}>
@@ -72,14 +80,19 @@ function TreeRow({ depth, expandable, open, onToggle, icon, label, tier, right, 
         {expandable && <span className={'qh-caret' + (open ? ' is-open' : '')}><DBIcons.caret /></span>}
       </span>
       <span className="qh-tr-ic">{icon}</span>
-      <span className="qh-tr-label">{label}</span>
+      {/* A row that has to say WHERE it lives says it underneath, not beside:
+          side by side, a 25-character server name and the database's own name
+          fight over the same 200px and the name is what gets clipped. */}
+      {sub
+        ? <span className="qh-tr-main"><span className="qh-tr-label">{label}</span><span className="qh-db-srv">{sub}</span></span>
+        : <span className="qh-tr-label">{label}</span>}
       {tier && <TierBadge tier={tier} sm />}
       {right}
     </div>
   );
 }
 
-function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, open, setOpen, onPickDb, onOpenTable, onNewQuery, isSuper, reveal }) {
+function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, open, setOpen, onPickDb, onOpenTable, onNewQuery, isSuper, reveal, narrow }) {
   const tog = (id) => setOpen(o => ({ ...o, [id]: !o[id] }));
   const isOpen = (id) => !!open[id];
   const [menu, setMenu] = React.useState(null);
@@ -166,7 +179,7 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
 
   // One database subtree, rendered from `base` depth so the same code serves the
   // server-grouped tree (server ▸ db ▸ …) and the flat database list.
-  const dbNode = (c, db, base, rightExtra, dbDragKey) => {
+  const dbNode = (c, db, base, rightExtra, dbDragKey, sub) => {
     const sid = c.id;
     const eng = qhEngineId(c.engine);
     const qi = (x) => qhQuoteIdentFor(x, eng);
@@ -185,8 +198,8 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
       <div key={did}>
         <TreeRow depth={base} expandable open={isOpen(did)} onToggle={() => { tog(did); onLoadSchema && onLoadSchema(c.id, db.id); }}
           icon={rightExtra !== undefined ? <img className="qh-engine-logo" src={qhEngineLogo(c)} alt={qhEngine(c).label} draggable={false} /> : TICN.db()}
-          label={db.name} tier={db.tier} active={act} drag={qhQuoteIdent(db.name)} dbDrag={dbDragKey} nodeId={did}
-          title={rightExtra !== undefined ? c.name + ' · ' + (c.host || c.name) + (c.port ? ':' + c.port : '') + ' · ' + c.engine : undefined}
+          label={db.name} sub={sub} tier={db.tier} active={act} drag={qhQuoteIdent(db.name)} dbDrag={dbDragKey} nodeId={did}
+          title={rightExtra !== undefined ? db.name + ' · ' + c.name + ' · ' + (c.host || c.name) + (c.port ? ':' + c.port : '') + ' · ' + c.engine : undefined}
           right={rightExtra}
           onCtx={(e) => openMenu(e, c, db)} onDbl={() => newQ(c, db)} />
         {isOpen(did) && (
@@ -258,8 +271,8 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
         return (
           <div key={sid}>
             <TreeRow depth={0} expandable open={isOpen(sid)} onToggle={() => tog(sid)} strong
-              title={c.engine + ' · ' + c.env}
-              icon={<img className="qh-engine-logo" src={qhEngineLogo(c)} alt={qhEngine(c).label} draggable={false} />} label={c.name} connDrag={sid}
+              title={c.name + ' · ' + c.engine + ' · ' + c.env + (c.disabled ? ' · disabled' : '')}
+              icon={<img className="qh-engine-logo" src={qhEngineLogo(c)} alt={qhEngine(c).label} draggable={false} />} label={srvLabel(c)} connDrag={sid}
               // A disabled connection stays in an admin's list so their saved
               // queries and history can still resolve its alias — but it has to
               // SAY so, because the reason a target gets disabled is that nobody
@@ -268,7 +281,7 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
               // to prevent: a target retired the same day was still sitting in
               // the picker looking exactly like the live one.
               right={c.disabled
-                ? <span className="qh-conn-off" title="Disabled — retired or parked. It would still answer, with stale data. Pick it only deliberately.">disabled</span>
+                ? <span className="qh-conn-off is-icon" aria-label="Disabled" title="Disabled — retired or parked. It would still answer, with stale data. Pick it only deliberately.">{TICN.off()}</span>
                 : (QH_SHOW_ENV_TAGS
                     ? <span className={'qh-envtag-sm env-' + c.env}>{c.env === 'production' ? 'PROD' : c.env === 'staging' ? 'STG' : c.env}</span>
                     : null)}
@@ -289,6 +302,11 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
         );
   };
 
+  // The head every target in the fleet shares (`svc-prod-`) is dimmed, and
+  // hidden outright while the sidebar is narrow — see qhFleetPrefixes.
+  const foldPre = React.useMemo(() => qhFleetPrefixes(conns), [conns]);
+  const srvLabel = (c) => { const sp = qhSplitName(c.name, foldPre); return sp[0] ? <><span className="qh-name-pre">{sp[0]}</span>{sp[1]}</> : c.name; };
+
   const favServers = conns.filter(c => isFav(c.id));
   const ungrouped = conns.filter(c => !folderOf(c.id));
   // Every database the caller can reach. The server decides what is in this
@@ -308,11 +326,10 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
     return dup;
   }, [flatDbs]);
   const dbRow = (row) => dbNode(row.c, row.db, 0, (
-    <>
-      {row.c.disabled && <span className="qh-conn-off" title="Disabled — retired or parked. It would still answer, with stale data. Pick it only deliberately.">disabled</span>}
-      {dupDbNames.has(row.db.name) && <span className="qh-db-srv">{row.c.name}</span>}
-    </>
-  ), dbKey(row.c, row.db));
+    row.c.disabled
+      ? <span className="qh-conn-off is-icon" aria-label="Disabled" title="Disabled — retired or parked. It would still answer, with stale data. Pick it only deliberately.">{TICN.off()}</span>
+      : null
+  ), dbKey(row.c, row.db), dupDbNames.has(row.db.name) ? srvLabel(row.c) : null);
   const favDbs = flatDbs.filter(r => isDbFav(dbKey(r.c, r.db)));
   const ungroupedDbs = flatDbs.filter(r => !dbFolderOf(dbKey(r.c, r.db)));
   const ICN_STAR = <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9 6.8 19.2l1-5.8L3.5 9.2l5.9-.9z"/></svg>;
@@ -321,7 +338,7 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
   const ICN_FOLDER_NEW = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M12 11v6M9 14h6"/></svg>;
 
   return (
-    <div className="qh-tree" ref={treeRef}>
+    <div className={'qh-tree' + (narrow ? ' is-narrow' : '')} ref={treeRef}>
       <div className="qh-treeview" role="group" aria-label="Browse by">
         <button className={treeView === 'servers' ? 'is-on' : ''} onClick={() => setTreeView('servers')} aria-label="Server view">
           {TICN.server()}<span>Server view</span>
@@ -504,7 +521,7 @@ function OriginBadge({ dest }) {
   );
 }
 
-function Sidebar({ mode, setMode, conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown }) {
+function Sidebar({ mode, setMode, conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
   const [open, setOpen] = React.useState(() => ({ 'prod-main': true, 'prod-replica': true }));
   const [q, setQ] = React.useState('');
   const sqlFileRef = React.useRef(null);
@@ -572,7 +589,7 @@ function Sidebar({ mode, setMode, conns, schemaCache, onLoadSchema, rolesCache, 
 
   return (
     <div className={'qh-side' + (collapsed ? ' is-collapsed' : '')} style={width ? { width: width + 'px' } : undefined}>
-      {onResizerDown && <div className="qh-side-resizer" onMouseDown={onResizerDown} title="Drag to resize" />}
+      {onResizerDown && <div className="qh-side-resizer" onMouseDown={onResizerDown} onDoubleClick={onResizerFit} title="Drag to resize · double-click to fit the widest name" />}
       <div className="qh-side-switch">
         {modes.map(([m, Icon]) => (
           <button key={m} className={'qh-side-tab' + (mode === m ? ' is-active' : '')} onClick={() => setMode(m)} aria-label={m === 'conns' ? 'Connections' : m === 'saved' ? 'Saved' : m === 'sessions' ? 'Sessions' : m === 'scheduled' ? 'Scheduled' : 'History'}>
@@ -634,7 +651,7 @@ function Sidebar({ mode, setMode, conns, schemaCache, onLoadSchema, rolesCache, 
       )}
 
       <div className="qh-side-body">
-        {mode === 'conns' && <SchemaTree conns={conns} schemaCache={schemaCache} onLoadSchema={onLoadSchema} rolesCache={rolesCache} onLoadRoles={onLoadRoles} active={active} open={open} setOpen={setOpen} onPickDb={onPick} onOpenTable={onOpenTable} onNewQuery={onNewQuery} isSuper={isSuper} reveal={reveal} />}
+        {mode === 'conns' && <SchemaTree conns={conns} schemaCache={schemaCache} onLoadSchema={onLoadSchema} rolesCache={rolesCache} onLoadRoles={onLoadRoles} active={active} open={open} setOpen={setOpen} onPickDb={onPick} onOpenTable={onOpenTable} onNewQuery={onNewQuery} isSuper={isSuper} reveal={reveal} narrow={!width || width < 330} />}
 
         {mode === 'saved' && saved.length === 0 && (
           <div className="qh-side-empty">

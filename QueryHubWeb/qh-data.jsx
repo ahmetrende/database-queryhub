@@ -618,8 +618,43 @@ function qhCopyText(text) {
   return Promise.resolve(false);
 }
 
+// ---- long target names ------------------------------------------------
+// Real fleets give every host the same head: `svc-prod-bank-integration`,
+// `svc-prod-crm`, `svc-prod-gopanel`. In a list where every row carries it,
+// that head is the part of the name that says nothing — and it costs 9 of the
+// ~25 characters a 264px sidebar can hold, which is how a database row ended
+// up showing its server and losing its own name.
+// qhFleetPrefixes returns the heads worth folding (delimiter-aligned, carried
+// by at least three targets), longest first; qhSplitName cuts a name into
+// [head, tail] so the UI can dim the head and drop it first. Nothing is lost:
+// the full name stays in the row's hover title and comes back when the
+// sidebar is wide enough to hold it.
+const QH_FOLD_MIN = 3;
+function qhSplitName(name, prefixes) {
+  const n = String(name || '');
+  const p = (prefixes || []).find(x => n.length > x.length && n.slice(0, x.length) === x);
+  return p ? [p, n.slice(p.length)] : ['', n];
+}
+function qhFleetPrefixes(conns) {
+  const list = (conns || []).map(c => String(c.name || ''));
+  const count = {};
+  list.forEach(n => { for (let i = 0; i < n.length - 1; i++) { if (n[i] === '-' || n[i] === '_' || n[i] === '.') { const p = n.slice(0, i + 1); count[p] = (count[p] || 0) + 1; } } });
+  let pres = Object.keys(count).filter(p => count[p] >= QH_FOLD_MIN && p.length >= 4).sort((a, b) => b.length - a.length);
+  // Folding must never make two targets read alike: `svc-prod-crm` and
+  // `svc-stg-crm` would both come out as `crm`. A head whose tail another
+  // target already owns is not foldable.
+  for (let pass = 0; pass < 3 && pres.length; pass++) {
+    const tails = {}, bad = {};
+    list.forEach(n => { const sp = qhSplitName(n, pres); (tails[sp[1]] = tails[sp[1]] || []).push(sp[0]); });
+    Object.keys(tails).forEach(t => { if (tails[t].length > 1) tails[t].forEach(p => { if (p) bad[p] = 1; }); });
+    if (!Object.keys(bad).length) break;
+    pres = pres.filter(p => !bad[p]);
+  }
+  return pres;
+}
+
 Object.assign(window, {
-  qhCopyText,
+  qhCopyText, qhFleetPrefixes, qhSplitName,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,
   qhClassify, qhDetectPII, qhMockResult, qhMaskValue, qhStripComments,

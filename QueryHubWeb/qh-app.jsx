@@ -89,7 +89,7 @@ const QH_NEWS_KEY = 'qh.news.v1';
 // Connection organizer (favorites / folders). Since the Databases view it files
 // individual DATABASES, not just servers — which server exists is common
 // knowledge to anyone with a grant, but which databases a person works in is
-// theirs. Cleared on sign-out; see the note there.
+// theirs. Cleared on sign-out (SEC-12); see the note there.
 const QH_CONNORG_KEY = 'qh.connorg.v1';
 function qhLatestNewsSha() { return (typeof window !== 'undefined' && window.QH_BUILD && window.QH_BUILD.sha) || ''; }
 
@@ -106,6 +106,26 @@ function qhLatestNewsSha() { return (typeof window !== 'undefined' && window.QH_
 // Returns null until the first answer for the current (sql, conn, db) —
 // callers fall back to the local hint until then.
 const QH_CLASSIFY_DEBOUNCE_MS = 400;
+
+// Reasons the user has typed before. The friction people complain about in an
+// approval field is retyping the same sentence, so the last few are kept and
+// offered as one-click chips — but never PREFILLED: a justification that
+// arrives pre-answered gets sent unread, which is the exact failure the field
+// exists to prevent. User data (a reason names incidents and tickets), so it
+// is cleared on sign-out with the rest.
+const QH_REASON_KEY = 'qh.reason.v1';
+const QH_REASON_MAX = 5;
+function qhLoadReasons() {
+  try { const a = JSON.parse(localStorage.getItem(QH_REASON_KEY)); return Array.isArray(a) ? a.filter(x => typeof x === 'string' && x.trim()).slice(0, QH_REASON_MAX) : []; }
+  catch (e) { return []; }
+}
+function qhSaveReason(list, text) {
+  const t = String(text || '').trim();
+  if (!t) return list;
+  const next = [t, ...list.filter(x => x !== t)].slice(0, QH_REASON_MAX);
+  try { localStorage.setItem(QH_REASON_KEY, JSON.stringify(next)); } catch (e) {}
+  return next;
+}
 
 function useServerClassify(sql, connId, dbId) {
   const [verdict, setVerdict] = React.useState(null);
@@ -148,7 +168,7 @@ function App() {
   const signIn = (u) => setUser(u);   // legacy prop; real sign-in is a redirect
   const signOut = () => {
     qhApi.signout().catch(() => {});
-    // Storage isolation: the per-user cache/UI-state keys are
+    // Storage isolation (SEC-12): the per-user cache/UI-state keys are
     // browser-global, so on a shared machine the next person would see the
     // previous user's saved queries, sessions, scheduled list and open tabs.
     // Clear them on sign-out.
@@ -157,7 +177,7 @@ function App() {
     // just be a papercut on a shared machine.
     try {
       [QH_WS_KEY, QH_SAVED_KEY, QH_SESSIONS_KEY, QH_SCHEDULED_KEY,
-       QH_CLOSED_KEY, QH_SESSION_KEY, QH_NEWS_KEY, QH_CONNORG_KEY].forEach(
+       QH_CLOSED_KEY, QH_SESSION_KEY, QH_NEWS_KEY, QH_CONNORG_KEY, QH_REASON_KEY].forEach(
         (k) => localStorage.removeItem(k));
     } catch (e) { /* private mode / storage disabled — nothing to clear */ }
     setUser(null);
@@ -185,6 +205,9 @@ function App() {
   const [resTab, setResTab] = useState('results');
   const [resH, setResH] = useState(280);
   const [schedOpen, setSchedOpen] = useState(false);
+  const [whyErr, setWhyErr] = useState(false);
+  const [reasons, setReasons] = useState(qhLoadReasons);
+  const whyRef = useRef(null);
   const [reqOpen, setReqOpen] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
   const [closePrompt, setClosePrompt] = useState(null);
@@ -521,6 +544,25 @@ function App() {
   const autoApprove = server ? server.willAutoApprove
     : (isSuper || (localClassify.tier === 'RO' && qhAutoApproveRO(conn, db)));
   const tierExceedsGrant = server ? server.tierExceedsGrant : false;
+  // ---- reason (justification) ----
+  // Both flags are the server's answer and are never re-derived here: the
+  // client used to own this rule and had it wrong in two directions at once
+  // (it thought DDL-only, and it ignored auto-approval).
+  const why = tab.justification || '';
+  const needWhy = !!(server && server.requiresJustification);
+  const needWhySched = !!(server && server.requiresJustificationWhenScheduled);
+  // Appearing is driven by a settled verdict (classify is debounced), so the
+  // field cannot flicker mid-word. Disappearing is not: once shown it stays
+  // for the life of the tab, quietly optional. A field must not be pulled out
+  // from under a cursor, and typed text must never be destroyed by a keystroke
+  // that happens to drop the query back to read-only.
+  const showWhy = needWhy || !!tab.whyOpen;
+  const setWhy = (v) => { if (whyErr) setWhyErr(false); patch(activeId, { justification: v }); };
+  const demandWhy = () => {
+    setWhyErr(true);
+    if (!tab.whyOpen) patch(activeId, { whyOpen: true });
+    requestAnimationFrame(() => { const el = whyRef.current; if (el) el.focus(); });
+  };
   const editorEngine = qhEngineId(conn && conn.engine);
   const busy = tab.status === 'pending' || tab.status === 'approved' || tab.status === 'running';
   const killed = !!(admin.killSwitch && admin.killSwitch.enabled);
@@ -535,6 +577,8 @@ function App() {
 
   // ----- editor change -----
   const onCode = (sql) => patch(activeId, { sql, dirty: true, touchedAt: Date.now() });
+  useEffect(() => { if (needWhy && !tab.whyOpen) patch(activeId, { whyOpen: true }); }, [needWhy, activeId]);
+  useEffect(() => { setWhyErr(false); }, [activeId]);
 
   const openWelcome = () => { setTabs(ts => ts.some(x => x.kind === 'welcome') ? ts : [welcomeTab(), ...ts]); setActiveId('welcome'); };
   const goHome = () => { setView('dev'); openWelcome(); };
@@ -824,6 +868,7 @@ function App() {
         draftId: cur.reqId || null,
       });
       patch(id, { qid: r.id, reqId: r.id, status: r.status });
+      if (cur.justification) setReasons(rs => qhSaveReason(rs, cur.justification));
       track(id, r.id);
     } catch (e) {
       patch(id, { status: null,
@@ -868,6 +913,10 @@ function App() {
     if (killed) { pushToast('Kill switch is engaged — query execution is paused.'); return; }
     if (!tab.sql.trim() || busy || !tab.conn) return;
     if (tierExceedsGrant) { pushToast(classify.tier + ' exceeds your ' + dbTier + ' grant on this database.'); return; }
+    // Run is never a no-op. A required reason that is still empty answers the
+    // keystroke by taking focus and saying so — a disabled button would let
+    // F5 do nothing at all, which is the one thing a shortcut must not do.
+    if (needWhy && !why.trim()) { demandWhy(); return; }
     submitToServer(activeId);
   };
 
@@ -876,13 +925,14 @@ function App() {
     const t = (selText || '').trim();
     if (!t || busy || !tab.conn) return;
     if (killed) { pushToast('Kill switch is engaged — query execution is paused.'); return; }
+    if (needWhy && !why.trim()) { demandWhy(); return; }
     submitToServer(activeId, null, t);
   };
 
   // Batch — one bundle = one approval round (the server groups them). Each tab
   // is patched to pending, then tracked by the request id the bundle returns
   // (items come back in submit order).
-  const submitBatch = (ids) => {
+  const submitBatch = (ids, bundleWhy) => {
     if (killed) { pushToast('Kill switch is engaged — query execution is paused.'); return; }
     const valid = ids.filter(id => { const x = tabs.find(t => t.id === id); return x && x.sql.trim() && x.conn; });
     if (!valid.length) return;
@@ -890,12 +940,13 @@ function App() {
     const items = valid.map(id => { const x = tabs.find(t => t.id === id); return { connectionId: x.conn, databaseId: x.db, sql: x.sql, name: x.name }; });
     valid.forEach(id => patch(id, { status: 'pending', result: null,
       messages: [{ kind: 'info', text: 'Submitted in a batch — one approval round.', time: nowTime() }] }));
-    qhApi.submitBatch({ items }).then(r => {
+    qhApi.submitBatch({ items, justification: (bundleWhy || '').trim() || null }).then(r => {
       (r.items || []).forEach((it, i) => {
         const tabId = valid[i];
         if (tabId) { patch(tabId, { qid: it.queryId, status: it.status }); track(tabId, it.queryId); }
       });
       refreshHistory();
+      if (bundleWhy) setReasons(rs => qhSaveReason(rs, bundleWhy));
       pushToast(valid.length + ' queries submitted as one batch (B#' + r.bundleId + ').');
     }).catch(e => {
       valid.forEach(id => patch(id, { status: null,
@@ -907,6 +958,11 @@ function App() {
   const refreshScheduled = () => qhApi.scheduled().then(r => setScheduled((r.scheduled || []).map(s => ({
     ...s, when: s.when ? new Date(s.when).toLocaleString() : '' })))).catch(() => {});
   const schedule = (when) => {
+    // The requirement can arrive WITH the schedule: an auto-approve grant may
+    // expire before the run time, so a scheduled RW/DDL needs a reason even
+    // when running it now would not. Ask inside the popup the user is looking
+    // at rather than closing it and flashing a field behind their back.
+    if (needWhySched && !why.trim()) { setWhyErr(true); return; }
     setSchedOpen(false);
     const iso = qhScheduleToISO(when);
     if (!iso) { pushToast('Unknown schedule preset.'); return; }
@@ -993,6 +1049,29 @@ function App() {
 
   const [sideWidth, setSideWidth] = useState(() => { const n = parseInt(localStorage.getItem('qh.sidewidth.v1'), 10); return (n >= 224 && n <= 560) ? n : 264; });
   useEffect(() => { try { localStorage.setItem('qh.sidewidth.v1', String(sideWidth)); } catch (e) {} }, [sideWidth]);
+  // Double-click the resizer: size the sidebar to the widest row it is
+  // showing. With 25-character server names and 65 databases, "the name does
+  // not fit" often just wants the pane to be as wide as its content — one
+  // gesture instead of a drag, the same one every file tree has. Rows are laid
+  // out at their natural width for a single frame to be measured.
+  const fitSidebar = () => {
+    const body = document.querySelector('.qh-side .qh-side-body');
+    if (!body) return;
+    body.classList.add('qh-measuring');
+    // Measure the ROWS, not the container: scrollWidth is never smaller than
+    // the pane it is in, so reading it could only ever make the sidebar wider
+    // (and did, 18px per double-click). The rows are laid out at max-content
+    // for this one frame, so their own width is the honest number — which is
+    // what lets the gesture SHRINK the pane, the case this is mostly for.
+    // Only `.qh-tr`: a group header (FAVORITES / ALL DATABASES) is a full-width
+    // block whose label is `flex: 1`, so it reports the pane back to us and
+    // pins the answer to the current width. Its label is short anyway.
+    let widest = 0;
+    body.querySelectorAll('.qh-tr').forEach(el => { const w = el.getBoundingClientRect().width; if (w > widest) widest = w; });
+    body.classList.remove('qh-measuring');
+    if (!widest) return;
+    setSideWidth(Math.max(224, Math.min(560, Math.round(widest + 16 + 12))));
+  };
   const onResizerDown = (e) => {
     e.preventDefault();
     const startX = e.clientX, startW = sideWidth, side = t.sidebarSide;
@@ -1010,7 +1089,7 @@ function App() {
       sessions={sessions} onSaveSession={() => setSessionModal(true)} onRestoreSession={restoreSession} onDeleteSession={deleteSession}
       scheduled={scheduled} onOpenScheduled={openScheduled} onCancelScheduled={cancelScheduled}
       history={history} onLoadHistory={loadHistory}
-      width={sideWidth} onResizerDown={onResizerDown}
+      width={sideWidth} onResizerDown={onResizerDown} onResizerFit={fitSidebar}
       onRequestEndpoint={() => setReqOpen(true)} onOpenTable={openTable} onNewQuery={newQueryOn} onNewTab={newTab}
       onOpenSqlFile={openSqlFile} onDownloadSql={() => requestDownloadSql(activeId)} canDownloadSql={activeHasSql} isSuper={isSuper} />
   );
@@ -1095,7 +1174,12 @@ function App() {
                 riskHints={riskHints} riskTop={riskTop} onCancelRun={cancelRun}
                 tabCount={queryTabsForBar.length} onOpenBatch={() => setBatchOpen(true)}
                 schedOpen={schedOpen} setSchedOpen={setSchedOpen} onSchedule={schedule}
+                why={why} onWhy={setWhy} whyNeedSched={needWhySched} whyErr={whyErr}
               />
+
+              <WhyBar show={showWhy} need={needWhy} value={why} onChange={setWhy} err={whyErr && needWhy}
+                inputRef={whyRef} recent={reasons} autoApprove={autoApprove} tier={classify.tier} isSuper={isSuper}
+                onEnter={primary} onEscape={() => setEdFocus(n => n + 1)} />
 
               <div className="qh-ed-host">
                 <SqlEditor value={tab.sql} onChange={onCode} fontSize={t.editorFont} onRun={primary} onRunSelection={runSelection} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} />
@@ -1118,7 +1202,7 @@ function App() {
       {feedbackOpen && <FeedbackModal user={user} view={view} onClose={() => setFeedbackOpen(false)} onSubmit={submitFeedback} />}
       {dlModal && <DownloadSqlModal defaultName={dlModal.name} onConfirm={performDownloadSql} onCancel={() => setDlModal(null)} />}
       {batchOpen && (
-        <BatchModal tabs={tabs} activeId={activeId} onClose={() => setBatchOpen(false)} onSubmit={submitBatch} />
+        <BatchModal tabs={tabs} activeId={activeId} onClose={() => setBatchOpen(false)} onSubmit={submitBatch} recent={reasons} />
       )}
       {closePrompt && (
         <CloseConfirmModal victims={closePrompt.victims} dest={saveDest} setDest={setSaveDest}
@@ -1342,8 +1426,55 @@ function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePas
   );
 }
 
+// ---------- Reason (justification) ----------
+// Required when the server says so — an RW/DDL request a human will approve.
+// Deliberately NOT a modal: the reason is part of the request, so it belongs
+// in the request's own header next to the target and the tier, where it is
+// read before Run rather than as a stop between pressing Run and the query
+// going. When it is not being asked for, the same strip says WHY not — "runs
+// without approval" is worth seeing, and we have the flag for it.
+const ICN_WHY = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 01-2 2H8l-4 4V5a2 2 0 012-2h13a2 2 0 012 2z"/></svg>;
+const ICN_WHY_OK = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>;
+function WhyBar({ show, need, value, onChange, err, inputRef, recent, autoApprove, tier, isSuper, onEnter, onEscape }) {
+  if (!show) {
+    // Only where a reason WOULD have been asked for: on read-only work this
+    // line would be on every query and would stop being read.
+    if (!autoApprove || tier === 'RO') return null;
+    return (
+      <div className="qh-why is-auto">
+        <span className="qh-why-ic">{ICN_WHY_OK}</span>
+        <span className="qh-why-auto" title="No approver means no one to write the reason for. The audit log still records why this ran: it records the grant that allowed it.">
+          <b>Runs without approval</b> — {isSuper ? 'you are a super-admin' : 'an auto-approve grant covers this'}. <span>No reason needed.</span>
+        </span>
+      </div>
+    );
+  }
+  const chips = (recent || []).filter(r => r !== value).slice(0, 2);
+  return (
+    <div className={'qh-why' + (err ? ' is-err' : '')}>
+      <span className="qh-why-ic">{ICN_WHY}</span>
+      <label className="qh-why-lab" htmlFor="qh-why-in">Reason{need ? '' : ' (optional)'}</label>
+      <input id="qh-why-in" ref={inputRef} className="qh-why-in" value={value} onChange={(e) => onChange(e.target.value)}
+        placeholder={need ? 'Why this needs to run — the DBA reads this line before approving' : 'Optional context for the audit log'}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && value.trim()) { e.preventDefault(); onEnter && onEnter(); }
+          else if (e.key === 'Escape') { e.preventDefault(); onEscape && onEscape(); }
+        }} />
+      {err
+        ? <span className="qh-why-msg">Required — this goes to a person, not a policy.</span>
+        : (!value && chips.length > 0 && (
+          <span className="qh-why-chips">
+            {chips.map(r => (
+              <button key={r} type="button" className="qh-why-chip" title={'Reuse: ' + r} onClick={() => onChange(r)}>{r}</button>
+            ))}
+          </span>
+        ))}
+    </div>
+  );
+}
+
 // ---------- Action bar (target context + security + actions) ----------
-function ActionBar({ conn, db, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun }) {
+function ActionBar({ why, onWhy, whyNeedSched, whyErr, conn, db, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun }) {
   const tierLabel = { RO: 'Read-only', RW: 'Read/Write', DDL: 'Schema (DDL)' }[classify.tier];
   const highRisks = (riskHints || []).filter(h => h.level !== 'low');
   const schedBtnRef = useRef(null);
@@ -1476,6 +1607,16 @@ function ActionBar({ conn, db, dbTier, classify, pii, autoApprove, tierExceedsGr
           <div className="qh-ctx-backdrop" onClick={() => setSchedOpen(false)} onContextMenu={(e) => { e.preventDefault(); setSchedOpen(false); }} />
           <div className="qh-sched-pop" style={{ position: 'fixed', top: schedPos.top, right: schedPos.right, zIndex: 91 }} onClick={(e) => e.stopPropagation()}>
             <div className="qh-sched-title">Schedule this query</div>
+            {/* A schedule can create the requirement on its own: the grant that
+                would auto-approve this now may be gone at the run time. */}
+            {whyNeedSched && (
+              <div className={'qh-sched-why' + (whyErr && !String(why || '').trim() ? ' is-err' : '')}>
+                <label className="qh-sched-clabel">Reason (required to schedule)</label>
+                <input className="qh-sched-cinput" value={why || ''} autoFocus
+                  onChange={(e) => onWhy(e.target.value)} placeholder="Why this needs to run" />
+                <div className="qh-sched-note">Scheduled requests always carry one — a grant can expire before the run time.</div>
+              </div>
+            )}
             {['In 1 hour', 'Tonight 02:00', 'Tomorrow 09:00'].map(w => (
               <button key={w} className="qh-sched-opt" onClick={() => onSchedule(w)}>{w}</button>
             ))}
@@ -1684,9 +1825,26 @@ function FeedbackModal({ user, view, onClose, onSubmit }) {
 }
 
 // ---------- Batch / bundle modal ----------
-function BatchModal({ tabs, activeId, onClose, onSubmit }) {
+function BatchModal({ tabs, activeId, onClose, onSubmit, recent }) {
   const eligible = tabs.filter(x => x.sql.trim());
   const [sel, setSel] = useState(() => eligible.map(x => x.id));
+  const [why, setWhy] = useState('');
+  const [err, setErr] = useState(false);
+  // One reason for the whole bundle — the API takes a single bundle-level
+  // field and Slack shows one. Whether it is required is the server's call,
+  // not ours: a bundle always meets a human approver, which is the same
+  // question requiresJustificationWhenScheduled already answers.
+  const [verd, setVerd] = useState({});
+  useEffect(() => {
+    let live = true;
+    Promise.all(eligible.map(x => qhApi.classify({ connectionId: x.conn, databaseId: x.db, sql: x.sql })
+      .then(r => [x.id, r], () => [x.id, null])))
+      .then(pairs => { if (!live) return; const m = {}; pairs.forEach(p => { m[p[0]] = p[1]; }); setVerd(m); });
+    return () => { live = false; };
+  }, []);
+  const need = sel.some(id => verd[id] && verd[id].requiresJustificationWhenScheduled);
+  const go = () => { if (need && !why.trim()) { setErr(true); return; } onSubmit(sel, why.trim()); };
+  const chips = (recent || []).filter(r => r !== why).slice(0, 2);
   const toggle = (id) => setSel(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
   return (
     <QhModal onClose={onClose}>
@@ -1712,10 +1870,22 @@ function BatchModal({ tabs, activeId, onClose, onSubmit }) {
             );
           })}
         </div>
+        <div className={'qh-field' + (err ? ' is-err' : '')}>
+          <div className="qh-field-lbl">Reason{need ? '' : ' (optional)'}</div>
+          <input className="qh-input" value={why} placeholder="One line for the whole bundle — the DBA reads it once"
+            onChange={(e) => { if (err) setErr(false); setWhy(e.target.value); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && sel.length) go(); }} />
+          {err && <div className="qh-field-err">Required — this bundle needs a person to approve it.</div>}
+          {!err && !why && chips.length > 0 && (
+            <div className="qh-why-chips">
+              {chips.map(r => <button key={r} type="button" className="qh-why-chip" title={'Reuse: ' + r} onClick={() => setWhy(r)}>{r}</button>)}
+            </div>
+          )}
+        </div>
       </div>
       <div className="qh-modal-foot">
         <button className="qh-btn qh-btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="qh-btn qh-btn-primary is-approval" disabled={!sel.length} onClick={() => onSubmit(sel)}>
+        <button className="qh-btn qh-btn-primary is-approval" disabled={!sel.length} onClick={go}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>
           Submit {sel.length} as one bundle
         </button>

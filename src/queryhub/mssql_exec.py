@@ -173,6 +173,77 @@ SQL_VARIANT = -16
 SQL_SS_UDT = -151
 
 
+# ---- making the UDTs readable, by asking the server -------------------------
+#
+# The follow-up the comment above filed. Hex is honest but useless: nobody reads
+# 0xE6100000010CE2E995B20C8144400A68226C78FA3C as a coordinate. SQL Server will
+# render it — `col.ToString()` — so the readable form comes from the only place
+# that can produce it correctly.
+#
+# Measured on the live SQL Server 2025 (17.0.4060.2), which is what makes this
+# shippable rather than plausible:
+#
+#   raw                        geography -> 0xE6100000010CE2E99…   hierarchyid -> 0x5B5E
+#   sp_describe_first_result_set          -> system_type_name = geography / hierarchyid
+#   SELECT qh.g.ToString() … FROM (q) qh  -> POINT (28.9784 41.0082) and /1/2/3/
+#   SELECT * FROM (SELECT 1 a ORDER BY a) -> rejected: "The ORDER BY clause is
+#                                            invalid in views, inline functions…"
+#
+# That last line is why this cannot be unconditional: a top-level ORDER BY — very
+# common — makes the query unwrappable, and detecting one reliably would mean
+# parsing T-SQL. So the server decides: try the wrapped form, and if it is
+# rejected, run the original and say why the column is hex. RO only, because
+# running a statement that might be refused is only free when it has no effects.
+UDT_TYPE_NAMES = frozenset({"geography", "geometry", "hierarchyid"})
+
+
+def describe_columns(cur, sql: str) -> list[tuple[str, str]] | None:
+    """[(column name, SQL Server type name)] for `sql`, WITHOUT running it.
+
+    `sp_describe_first_result_set` compiles the statement and returns its result
+    shape — no execution, no side effects. None when the server declines (a
+    statement it cannot describe, an older server, no permission); the caller
+    then simply does not wrap.
+    """
+    try:
+        cur.execute("EXEC sp_describe_first_result_set @tsql = ?, @params = NULL, "
+                    "@browse_information_mode = 0", sql)
+        names = [d[0] for d in cur.description]
+        i_name, i_type = names.index("name"), names.index("system_type_name")
+        return [(r[i_name], (r[i_type] or "").lower()) for r in cur.fetchall()]
+    except Exception:
+        log.info("sp_describe_first_result_set declined — not wrapping UDT "
+                 "columns for this statement", exc_info=True)
+        return None
+
+
+def wrap_udt_projection(sql: str, cols: list[tuple[str, str]]) -> str | None:
+    """`sql` re-projected so UDT columns come back as text, or None to leave it.
+
+    None — meaning "run the original" — whenever re-projection would change what
+    the query returns rather than just how one column is rendered:
+
+      * no UDT column, so there is nothing to gain;
+      * an unnamed column (`SELECT geography::Point(…)` with no alias): the
+        wrapper has no name to select it by, and inventing one would rename a
+        column the caller asked for;
+      * a duplicated name (`SELECT a.id, b.id`): `qh.[id]` is ambiguous, and
+        picking one of them silently drops the other.
+    """
+    if not cols or not any(ty in UDT_TYPE_NAMES for _, ty in cols):
+        return None
+    names = [n for n, _ in cols]
+    if any(not n for n in names) or len(set(names)) != len(names):
+        return None
+    parts = []
+    for name, ty in cols:
+        ident = "[" + name.replace("]", "]]") + "]"
+        parts.append(f"qh.{ident}.ToString() AS {ident}"
+                     if ty in UDT_TYPE_NAMES else f"qh.{ident}")
+    return "SELECT " + ", ".join(parts) + "\nFROM (\n" + sql + "\n) AS qh"
+
+
+
 def passthrough_or_hex(value):
     """Return an already-decoded value untouched; render raw bytes as hex.
 

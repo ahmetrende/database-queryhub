@@ -385,7 +385,8 @@
   .qh-kb-title { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--fg-tertiary); padding: 2px 4px 8px; }
   .qh-kb-row { display: flex; align-items: center; gap: 10px; padding: 5px 4px; font-size: 12.5px; color: var(--fg-secondary); }
   .qh-kbd { flex-shrink: 0; min-width: 82px; text-align: center; font-family: var(--qh-mono); font-size: 11px; font-weight: 600; color: var(--fg-primary); background: var(--bg-light); border: 1px solid var(--stroke-medium); border-bottom-width: 2px; border-radius: var(--r-xs); padding: 3px 7px; }
-  .qh-tr-rows { font-family: var(--qh-mono); font-size: 10.5px; color: var(--fg-tertiary); opacity: 0.85; flex-shrink: 0; }
+  .qh-tr-rows { font-family: var(--qh-mono); font-size: 10.5px; color: var(--fg-tertiary); opacity: 0.85;
+    flex: 0 1000 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .qh-tr:hover .qh-tr-rows { display: none; }
   .qh-side-top { padding: 8px 8px 0; }
   .qh-newq-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 7px; height: 38px; margin-bottom: 0; background: var(--brand-green); border: 0; border-radius: var(--r-sm); cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 600; color: #fff; transition: background var(--d-fast-02) var(--ease-standard); }
@@ -412,6 +413,42 @@
   .qh-ctx-sep { height: 1px; background: var(--stroke-light); margin: 4px 6px; }
   .qh-ctx-kbd { margin-left: auto; padding-left: 14px; font-family: var(--qh-mono); font-size: 10.5px; color: var(--fg-tertiary); }
   .qh-ctxmenu button:hover .qh-ctx-kbd { color: var(--fg-accent); }
+
+  /* ---------- reason (justification) ----------
+     A request a human will approve carries one line saying why. It sits
+     between the action bar and the editor — part of the request's header, not
+     a dialog in front of Run: the approver's question is context you read
+     next to the target and the tier, and the moment between pressing Run and
+     the query going is the wrong place to meet it. Empty-and-required is not
+     an error until you try to send: the ring appears only once Run has asked. */
+  .qh-why { display: flex; align-items: center; gap: 8px; height: 36px; flex-shrink: 0; padding: 0 14px;
+    background: var(--bg-light); border-bottom: 1px solid var(--stroke-medium); min-width: 0; }
+  .qh-why-ic { display: inline-flex; flex-shrink: 0; color: var(--fg-tertiary); }
+  .qh-why-lab { flex-shrink: 0; font-size: 12px; font-weight: 600; color: var(--fg-secondary); }
+  .qh-why-in { flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 9px; box-sizing: border-box;
+    font-family: inherit; font-size: 13px; color: var(--fg-primary); background: var(--bg-white);
+    border: 1px solid var(--stroke-medium); border-radius: var(--r-xs); outline: none; }
+  .qh-why-in::placeholder { color: var(--fg-tertiary); }
+  .qh-why-in:focus { border-color: var(--stroke-accent); box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-why.is-err .qh-why-lab { color: var(--fg-danger); }
+  .qh-why.is-err .qh-why-in { border-color: var(--stroke-danger); box-shadow: 0 0 0 2px var(--danger-adaptive-light); }
+  .qh-why-msg { flex-shrink: 0; font-size: 11.5px; color: var(--fg-danger); }
+  /* Recent reasons are offered, never prefilled: an audit field that arrives
+     pre-answered gets sent unread, which is the failure it exists to prevent. */
+  .qh-why-chips { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; overflow: hidden; }
+  .qh-why-chip { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: inherit; font-size: 11.5px; color: var(--fg-secondary); background: var(--adaptive-medium);
+    border: 0; border-radius: 999px; padding: 4px 10px; cursor: pointer; }
+  .qh-why-chip:hover { background: var(--adaptive-bold); color: var(--fg-primary); }
+  .qh-why-auto { font-size: 12px; color: var(--fg-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qh-why-auto b { font-weight: 600; }
+  .qh-why-auto span { color: var(--fg-tertiary); }
+  .qh-why.is-auto .qh-why-ic { color: var(--fg-success, var(--brand-green)); }
+  .qh-sched-why { padding: 4px 6px 8px; display: flex; flex-direction: column; gap: 6px; }
+  .qh-sched-why.is-err .qh-sched-cinput { border-color: var(--stroke-danger); box-shadow: 0 0 0 2px var(--danger-adaptive-light); }
+  .qh-sched-note { font-size: 11px; line-height: 1.4; color: var(--fg-tertiary); }
+  .qh-field-err { font-size: 11.5px; color: var(--fg-danger); }
+  .qh-field.is-err .qh-input { border-color: var(--stroke-danger); box-shadow: 0 0 0 2px var(--danger-adaptive-light); }
 
   /* ---------- action bar ---------- */
   .qh-actionbar { display: flex; align-items: center; gap: 10px; height: 52px; flex-shrink: 0; padding: 0 14px; overflow: visible; min-width: 0; background: var(--bg-white); border-bottom: 1px solid var(--stroke-medium); }
@@ -554,7 +591,7 @@
 
   /* tier badge */
   .qh-tier { display: inline-flex; align-items: center; font-size: 10px; font-weight: 700; font-family: var(--qh-mono);
-    padding: 2px 7px; border-radius: var(--r-2xs); letter-spacing: 0.02em; }
+    padding: 2px 7px; border-radius: var(--r-2xs); letter-spacing: 0.02em; flex-shrink: 0; }
   .qh-tier.is-sm { font-size: 9px; padding: 1px 5px; }
 
   /* results table */
@@ -637,7 +674,7 @@
   .qh-tree { padding: 2px 0 4px; }
   /* Browse-by switch. Icon-only: it changes how the list is grouped, not what
      you can reach, so it stays out of the way until hovered (same dark-pill
-     tooltip as the sidebar's icon tabs). Choice persists across sign-outs \u2014 it
+     tooltip as the sidebar's icon tabs). Choice persists across sign-outs — it
      is a UI preference, not user data. */
   .qh-treeview { display: flex; align-items: center; gap: 2px; padding: 2px 8px 6px 6px; }
   .qh-treeview button { position: relative; display: inline-flex; align-items: center; justify-content: center;
@@ -654,8 +691,27 @@
     box-shadow: var(--shadow-md, 0 4px 14px -3px rgba(0,0,0,0.22)); pointer-events: none; opacity: 0; }
   .qh-treeview button:hover > span { opacity: 1; }
   .qh-treeview-n { margin-left: auto; font-family: var(--qh-mono); font-size: 10.5px; color: var(--fg-tertiary); }
-  /* Which server a database sits on — shown only when the name alone is ambiguous. */
-  .qh-db-srv { font-family: var(--qh-mono); font-size: 10.5px; color: var(--fg-tertiary); flex-shrink: 0; }
+  /* Which server a database sits on — shown only when the name alone is
+     ambiguous, and on its OWN line: inline it was a 25-character mono string
+     competing with the name for the same 200px, and the name lost. */
+  .qh-db-srv { font-family: var(--qh-mono); font-size: 10.5px; line-height: 1.35; color: var(--fg-tertiary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qh-tr.is-two { height: 40px; }
+  .qh-tr-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+  .qh-tr-main .qh-tr-label { flex: none; line-height: 1.3; }
+  /* The fleet's shared name head (`svc-prod-…`), dimmed: it is the same on
+     every row, so it reads as the prefix it is and is the first thing the row
+     gives up — below ~330px it is hidden outright and the row keeps the part
+     that actually identifies the target. Full name in the hover title. */
+  .qh-name-pre { color: var(--fg-tertiary); font-weight: 400; }
+  .qh-tree.is-narrow .qh-name-pre { display: none; }
+  /* Double-clicking the resizer fits the sidebar to its widest row: for one
+     frame the rows are laid out at their natural width so they can be measured. */
+  .qh-side-body.qh-measuring { overflow-x: auto; }
+  .qh-side-body.qh-measuring .qh-tr { width: max-content; min-width: 0; }
+  .qh-side-body.qh-measuring .qh-tr-label,
+  .qh-side-body.qh-measuring .qh-db-srv { overflow: visible; text-overflow: clip; }
+  .qh-side-body.qh-measuring .qh-name-pre { display: inline; }
   .qh-tr { display: flex; align-items: center; gap: 6px; height: 28px; padding-right: 8px; cursor: pointer; color: var(--fg-secondary); font-size: 13px; border-radius: var(--r-xs); user-select: none; }
   .qh-tr:hover { background: var(--adaptive-medium); }
   .qh-tr.is-strong { font-weight: 600; color: var(--fg-primary); height: 30px; }
@@ -667,10 +723,16 @@
   .qh-tr-ic { display: inline-flex; flex-shrink: 0; color: var(--fg-tertiary); }
   .qh-tr.is-active .qh-tr-ic { color: var(--fg-accent); }
   .qh-tr.is-pii .qh-tr-ic { color: var(--fg-warning); }
-  .qh-tr-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Width priority inside a row: the NAME is the row's identity, so it holds its
+     intrinsic width (flex-basis auto, not 0) and is the LAST thing to ellipsize.
+     Secondary metadata to its right — which server a db sits on, a column type, a
+     role note — carries a 1000× shrink weight, so it clips away to nothing before
+     the name gives up a pixel; the row's hover title still carries the full text. */
+  .qh-tr-label { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .qh-tr.is-pii .qh-tr-label { color: var(--fg-warning); }
   .qh-tr-count { font-size: 10px; color: var(--fg-tertiary); background: var(--adaptive-bold); border-radius: 999px; padding: 1px 6px; flex-shrink: 0; }
-  .qh-col-type { font-family: var(--qh-mono); font-size: 10.5px; color: var(--fg-tertiary); opacity: 0.9; flex-shrink: 0; }
+  .qh-col-type { font-family: var(--qh-mono); font-size: 10.5px; color: var(--fg-tertiary); opacity: 0.9;
+    flex: 0 1000 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .qh-pgchip { font-size: 9px; font-weight: 600; letter-spacing: 0.02em; color: var(--fg-tertiary); background: var(--adaptive-bold); border-radius: var(--r-2xs); padding: 1px 5px; flex-shrink: 0; }
   .qh-tr-run { width: 20px; height: 20px; flex-shrink: 0; display: none; align-items: center; justify-content: center; border: 0; background: transparent; border-radius: var(--r-2xs); color: var(--fg-tertiary); cursor: pointer; }
   .qh-tr:hover .qh-tr-run { display: inline-flex; }
@@ -977,6 +1039,14 @@
     letter-spacing: 0.04em; padding: 2px 5px; border-radius: var(--r-xs);
     color: var(--fg-warning); background: var(--warning-adaptive-light);
     white-space: nowrap; flex-shrink: 0; }
+  /* In a tree row the marker is icon-only: as a word it is 65px of chip, which
+     outranked the row's own name at every sidebar width. The glyph keeps the
+     warning colour, costs 15px, and the sentence stays in the row's hover title. */
+  .qh-conn-off.is-icon { display: inline-flex; align-items: center; padding: 0;
+    background: transparent; border-radius: 0; }
+  /* Chips in a tree row yield width to the name too (see .qh-tr-label). Both are
+     short, so in practice they collapse only where the name would otherwise die. */
+  .qh-tr .qh-pgchip, .qh-tr .qh-envtag-sm { flex: 0 1000 auto; min-width: 0; overflow: hidden; }
   .qh-auditreq { font-family: var(--qh-mono); font-size: 11.5px;
     color: var(--fg-secondary); white-space: nowrap; }
   .qh-auditline.is-head { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-tertiary); background: var(--bg-light); }
@@ -1173,7 +1243,8 @@
   .qh-role-badge.role-dba { color: #15688C; background: var(--sup-blue-light); }
   .qh-role-badge.role-super { color: var(--fg-accent); background: var(--brand-adaptive-light); }
   [data-theme='dark'] .qh-role-badge.role-dba { color: #7FD2F5; background: rgba(102,204,255,0.12); }
-  .qh-role-note { font-family: var(--qh-mono); font-size: 10px; color: var(--fg-tertiary); flex-shrink: 0; opacity: 0.9; }
+  .qh-role-note { font-family: var(--qh-mono); font-size: 10px; color: var(--fg-tertiary); opacity: 0.9;
+    flex: 0 1000 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .qh-user-sync { font-size: 10.5px; color: var(--fg-tertiary); margin-top: 5px; font-family: var(--qh-mono); }
   .qh-sched-chip { display: inline-flex; align-items: center; gap: 4px; color: var(--fg-accent); }
 
@@ -1264,6 +1335,10 @@
 <script>window.__QH_DESIGN_MODE__ = true;</script>
 <script type="text/babel" src="tweaks-panel.jsx"></script>
 <script type="text/babel" src="qh-data.jsx"></script>
+<!-- DESIGN MOCK of the API client: same window.qhApi surface as the product's
+     qh-api.jsx, served from in-memory mock data so this prototype runs with no
+     backend. The served app loads qh-api.jsx here instead. -->
+<script type="text/babel" src="qh-api-mock.jsx"></script>
 <script type="text/babel" src="qh-modal.jsx"></script>
 <script type="text/babel" src="qh-login.jsx"></script>
 <script type="text/babel" src="qh-editor.jsx"></script>
@@ -1275,10 +1350,6 @@
 <script type="text/babel" src="qh-admin.jsx"></script>
 <script type="text/babel" src="qh-whatsnew.jsx"></script>
 <script type="text/babel" src="qh-home.jsx"></script>
-<!-- DESIGN MOCK of the API client: same window.qhApi surface as the product's
-     qh-api.jsx, served from in-memory mock data so this prototype runs with no
-     backend. The served app loads qh-api.jsx here instead. -->
-<script type="text/babel" src="qh-api-mock.jsx"></script>
 <script type="text/babel" src="qh-app.jsx"></script>
 </body>
 </html>

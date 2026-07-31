@@ -9,6 +9,42 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.3] — 2026-07-31
+
+### Added
+- **A reason field in the web editor.** Ported from the design source: a strip
+  between the action bar and the editor, not a dialog in front of Run, because the
+  reason is part of the request. Run stays enabled with an empty required field —
+  it focuses and rings it rather than doing nothing, since a disabled button plus
+  a keyboard shortcut is a no-op nobody can diagnose. The strip appears only on a
+  settled classification and never disappears, so typed text is not destroyed by a
+  keystroke that drops the statement back to read-only. Recent reasons are offered
+  as chips and never prefilled.
+- **`geography`, `geometry` and `hierarchyid` are readable.** They arrive as SQL
+  Server's own serialisation, which we could only render as hex. The executor now
+  asks the server for the result shape without running the query, and where one of
+  those types appears, re-projects that column through `.ToString()` —
+  `POINT (28.9784 41.0082)`, `/1/2/3/`. Read-only queries only, and the server
+  decides: a top-level `ORDER BY` makes a query unwrappable, so the wrapped form is
+  attempted and the original runs if it is refused.
+- The sidebar makes room for long target names: the fleet-wide name head is folded
+  and dimmed, an ambiguous database row names its server on a second line, and
+  double-clicking the resizer fits the pane to its widest row.
+
+### Fixed
+- `POST /classify` publishes `requiresJustificationWhenReviewed` — named for the
+  question it answers, "will a human read this?" The old
+  `requiresJustificationWhenScheduled` is kept as an alias for one release. It gave
+  the right answer for the wrong reason: a batch also always meets an approver, and
+  a field whose name and meaning agree only by accident is one rename from a silent
+  bug.
+- `GET /admin/queue` emits `justification` as well as `reason`. The requester
+  submits `justification`; the approver was reading the same value under a name that
+  existed only because the queue mapper was written separately.
+- The Slack modal no longer labels the justification field "(optional)". It is
+  required for write and DDL unless an auto-approve grant covers it, and the hint
+  now says so instead of promising the opposite.
+
 ## [1.0.2] — 2026-07-31
 
 ### Fixed
