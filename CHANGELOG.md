@@ -9,6 +9,37 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-07-31
+
+### Fixed
+- A query with an unbalanced quote came back as **"internal error"** instead of
+  a syntax error. `ast_safety.check` catches `sqlglot.errors.ParseError` and
+  fails closed with a message that already says "check for stray quotes" — but
+  `TokenError` is a SIBLING of `ParseError`, not a subclass, and the tokenizer
+  raises before a parse is attempted. So the one input the handler was written
+  for was the one input that escaped it, all the way out of the API as a 500.
+  Now the whole `SqlglotError` family is caught, with a backstop for anything
+  new: a parser is a moving dependency on the submit path, and an exception
+  class we have not seen must still refuse the query rather than reach a user.
+- `POST /classify` reported `requiresJustification` as "DDL only", so the field
+  the web editor is supposed to render was wrong for RW and ignored
+  auto-approval entirely.
+
+### Changed
+- **A justification is no longer required when the request will be
+  auto-approved.** The field's first reader is the approver, and an
+  auto-approved request has no approver. The audit question is still answered:
+  such a submission records the covering grant, and the grant carries its own
+  reason. A SCHEDULED request stays exempt-free — its grant may lapse before
+  the run time, which puts a human back in the loop.
+- `/classify` now also publishes `requiresJustificationWhenScheduled`, because
+  the client knows whether a schedule was picked and the endpoint does not.
+
+### Known gap
+- The web editor still has no justification input, so a user WITHOUT
+  auto-approve cannot submit RW or DDL from the web. Slack's `/sql` modal has
+  the field. The API contract this needs is now correct.
+
 ## [1.0.0] — 2026-07-31
 
 The repository is public, and this is the first release built by the release

@@ -153,15 +153,35 @@ def check(sql: str, engine: str = "postgres") -> list[str]:
     dialect = spec.sqlglot_dialect
     try:
         statements = sqlglot.parse(sql, read=dialect)
-    except sqlglot.errors.ParseError as e:
-        # Fail closed: anything that doesn't parse cleanly under this
-        # engine's syntax is suspicious. Most obfuscation bypasses fall here.
-        log.info("ast_safety: parse error (engine=%s), blocking. %s", engine, e)
+    except sqlglot.errors.SqlglotError as e:
+        # Fail closed: anything that doesn't parse cleanly under this engine's
+        # syntax is suspicious. Most obfuscation bypasses fall here.
+        #
+        # SqlglotError, not ParseError. `TokenError` is a SIBLING of ParseError,
+        # not a subclass, so catching ParseError alone let every unbalanced quote
+        # escape as a 500 — the tokenizer raises before a parse is ever
+        # attempted. A user pasted a CASE arm whose string literal had been
+        # truncated mid-line and got "internal error" from a check whose message
+        # already said "stray quotes". The intent was right and the except clause
+        # was one level too narrow.
+        log.info("ast_safety: %s (engine=%s), blocking. %s",
+                 type(e).__name__, engine, e)
         return [
             f"Query could not be parsed as standard {dialect} SQL. Check for "
             "stray quotes, unbalanced parentheses, or non-standard syntax. "
             "If the query is intentionally exotic, ask the DBA team to "
             "disable bot_config.ast_safety_enabled for the run."
+        ]
+    except Exception:
+        # Backstop for the same failure in a shape this sqlglot does not have
+        # yet. A parser is a moving dependency and this one is on the submit
+        # path: an exception class we have never seen must still refuse the
+        # query rather than reach the user as an unhandled error.
+        log.exception("ast_safety: unexpected parser failure (engine=%s), "
+                      "blocking", engine)
+        return [
+            f"Query could not be parsed as standard {dialect} SQL. Check for "
+            "stray quotes, unbalanced parentheses, or non-standard syntax."
         ]
 
     blocked_funcs = _DANGEROUS_FUNCS | spec.blocked_functions
