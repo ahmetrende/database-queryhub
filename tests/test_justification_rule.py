@@ -117,3 +117,34 @@ def test_submit_fails_closed_when_the_grant_lookup_raises():
     body = src[src.index("auto_approve_exempt = False"):]
     assert "except Exception" in body
     assert "auto_approve_exempt = False" in body[body.index("except Exception"):]
+
+
+# ---------------------------------------------------------------------------
+# audit vocabulary: provider labels must cover the provider registry
+# ---------------------------------------------------------------------------
+
+def test_every_registered_auth_provider_has_an_audit_label():
+    """The label map is hand-written and the provider registry is not, so the
+    two can drift. They must not: a provider with no label renders through the
+    fallback, which is a safety net for old audit rows — not a way to ship a new
+    login surface with a placeholder name in the audit trail."""
+    from queryhub.web import auth_providers, mapping
+
+    registered = set(auth_providers._ALL)
+    labelled = set(mapping._PROVIDER_LABELS)
+    missing = registered - labelled
+    assert not missing, (
+        f"auth providers with no audit label: {sorted(missing)}. "
+        "Add them to mapping._PROVIDER_LABELS.")
+
+
+def test_provider_labels_do_not_reuse_the_surface_wording():
+    """`via` belongs to origin (via web / via Slack). A provider label that also
+    said "via" would recreate the exact ambiguity this fixed: an audit line
+    reading "Signed in to web · via slack"."""
+    from queryhub.web import mapping
+
+    for name, label in mapping._PROVIDER_LABELS.items():
+        assert not label.lower().startswith("via "), (
+            f"provider label for {name!r} starts with 'via', which means "
+            "surface elsewhere in the same list")

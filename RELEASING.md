@@ -76,8 +76,8 @@ Until then, the GitHub Release with attached artifacts *is* the release, and
 
 ## Versioning
 
-See [README.md](README.md#versioning-and-support) for what 0.x does and does not
-guarantee, and for the support window. Two rules that live here because they
+See [README.md](README.md#versioning-and-support) for what the major version
+does and does not guarantee, and for the support window. Two rules that live here because they
 constrain what a release may contain:
 
 - **Migrations are append-only.** A released migration is never edited, only
@@ -98,10 +98,12 @@ us.
 - [ ] First release only: the GHCR package is created private. Make it public in
       the repository's Packages settings, or `docker pull` fails for everyone
       with an authentication error that looks like the image does not exist.
-- [ ] First release only: once the image is public and pulled successfully, add
-      the `docker run` line to README. It is deliberately NOT there yet —
-      advertising an image nobody has published is the kind of claim this
-      project tries not to make.
+- [ ] Update the example image tag in `README.md`, `.env.example` and
+      `docker-compose.install.yml` to this version.
+      `tests/test_release_docs.py` fails if you forget, which is how this
+      became a checklist item: the README went on advertising 1.0.0 after
+      1.0.1 shipped. Naming a version rather than `latest` is deliberate —
+      see the next box — so the tag has to be maintained, not removed.
 - [ ] Reference the **version** tag in any deployment, not `latest`. A SQL
       gateway should not change underneath you because a tag moved.
 

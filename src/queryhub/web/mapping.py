@@ -320,6 +320,27 @@ _EVENT_LABEL = {
 }
 
 
+# How a sign-in identifies itself, in words that do not collide with the
+# "via web" / "via Slack" the request rows use for the SURFACE a query arrived
+# from. Two vocabularies, deliberately kept apart:
+#
+#     provider  →  what proved who you are      Slack SSO / local account
+#     origin    →  where the request came from   via web / via Slack
+#
+# One key per entry in auth_providers._ALL, which is the registry the login
+# screen is built from — a test fails if a provider is added without a label
+# here, because the fallback below is a safety net and not a plan.
+#
+# The fallback exists for a row written by an older or newer build than the one
+# rendering it: audit rows are permanent and the provider set is not. It shows
+# "<name> sign-in" rather than hiding the line, because a login nobody can
+# attribute is precisely what an audit reader needs to see.
+_PROVIDER_LABELS = {
+    "slack": "Slack SSO",
+    "local": "local account",
+}
+
+
 def _audit_info(d: dict) -> str | None:
     """A general, human-readable detail line for an audit row, built from the
     parts of `details` that the fixed columns (actor/event/target/tier) don't
@@ -329,7 +350,17 @@ def _audit_info(d: dict) -> str | None:
         return None
     bits: list[str] = []
     if d.get("provider"):
-        bits.append(f"via {d['provider']}")
+        # Name the identity provider, and do NOT say "via".
+        #
+        # "via" is already taken in this same list: a submitted request renders
+        # "via web" or "via Slack" meaning the SURFACE it arrived from. A sign-in
+        # row carries `provider`, which is the thing that proved who you are —
+        # so "Signed in to web · via slack" read as a contradiction and was
+        # reported as a bug. It was not: someone signed into the web app using
+        # Slack SSO, which is both true and the whole point of the provider
+        # registry. One word, two meanings, one list.
+        bits.append(_PROVIDER_LABELS.get(
+            str(d["provider"]).lower(), f"{d['provider']} sign-in"))
     if d.get("ip"):
         bits.append(f"IP {d['ip']}")
     ua = d.get("user_agent")

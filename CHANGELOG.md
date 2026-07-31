@@ -9,6 +9,27 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-07-31
+
+### Fixed
+- The audit log described a web sign-in as "via slack", which read as a
+  contradiction next to its own title, "Signed in to web". The data was right —
+  someone signed into the web app using Slack SSO — but "via" was already taken
+  in the same list, where a submitted request renders "via web" or "via Slack"
+  to mean the surface it arrived from. One word, two meanings, one list. A
+  sign-in now names its identity provider instead: "Slack SSO", "local account",
+  or "<name> sign-in" for a provider this build does not know, because a login
+  nobody can attribute is exactly what an audit reader needs to see.
+
+### Changed
+- The example image tag in `README.md`, `.env.example` and
+  `docker-compose.install.yml` is now checked against `pyproject.toml` by a
+  test. Naming a version rather than `latest` is deliberate — a gateway should
+  not change underneath an operator because a tag moved — and the cost of that
+  advice is a number that has to be maintained. It was not: the README went on
+  advertising 1.0.0 after 1.0.1 shipped, which sends a reader to a real image
+  that is not the one being shipped.
+
 ## [1.0.1] — 2026-07-31
 
 ### Fixed
