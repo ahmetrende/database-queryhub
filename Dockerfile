@@ -24,7 +24,7 @@
 #
 # Digests resolved 2026-07-25. They are the multi-arch INDEX digests, not a
 # single platform's manifest, so an arm64 build still works.
-FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS frontend
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS frontend
 WORKDIR /build
 
 # The build reads QueryHub.html (design CSS) and the shared .jsx files through
