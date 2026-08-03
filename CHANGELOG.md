@@ -9,6 +9,14 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.4] — 2026-08-01
+
+### Changed
+- The GitHub Actions the workflows call are current again: `checkout` 4→7,
+  `setup-node` 4→7, `download-artifact` 4→8, `login-action` 3→4.5.2 and
+  `build-push-action` 6→7. No shipped code changes; this release exists so the
+  build that produces the artifacts is not running on abandoned action majors.
+
 ## [1.0.3] — 2026-07-31
 
 ### Added

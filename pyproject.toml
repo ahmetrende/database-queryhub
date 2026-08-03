@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "queryhub"
-version = "1.0.3"
+version = "1.0.4"
 description = "QueryHub — admin-approved, audited SQL gateway (Slack + web) for PostgreSQL and SQL Server"
 readme = "README.md"
 requires-python = ">=3.11"
