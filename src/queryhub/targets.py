@@ -206,11 +206,62 @@ def update_password(target_id: int, new_password: str) -> None:
     )
 
 
-def set_enabled(target_id: int, enabled: bool) -> None:
+class CredentialNotProvisioned(Exception):
+    """Enabling a target whose RO password is still the import sentinel."""
+
+
+def set_enabled(target_id: int, enabled: bool, *, force: bool = False) -> None:
+    """Flip a target's visibility. Refuses to enable one that cannot be used.
+
+    Onboarding is two steps -- enable it, and give it a password -- and only the
+    first is visible, so the second gets skipped. A target enabled with the
+    import sentinel still looks finished: it appears in the picker, a grant can
+    be issued on it, the tier badge renders. Nothing fails until a real person
+    runs a query, and the schema snapshot silently cannot connect either, so the
+    tree shows a database with no tables. That is exactly how it reached a user's
+    screen on 2026-08-06 -- enabled, granted, reported broken from the outside.
+
+    So the sentinel is refused here rather than warned about further down. This
+    is the one choke point every caller goes through, and a check anywhere later
+    would be a check the enable path can skip.
+
+    `force` exists for the operator who genuinely wants a placeholder row
+    visible (staging a target before its credential arrives); it has to be asked
+    for, which is the whole point.
+    """
+    if enabled and not force:
+        row = db.fetch_one(
+            "SELECT alias, password_encrypted FROM target_servers WHERE id = %s",
+            (target_id,),
+        )
+        if row is None:
+            raise LookupError(f"target_servers id={target_id} not found")
+        if _is_placeholder(row["password_encrypted"]):
+            raise CredentialNotProvisioned(
+                f"{row['alias']}: the read-only password is still the import "
+                f"placeholder, so queries and schema snapshots would both fail. "
+                f"Set the credential first (see scripts/adopt_target_credential.py), "
+                f"or pass force=True to list it anyway."
+            )
     db.execute(
         "UPDATE target_servers SET enabled = %s, updated_at = NOW() WHERE id = %s",
         (enabled, target_id),
     )
+
+
+def unprovisioned_enabled() -> list[dict]:
+    """Enabled targets whose RO password is still the sentinel.
+
+    The fleet-health question: which targets are visible to users but cannot
+    actually run anything. Should be empty; anything here is a half-finished
+    onboarding waiting to surprise someone.
+    """
+    rows = db.fetch_all(
+        "SELECT id, alias, password_encrypted FROM target_servers "
+        "WHERE enabled ORDER BY id"
+    )
+    return [{"id": r["id"], "alias": r["alias"]}
+            for r in rows if _is_placeholder(r["password_encrypted"])]
 
 
 # ---------------------------------------------------------------------------

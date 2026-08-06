@@ -9,6 +9,25 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.6] — 2026-08-06
+
+### Added
+- **Enabling a target without a credential is now refused.** Onboarding a
+  discovered endpoint is two steps — make it visible, and give it a password —
+  and only the first one is memorable, so the second gets skipped. Nothing used
+  to complain: the target joined the picker, a grant could be issued on it, the
+  tier badge rendered, and the schema snapshot failed quietly, so the tree showed
+  a database with no tables. The failure surfaced on a user's screen instead of
+  in the system. `set_enabled` is the single choke point every caller goes
+  through, so the refusal lives there, names the target, and says what to do
+  next; `force=True` still stages a target deliberately.
+- `scripts/adopt_target_credential.py` — copies a credential from a sibling
+  target for fleets where one database role serves every instance. It moves the
+  **ciphertext**, so the secret is never read, printed or passed as an argument,
+  and it refuses when the two targets use different role names, because that
+  produces a login failure that looks like a password problem. Dry run by
+  default; `--check` reports enabled targets that still hold the placeholder.
+
 ## [1.0.5] — 2026-08-06
 
 ### Fixed
