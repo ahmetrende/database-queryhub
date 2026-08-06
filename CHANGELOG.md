@@ -9,6 +9,19 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.5] — 2026-08-06
+
+### Fixed
+- **The maintenance database could reach a user's sidebar.** `postgres` is hidden
+  from every listing on purpose, and it is also `default_database` on most of this
+  fleet. `GET /connections` filtered the hidden names *before* falling back to the
+  default database, so a target with an empty catalog — which is every target
+  between being enabled and its first schema snapshot — fell back to exactly the
+  database meant to be invisible, past a filter that had already run. A user saw it
+  in the tree. The filter now runs after the fallback and covers both paths in one
+  pass, and a target left with nothing after filtering is dropped rather than
+  falling back a second time.
+
 ## [1.0.4] — 2026-08-01
 
 ### Changed

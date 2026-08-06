@@ -116,7 +116,6 @@ def connections(claims: dict = Depends(deps.current_user)):
             continue
         allowed = grant["allowed_databases"]  # None = all
         dbs = sorted(allowed) if allowed is not None else _catalog_databases(t.id)
-        dbs = [d for d in dbs if d not in _HIDDEN_DATABASES]
         if not dbs:
             # Only fall back to the target's default DB when the grant is
             # UNRESTRICTED. A restricted grant that lists only hidden DBs
@@ -126,6 +125,16 @@ def connections(claims: dict = Depends(deps.current_user)):
                 dbs = [t.default_database]
             else:
                 continue
+        # Filter AFTER the fallback, never before. `default_database` is
+        # `postgres` on most of this fleet, so a target whose catalog is empty
+        # -- which is every target between being enabled and its first schema
+        # snapshot -- used to fall back to exactly the database that is meant to
+        # be invisible, and the earlier filter had already run. It reached a
+        # user's sidebar that way. Filtering here covers both the catalog list
+        # and the fallback with one pass.
+        dbs = [d for d in dbs if d not in _HIDDEN_DATABASES]
+        if not dbs:
+            continue
         db_entries = []
         auto_ro_any = False
         for d in dbs:
