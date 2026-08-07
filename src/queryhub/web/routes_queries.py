@@ -938,9 +938,11 @@ def _masked_pii_cols(row: dict, cols: list[str],
         return []
     try:
         skip_all, pii_skip = pii.exemption_decision(
-            row["target_server_id"], row["database_name"], row["query"], cols)
+            row["target_server_id"], row["database_name"], row["query"], cols,
+            principal_id=row["requester_slack_id"])
         pii_ns = pii.exemption_namescan(
-            row["target_server_id"], row["database_name"], row["query"], cols)
+            row["target_server_id"], row["database_name"], row["query"], cols,
+            principal_id=row["requester_slack_id"])
     except Exception:
         log.exception("piiCols exemption check failed for request %s; "
                       "keeping dots on (fail-closed)", row["id"])

@@ -668,6 +668,7 @@ def _run(request: dict, client: WebClient) -> None:
                         target_id=target.id,
                         database=request["database_name"],
                         engine=target.engine,
+                        requester_id=request["requester_slack_id"],
                         capture_plan=capture_plan,
                         # In autocommit mode a mutating (RW/DDL) statement is
                         # durable the instant it returns — mark it so a later
@@ -963,6 +964,7 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
                     target_id=target.id,
                     database=request["database_name"],
                     engine=target.engine,
+                    requester_id=request["requester_slack_id"],
                     capture_plan=False,   # no PG-style EXPLAIN plan on SQL Server
                 )
             except Exception:
@@ -978,6 +980,7 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
                     target_id=target.id,
                     database=request["database_name"],
                     engine=target.engine,
+                    requester_id=request["requester_slack_id"],
                     capture_plan=False,
                 )
             stmt_results.append(res)
@@ -1000,6 +1003,10 @@ def _execute_main_statement(
     max_rows: int,
     max_csv_bytes: int,
     *,
+    # Who is reading. A masking exemption can be scoped to super-admins (the
+    # operator's own dba.* toolkit), so the decision needs the reader; absent,
+    # _load_exemptions gives the unprivileged answer.
+    requester_id: str | None = None,
     result_format: str = "csv",
     target_id: int | None = None,
     database: str | None = None,
@@ -1165,9 +1172,11 @@ def _execute_main_statement(
         # column-name rule and keep the value scan. Fail-closed inside.
         try:
             skip_all, pii_skip = pii.exemption_decision(
-                target_id, database or "", stmt.rewritten, columns, engine=engine)
+                target_id, database or "", stmt.rewritten, columns,
+                engine=engine, principal_id=requester_id)
             pii_namescan = pii.exemption_namescan(
-                target_id, database or "", stmt.rewritten, columns, engine=engine)
+                target_id, database or "", stmt.rewritten, columns,
+                engine=engine, principal_id=requester_id)
         except Exception:
             log.exception("pii exemption check failed; keeping masking on")
             skip_all, pii_skip, pii_namescan = False, set(), set()

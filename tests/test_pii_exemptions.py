@@ -3,13 +3,19 @@
 _load_exemptions is monkeypatched so the decision logic is tested without a
 DB. Row shape mirrors the query: {database_name, table_name, column_name}
 (database filtering already happened in SQL, so rows here are post-filter).
+
+The rows here carry no `schema_name` or `super_admin_only` — deliberately. Every
+read of those two goes through `.get()`, so this file doubles as the check that
+adding the schema and reader dimensions did not change what an ordinary
+target/database/table/column exemption does.
 """
 
 from queryhub import pii
 
 
 def _patch(monkeypatch, rows):
-    monkeypatch.setattr(pii, "_load_exemptions", lambda tid, db: rows)
+    monkeypatch.setattr(pii, "_load_exemptions",
+                        lambda tid, db, principal_id=None: rows)
 
 
 def decide(sql, columns, rows, monkeypatch):

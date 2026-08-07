@@ -9,6 +9,31 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.7] — 2026-08-06
+
+### Added
+- **A masking exemption can now be scoped to a schema and to super-admins.**
+  The catalog matches column *names*, so an operator's own monitoring views come
+  back mangled: a view exposing query text, host names or session owners trips
+  the same rules a customer table does. Two new dimensions on
+  `pii_masking_exemptions` carry it — `schema_name` and `super_admin_only` — and
+  `target_server_id` becomes nullable so one row covers a whole fleet instead of
+  drifting the moment a server is added.
+
+  Both dimensions are needed. Scoping by the existing `table_name` would not
+  work: it matches the **bare** name, so `dba.sessions` and `public.sessions` are
+  one string to it and a toolkit exemption would unmask a business table that
+  happens to share a name. And without the reader dimension the exemption is
+  fleet-wide for everyone, which for `pg_stat_statements` means handing query
+  literals to anyone with a grant.
+
+  Two fail-closed rules: every table reference must be explicitly
+  schema-qualified (an unqualified name resolves through `search_path`, so its
+  schema is not knowable from the text), and every schema named must be exempt —
+  one table from anywhere else and masking stays on for the whole result, the
+  rule joins already follow. An unknown reader gets the strict answer, and so
+  does a failed privilege lookup.
+
 ## [1.0.6] — 2026-08-06
 
 ### Added

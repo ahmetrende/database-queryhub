@@ -663,17 +663,85 @@ def _load_column_patterns() -> list[tuple]:
 # wildcard). Resolved once per statement, before streaming.
 
 
-def _load_exemptions(target_id: int, database: str) -> list[dict]:
-    """Enabled exemption rows matching (target, database-or-wildcard)."""
+def _load_exemptions(target_id: int, database: str,
+                     principal_id: str | None = None) -> list[dict]:
+    """Enabled exemption rows in scope for (target, database, reader).
+
+    `target_server_id IS NULL` means every target — one row for the fleet, so a
+    newly added server inherits the same masking as its siblings instead of
+    quietly differing until someone notices.
+
+    `super_admin_only` rows are dropped for everyone else, and dropped for an
+    unknown reader too: a caller that cannot say who is asking gets the strict
+    answer, never the privileged one.
+    """
     from . import db
-    return db.fetch_all(
-        "SELECT database_name, table_name, column_name, apply_in_joins, "
-        "       keep_value_scan "
+    rows = db.fetch_all(
+        "SELECT database_name, schema_name, table_name, column_name, "
+        "       apply_in_joins, keep_value_scan, super_admin_only "
         "  FROM pii_masking_exemptions "
-        " WHERE enabled AND target_server_id = %s "
+        " WHERE enabled "
+        "   AND (target_server_id IS NULL OR target_server_id = %s) "
         "   AND (database_name IS NULL OR database_name = %s)",
         (target_id, database),
     )
+    if not any(r.get("super_admin_only") for r in rows):
+        return rows
+    privileged = False
+    if principal_id:
+        try:
+            from . import admins
+            privileged = admins.is_super_admin(principal_id)
+        except Exception:
+            log.exception("super-admin lookup failed for %s; treating the "
+                          "reader as unprivileged", principal_id)
+            privileged = False
+    return [r for r in rows if privileged or not r.get("super_admin_only")]
+
+
+def _schema_scoped_skip(rows: list[dict], sql: str, engine: str) -> bool:
+    """True when a schema-scoped exemption covers the whole statement.
+
+    Schemas exist as their own dimension because `table_name` matches the BARE
+    name: to the table rules `dba.blocking_sessions` and
+    `public.blocking_sessions` are one string, so scoping a toolkit view by table
+    would also unmask a business table that happens to share its name.
+
+    Two fail-closed conditions, both necessary:
+
+      * every table reference must be explicitly schema-qualified. An
+        unqualified name resolves through `search_path`, so its schema is not
+        knowable from the text -- and guessing it is how a privileged exemption
+        would start covering rows it was never meant to.
+      * every schema named must be exempt. One table from anywhere else and
+        masking stays on for the whole result, the same rule joins already
+        follow.
+    """
+    exempt = {(r["schema_name"] or "").lower() for r in rows if r.get("schema_name")}
+    if not exempt:
+        return False
+    try:
+        import sqlglot
+        from sqlglot import exp
+        from . import engines
+        dialect = engines.spec(engine).sqlglot_dialect
+        ctes: set[str] = set()
+        refs: list[tuple[str, str]] = []
+        for s in sqlglot.parse(sql, read=dialect):
+            if s is None:
+                continue
+            for cte in s.find_all(exp.CTE):
+                ctes.add(cte.alias_or_name.lower())
+            for t in s.find_all(exp.Table):
+                refs.append(((t.db or "").lower(), t.name.lower()))
+    except Exception:
+        return False                      # unparseable -> masking stays on
+    real = [(schema, name) for schema, name in refs if name not in ctes]
+    if not real:
+        return False
+    return all(schema in exempt for schema, _ in real)
+
+
 
 
 def _tables_in(sql: str, engine: str = "postgres") -> set[str] | None:
@@ -734,7 +802,8 @@ def _column_skips(col_rows: list[dict], tables: set[str] | None,
 
 def exemption_decision(target_id: int, database: str, sql: str,
                        columns: list[str],
-                       engine: str = "postgres") -> tuple[bool, set[int]]:
+                       engine: str = "postgres",
+                       principal_id: str | None = None) -> tuple[bool, set[int]]:
     """Resolve pii_masking_exemptions for one statement's result.
 
     Returns (skip_all, skip_cols):
@@ -748,12 +817,20 @@ def exemption_decision(target_id: int, database: str, sql: str,
       skip_cols      -> result-column indexes exempted by column-level rows
                         (matched by name; a table-scoped column row also
                         requires the only-exempt-tables condition)."""
-    rows = _load_exemptions(target_id, database)
+    rows = _load_exemptions(target_id, database, principal_id)
     if not rows:
         return False, set()
 
-    # Target- or database-wide exemption: no table/column narrowing.
-    if any(r["table_name"] is None and r["column_name"] is None for r in rows):
+    # Target- or database-wide exemption: no table/column narrowing. A
+    # schema-scoped row also has no table and no column, so it MUST be excluded
+    # here — treating it as db-wide would turn "the dba schema, for one reader"
+    # into "everything on this database, for that reader", which is the whole
+    # risk this dimension was added to avoid.
+    if any(r["table_name"] is None and r["column_name"] is None
+           and r.get("schema_name") is None for r in rows):
+        return True, set()
+
+    if _schema_scoped_skip(rows, sql, engine):
         return True, set()
 
     tables = _tables_in(sql, engine=engine)
@@ -774,7 +851,8 @@ def exemption_decision(target_id: int, database: str, sql: str,
 
 def exemption_namescan(target_id: int, database: str, sql: str,
                        columns: list[str],
-                       engine: str = "postgres") -> set[int]:
+                       engine: str = "postgres",
+                       principal_id: str | None = None) -> set[int]:
     """Result-column indexes for SOFT exemptions (keep_value_scan=true):
     the column-name mask is lifted, but the per-value content detectors still
     run. For a column that is mostly non-PII yet can hold the odd real PII
@@ -782,7 +860,7 @@ def exemption_namescan(target_id: int, database: str, sql: str,
     values pass, IBAN/card/TCKN/email cells still get masked. Same
     table-scoping rules as full column exemptions (fail-closed on unparseable
     SQL for table-scoped rows)."""
-    rows = _load_exemptions(target_id, database)
+    rows = _load_exemptions(target_id, database, principal_id)
     ns_rows = [r for r in rows
                if r["column_name"] and r.get("keep_value_scan")]
     if not ns_rows:
