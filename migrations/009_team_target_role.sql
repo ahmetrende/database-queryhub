@@ -8,7 +8,7 @@
 -- name MUST exist on the target cluster AND the bot's login user MUST be a
 -- member of it, otherwise `SET LOCAL ROLE` throws and the request fails.
 --
--- Naming convention (recommended): slackbot_team_<team_name> — but any
+-- Naming convention (recommended): queryhub_team_<team_name> — but any
 -- valid Postgres identifier works.
 
 ALTER TABLE team_target_grants

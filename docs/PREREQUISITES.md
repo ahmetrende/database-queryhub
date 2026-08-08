@@ -268,7 +268,7 @@ query itself.
 ### Per-team Postgres role enforcement
 
 For defense-in-depth beyond the bot's application-layer team grants,
-provision a `slackbot_team_<name>` role on each target with team-scoped
+provision a `queryhub_team_<name>` role on each target with team-scoped
 SELECT/INSERT/etc. privileges. Set `team_target_grants.target_role`
 to the role name, and the bot will `SET LOCAL ROLE <role>` before
 running the query — so Postgres enforces team boundaries natively.

@@ -515,7 +515,14 @@ def analyze(sql: str, engine: str = "postgres") -> SafetyReport:
 
 def required_mode(sql: str, engine: str = "postgres") -> str:
     """Backward-compatible thin wrapper. Returns the main_tier from
-    analyze() — 'ro' for empty / unrecognized / blocked queries."""
+    analyze() — 'ro' for empty / unrecognized / blocked queries.
+
+    NOT an authorization input on its own. A BLOCKED query — a mixed-tier
+    submission, `UPDATE` with no `WHERE`, an unparseable fragment — also reports
+    'ro', so anything comparing this against a grant must call analyze() and
+    return on `.blocked` FIRST. Every such caller does, and the ordering is
+    pinned by tests/test_required_mode_ordering.py. Read on its own, treat this
+    as a display label."""
     rep = analyze(sql, engine=engine)
     return rep.main_tier if not rep.blocked else "ro"
 

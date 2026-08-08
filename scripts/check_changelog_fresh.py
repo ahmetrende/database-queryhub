@@ -146,6 +146,44 @@ def commits_since(ref: str, date: str) -> list[tuple[str, str, str]]:
     return found
 
 
+def report_publishability(path: Path) -> None:
+    """Say so, HERE, when the changelog is present but will not publish.
+
+    The S3 page is generated from this file by a `build_whatsnew.py` that sits
+    beside it, run by the pre-push hook. That generator refuses an entry whose
+    category the page cannot render — correctly — but it was only ever called
+    from the publish script, which the hook backgrounded into a log file. So the
+    refusal was invisible: four consecutive pushes published nothing while this
+    very script printed "up to date" on the line above, because the changelog
+    WAS current. Only the generated page was stale.
+
+    So ask the generator, in the foreground, where a person is looking. Its
+    `--check` validates and writes nothing. Advisory like the rest of this
+    script: a missing or unrunnable generator is normal (an open-source clone has
+    no site directory) and must never fail a push.
+    """
+    gen = path.parent / "build_whatsnew.py"
+    if not gen.exists():
+        return
+    try:
+        out = subprocess.run((sys.executable, str(gen), "--check"),
+                             capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"changelog: could not run {gen.name} ({exc}) — page not verified.")
+        return
+    if out.returncode == 0:
+        return
+    bar = "!" * 72
+    print(bar)
+    print("  THE PUBLISHED PAGE WILL NOT BUILD from this changelog:")
+    for line in (out.stdout + out.stderr).strip().splitlines():
+        print(f"    {line}")
+    print("")
+    print("  The in-app What's-new reads the changelog live, so it looks fine;")
+    print("  the generated page is the one that silently stops updating.")
+    print(bar)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--strict", action="store_true",
@@ -176,6 +214,11 @@ def main() -> int:
     except subprocess.CalledProcessError as exc:
         print(f"changelog: git log failed ({exc}) — skipping the check.")
         return 1 if args.strict else 0
+
+    # Before the freshness verdict, because "up to date" is exactly what made
+    # the broken page invisible: the changelog WAS current, only the generated
+    # page had stopped building.
+    report_publishability(path)
 
     if not missing:
         print(f"changelog: up to date (newest entry {newest}, "

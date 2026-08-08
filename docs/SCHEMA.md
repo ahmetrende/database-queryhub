@@ -223,7 +223,7 @@ targets; for a given target, the array narrows down which DBs and
 #### `target_role` flow
 
 1. **Once per (team, target cluster):** DBA runs `deploy/grant_team_role.sql`
-   on the target with `role_name=slackbot_team_<X>` and `bot_login=<bot's
+   on the target with `role_name=queryhub_team_<X>` and `bot_login=<bot's
    target user>`. Then GRANTs the schema/table privileges that role should
    have.
 2. **Once per (team, target):** DBA UPDATEs `team_target_grants.target_role`
