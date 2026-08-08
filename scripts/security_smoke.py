@@ -148,8 +148,18 @@ def run_http(c: httpx.Client, valid_uid: str) -> None:
     db.execute("DELETE FROM requests WHERE id = %s", (vid,))
 
     # --- D. static path traversal to host secrets ---
-    for pt in ["/../etc/queryhub/env", "/../etc/queryhub/web.env",
-               "/..%2f..%2f..%2f..%2fetc%2fslackbot%2fenv",
+    # The config directory is READ from the environment, not written here. Two
+    # reasons, and the second is why it changed: a smoke test should probe where
+    # THIS install keeps its secrets, and a hardcoded path had already reached a
+    # public repository. The plain-text copies were renamed correctly on export;
+    # the percent-encoded one was not, because `%2f<name>%2f` gives `\b<name>\b`
+    # no boundary to match on. Deriving the string means there is nothing for a
+    # scanner to miss.
+    cfg_dir = os.path.dirname(
+        os.environ.get("MASTER_KEY_PATH", "/etc/queryhub/master.key")).strip("/")
+    enc_dir = cfg_dir.replace("/", "%2f")
+    for pt in [f"/../{cfg_dir}/env", f"/../{cfg_dir}/web.env",
+               f"/..%2f..%2f..%2f..%2f{enc_dir}%2fenv",
                "/%2e%2e/%2e%2e/%2e%2e/etc/passwd", "/app.py",
                "/../src/queryhub/web/sessions.py"]:
         r = c.get(BASE + pt)

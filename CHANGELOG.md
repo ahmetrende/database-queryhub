@@ -9,6 +9,34 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.8] — 2026-08-08
+
+### Fixed
+
+- **Run now honours a selection.** With text selected in the editor, Run — the
+  toolbar button, F5 and Ctrl/Cmd+Enter alike — submits exactly that text instead
+  of the whole tab. Previously only F8 did, so selecting one statement out of a
+  multi-statement script and pressing Run submitted the entire script. A
+  selection that contains only comments runs nothing and says so, rather than
+  falling back to "run everything": highlighting a commented-out `UPDATE` must
+  not execute the script around it. The rule lives in one function shared by all
+  four entry points.
+- **Autocomplete after a schema qualifier.** In a `FROM`/`JOIN`/`UPDATE` clause,
+  `schema.tab|` offered columns — which cannot appear there — because the clause
+  keyword was read from the word immediately before the caret, which is the
+  qualifier itself. Accepting a qualified suggestion also wrote the schema twice
+  (`dba.dba.whoisactive`), since the inserted text re-qualified while the replaced
+  range covered only the bare name. A column pick after an alias still leaves the
+  alias alone.
+- **SQL Server icon.** The engine badge for SQL Server targets now uses
+  Microsoft's current SQL Server 2025 mark.
+
+### Added
+
+- **Frontend tests.** `npm test` in `QueryHubWeb/app` runs `node --test` over the
+  browser-side code, including the editor mounted in a DOM, and runs in CI after
+  the bundle build. Frontend changes previously had no proof beyond compiling.
+
 ## [1.0.7] — 2026-08-06
 
 ### Added

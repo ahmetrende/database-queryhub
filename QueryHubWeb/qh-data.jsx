@@ -618,9 +618,32 @@ function qhCopyText(text) {
   return Promise.resolve(false);
 }
 
+// ---- what Run should execute ------------------------------------------
+// One rule, shared by the toolbar button, F5, ⌘↵ and F8, so "what will Run
+// do?" has a single answer no matter how it is pressed.
+//
+//   selection with SQL in it -> that selection, nothing else
+//   selection that is ONLY comments -> nothing, and say so
+//   no selection -> the whole tab
+//
+// The middle case is the reason this is a function rather than an `if`. Falling
+// back to the whole tab when a selection has no statement in it is the
+// dangerous answer: someone highlights one commented-out line of a long script
+// and the entire script runs. "Nothing selected" and "a selection that means
+// nothing" are different intents and must not collapse into each other.
+function qhRunTarget(selText, allText) {
+  const sel = String(selText == null ? '' : selText).trim();
+  if (sel) {
+    return qhStripComments(sel).trim() ? { kind: 'selection', sql: sel }
+                                       : { kind: 'comments' };
+  }
+  const all = String(allText == null ? '' : allText).trim();
+  return all ? { kind: 'all', sql: all } : { kind: 'empty' };
+}
+
 // ---- long target names ------------------------------------------------
-// Real fleets give every host the same head: `svc-prod-bank-integration`,
-// `svc-prod-crm`, `svc-prod-gopanel`. In a list where every row carries it,
+// Real fleets give every host the same head: `svc-prod-orders`,
+// `svc-prod-billing`, `svc-prod-catalog`. In a list where every row carries it,
 // that head is the part of the name that says nothing — and it costs 9 of the
 // ~25 characters a 264px sidebar can hold, which is how a database row ended
 // up showing its server and losing its own name.
@@ -640,8 +663,8 @@ function qhFleetPrefixes(conns) {
   const count = {};
   list.forEach(n => { for (let i = 0; i < n.length - 1; i++) { if (n[i] === '-' || n[i] === '_' || n[i] === '.') { const p = n.slice(0, i + 1); count[p] = (count[p] || 0) + 1; } } });
   let pres = Object.keys(count).filter(p => count[p] >= QH_FOLD_MIN && p.length >= 4).sort((a, b) => b.length - a.length);
-  // Folding must never make two targets read alike: `svc-prod-crm` and
-  // `svc-stg-crm` would both come out as `crm`. A head whose tail another
+  // Folding must never make two targets read alike: `svc-prod-orders` and
+  // `svc-stg-orders` would both come out as `orders`. A head whose tail another
   // target already owns is not foldable.
   for (let pass = 0; pass < 3 && pres.length; pass++) {
     const tails = {}, bad = {};
@@ -654,7 +677,7 @@ function qhFleetPrefixes(conns) {
 }
 
 Object.assign(window, {
-  qhCopyText, qhFleetPrefixes, qhSplitName,
+  qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,
   qhClassify, qhDetectPII, qhMockResult, qhMaskValue, qhStripComments,

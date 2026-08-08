@@ -245,6 +245,12 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
+      - name: Run the frontend tests
+        # The Python suite cannot reach this code at all: the editor and the run
+        # decision live in browser-side files. Without this step the only proof a
+        # frontend change works is that it compiled.
+        working-directory: QueryHubWeb/app
+        run: npm test
       - name: Assert the build produced something servable
         # An empty or missing dist is the failure mode that shipped once already:
         # a fresh clone that skipped the build served a blank page.

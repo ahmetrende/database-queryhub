@@ -256,7 +256,9 @@ function ApprovalsView({ st, user, role }) {
               <pre className="qh-adetail-sql"><code dangerouslySetInnerHTML={{ __html: qhHighlight(cur.sql) }} /></pre>
             </div>
 
-            <div className="qh-adetail-reason"><span className="qh-reason-k">Reason</span>{cur.reason}</div>
+            {/* `justification` is the canonical field; `reason` is the legacy
+                alias the queue still emits for one release. */}
+            <div className="qh-adetail-reason"><span className="qh-reason-k">Reason</span>{cur.justification || cur.reason}</div>
 
             {cur.bundleId && (
               <div className="qh-bundle-note">
@@ -317,7 +319,7 @@ function DdlView({ st, user }) {
                 <span className="qh-qcard-when">{qhAgo(it.submittedAt)}</span>
               </div>
               <pre className="qh-adetail-sql sm"><code dangerouslySetInnerHTML={{ __html: qhHighlight(it.sql) }} /></pre>
-              <div className="qh-adetail-reason"><span className="qh-reason-k">Reason</span>{it.reason}</div>
+              <div className="qh-adetail-reason"><span className="qh-reason-k">Reason</span>{it.justification || it.reason}</div>
               <div className="qh-ddl-actions">
                 <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => st.decide(it.id, 'approve', 'dba.ops')}>Approve schema change</button>
                 <button className="qh-btn qh-btn-danger qh-btn-sm" onClick={() => st.decide(it.id, 'reject', 'dba.ops')}>Reject</button>

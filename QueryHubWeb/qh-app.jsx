@@ -7,6 +7,10 @@ const QH_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(naviga
 const QH_KBD = { run: QH_MAC ? '⌘ ↵  ·  F5' : 'Ctrl ↵  ·  F5', newq: QH_MAC ? '⌘ ⌥ N' : 'Ctrl Alt N' };
 window.QH_KBD = QH_KBD;
 
+// Said when a selection exists but holds no statement. Worth a constant: it
+// is shown from two paths (Run and F8) and must read identically from both.
+const QH_ONLY_COMMENTS = 'Nothing to run — the selection is only comments.';
+
 function nowTime() {
   const d = new Date();
   const p = (n, l = 2) => String(n).padStart(l, '0');
@@ -550,7 +554,7 @@ function App() {
   // (it thought DDL-only, and it ignored auto-approval).
   const why = tab.justification || '';
   const needWhy = !!(server && server.requiresJustification);
-  const needWhySched = !!(server && server.requiresJustificationWhenScheduled);
+  const needWhySched = qhNeedsWhyWhenReviewed(server);
   // Appearing is driven by a settled verdict (classify is debounced), so the
   // field cannot flicker mid-word. Disappearing is not: once shown it stays
   // for the life of the tab, quietly optional. A field must not be pulled out
@@ -909,7 +913,18 @@ function App() {
     }
   };
 
+  // Reads the editor's current selection. SqlEditor fills this in; it is a
+  // reader rather than a pushed value so Run always sees the live selection
+  // (see the comment on selectionGetter in qh-editor.jsx).
+  const selGet = React.useRef(null);
+  const curSel = () => (selGet.current ? selGet.current() : '');
+
   const primary = () => {
+    // A selection always wins — see qhRunTarget for why, and for the case where
+    // the selection has nothing runnable in it.
+    const tgt = qhRunTarget(curSel(), tab.sql);
+    if (tgt.kind === 'comments') { pushToast(QH_ONLY_COMMENTS); return; }
+    if (tgt.kind === 'selection') { runSelection(tgt.sql); return; }
     if (killed) { pushToast('Kill switch is engaged — query execution is paused.'); return; }
     if (!tab.sql.trim() || busy || !tab.conn) return;
     if (tierExceedsGrant) { pushToast(classify.tier + ' exceeds your ' + dbTier + ' grant on this database.'); return; }
@@ -922,8 +937,11 @@ function App() {
 
   // F8 — submit the selected text as a one-off (server runs it as its own query)
   const runSelection = (selText) => {
-    const t = (selText || '').trim();
-    if (!t || busy || !tab.conn) return;
+    if (busy || !tab.conn) return;
+    const tgt = qhRunTarget(selText, '');
+    if (tgt.kind === 'comments') { pushToast(QH_ONLY_COMMENTS); return; }
+    if (tgt.kind !== 'selection') return;
+    const t = tgt.sql;
     if (killed) { pushToast('Kill switch is engaged — query execution is paused.'); return; }
     if (needWhy && !why.trim()) { demandWhy(); return; }
     submitToServer(activeId, null, t);
@@ -1182,7 +1200,7 @@ function App() {
                 onEnter={primary} onEscape={() => setEdFocus(n => n + 1)} />
 
               <div className="qh-ed-host">
-                <SqlEditor value={tab.sql} onChange={onCode} fontSize={t.editorFont} onRun={primary} onRunSelection={runSelection} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} />
+                <SqlEditor value={tab.sql} onChange={onCode} fontSize={t.editorFont} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} />
               </div>
 
               <div className="qh-res-grip" onMouseDown={onDragStart}><span /></div>
@@ -1435,6 +1453,13 @@ function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePas
 // without approval" is worth seeing, and we have the flag for it.
 const ICN_WHY = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 01-2 2H8l-4 4V5a2 2 0 012-2h13a2 2 0 012 2z"/></svg>;
 const ICN_WHY_OK = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>;
+// "Will an approver read this?" — POST /classify's answer, and the one flag both
+// the schedule path and a bundle need. Canonical name since 2026-08-01;
+// requiresJustificationWhenScheduled is the old name for the same question and is
+// read for one release, so a server that has not shipped the rename still works.
+// Drop the fallback when it goes.
+const qhNeedsWhyWhenReviewed = (v) => !!(v && (v.requiresJustificationWhenReviewed !== undefined
+  ? v.requiresJustificationWhenReviewed : v.requiresJustificationWhenScheduled));
 function WhyBar({ show, need, value, onChange, err, inputRef, recent, autoApprove, tier, isSuper, onEnter, onEscape }) {
   if (!show) {
     // Only where a reason WOULD have been asked for: on read-only work this
@@ -1833,7 +1858,7 @@ function BatchModal({ tabs, activeId, onClose, onSubmit, recent }) {
   // One reason for the whole bundle — the API takes a single bundle-level
   // field and Slack shows one. Whether it is required is the server's call,
   // not ours: a bundle always meets a human approver, which is the same
-  // question requiresJustificationWhenScheduled already answers.
+  // question requiresJustificationWhenReviewed already answers.
   const [verd, setVerd] = useState({});
   useEffect(() => {
     let live = true;
@@ -1842,7 +1867,7 @@ function BatchModal({ tabs, activeId, onClose, onSubmit, recent }) {
       .then(pairs => { if (!live) return; const m = {}; pairs.forEach(p => { m[p[0]] = p[1]; }); setVerd(m); });
     return () => { live = false; };
   }, []);
-  const need = sel.some(id => verd[id] && verd[id].requiresJustificationWhenScheduled);
+  const need = sel.some(id => qhNeedsWhyWhenReviewed(verd[id]));
   const go = () => { if (need && !why.trim()) { setErr(true); return; } onSubmit(sel, why.trim()); };
   const chips = (recent || []).filter(r => r !== why).slice(0, 2);
   const toggle = (id) => setSel(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);

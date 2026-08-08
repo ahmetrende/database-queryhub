@@ -54,7 +54,19 @@ function qhBuildSuggest(value, caret, schema, engineId) {
   const dot = before[start - 1] === '.';
   const prevM = before.slice(0, dot ? start - 1 : start).match(/([A-Za-z_][A-Za-z0-9_]*)\s*$/);
   const prev = prevM ? prevM[1].toLowerCase() : '';
-  const tableMode = QH_KW_AFTER_TABLE.has(prev);
+  // Where the already-typed qualifier begins. `prevM` matched a slice starting
+  // at 0, so its index is an index into `before`.
+  const qualStart = (dot && prevM) ? prevM.index : start;
+  // The word that governs what belongs here. Without a qualifier that is the
+  // previous word; with one it is the word BEFORE the qualifier, since `prev` is
+  // then the qualifier itself. Reading only `prev` is why `FROM dba.ind|` offered
+  // columns: `prev` was `dba`, never `from`, so table mode stayed off and columns
+  // outranked tables in a clause where a column cannot appear at all.
+  const govM = dot
+    ? before.slice(0, qualStart).match(/([A-Za-z_][A-Za-z0-9_]*)\s*$/)
+    : prevM;
+  const gov = govM ? govM[1].toLowerCase() : '';
+  const tableMode = QH_KW_AFTER_TABLE.has(dot ? gov : prev);
   const lc = token.toLowerCase();
   const items = [];
   const quote = (n) => (typeof qhQuoteIdentFor === 'function' ? qhQuoteIdentFor(n, engineId) : qhQuoteIdent(n));
@@ -85,13 +97,27 @@ function qhBuildSuggest(value, caret, schema, engineId) {
     else if (nl.startsWith(lc)) rank = 1;
     else if (type !== 'keyword' && nl.indexOf(lc) > 0) rank = 2;
     else return;
-    items.push({ text: insertFor(n, type), label: n, type, rank, typeRank });
+    const text = insertFor(n, type);
+    const it = { text, label: n, type, rank, typeRank };
+    // A pick whose own text is qualified, dropped in after a qualifier the user
+    // already typed, produced `dba.dba.whoisactive` -- the insert re-qualified
+    // while the replacement range covered only the bare token. So an item that
+    // carries a qualifier replaces from the qualifier, and the range travels
+    // with the item: a COLUMN pick in `alias.col|` must NOT eat the alias
+    // (`u.email` becoming `public.email` would be a different, wrong column),
+    // while a TABLE pick must, or the schema is written twice.
+    if (dot && text.indexOf('.') >= 0) it.start = qualStart;
+    items.push(it);
   });
-  if (dot) {
-    // `prev.token` is either table.column (prev is a table/alias) or
-    // schema.table (prev is a schema, e.g. dba.whoisactive). Offer columns
-    // and tables both — harmless, and it avoids having to resolve aliases;
-    // the already-typed `prev.` stays, the token is replaced with the pick.
+  if (dot && tableMode) {
+    // `schema.tbl|` inside FROM/JOIN/UPDATE...: a column cannot appear here at
+    // all, so offering them is what made the popup look broken.
+    add(schema.tables, 'table', 0);
+    add(schema.systemTables, 'system', 1);
+  }
+  else if (dot) {
+    // `alias.col|` in a select list / WHERE: columns first, tables still
+    // offered because an alias cannot be resolved from the text alone.
     add(schema.columns, 'column', 0);
     add(schema.tables, 'table', 1);
   }
@@ -106,7 +132,7 @@ function qhBuildSuggest(value, caret, schema, engineId) {
 }
 const QH_AC_TYPE_LABEL = { keyword: 'kw', table: 'table', column: 'col', database: 'db', system: 'system', expand: 'all cols' };
 
-function SqlEditor({ value, onChange, fontSize, onRun, onRunSelection, schema, engineId, focusSignal }) {
+function SqlEditor({ value, onChange, fontSize, onRun, onRunSelection, selectionGetter, schema, engineId, focusSignal }) {
   const taRef = React.useRef(null);
   const preRef = React.useRef(null);
   const gutRef = React.useRef(null);
@@ -144,6 +170,27 @@ function SqlEditor({ value, onChange, fontSize, onRun, onRunSelection, schema, e
   React.useLayoutEffect(() => {
     if (measRef.current) setCharW(measRef.current.getBoundingClientRect().width / 10);
   }, [fontSize]);
+
+  // Run must honour a selection wherever it is pressed from — F5, ⌘↵, or the
+  // toolbar button, which lives outside this component and cannot reach the
+  // textarea. Publish a READER rather than pushing changes up: reading at the
+  // moment Run is pressed cannot go stale, needs no event plumbing, and cannot
+  // hand over a selection made in a tab the user has since left.
+  //
+  // Pushing was tried first, via React's onSelect. It does not fire from a
+  // dispatched `select` event (React derives onSelect from its own
+  // selectionchange plugin), so the parent silently never learned there was a
+  // selection and Run kept running the whole tab — the exact bug this fixes.
+  // A DOM selection also survives blur, so the toolbar button still sees it.
+  React.useEffect(() => {
+    if (!selectionGetter) return;
+    selectionGetter.current = () => {
+      const ta = taRef.current;
+      if (!ta || ta.selectionStart === ta.selectionEnd) return '';
+      return ta.value.slice(ta.selectionStart, ta.selectionEnd);
+    };
+    return () => { selectionGetter.current = null; };
+  }, [selectionGetter]);
 
   // Focus the textarea when the parent bumps focusSignal (e.g. a new query
   // tab or an opened table) so you can start typing without a click.
@@ -188,8 +235,11 @@ function SqlEditor({ value, onChange, fontSize, onRun, onRunSelection, schema, e
 
   const accept = (item) => {
     const ta = taRef.current;
-    const nv = value.slice(0, ac.start) + item.text + value.slice(ac.end);
-    const caret = ac.start + item.text.length;
+    // The item may carry its own start: a qualified insert replaces the
+    // qualifier the user already typed rather than appending behind it.
+    const from = (item && typeof item.start === 'number') ? item.start : ac.start;
+    const nv = value.slice(0, from) + item.text + value.slice(ac.end);
+    const caret = from + item.text.length;
     setAc(null);
     onChange(nv);
     requestAnimationFrame(() => { if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = caret; } });
@@ -268,7 +318,8 @@ function SqlEditor({ value, onChange, fontSize, onRun, onRunSelection, schema, e
         // "completing" one replaces the token with itself. Don't swallow the
         // keystroke for a no-op: close the popup and let Enter make a newline
         // / Tab indent, as it would with no popup open.
-        if (!(it && value.slice(ac.start, ac.end) === it.text)) {
+        const itFrom = (it && typeof it.start === 'number') ? it.start : ac.start;
+        if (!(it && value.slice(itFrom, ac.end) === it.text)) {
           e.preventDefault(); accept(it); return;
         }
         setAc(null);
@@ -372,7 +423,7 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, onCloseOthers, o
   const [editId, setEditId] = React.useState(null);
   const [draft, setDraft] = React.useState('');
   const cancelledRef = React.useRef(false);
-  const SHORTCUTS = [['F5', 'Run whole query'], ['F8', 'Run selection / current line'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Tab', 'Indent'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
+  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current line'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Tab', 'Indent'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
   const beginRename = (t) => { if (t.kind) return; setMenu(null); setEditId(t.id); setDraft(t.name); };
   const openMenu = (e, id) => { e.preventDefault(); e.stopPropagation(); setKb(false); setMenu({ x: Math.min(e.clientX, window.innerWidth - 200), y: e.clientY, id }); };
   React.useEffect(() => {
