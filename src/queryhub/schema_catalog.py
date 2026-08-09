@@ -19,6 +19,7 @@ import psycopg
 
 from . import config as cfg
 from . import db
+from . import engines
 
 log = logging.getLogger(__name__)
 
@@ -154,6 +155,34 @@ def _connect(target, password: str, database: str):
     )
 
 
+def _routines(target, password: str, database: str) -> list[dict]:
+    """Callable routines in one database, per the engine's own catalog query.
+
+    Engine-modular by construction: the SQL lives on the EngineSpec, so an engine
+    with no routine scan yields nothing instead of having a Postgres query run
+    against it. Failure is NON-FATAL — a missing suggestion pool must never cost
+    the tables-and-columns snapshot, which is what the schema browser needs.
+    """
+    spec = engines.spec(getattr(target, "engine", None))
+    if not spec.routines_sql:
+        return []
+    try:
+        if spec.driver == "pyodbc":
+            from . import mssql_exec
+            return mssql_exec.catalog_rows(
+                target.host, target.port, database, target.username, password,
+                spec.routines_sql)
+        with _connect(target, password, database) as conn:
+            with conn.cursor() as cur:
+                cur.execute(spec.routines_sql)
+                cols = [d.name for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+    except Exception as exc:                       # noqa: BLE001
+        log.warning("routine scan failed for %s/%s: %s",
+                    getattr(target, "alias", target.id), database, exc)
+        return []
+
+
 def snapshot_database(target, password: str, database: str) -> tuple[int, int]:
     """Snapshot one target database into the bot DB. Returns
     (n_tables, n_columns). The swap (delete old rows + insert new) runs in
@@ -171,6 +200,7 @@ def snapshot_database(target, password: str, database: str) -> tuple[int, int]:
                 cur.execute(_COLUMNS_SQL)
                 c_cols = [d.name for d in cur.description]
                 columns = [dict(zip(c_cols, row)) for row in cur.fetchall()]
+    routines = _routines(target, password, database)
 
     with db.transaction() as cur:
         cur.execute(
@@ -212,7 +242,45 @@ def snapshot_database(target, password: str, database: str) -> tuple[int, int]:
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
             col_rows,
         )
+        # Same transaction as the tables swap: the catalog is read as one thing,
+        # so it is replaced as one thing.
+        cur.execute(
+            "DELETE FROM schema_functions "
+            "WHERE target_server_id = %s AND database_name = %s",
+            (target.id, database),
+        )
+        if routines:
+            cur.executemany(
+                "INSERT INTO schema_functions (target_server_id, database_name, "
+                " schema_name, routine_name, routine_kind, arg_signature, returns) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                # Overloads collapse to one suggestion; see migration 091.
+                "ON CONFLICT (target_server_id, database_name, schema_name, "
+                "             routine_name) DO NOTHING",
+                [(target.id, database, r["schema_name"], r["routine_name"],
+                  r["routine_kind"], r.get("arg_signature"), r.get("returns"))
+                 for r in routines],
+            )
     return len(tables), len(col_rows)
+
+
+def catalog_functions(target_id: int, database: str,
+                      limit: int = 400) -> list[dict]:
+    """Routines for one (target, database), schema-qualified.
+
+    Ordered by schema then name so the cap, when it bites, is at least stable
+    rather than whatever the planner returned that hour.
+    """
+    with db.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT schema_name AS s, routine_name AS n, routine_kind AS k, "
+            "       arg_signature AS args, returns AS ret "
+            "FROM schema_functions "
+            "WHERE target_server_id = %s AND database_name = %s "
+            "ORDER BY schema_name, routine_name LIMIT %s",
+            (target_id, database, limit),
+        )
+        return [dict(r) for r in cur.fetchall()]
 
 
 # ---------- browse / search (read side) -------------------------------------

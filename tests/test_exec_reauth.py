@@ -10,7 +10,7 @@ from queryhub import executor as ex
 
 def _fake_target():
     return type("T", (), {
-        "engine": "postgres", "alias": "svc", "id": 7, "default_database": "app",
+        "enabled": True, "engine": "postgres", "alias": "svc", "id": 7, "default_database": "app",
     })()
 
 

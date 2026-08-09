@@ -4,7 +4,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // Keyboard-shortcut labels (mac-aware) surfaced as hover tooltips on action buttons.
 const QH_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
-const QH_KBD = { run: QH_MAC ? '⌘ ↵  ·  F5' : 'Ctrl ↵  ·  F5', newq: QH_MAC ? '⌘ ⌥ N' : 'Ctrl Alt N' };
+const QH_KBD = { run: QH_MAC ? '⌘ ↵  ·  F5' : 'Ctrl ↵  ·  F5', newq: QH_MAC ? '⌘ ⌥ N' : 'Ctrl Alt N', wrap: QH_MAC ? '⌥ Z' : 'Alt Z' };
 window.QH_KBD = QH_KBD;
 
 // Said when a selection exists but holds no statement. Worth a constant: it
@@ -320,6 +320,12 @@ function App() {
   // Reopen last closed tab — Ctrl/Cmd + Shift + T
   useEffect(() => {
     const onKey = (e) => {
+      // Alt+Z toggles word wrap — the shortcut every editor uses. Read from
+      // e.code because on mac ⌥Z reports its composed character, not 'z'. Left
+      // alone inside single-line inputs: there ⌥Z is a character someone is
+      // typing, and a view switch is not worth swallowing it.
+      if (e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'KeyZ'
+        && !(e.target && e.target.tagName === 'INPUT')) { e.preventDefault(); setWrap(w => !w); return; }
       if ((e.metaKey || e.ctrlKey) && e.altKey && (e.code === 'KeyN' || e.key === 'n' || e.key === 'N')) { e.preventDefault(); if (newTabRef.current) newTabRef.current(); return; }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'T' || e.key === 't')) {
         e.preventDefault();
@@ -536,8 +542,15 @@ function App() {
     const systemTables = engMeta && engMeta.system
       ? [].concat(...Object.values(engMeta.system)) : [];
     const dbs = [...new Set(conns.flatMap(c => c.databases.map(d => d.name)))];
+    // Callable routines, from the catalog. Until this arrived no function was
+    // ever suggested -- not the operator's own helpers, not an extension's.
+    // `functionKind` keeps procedure vs function, since only one of them
+    // belongs inside an expression.
+    const functions = (db && db.functions) || [];
+    const functionKind = {};
+    ((db && db.functionRefs) || []).forEach(f => { functionKind[f.n] = f.k; });
     return { tables: refs.map(r => r.n), columns: [...cols], dbs, tableCols,
-             qualify, systemTables };
+             qualify, systemTables, functions, functionKind };
   }, [tab.conn, tab.db, schemaCache, conns]);
   const dbTier = db ? db.tier : 'RO';
   // Prefer the server's answer on both of these. The local fallback is only in
@@ -916,6 +929,13 @@ function App() {
   // Reads the editor's current selection. SqlEditor fills this in; it is a
   // reader rather than a pushed value so Run always sees the live selection
   // (see the comment on selectionGetter in qh-editor.jsx).
+  // Editor word wrap. A chrome preference like qh.treeview.v1 / qh.sidewidth.v1,
+  // so it is deliberately NOT in the sign-out clear list: it says nothing about
+  // the previous user's work. Off by default — SQL is written in lines, and a
+  // wrapped line costs the one-line-one-number reading of the gutter.
+  const [wrap, setWrap] = useState(() => { try { return localStorage.getItem('qh.wrap.v1') === '1'; } catch (e) { return false; } });
+  useEffect(() => { try { localStorage.setItem('qh.wrap.v1', wrap ? '1' : '0'); } catch (e) {} }, [wrap]);
+
   const selGet = React.useRef(null);
   const curSel = () => (selGet.current ? selGet.current() : '');
 
@@ -1168,6 +1188,7 @@ function App() {
                 : <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M16.5 9l-3 3 3 3"/></svg>}
             </button>
             <EditorTabs tabs={tabsForBar} activeId={activeId} onSelect={selectTab} onClose={(id) => requestClose('one', id)} onNew={newTab}
+              wrap={wrap} onToggleWrap={() => setWrap(w => !w)}
               onCloseOthers={(id) => requestClose('others', id)} onCloseRight={(id) => requestClose('right', id)} onCloseAll={() => requestClose('all', activeId)} onDuplicate={duplicateTab} onRename={renameTab} onCopySql={copyTabSql} onDownloadSql={requestDownloadSql} onReorder={reorderTabs} />
           </div>
 
@@ -1200,7 +1221,7 @@ function App() {
                 onEnter={primary} onEscape={() => setEdFocus(n => n + 1)} />
 
               <div className="qh-ed-host">
-                <SqlEditor value={tab.sql} onChange={onCode} fontSize={t.editorFont} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} />
+                <SqlEditor value={tab.sql} onChange={onCode} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} />
               </div>
 
               <div className="qh-res-grip" onMouseDown={onDragStart}><span /></div>

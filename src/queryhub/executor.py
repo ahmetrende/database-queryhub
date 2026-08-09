@@ -422,10 +422,34 @@ def _deliver_result_to_requester(request: dict) -> bool:
 def _run(request: dict, client: WebClient) -> None:
     request_id = request["id"]
     csv_paths_to_cleanup: list[Path] = []
+    # Assigned BEFORE the try, not inside it. The except handler below reads it
+    # to decide whether a mutation already committed, so anything raising before
+    # its old assignment point crashed the ERROR HANDLER with an
+    # UnboundLocalError — the one place that must not fail. Surfaced by adding a
+    # new early return above it; the hazard was already there.
+    committed = {"mutation": False}
     try:
         target = targets.get(request["target_server_id"])
         if target is None:
             _fail(client, request, "Target server not found at execution time.")
+            return
+
+        # A DISABLED target must not be reached, at execution time and not just
+        # at submit time. `enabled` gated the pickers and the connection list, so
+        # nothing new could be submitted — but a request already approved, queued
+        # or scheduled ran anyway, because targets.get() returns the row
+        # regardless. Disabling is what an operator does when a host is being
+        # migrated, decommissioned or is in an incident, and it has to mean "no
+        # more queries", not "no more submissions".
+        #
+        # Checked here rather than in targets.get(): the browse and admin paths
+        # legitimately need to SEE a disabled target, and hiding it from them
+        # would be a different bug.
+        if not target.enabled:
+            _fail(client, request,
+                  f"Target `{target.alias}` was disabled before this request "
+                  f"ran, so it was not executed. Ask an admin why the target is "
+                  f"disabled, then resubmit.")
             return
 
         # Fail closed for a known-but-unwired engine. A target tagged with an
@@ -451,7 +475,6 @@ def _run(request: dict, client: WebClient) -> None:
         # later delivery/finalize error must then NOT report the request as
         # failed, because the change is already applied. Defined here
         # so it is always in scope for the exception handlers below.
-        committed = {"mutation": False}
 
         # Re-authorize at execution time. The grant that justified this request
         # at submit can be revoked or downgraded before it actually runs —

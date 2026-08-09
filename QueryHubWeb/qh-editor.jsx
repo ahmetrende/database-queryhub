@@ -84,6 +84,10 @@ function qhBuildSuggest(value, caret, schema, engineId) {
   // public/dbo, inserting a bare name produced SQL that could not run.
   const insertFor = (n, type) => {
     if (type === 'keyword') return n.toUpperCase();
+    // A routine is inserted CALLED — `count(` — with the caret left inside the
+    // parens. A bare name costs two more keystrokes every time, and the thing you
+    // certainly want next is the argument.
+    if (type === 'function') return quote(n) + '(';
     if (type === 'system') return n;          // already qualified (pg_catalog.x / sys.x)
     const q = (type === 'table' && schema.qualify) ? schema.qualify[n] : null;
     if (!q) return quote(n);
@@ -109,20 +113,51 @@ function qhBuildSuggest(value, caret, schema, engineId) {
     if (dot && text.indexOf('.') >= 0) it.start = qualStart;
     items.push(it);
   });
+  // The system pool holds QUALIFIED names (`sys.dm_exec_sessions`,
+  // `pg_catalog.pg_class`). After a dot the token is only the tail, so matching
+  // the stored string against it fails at the prefix and could only ever hit as a
+  // substring — which is why `sys.dm_` returned nothing useful while the bare
+  // `dm_` worked. Match the tail against the tail, and only for entries whose own
+  // qualifier is the one the user typed: inside `sys.`, `pg_catalog.*` is noise.
+  const addSystem = (arr, qual, typeRank) => {
+    const q = String(qual || '').toLowerCase();
+    if (!q) return;
+    (arr || []).forEach(full => {
+      const i = full.indexOf('.');
+      if (i < 0) return;
+      if (full.slice(0, i).toLowerCase() !== q) return;
+      const tail = full.slice(i + 1), tl = tail.toLowerCase();
+      let rank;
+      if (tl === lc) rank = 0;
+      else if (tl.startsWith(lc)) rank = 1;
+      else if (tl.indexOf(lc) > 0) rank = 2;
+      else return;
+      // Replaces the TOKEN only: the qualifier the user typed is already there
+      // and correct, so it must not be re-inserted (that is the doubled-schema
+      // bug, one dot to the left).
+      items.push({ text: tail, label: full, type: 'system', rank, typeRank });
+    });
+  };
+
   if (dot && tableMode) {
     // `schema.tbl|` inside FROM/JOIN/UPDATE...: a column cannot appear here at
     // all, so offering them is what made the popup look broken.
     add(schema.tables, 'table', 0);
-    add(schema.systemTables, 'system', 1);
+    // `prev`, not `gov`: the QUALIFIER is the word before the dot (`sys`), while
+    // `gov` is the clause keyword that put us in table mode (`from`).
+    addSystem(schema.systemTables, prev, 1);
+    // A table-valued function is a legal FROM entry, so routines belong here too.
+    add(schema.functions, 'function', 2);
   }
   else if (dot) {
     // `alias.col|` in a select list / WHERE: columns first, tables still
     // offered because an alias cannot be resolved from the text alone.
     add(schema.columns, 'column', 0);
     add(schema.tables, 'table', 1);
+    addSystem(schema.systemTables, prev, 2);
   }
-  else if (tableMode) { add(schema.tables, 'table', 0); add(schema.systemTables, 'system', 1); add(schema.dbs, 'database', 2); }
-  else { add(schema.tables, 'table', 0); add(schema.columns, 'column', 1); add(schema.systemTables, 'system', 2); add(QH_KEYWORDS, 'keyword', 3); }
+  else if (tableMode) { add(schema.tables, 'table', 0); add(schema.systemTables, 'system', 1); add(schema.dbs, 'database', 2); add(schema.functions, 'function', 3); }
+  else { add(schema.tables, 'table', 0); add(schema.columns, 'column', 1); add(schema.functions, 'function', 2); add(schema.systemTables, 'system', 3); add(QH_KEYWORDS, 'keyword', 4); }
   // Sort BEFORE truncating: the old code capped in insertion order, so a
   // matching table could be pushed out of the list by ten columns.
   items.sort((a, b) => (a.rank - b.rank) || (a.typeRank - b.typeRank));
@@ -130,13 +165,21 @@ function qhBuildSuggest(value, caret, schema, engineId) {
   for (const it of items) { const k = it.type + ':' + it.text; if (!seen.has(k)) { seen.add(k); out.push(it); } if (out.length >= 12) break; }
   return out.length ? { items: out, start, end: start + token.length } : null;
 }
-const QH_AC_TYPE_LABEL = { keyword: 'kw', table: 'table', column: 'col', database: 'db', system: 'system', expand: 'all cols' };
+const QH_AC_TYPE_LABEL = { keyword: 'kw', table: 'table', column: 'col', database: 'db', system: 'system', function: 'fn', expand: 'all cols' };
 
-function SqlEditor({ value, onChange, fontSize, onRun, onRunSelection, selectionGetter, schema, engineId, focusSignal }) {
+function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, schema, engineId, focusSignal }) {
   const taRef = React.useRef(null);
   const preRef = React.useRef(null);
   const gutRef = React.useRef(null);
   const measRef = React.useRef(null);
+  const hostRef = React.useRef(null);
+  // Wrapping breaks the assumption the gutter and the caret maths rest on: one
+  // logical line is no longer one visual row. Heights are MEASURED rather than
+  // derived from character counts — `overflow-wrap: break-word` breaks at spaces,
+  // so arithmetic would be wrong on exactly the lines that wrap.
+  const wrapRef = React.useRef(null);
+  const [rowH, setRowH] = React.useState(null);
+  const [, bumpWidth] = React.useReducer(x => x + 1, 0);
   const [charW, setCharW] = React.useState(fontSize * 0.6);
   const [ac, setAc] = React.useState(null); // {items, idx, top, left, start, end}
   const [dragOver, setDragOver] = React.useState(false);
@@ -144,14 +187,71 @@ function SqlEditor({ value, onChange, fontSize, onRun, onRunSelection, selection
   const lh = Math.round(fontSize * 1.55);
   const sch = schema || { tables: [], columns: [], dbs: [] };
 
+  // Caret geometry inside the hidden mirror. Its box sits exactly on the text
+  // origin, so rects come back relative to the first character and the caller
+  // only has to add the padding and the scroll offset.
+  // The mirror is built imperatively and has NO JSX children: React must not
+  // own nodes that wrapRect updates mid-keystroke, or a shrinking line count
+  // has React removing a node this code already detached (it throws, and the
+  // editor unmounts to the error boundary with the user's query in it).
+  const syncMirror = (text) => {
+    const m = wrapRef.current; if (!m) return null;
+    const live = text.split('\n');
+    while (m.children.length > live.length) m.removeChild(m.lastChild);
+    while (m.children.length < live.length) m.appendChild(document.createElement('div'));
+    live.forEach((l, i) => { const t = (l === '' ? '\u200b' : l); if (m.children[i].textContent !== t) m.children[i].textContent = t; });
+    return m;
+  };
+  const wrapRect = (row, col) => {
+    const ta = taRef.current;
+    if (!ta) return null;
+    // refreshAC runs synchronously inside onChange, so React's value is one
+    // render behind the textarea's. Measure the live text or the popup lands a
+    // whole visual row out whenever the keystroke crossed a wrap point.
+    const m = syncMirror(ta.value);
+    const el = m && m.children[row];
+    if (!el) return null;
+    const node = el.firstChild, mr = m.getBoundingClientRect();
+    if (!node || !col) return { bottom: el.offsetTop + lh, right: 0 };
+    const r = document.createRange();
+    r.setStart(node, 0); r.setEnd(node, Math.min(col, node.length));
+    const rects = r.getClientRects(), last = rects[rects.length - 1];
+    if (!last) return { bottom: el.offsetTop + lh, right: 0 };
+    return { bottom: last.bottom - mr.top, right: last.right - mr.left };
+  };
+  // Which character a pointer is over on a wrapped line: the visual row decides
+  // first (vertical distance dominates the score), the column within it second.
+  const wrapColAt = (row, relX, relY) => {
+    const el = wrapRef.current && wrapRef.current.children[row];
+    const node = el && el.firstChild;
+    const len = (value.split('\n')[row] || '').length;
+    if (!node || !len) return 0;
+    let best = 0, bestScore = Infinity;
+    for (let c = 0; c <= len; c++) {
+      const p = wrapRect(row, c); if (!p) break;
+      const score = Math.abs(p.bottom - lh / 2 - relY) * 10000 + Math.abs(p.right - relX);
+      if (score < bestScore) { bestScore = score; best = c; }
+    }
+    return best;
+  };
   const indexFromPoint = (ta, x, y) => {
     const r = ta.getBoundingClientRect();
-    const row = Math.max(0, Math.floor((y - r.top - 14 + ta.scrollTop) / lh));
-    const col = Math.max(0, Math.round((x - r.left - 16 + ta.scrollLeft) / charW));
+    const relY = y - r.top - 14 + ta.scrollTop, relX = x - r.left - 16 + ta.scrollLeft;
     const ls = value.split('\n');
-    const rr = Math.min(row, ls.length - 1);
+    let rr, col;
+    if (wrap && wrapRef.current && wrapRef.current.children.length === ls.length) {
+      rr = ls.length - 1;
+      for (let i = 0; i < ls.length; i++) {
+        const c = wrapRef.current.children[i];
+        if (relY < c.offsetTop + c.offsetHeight) { rr = i; break; }
+      }
+      col = wrapColAt(rr, relX, relY);
+    } else {
+      rr = Math.min(Math.max(0, Math.floor(relY / lh)), ls.length - 1);
+      col = Math.min(Math.max(0, Math.round(relX / charW)), ls[rr].length);
+    }
     let idx = 0; for (let i = 0; i < rr; i++) idx += ls[i].length + 1;
-    return idx + Math.min(col, ls[rr].length);
+    return idx + col;
   };
   const onDrop = (e) => {
     const text = e.dataTransfer.getData('text/plain');
@@ -170,6 +270,27 @@ function SqlEditor({ value, onChange, fontSize, onRun, onRunSelection, selection
   React.useLayoutEffect(() => {
     if (measRef.current) setCharW(measRef.current.getBoundingClientRect().width / 10);
   }, [fontSize]);
+
+  // Re-measure after every render while wrapping: the text, the font size and
+  // the pane width all move the break points. `clientWidth` excludes the
+  // textarea's scrollbar, so the mirror wraps where the textarea does and not
+  // one character later. The equality guard is what stops the setState loop.
+  React.useLayoutEffect(() => {
+    if (!wrap) { if (rowH) setRowH(null); return; }
+    const m = wrapRef.current, ta = taRef.current;
+    if (!m || !ta) return;
+    m.style.width = Math.max(0, ta.clientWidth - 32) + 'px';
+    syncMirror(value);
+    const hs = Array.prototype.map.call(m.children, (c) => c.offsetHeight);
+    setRowH(prev => (prev && prev.length === hs.length && prev.every((h, i) => h === hs[i])) ? prev : hs);
+  });
+  // A pane resize changes the break points without changing any prop.
+  React.useEffect(() => {
+    if (!wrap || !hostRef.current || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => bumpWidth());
+    ro.observe(hostRef.current);
+    return () => ro.disconnect();
+  }, [wrap]);
 
   // Run must honour a selection wherever it is pressed from — F5, ⌘↵, or the
   // toolbar button, which lives outside this component and cannot reach the
@@ -209,6 +330,10 @@ function SqlEditor({ value, onChange, fontSize, onRun, onRunSelection, selection
   const posAt = (ta, idx) => {
     const rows = ta.value.slice(0, idx).split('\n');
     const row = rows.length - 1, col = rows[row].length;
+    if (wrap) {
+      const p = wrapRect(row, col);
+      if (p) return { top: 14 + p.bottom - ta.scrollTop + 2, left: 16 + p.right - ta.scrollLeft };
+    }
     return { top: 14 + (row + 1) * lh - ta.scrollTop + 2, left: 16 + col * charW - ta.scrollLeft };
   };
   const refreshAC = (ta) => {
@@ -337,12 +462,16 @@ function SqlEditor({ value, onChange, fontSize, onRun, onRunSelection, selection
   };
 
   return (
-    <div className="qh-editor" style={{ '--ed-fs': fontSize + 'px', '--ed-lh': lh + 'px' }}>
+    <div className={'qh-editor' + (wrap ? ' is-wrap' : '')} style={{ '--ed-fs': fontSize + 'px', '--ed-lh': lh + 'px' }}>
       <span ref={measRef} className="qh-meas" aria-hidden="true">0000000000</span>
       <div className="qh-gutter" ref={gutRef}>
-        {lines.map((_, i) => <div key={i} className="qh-lno">{i + 1}</div>)}
+        {lines.map((_, i) => (
+          <div key={i} className="qh-lno"
+            style={(rowH && rowH.length === lines.length) ? { height: rowH[i] + 'px' } : undefined}>{i + 1}</div>
+        ))}
       </div>
-      <div className={'qh-code-wrap' + (dragOver ? ' is-drop' : '')}>
+      <div className={'qh-code-wrap' + (dragOver ? ' is-drop' : '')} ref={hostRef}>
+        {wrap && <div className="qh-wrapmeas" ref={wrapRef} aria-hidden="true"></div>}
         <pre className="qh-pre" ref={preRef} aria-hidden="true">
           <code dangerouslySetInnerHTML={{ __html: qhHighlight(value) + '\n' }} />
         </pre>
@@ -391,7 +520,7 @@ const QH_TAB_ICN = {
   all: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9l6 6M15 9l-6 6"/></svg>,
 };
 
-function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, onCloseOthers, onCloseRight, onCloseAll, onDuplicate, onRename, onCopySql, onDownloadSql, onReorder }) {
+function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWrap, onCloseOthers, onCloseRight, onCloseAll, onDuplicate, onRename, onCopySql, onDownloadSql, onReorder }) {
   const [kb, setKb] = React.useState(false);
   const [dragId, setDragId] = React.useState(null);
   const [overId, setOverId] = React.useState(null);
@@ -402,6 +531,38 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, onCloseOthers, o
   const kbWrapRef = qhUseDismiss(kb, closeKb);
   const kbBtnRef = React.useRef(null);
   const barRef = React.useRef(null);
+  // The + belongs at the END OF THE TABS, not at the end of the row: that is
+  // where the next tab will appear, and a gap of empty strip between the last
+  // tab and the button reads as "unrelated control". It only moves to the
+  // pinned cluster when the tabs no longer fit — there, in flow, it would
+  // scroll out of reach exactly when a new tab is most likely wanted.
+  // The test is on the TABS' width alone (36px of room for the button, 4px of
+  // strip padding), never on scrollWidth with the button in it, or showing the
+  // button would create the overflow that hides it again.
+  const [inlineNew, setInlineNew] = React.useState(true);
+  React.useLayoutEffect(() => {
+    const bar = barRef.current; if (!bar) return;
+    let t = 4;
+    bar.querySelectorAll('.qh-tab').forEach((el) => { t += el.offsetWidth; });
+    const fits = t + 36 <= bar.clientWidth;
+    if (fits !== inlineNew) setInlineNew(fits);
+  });
+  React.useEffect(() => {
+    const bar = barRef.current;
+    if (!bar || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      let t = 4;
+      bar.querySelectorAll('.qh-tab').forEach((el) => { t += el.offsetWidth; });
+      setInlineNew(t + 36 <= bar.clientWidth);
+    });
+    ro.observe(bar);
+    return () => ro.disconnect();
+  }, []);
+  const newBtn = (extra) => (
+    <button className={'qh-tab-new' + (extra || '')} onClick={onNew} data-kbd={(window.QH_KBD || {}).newq} aria-label="New query">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+  );
   React.useEffect(() => {
     const bar = barRef.current; if (!bar) return;
     const el = bar.querySelector('.qh-tab.is-active'); if (!el) return;
@@ -423,7 +584,7 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, onCloseOthers, o
   const [editId, setEditId] = React.useState(null);
   const [draft, setDraft] = React.useState('');
   const cancelledRef = React.useRef(false);
-  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current line'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Tab', 'Indent'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
+  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current line'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Tab', 'Indent'], ['⌥ / Alt + Z', 'Toggle word wrap'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
   const beginRename = (t) => { if (t.kind) return; setMenu(null); setEditId(t.id); setDraft(t.name); };
   const openMenu = (e, id) => { e.preventDefault(); e.stopPropagation(); setKb(false); setMenu({ x: Math.min(e.clientX, window.innerWidth - 200), y: e.clientY, id }); };
   React.useEffect(() => {
@@ -483,11 +644,10 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, onCloseOthers, o
           )}
         </div>
       ))}
+      {inlineNew && newBtn(' qh-tab-new-inline')}
       </div>
       <div className="qh-tabs-fixed">
-      <button className="qh-tab-new" onClick={onNew} data-kbd={(window.QH_KBD || {}).newq} aria-label="New query">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>
-      </button>
+      {!inlineNew && newBtn('')}
       {menu && (() => {
         const idx = tabs.findIndex(x => x.id === menu.id);
         const mt = tabs[idx];
@@ -516,6 +676,15 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, onCloseOthers, o
           </>
         );
       })()}
+      {/* Word wrap lives in the tab bar's pinned cluster rather than in a
+          toolbar of its own: the row is already there and never scrolls, so a
+          per-editor view switch costs 34px and no new surface. State is on the
+          button (tinted when on), not in a label that would need the space. */}
+      <button className={'qh-kb-btn qh-wrapt' + (wrap ? ' is-on' : '')} onClick={onToggleWrap}
+        data-kbd={'Word wrap  ·  ' + ((window.QH_KBD || {}).wrap || 'Alt Z')}
+        aria-pressed={wrap ? 'true' : 'false'} aria-label={wrap ? 'Word wrap on' : 'Word wrap off'}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h16"/><path d="M4 11.5h12a3 3 0 010 6h-4"/><path d="M15 14.5l-3 3 3 3"/></svg>
+      </button>
       <div className="qh-kb-wrap" ref={kbWrapRef}>
         <button ref={kbBtnRef} className="qh-kb-btn" onClick={() => {
           if (kb) { setKb(false); return; }
@@ -539,4 +708,7 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, onCloseOthers, o
   );
 }
 
-Object.assign(window, { SqlEditor, EditorTabs, qhHighlight });
+// qhBuildSuggest is exported so the suggestion rules can be tested directly.
+// It is the one piece of editor behaviour with no visible surface of its own —
+// a wrong pool looks like "autocomplete is being unhelpful", never like a bug.
+Object.assign(window, { SqlEditor, EditorTabs, qhHighlight, qhBuildSuggest });

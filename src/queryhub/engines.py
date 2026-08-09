@@ -94,6 +94,17 @@ class EngineSpec:
     # pre-flight EXPLAIN no-ops (the safety layer is the real guard).
     supports_explain: bool = True
 
+    # Catalog query listing the database's callable routines, run with the RO
+    # credential by the schema snapshot. Columns it must return:
+    #   schema_name, routine_name, routine_kind, arg_signature, returns
+    #
+    # None means "this engine has no routine scan", which is the honest state for
+    # a spec-only engine: the catalog simply holds no functions for it and
+    # autocomplete offers none, rather than a Postgres query being run against a
+    # dialect that would reject it. That is the engine dimension the suggestion
+    # pool was missing — it was Postgres-shaped for every target.
+    routines_sql: str | None = None
+
     # --- execution ----------------------------------------------------
     # Driver family the executor dispatches on. 'psycopg' is the original
     # (Postgres) path; 'pyodbc' is SQL Server via the Microsoft ODBC
@@ -102,11 +113,37 @@ class EngineSpec:
     default_port: int = 5432
 
 
+# Routines a Postgres RO login may call. pg_proc rather than
+# information_schema.routines: the latter hides anything the role cannot execute,
+# which silently shortens the list for exactly the RO credential doing the scan,
+# and it does not distinguish an aggregate from a plain function. prokind covers
+# f(unction) / a(ggregate) / w(indow); p(rocedure) is included so CALL targets
+# appear. System schemas are excluded here — the built-ins are already offered by
+# the editor's static keyword pool, and pg_catalog alone would add ~3000 rows.
+_PG_ROUTINES_SQL = """
+SELECT n.nspname                                   AS schema_name,
+       p.proname                                   AS routine_name,
+       CASE p.prokind WHEN 'a' THEN 'aggregate'
+                      WHEN 'w' THEN 'window'
+                      WHEN 'p' THEN 'procedure'
+                      ELSE 'function' END          AS routine_kind,
+       pg_get_function_arguments(p.oid)            AS arg_signature,
+       pg_get_function_result(p.oid)               AS returns
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND n.nspname NOT LIKE 'pg_toast%'
+  AND n.nspname NOT LIKE 'pg_temp%'
+ORDER BY 1, 2
+"""
+
+
 POSTGRES = EngineSpec(
     name="postgres",
     sqlglot_dialect="postgres",
     read_only=False,
     blocked_functions=frozenset(),  # PG dangerous-fn list stays in ast_safety
+    routines_sql=_PG_ROUTINES_SQL,
     driver="psycopg",
     default_port=5432,
 )
@@ -186,6 +223,34 @@ _MSSQL_BLOCKED = frozenset({
     "sp_send_dbmail", "xp_delete_file",
 })
 
+# T-SQL routines. sys.objects, not INFORMATION_SCHEMA.ROUTINES: the latter omits
+# table-valued functions and reports nothing useful for aggregates. `type` covers
+# FN (scalar), IF/TF (inline / multi-statement table-valued), AF (CLR aggregate)
+# and P (procedure). Microsoft-shipped objects are excluded — is_ms_shipped filters
+# the thousands of sys.* built-ins, which the editor's static pool already covers.
+_MSSQL_ROUTINES_SQL = """
+SELECT SCHEMA_NAME(o.schema_id)                    AS schema_name,
+       o.name                                      AS routine_name,
+       CASE o.type WHEN 'P'  THEN 'procedure'
+                   WHEN 'AF' THEN 'aggregate'
+                   WHEN 'IF' THEN 'function'
+                   WHEN 'TF' THEN 'function'
+                   ELSE 'function' END             AS routine_kind,
+       STUFF((SELECT ', ' + p.name + ' ' + TYPE_NAME(p.user_type_id)
+              FROM sys.parameters p
+              WHERE p.object_id = o.object_id AND p.parameter_id > 0
+              ORDER BY p.parameter_id
+              FOR XML PATH('')), 1, 2, '')         AS arg_signature,
+       TYPE_NAME((SELECT TOP 1 r.user_type_id FROM sys.parameters r
+                  WHERE r.object_id = o.object_id AND r.parameter_id = 0))
+                                                   AS returns
+FROM sys.objects o
+WHERE o.type IN ('FN', 'IF', 'TF', 'AF', 'P')
+  AND o.is_ms_shipped = 0
+ORDER BY 1, 2
+"""
+
+
 MSSQL = EngineSpec(
     name="mssql",
     sqlglot_dialect="tsql",
@@ -201,6 +266,7 @@ MSSQL = EngineSpec(
     set_local_supported=False,   # T-SQL SET is a different construct
     supports_explain=False,      # no PG-style EXPLAIN (FORMAT JSON)
     block_catalog_refs=True,     # no cross-database / linked-server names
+    routines_sql=_MSSQL_ROUTINES_SQL,
     driver="pyodbc",
     default_port=1433,
 )

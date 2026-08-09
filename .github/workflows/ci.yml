@@ -10,9 +10,18 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  # Least privilege at the WORKFLOW level, so a job that forgets to
+  # declare its own cannot inherit the repository default (which is
+  # write-all on older settings). Nothing in CI writes to the repo:
+  # it reads the tree, builds, and tests.
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Any job that hangs is a bug, and the default is six hours.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -21,10 +30,10 @@ jobs:
         # nobody has tested, however green the container jobs look.
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -100,6 +109,8 @@ jobs:
   # ran. A throwaway Postgres service container costs one job.
   integration:
     runs-on: ubuntu-latest
+    # Any job that hangs is a bug, and the default is six hours.
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16
@@ -115,8 +126,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -165,9 +176,11 @@ jobs:
   # exercise them with mocks is what was missing.
   optional-extras:
     runs-on: ubuntu-latest
+    # Any job that hangs is a bug, and the default is six hours.
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -195,9 +208,11 @@ jobs:
   # If a top-level Slack import creeps back in, this job goes red.
   vanilla-import:
     runs-on: ubuntu-latest
+    # Any job that hangs is a bug, and the default is six hours.
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -228,11 +243,51 @@ jobs:
   # edited line by line, so a style ruleset would generate churn without catching
   # anything. A build that must succeed catches the errors that actually break
   # the page.
+  # The two leak gates were prose rituals: documented, run by hand, wired to
+  # nothing. A gate nobody runs is a gate that does not exist, and the one thing
+  # it protects against — a real name or alias reaching a published tree — is
+  # exactly what a pull request from a fork would carry.
+  #
+  # --static-only because a checkout here has no bot DB. That is the weaker half
+  # of the scan and it says so out loud; the operator's pre-commit run does the
+  # full one. It still catches the static shapes: absolute paths, key material,
+  # the employer's name, an internal hostname.
+  leak-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The commit-message scan needs history, not just the tip.
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Sensitive-content scan (static half)
+        run: python3 scripts/check_repo_clean.py --static-only
+      - name: The scan must fail when it cannot do its job
+        # Proves the gate is fail-CLOSED. Without this, a broken denylist loader
+        # would make every future run pass silently — which is the failure this
+        # job exists to prevent, one level up.
+        run: |
+          set +e
+          BOT_DB_HOST=127.0.0.1 BOT_DB_PORT=1 BOT_DB_NAME=x BOT_DB_USER=x \
+            BOT_DB_PASSWORD=x timeout 120 python3 scripts/check_repo_clean.py
+          code=$?
+          set -e
+          if [ "$code" = "0" ]; then
+            echo "check_repo_clean exited 0 with no reachable denylist source" >&2
+            exit 1
+          fi
+          echo "refused with exit $code, as it should"
+
   frontend:
     runs-on: ubuntu-latest
+    # Any job that hangs is a bug, and the default is six hours.
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           # Matches the Dockerfile's base image. When they drift, the
           # bundle CI proves and the bundle the image builds are not the
@@ -283,8 +338,10 @@ jobs:
   # nothing logged, and target_ssl_mode=require against a TLS-less container.
   demo-stack:
     runs-on: ubuntu-latest
+    # Any job that hangs is a bug, and the default is six hours.
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Build and start the stack
         run: docker compose up -d --build
@@ -327,8 +384,10 @@ jobs:
   # working admin credential and nothing would look broken.
   install-stack:
     runs-on: ubuntu-latest
+    # Any job that hangs is a bug, and the default is six hours.
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Build the image the compose file will run
         # QH_IMAGE is the documented override; a real install pulls the released

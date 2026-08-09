@@ -571,6 +571,25 @@ def catalog_databases(host, port, database, user, password, *,
         conn.close()
 
 
+def catalog_rows(host, port, database, user, password, sql: str, *,
+                 timeout_sec: int = 60) -> list[dict]:
+    """Run one CATALOG query and return dict rows.
+
+    For engine-supplied catalog SQL that lives on the EngineSpec rather than in
+    this module — the routine scan, today. Deliberately generic and deliberately
+    NOT reachable from a user request: the caller passes SQL from the spec, never
+    from a query, so there is nothing to interpolate and nothing to escape.
+    """
+    conn = connect(host, port, database, user, password,
+                   timeout_sec=timeout_sec, read_only=False)
+    try:
+        cur = conn.cursor()
+        cur.execute(sql)
+        return _rows(cur)
+    finally:
+        conn.close()
+
+
 def catalog_snapshot(host, port, database, user, password, *,
                      timeout_sec: int = 120) -> tuple[list[dict], list[dict]]:
     """Read one database's table + column catalog, returning (tables, columns)

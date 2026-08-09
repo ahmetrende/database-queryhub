@@ -155,6 +155,33 @@ def _explain_analyze_allowed() -> bool:
     return (v or "").strip().lower() in {"on", "true", "yes", "1"}
 
 
+def _selects_into(stripped: str) -> bool:
+    """True for `SELECT ... INTO <table> ...`, which creates a relation.
+
+    Postgres and T-SQL both spell "create a table from this result" this way, and
+    it leads with SELECT, so every leading-word rule reads it as a read. The
+    detector is deliberately blunt — a top-level INTO anywhere in a SELECT — for
+    two reasons: the classification only ever moves UPWARD (a false positive asks
+    for a DDL approval on a read, which is annoying and safe, while a false
+    negative hands a table-creating write the read-only credential), and the
+    parenthesis-depth walk below is enough to keep a subquery's own INTO from
+    counting.
+
+    `stripped` has string literals removed by the caller, so an INTO inside a
+    literal cannot reach here.
+    """
+    depth = 0
+    for m in re.finditer(r"[()]|\bINTO\b", stripped, flags=re.IGNORECASE):
+        tok = m.group(0)
+        if tok == "(":
+            depth += 1
+        elif tok == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            return True
+    return False
+
+
 def _explain_inner(stripped: str) -> str | None:
     """The SQL wrapped by EXPLAIN [(...)] [ANALYZE ...], or None if it can't
     be isolated. Handles both the option-list form
@@ -412,6 +439,28 @@ def analyze(sql: str, engine: str = "postgres") -> SafetyReport:
                     return report
                 # Allowed read-only EXPLAIN ANALYZE — falls through and is
                 # classified 'ro' below (runs with RO credentials).
+            else:
+                # PLAIN EXPLAIN, same blind spot for the same reason: sqlglot
+                # parses `EXPLAIN ...` as an opaque Command, so the module-level
+                # AST check below never sees the wrapped statement, and
+                # `EXPLAIN SELECT pg_read_file('/etc/passwd')` passed every gate
+                # while the bare call was blocked.
+                #
+                # Plain EXPLAIN plans without executing, so a VOLATILE function is
+                # not called and nothing is read. That is an argument about
+                # volatility, not about this code: an IMMUTABLE function with
+                # constant arguments IS folded at plan time, and the blocklist is
+                # not curated by volatility. Scanning here costs one parse and
+                # removes the dependency on that reasoning — and makes the two
+                # EXPLAIN forms answer the same way, which is what anyone reading
+                # this file will assume.
+                from . import ast_safety as _ast
+                _inner = _explain_inner(_raw_body(stmt))
+                if _inner:
+                    _inner_blockers = _ast.check(_inner, engine=engine)
+                    if _inner_blockers:
+                        report.blockers.extend(_inner_blockers)
+                        return report
 
         # Destructive flag.
         if upper in destructive:
@@ -456,7 +505,18 @@ def analyze(sql: str, engine: str = "postgres") -> SafetyReport:
                 return report
 
         # Classify tier.
-        if upper in ddl_keywords:
+        #
+        # `SELECT ... INTO new_table ...` is checked FIRST, before the leading
+        # word decides anything: it leads with SELECT and it CREATES A TABLE.
+        # Postgres treats it as CREATE TABLE AS, T-SQL the same — so it was
+        # classified `ro`, reviewed as a read, and handed the read-only
+        # credential. The credential would refuse it, which is the backstop, but
+        # the approver was shown the wrong thing and `CREATE TABLE AS`, the exact
+        # same operation written differently, has always been ddl. Same operation,
+        # same tier.
+        if upper == "SELECT" and _selects_into(_stripped_body(stmt)):
+            tier = "ddl"
+        elif upper in ddl_keywords:
             tier = "ddl"
         elif upper in rw_keywords:
             tier = "rw"

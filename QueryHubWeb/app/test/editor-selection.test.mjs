@@ -34,16 +34,25 @@ const SCRIPT = [
 function mount() {
   const dom = new JSDOM('<!doctype html><div id="root"></div>',
                         { pretendToBeVisual: true, url: 'https://localhost/' });
+  // defineProperty, not assignment: node 21+ predefines some of these itself
+  // (`navigator` is a getter-only global there), and a plain `globalThis.x = …`
+  // throws on those. This has to work on both the node the container ships and
+  // whatever a contributor has locally, so do not assume which ones exist.
   for (const k of ['window', 'document', 'navigator', 'HTMLElement', 'Element',
                    'Node', 'Event', 'KeyboardEvent', 'getComputedStyle',
                    'requestAnimationFrame', 'cancelAnimationFrame', 'localStorage']) {
-    globalThis[k] = dom.window[k];
+    Object.defineProperty(globalThis, k, {
+      value: dom.window[k], configurable: true, writable: true,
+    });
   }
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
   const React = require_('react');
   const ReactDOM = require_('react-dom/client');
-  const { act } = require_('react-dom/test-utils');
+  // `act` from React itself, not react-dom/test-utils: the latter is deprecated
+  // in React 19 and warns on every use, and the warning is the kind of noise
+  // that trains people to stop reading test output.
+  const act = React.act;
   globalThis.React = React;
 
   const win = dom.window;
@@ -70,11 +79,13 @@ function mount() {
   };
 
   const root = ReactDOM.createRoot(win.document.getElementById('root'));
-  act(() => root.render(React.createElement(SqlEditor, {
+  const render = (extra) => act(() => root.render(React.createElement(SqlEditor, {
     value: SCRIPT, onChange: () => {}, fontSize: 13,
     onRun: primary, onRunSelection: runSelection, selectionGetter: selGet,
     schema: { tables: [], columns: [], dbs: [] }, engineId: 'postgres',
+    ...extra,
   })));
+  render();
   const ta = win.document.querySelector('textarea');
   assert.ok(ta, 'the editor rendered no textarea');
 
@@ -100,6 +111,7 @@ function mount() {
         'keydown', { key, bubbles: true, cancelable: true })));
     },
     took() { const r = state.ran; state.ran = null; return r; },
+    render, win, ta,
   };
 }
 
@@ -155,4 +167,57 @@ test('the selection survives blur, so the toolbar button sees it', opts, () => {
   assert.equal(ed.curSel(), 'FROM orders');
   ed.primary();
   assert.deepEqual(ed.took(), { via: 'selection', sql: 'FROM orders' });
+});
+
+
+// ---------------------------------------------------------------------------
+// word wrap (design 2026-08-09) — the gutter stops being one row per line
+// ---------------------------------------------------------------------------
+
+test('wrapping is off by default and the editor says so', opts, () => {
+  const ed = mount();
+  const host = ed.win.document.querySelector('.qh-editor');
+  assert.ok(host, 'no editor root rendered');
+  assert.ok(!host.className.includes('is-wrap'),
+    'wrap must default off: SQL is written in lines, and wrapping costs the '
+    + 'one-line-one-number reading of the gutter');
+  assert.equal(ed.win.document.querySelector('.qh-wrapmeas'), null,
+    'the measuring mirror should not exist when it cannot be needed');
+});
+
+test('turning wrap on adds the mirror and marks the editor', opts, () => {
+  const ed = mount();
+  ed.render({ wrap: true });
+  const host = ed.win.document.querySelector('.qh-editor');
+  assert.ok(host.className.includes('is-wrap'));
+  const mirror = ed.win.document.querySelector('.qh-wrapmeas');
+  assert.ok(mirror, 'no .qh-wrapmeas — the gutter has nothing to measure, so '
+    + 'line numbers would drift away from their lines');
+  assert.equal(mirror.getAttribute('aria-hidden'), 'true',
+    'the mirror is a measuring device and must not be read aloud');
+});
+
+test('the mirror has one child per LOGICAL line, and React owns none of them', opts, () => {
+  // The child list is built imperatively on purpose: letting React render these
+  // AND patching them by hand is an ownership conflict, and on a keystroke that
+  // reduces the line count React tries to remove a node the patch already
+  // detached — it throws, and the editor unmounts with the user's query in it.
+  const ed = mount();
+  ed.render({ wrap: true });
+  const mirror = ed.win.document.querySelector('.qh-wrapmeas');
+  assert.equal(mirror.children.length, SCRIPT.split('\n').length,
+    'one mirror row per logical line');
+  for (const child of mirror.children) {
+    assert.equal(child.tagName, 'DIV');
+  }
+});
+
+test('the gutter still renders one number per logical line while wrapped', opts, () => {
+  // Wrapping changes each number's HEIGHT, never the count: line 3 is line 3
+  // however many visual rows it occupies.
+  const ed = mount();
+  ed.render({ wrap: true });
+  const nos = ed.win.document.querySelectorAll('.qh-lno');
+  assert.equal(nos.length, SCRIPT.split('\n').length);
+  assert.equal(nos[0].textContent, '1');
 });

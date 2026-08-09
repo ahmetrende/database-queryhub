@@ -48,7 +48,7 @@ def test_submit_runs_normally_when_not_draining(monkeypatch):
 
 
 def _wire_run(monkeypatch, *, allowed: bool, is_admin: bool = False):
-    target = type("T", (), {"engine": "postgres", "alias": "svc", "id": 7,
+    target = type("T", (), {"enabled": True, "engine": "postgres", "alias": "svc", "id": 7,
                             "default_database": "app"})()
     monkeypatch.setattr(ex.targets, "get", lambda tid: target)
     monkeypatch.setattr(ex.engines, "is_executable", lambda e: True)

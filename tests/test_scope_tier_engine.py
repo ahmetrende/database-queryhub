@@ -36,7 +36,7 @@ def test_engine_resolved_from_target_when_absent(monkeypatch):
     seen = {}
     monkeypatch.setattr(qs, "required_mode",
                         lambda sql, engine="postgres": seen.update(engine=engine) or "rw")
-    monkeypatch.setattr(targets, "get", lambda tid: type("T", (), {"engine": "mssql"})())
+    monkeypatch.setattr(targets, "get", lambda tid: type("T", (), {"enabled": True, "engine": "mssql"})())
     admins._request_tier({"query": "MERGE INTO t ...", "target_server_id": 7})
     assert seen["engine"] == "mssql"
 

@@ -32,7 +32,7 @@ class _FakeTxn:
 
 def _target():
     return type("T", (), {
-        "engine": "postgres", "alias": "svc", "id": 7, "default_database": "app",
+        "enabled": True, "engine": "postgres", "alias": "svc", "id": 7, "default_database": "app",
     })()
 
 

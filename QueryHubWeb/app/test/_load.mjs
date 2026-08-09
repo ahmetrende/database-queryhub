@@ -12,6 +12,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { transformSync } from 'esbuild';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -24,18 +25,33 @@ export function loadInto(win, ...files) {
       loader: 'jsx', jsx: 'transform',
       jsxFactory: 'React.createElement', jsxFragment: 'React.Fragment',
     }).code;
-    // The same free names the browser provides. `window` is passed rather than
-    // assumed global so two tests can never bleed into each other.
-    new Function('window', 'React', 'document', 'localStorage', 'navigator', code)(
-      win, win.React, win.document, win.localStorage, win.navigator);
+    // `with (window)` — the browser's global scope, in one line and in THIS
+    // realm. Two failed attempts are worth recording, because both looked right:
+    //
+    //   * `new Function('window', …)` passes window as a PARAMETER, so bare
+    //     globals are not in scope. qh-editor.jsx calls `qhQuoteIdentFor`, which
+    //     qh-data.jsx publishes on window, and it was simply not defined.
+    //   * a `node:vm` context whose global is `win` fixes the scope and breaks
+    //     the assertions: a vm context is a separate REALM, so objects built
+    //     inside it have a different Object.prototype and deepStrictEqual — what
+    //     `node:assert/strict` gives you — rejects them against plain objects.
+    //
+    // These files are sloppy-mode scripts, which is what makes `with` available.
+    new Function('window', 'with (window) {\n' + code + '\n}')(win);
   }
   return win;
 }
 
-/** A minimal stand-in for the browser globals these files touch at load time. */
+/** A minimal stand-in for the browser globals these files touch at load time.
+ *
+ * React is REAL, not a stub: several of these files build icon elements at module
+ * scope, so `React.createElement` has to exist before any test runs. A stub would
+ * work today and rot the first time a module-level constant does something more
+ * than createElement.
+ */
 export function bareWindow() {
   const win = {
-    React: null,
+    React: createRequire(import.meta.url)('react'),
     document: { documentElement: { getAttribute: () => null } },
     localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
     navigator: { platform: 'test', userAgent: 'node', clipboard: null },

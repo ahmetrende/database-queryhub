@@ -14,7 +14,7 @@ import psycopg
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from .. import admins, auto_approve, db, errors, favorites, targets, teams
+from .. import admins, auto_approve, db, errors, favorites, schema_catalog, targets, teams
 from .. import config as cfg
 from . import deps, mapping
 
@@ -55,6 +55,23 @@ def _catalog_databases(target_id: int) -> list[str]:
     )
     return [r["database_name"] for r in rows
             if r["database_name"] not in _HIDDEN_DATABASES]
+
+
+def _catalog_functions(target_id: int, database: str) -> list[dict]:
+    """Routine suggestions for one database, or [] when the catalog has none.
+
+    Never raises into the connections payload: a missing suggestion pool must not
+    cost a user their whole connection list, which is what an exception here
+    would do.
+    """
+    try:
+        return [{"n": r["n"], "s": r["s"], "k": r["k"],
+                 "args": r.get("args"), "ret": r.get("ret")}
+                for r in schema_catalog.catalog_functions(target_id, database)]
+    except Exception:                              # noqa: BLE001
+        log.warning("function catalog unavailable for target %s/%s",
+                    target_id, database, exc_info=True)
+        return []
 
 
 def _catalog_table_refs(target_id: int, database: str) -> list[dict]:
@@ -143,6 +160,7 @@ def connections(claims: dict = Depends(deps.current_user)):
                                               database_name=d) is not None
             auto_ro_any = auto_ro_any or aa
             refs = _catalog_table_refs(t.id, d)
+            fns = _catalog_functions(t.id, d)
             db_entries.append({
                 "id": d,
                 "name": d,
@@ -156,6 +174,14 @@ def connections(claims: dict = Depends(deps.current_user)):
                 # Truthy when the list above is not the whole database, so the
                 # UI can say so rather than imply the tree is complete.
                 "tablesTruncated": len(refs) >= _max_tables_per_db(),
+                # Callable routines, so autocomplete can offer a function at all.
+                # `functions` is the bare-name pool the editor matches on;
+                # `functionRefs` carries schema + kind + signature for the hover
+                # and so a procedure is not offered where an expression belongs.
+                # Empty for an engine with no routine scan — which is a real
+                # answer, not a failure.
+                "functions": [r["n"] for r in fns],
+                "functionRefs": fns,
                 "autoApproveRO": aa,
             })
         entry = {

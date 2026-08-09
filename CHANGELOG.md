@@ -9,6 +9,48 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.9] — 2026-08-09
+
+### Added
+
+- **Word wrap in the editor** (⌥Z / Alt+Z, or the button in the tab bar). Off by
+  default and remembered per browser. Line numbers keep one number per logical
+  line and grow to the wrapped line's real height, measured rather than
+  calculated — `break-word` breaks at spaces, so arithmetic is wrong on exactly
+  the lines that wrap.
+- **Functions and procedures are suggested.** The schema snapshot now scans each
+  database's routines with a per-engine catalog query (`pg_proc` on PostgreSQL,
+  `sys.objects` on SQL Server, nothing for an engine with no scan), so a routine
+  can be completed at all. Accepting one inserts it called — `count_orders(`.
+- **Frontend tests grew to 33** and run in CI, including the editor mounted in a
+  DOM.
+- **New-query +** sits at the end of the tabs and moves to the pinned cluster only
+  when the tabs no longer fit.
+
+### Fixed
+
+- **`sys.dm_` suggested nothing** while the bare `dm_` worked: the system pool
+  holds qualified names, so after a dot the token is only the tail. Accepting one
+  replaces the token alone, and a foreign qualifier is no longer offered inside
+  `sys.`.
+- **`SELECT ... INTO t` was reviewed as a read.** It creates a table, and
+  `CREATE TABLE AS` — the same operation, written differently — was always DDL.
+  Now DDL on both engines.
+- **`EXPLAIN` did not scan the statement it wraps**, so a blocked function could
+  be named inside it while the bare call was refused. Both `EXPLAIN` forms scan
+  now.
+- **Disabling a target now stops queued and scheduled runs**, not just new
+  submissions. A request already approved ran against a disabled host.
+
+### Security
+
+- Repository scanner fails closed when its denylist source is unreachable
+  (it used to continue with a twentieth of its patterns and still report clean),
+  and both leak gates now run in CI.
+- All GitHub Actions pinned to commit SHAs; one was pinned to a mutable branch.
+  Every CI and release job has a timeout, and CI declares least privilege.
+- Frontend `nanoid` (high) and `postcss` advisories cleared.
+
 ## [1.0.8] — 2026-08-08
 
 ### Fixed
