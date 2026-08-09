@@ -104,7 +104,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--remote", default=os.environ.get("QH_REPLICA_REMOTE"),
                     help="replica git URL (or set QH_REPLICA_REMOTE)")
     ap.add_argument("--replica-branch", default="main",
-                    help="the replica's default branch (default: main)")
+                    help="branch the new commit is PARENTED on, and the branch the "
+                         "local-only files are read from (default: main). Pass the "
+                         "pull-request branch to ADD a commit to an open PR — with "
+                         "the default, the commit parents on main instead and the "
+                         "push is a non-fast-forward the ruleset will not allow.")
     ap.add_argument("--branch", required=True,
                     help="branch to create on the replica for the pull request")
     ap.add_argument("--base", default="HEAD",
