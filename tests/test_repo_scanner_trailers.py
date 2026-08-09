@@ -22,32 +22,46 @@ _PATH = (pathlib.Path(__file__).resolve().parents[1]
 
 # The scanner is an OPERATOR tool and is deliberately not shipped to the published
 # repository — its whole job is a denylist of real names read from a database that
-# only exists upstream. So this file has to skip there, at MODULE level: importing
-# a missing path at import time is a collection error, and a collection error does
-# not fail one test, it fails the whole run. That is exactly what happened — four
-# test jobs and the integration job went red on a file that has nothing to say
-# about the code under test.
-if not _PATH.exists():
-    pytest.skip("check_repo_clean.py is upstream-only", allow_module_level=True)
+# only exists upstream. So this file must not require it.
+#
+# The absence is handled PER TEST, not at module level, and the difference matters
+# more than it looks. A module-level `pytest.skip(allow_module_level=True)` runs
+# during collection, before marker filtering, so it reports a SKIP even in a run
+# that never wanted these tests — and the integration job fails on any skip in its
+# log, deliberately, so that integration tests can never silently no-op. A
+# `skipif` marker instead lets `-m integration` DESELECT the file, which is
+# invisible. Two wrong shapes preceded this one: importing unconditionally (a
+# collection error, which fails the whole run) and skipping at module level.
+_HAVE = _PATH.exists()
+upstream_only = pytest.mark.skipif(
+    not _HAVE, reason="check_repo_clean.py is upstream-only")
 
-_SPEC = importlib.util.spec_from_file_location("check_repo_clean", _PATH)
-crc = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(crc)
+if _HAVE:
+    _SPEC = importlib.util.spec_from_file_location("check_repo_clean", _PATH)
+    crc = importlib.util.module_from_spec(_SPEC)
+    _SPEC.loader.exec_module(crc)
+    strip = crc._strip_attribution
+else:                     # never called; the marker skips every test below
+    crc = None
 
-strip = crc._strip_attribution
+    def strip(_body):     # pragma: no cover
+        raise AssertionError("unreachable: the scanner is not present")
 
 NAME = "Jane Q Public"
 
 
+@upstream_only
 def test_a_generated_trailer_is_dropped():
     body = f"add a thing\n\nWhy it matters.\n\nCo-authored-by: {NAME} <1+jq@users.noreply.github.com>\n"
     assert NAME not in strip(body)
 
 
+@upstream_only
 def test_signed_off_by_too():
     assert NAME not in strip(f"subject\n\nSigned-off-by: {NAME} <jq@example.com>\n")
 
 
+@upstream_only
 def test_capitalisation_does_not_matter():
     # Our own convention writes `Co-Authored-By`; GitHub writes `Co-authored-by`.
     for form in ("Co-Authored-By", "co-authored-by", "CO-AUTHORED-BY"):
@@ -58,6 +72,7 @@ def test_capitalisation_does_not_matter():
 # the other half of each pair: the body is still read in full
 # ---------------------------------------------------------------------------
 
+@upstream_only
 def test_the_same_name_in_prose_survives():
     """If this ever passes by being stripped, the exemption has eaten the scan."""
     body = f"add a thing\n\n{NAME} asked for this.\n\nCo-authored-by: {NAME} <jq@example.com>\n"
@@ -66,11 +81,13 @@ def test_the_same_name_in_prose_survives():
     assert out.count(NAME) == 1, "only the trailer occurrence should be removed"
 
 
+@upstream_only
 def test_an_alias_in_the_body_survives():
     body = "port design round\n\nRewritten because svc-prod-orders is the sample fleet.\n"
     assert "svc-prod-orders" in strip(body)
 
 
+@upstream_only
 def test_a_trailer_like_sentence_is_not_a_trailer():
     """Only a real trailer — start of line, then a colon — is removed. A sentence
     that mentions one is prose and stays."""
@@ -78,18 +95,21 @@ def test_a_trailer_like_sentence_is_not_a_trailer():
     assert "svc-prod-orders" in strip(body)
 
 
+@upstream_only
 def test_indented_trailers_still_count():
     # git allows leading whitespace on trailers; a scanner that missed those
     # would fail on some merges and not others.
     assert NAME not in strip(f"subject\n\n   Co-authored-by: {NAME} <jq@example.com>\n")
 
 
+@upstream_only
 def test_a_body_with_no_trailer_is_returned_unchanged():
     body = "subject\n\nbody line\n"
     assert strip(body) == body
 
 
 @pytest.mark.parametrize("field", ["author", "committer"])
+@upstream_only
 def test_the_gap_this_does_not_close_is_documented(field):
     """The commit's own author/committer fields are outside any content scan.
     That is why the git identity must be set before a repo is initialised, and
