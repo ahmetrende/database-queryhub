@@ -16,9 +16,21 @@ import pathlib
 
 import pytest
 
-_SPEC = importlib.util.spec_from_file_location(
-    "check_repo_clean",
-    pathlib.Path(__file__).resolve().parents[1] / "scripts" / "check_repo_clean.py")
+
+_PATH = (pathlib.Path(__file__).resolve().parents[1]
+         / "scripts" / "check_repo_clean.py")
+
+# The scanner is an OPERATOR tool and is deliberately not shipped to the published
+# repository — its whole job is a denylist of real names read from a database that
+# only exists upstream. So this file has to skip there, at MODULE level: importing
+# a missing path at import time is a collection error, and a collection error does
+# not fail one test, it fails the whole run. That is exactly what happened — four
+# test jobs and the integration job went red on a file that has nothing to say
+# about the code under test.
+if not _PATH.exists():
+    pytest.skip("check_repo_clean.py is upstream-only", allow_module_level=True)
+
+_SPEC = importlib.util.spec_from_file_location("check_repo_clean", _PATH)
 crc = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(crc)
 

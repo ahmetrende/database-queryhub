@@ -263,9 +263,15 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
+      # The scanner is an OPERATOR tool and is not shipped to the published
+      # repository — its job is a denylist of real names read from a database that
+      # only exists upstream. This job therefore has to no-op there, or it fails
+      # on a missing file in a repository that has nothing for it to protect.
       - name: Sensitive-content scan (static half)
+        if: hashFiles('scripts/check_repo_clean.py') != ''
         run: python3 scripts/check_repo_clean.py --static-only
       - name: The scan must fail when it cannot do its job
+        if: hashFiles('scripts/check_repo_clean.py') != ''
         # Proves the gate is fail-CLOSED. Without this, a broken denylist loader
         # would make every future run pass silently — which is the failure this
         # job exists to prevent, one level up.
