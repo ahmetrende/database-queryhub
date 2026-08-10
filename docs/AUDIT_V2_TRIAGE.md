@@ -41,7 +41,7 @@ Status vocabulary, used precisely:
 | `ci.yml` declares no permissions | **fixed** | Now `contents: read` at workflow level. |
 | No JavaScript is ever executed by the test suite or CI | **fixed** | 29 frontend tests under `node --test`, wired into CI. Found and fixed three real defects while being written. |
 
-Two defects were found *by* this pass rather than reported in the audit:
+Three defects were found *by* this pass rather than reported in the audit:
 
 - **`node --test test/` stopped working at node 20+**, so the CI step added the
   day before would have failed on node 25 while passing locally on 18.
@@ -49,6 +49,19 @@ Two defects were found *by* this pass rather than reported in the audit:
   handler, so anything raising before that point crashed the error handler with an
   `UnboundLocalError` — the one place that must not fail. Surfaced by adding a new
   early return above it; the hazard was already there.
+- **The new `leak-gates` job scanned all of history, not the pull request.** The
+  message scan grandfathers upstream's pre-gate commits through a recorded SHA;
+  that reasoning covered upstream (has the anchor) and the published export (no
+  shared commits, clean either way) but not a downstream replica, which carries
+  some of upstream's old commits and *not* the anchor. So the job re-flagged five
+  2026-05 messages nobody in the pull request wrote, on a repository whose ruleset
+  forbids the force push that would fix it — permanently red, which is how a gate
+  gets routed around. The job now derives the range from the event
+  (`QH_SCAN_REV_RANGE`), and the tests pin both directions: a leak *inside* the
+  range still fails the build.
+
+  The five messages themselves are a real, separate finding, and narrowing the
+  range does not clean them — see **Needs an operator** below.
 
 ---
 
@@ -92,6 +105,16 @@ These are real and not done. The reason matters more than the count.
 - Retention and maintenance jobs ship as documentation; nothing schedules them in
   the container. Wiring them needs a decision about whether the image runs a
   scheduler at all.
+- **Five 2026-05 commit messages carry what the gate forbids** — three name a
+  colleague, two hold an operator-specific absolute path. They sit before the
+  grandfather anchor, so upstream exempts them by an explicit cost decision (391
+  of 449 commits, nine branches, three tags to rewrite, for a repository that is
+  never published). They are also inherited by the downstream replica, where they
+  are *not* exempt and the org ruleset forbids the force push a rewrite needs. So
+  the choice is the operator's: ask the org to allow a one-off history rewrite on
+  the replica, or accept the messages there as grandfathered too and record that
+  decision. Narrowing the scan range makes the gate usable again; it does not make
+  these clean. Measured 2026-08-10.
 
 **Real, small, not yet done**
 

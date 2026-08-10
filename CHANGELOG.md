@@ -9,6 +9,18 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.10] — 2026-08-10
+
+### Fixed
+
+- **The CI leak gate scanned all of history instead of the pull request.** The
+  commit-message scan grandfathers a repository's pre-gate messages through a
+  recorded commit; a fork or mirror that does not contain that commit fell back to
+  scanning everything and failed on history nobody in the pull request wrote —
+  unfixable without a force push. The job now derives the range from the event, and
+  the tests cover the other direction too: a leak inside the scanned range still
+  fails the build, including one introduced by the pull request itself.
+
 ## [1.0.9] — 2026-08-09
 
 ### Added

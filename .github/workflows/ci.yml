@@ -263,6 +263,36 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
+      # Scan the history THIS EVENT introduces, not all of it.
+      #
+      # The scanner's own default grandfathers upstream's pre-gate messages via a
+      # recorded SHA, because rewriting 391 of 449 commits to clean a repository
+      # that is never published buys nothing. That reasoning covered two repos —
+      # upstream, which has the anchor, and the published export, which shares no
+      # commits with it and is clean either way. It missed a third consumer: a
+      # downstream replica carries SOME of upstream's old commits but NOT the
+      # anchor, so the fallback scanned all of history and failed on five 2026-05
+      # messages nobody in the pull request wrote. Permanently red, on a
+      # repository whose ruleset forbids the force push that would fix it.
+      #
+      # An empty value means "no opinion" and the script falls back to its own
+      # default — which is what a manual or scheduled run should get.
+      - name: Decide which commits this event introduces
+        if: hashFiles('scripts/check_repo_clean.py') != ''
+        run: |
+          case "${{ github.event_name }}" in
+            pull_request) base="${{ github.event.pull_request.base.sha }}" ;;
+            push)         base="${{ github.event.before }}" ;;
+            *)            base="" ;;
+          esac
+          # A new branch reports an all-zero "before"; there is no range then.
+          case "$base" in
+            ""|0000000000000000000000000000000000000000)
+              echo "no event base; using the scanner's own default range" ;;
+            *)
+              echo "QH_SCAN_REV_RANGE=$base..HEAD" >> "$GITHUB_ENV"
+              echo "scanning messages in $base..HEAD" ;;
+          esac
       # The scanner is an OPERATOR tool and is not shipped to the published
       # repository — its job is a denylist of real names read from a database that
       # only exists upstream. This job therefore has to no-op there, or it fails
