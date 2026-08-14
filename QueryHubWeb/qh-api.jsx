@@ -157,6 +157,17 @@ const qhApi = {
   // Target-server registry CRUD (super-admin). Passwords travel in the
   // credentials block on create/update and are never returned: a response
   // carries {username, configured, placeholder} per tier and nothing else.
+  // The tag vocabulary, derived from the fleet — keys, their counts, and the
+  // values already in use. The connection form calls this for suggestions and
+  // to warn when a new key is about to become a fleet-wide filter dimension.
+  //
+  // It was missing when the 2026-08-15 design round landed: the ported form
+  // already called it and swallowed the failure in a `.catch`, so the feature
+  // degraded to an empty picker instead of an error. `qh-api.jsx` is
+  // code-owned, so a design round can add a call site here and nothing tells
+  // us — worth checking the client whenever a ported file gains a `qhApi.`
+  // method name we do not recognise.
+  adminTagKeys:()         => qhFetch('/admin/tag-keys'),
   adminCreateConnection:(b)     => qhFetch('/admin/connections', { method: 'POST', body: JSON.stringify(b) }),
   adminUpdateConnection:(conn, b)=> qhFetch('/admin/connections/' + encodeURIComponent(conn), { method: 'PATCH', body: JSON.stringify(b) }),
   // Answers {deleted, disabled, reason} — a connection with history or live
