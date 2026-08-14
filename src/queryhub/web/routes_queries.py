@@ -65,6 +65,14 @@ class QueryIn(BaseModel):
     # an older client, or a draft that has since been reaped, simply gets a
     # fresh id — see core_submit._claim_draft.
     draftId: int | None = None
+    # The operator answered the "this deletes / rewrites everything" prompt.
+    # Only meaningful for a super-admin: for anyone else that statement is a
+    # blocker, and a blocker is not something a flag can clear.
+    confirmed: bool = False
+    # Show this result with PII masking off. Refused outright for anyone who is
+    # not a super-admin, and re-checked against their standing again at
+    # execution — see core_submit.validate_submission and executor._run.
+    unmasked: bool = False
 
 
 class BatchItemIn(BaseModel):
@@ -78,6 +86,12 @@ class BatchIn(BaseModel):
     items: list[BatchItemIn] = Field(min_length=1)
     justification: str | None = None
     schedule: ScheduleIn | None = None
+    # Design asked whether a bundle 409s the same way. It does now: one flag
+    # for the whole bundle, because a bundle is approved as one round and a
+    # per-item confirmation would be a dialog answered N times for a decision
+    # taken once. The reasons come back naming the item, so the operator still
+    # sees which statement asked.
+    confirmed: bool = False
 
 
 def _schedule_parts(claims: dict, runat_iso: str) -> tuple[str, str]:
@@ -102,13 +116,43 @@ _REJECTION_HTTP = {
     "database": (403, "forbidden"),
     "rate_limit": (409, "conflict"),
     "kill_switch": (503, "server_error"),
+    # The statement is allowed but has to be acknowledged first. 409 rather
+    # than 422: nothing about the request is invalid, the client just has to
+    # ask the operator and re-send with confirmed=true.
+    #
+    # A DISTINCT code, not the `conflict` it shared with duplicate and
+    # rate_limit until now. The client has to tell "answer this question" from
+    # "you already sent this", and with one code it could only do so by
+    # matching the message text — which is fragile in the dangerous direction:
+    # a duplicate mistaken for the question gets re-sent with confirmed=true
+    # and duplicated for real. Measured on this codebase 2026-08-14, the
+    # duplicate wording ("You already have an active request…") did not match
+    # the client's duplicate regex, so that misfire was live.
+    "needs_confirmation": (409, "confirmation_required"),
+    # Asked for an unmasked result without super-admin standing.
+    "not_super_admin": (403, "forbidden"),
 }
 
 
 def _reject(rej: core_submit.Rejection):
     status, code = _REJECTION_HTTP.get(
         rej.reason or rej.field, (422, "validation"))
-    raise deps._error(status, code, rej.message.replace("*", ""))
+    raise deps._error(status, code, rej.message.replace("*", ""),
+                      reasons=[r.replace("*", "") for r in rej.reasons])
+
+
+def _ran_unmasked(request_id: int) -> bool:
+    """Did this request's result actually come back unmasked?
+
+    `executor._run` writes a `result_unmasked` audit row before running, and
+    only when the live super-admin check passed — so its presence is the
+    executed verdict rather than the requester's intent.
+    """
+    row = db.fetch_one(
+        "SELECT 1 AS x FROM audit_log "
+        " WHERE request_id = %s AND action = 'result_unmasked' LIMIT 1",
+        (request_id,))
+    return row is not None
 
 
 def _client_ctx(request: Request) -> tuple[str | None, str | None]:
@@ -185,6 +229,8 @@ def submit_query(body: QueryIn, request: Request,
         origin="web",
         client_ip=client_ip,
         user_agent=user_agent,
+        confirmed=body.confirmed,
+        unmasked=body.unmasked,
     )
     if isinstance(prep, core_submit.Rejection):
         _reject(prep)
@@ -434,10 +480,18 @@ def submit_batch(body: BatchIn, request: Request,
             uid, name, target_server_id=t.id, database_name=it.databaseId,
             query=it.sql, justification=body.justification, wants_result=True,
             result_format="csv", schedule_date=sched_date, schedule_time=sched_time,
-            origin="web", client_ip=client_ip, user_agent=user_agent)
+            origin="web", client_ip=client_ip, user_agent=user_agent,
+            confirmed=body.confirmed)
         if isinstance(prep, core_submit.Rejection):
             status, code = _REJECTION_HTTP.get(prep.reason or prep.field, (422, "validation"))
-            raise deps._error(status, code, f"Item {idx}: " + prep.message.replace("*", ""))
+            # Same envelope the single-query path returns, so the client's one
+            # 409 decision (`qhConfirmReasons`) covers both. Each reason names
+            # its item — the modal renders them in the order received and does
+            # not renumber, so the numbering has to come from here.
+            raise deps._error(
+                status, code, f"Item {idx}: " + prep.message.replace("*", ""),
+                reasons=[f"Item {idx}: " + r.replace("*", "")
+                         for r in prep.reasons])
         preps.append(prep)
 
     # AUTH.md §5 — live employment check if any item is RW/DDL (Slack logins
@@ -600,7 +654,15 @@ def classify_query(body: ClassifyIn, claims: dict = Depends(deps.current_user)):
                           f"Unknown database '{database}'.")
 
     sql = body.sql.strip()
-    safety = query_safety.analyze(sql, engine=t.engine)
+    # Same `unrestricted` the submit path and the executor compute, from the
+    # same source. Without it this endpoint answered a different question than
+    # the one submit would answer: a super-admin's procedural block came back
+    # `blocked`, and because willAutoApprove below requires `not blocked`, the
+    # button also flipped from "Run" to "Submit for approval" for a statement
+    # submit would have run outright.
+    unrestricted = admins.is_super_admin(uid)
+    safety = query_safety.analyze(sql, engine=t.engine,
+                                  unrestricted=unrestricted)
     required = safety.main_tier or "ro"
 
     # Does the user's grant on THIS database reach the required tier? This is
@@ -611,7 +673,7 @@ def classify_query(body: ClassifyIn, claims: dict = Depends(deps.current_user)):
 
     will_auto = False
     if not safety.blocked and not exceeds:
-        if admins.is_super_admin(uid):
+        if unrestricted:
             will_auto = True
         else:
             from .. import auto_approve
@@ -751,7 +813,8 @@ def explain_query(body: ExplainIn, claims: dict = Depends(deps.current_user)):
                           f"Unknown connection '{body.connectionId}'.")
 
     sql = body.sql.strip()
-    safety = query_safety.analyze(sql, engine=t.engine)
+    safety = query_safety.analyze(sql, engine=t.engine,
+                                  unrestricted=admins.is_super_admin(uid))
     if safety.blocked:
         raise deps._error(422, "validation", " ".join(safety.blockers)[:3000])
 
@@ -1010,6 +1073,17 @@ def query_result(request_id: int, claims: dict = Depends(deps.current_user)):
         # NULL for requests executed before 083; the grid falls back.
         "colTypes": row.get("result_column_types") or None,
         "piiCols": _masked_pii_cols(row, raw_cols, cols),
+        # Were these rows returned with masking OFF? The client used to fall
+        # back to what its own tab submitted, which is wrong the moment a
+        # result outlives the submit that made it — a reload, another browser,
+        # a colleague opening the same request.
+        #
+        # Read from the AUDIT ROW the executor wrote, not from
+        # `requests.unmasked`. That column is INTENT; the executor re-derives
+        # the verdict from live super-admin standing at run time and can refuse
+        # it. The audit row is written only when the verdict was yes, so it is
+        # the one record of what actually happened to these rows.
+        "unmasked": _ran_unmasked(row["id"]),
         "runMs": mapping.run_ms(row),
         "rowCount": row.get("row_count"),
         # Full row count so the grid can page the whole result via /rows,
@@ -1172,7 +1246,7 @@ async def _ws_auth(websocket: WebSocket, request_id: int) -> str | None:
         await websocket.close(code=4401)
         return None
     uid = claims["sub"]
-    if not await asyncio.to_thread(sessions.session_alive, claims["sid"]):
+    if not await asyncio.to_thread(sessions.session_alive, claims["sid"], claims.get("sub")):
         await websocket.close(code=4401)
         return None
     ok = await asyncio.to_thread(

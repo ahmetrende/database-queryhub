@@ -1,9 +1,11 @@
 """Target Postgres RDS server registry."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import db, secrets_providers
+from psycopg.types.json import Json
+
 from .crypto import decrypt, encrypt
 
 
@@ -33,7 +35,9 @@ _TIER_COLUMNS = {
 # caller's dict: the column name is interpolated into the UPDATE, so the set of
 # legal names has to be fixed here rather than come from a request body.
 _EDITABLE_COLUMNS = ("alias", "host", "port", "default_database", "engine",
-                     "notes", "enabled")
+                     "notes", "enabled", "tags")
+# Columns whose Python value is a dict/list and must reach postgres as jsonb.
+_JSON_COLUMNS = ("tags",)
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,10 @@ class TargetServer:
     enabled: bool
     notes: str | None
     engine: str = "postgres"
+    # Where this target runs: {provider, service, account, ...}. Display-only —
+    # see migration 095. Defaults to an empty bag so every existing caller and
+    # every untagged row behaves exactly as before.
+    tags: dict = field(default_factory=dict)
 
 
 def _row_to_target(row: dict) -> TargetServer:
@@ -58,6 +66,7 @@ def _row_to_target(row: dict) -> TargetServer:
         default_database=row["default_database"],
         username=row["username"],
         enabled=row["enabled"],
+        tags=row.get("tags") or {},
         notes=row.get("notes"),
         # Default to postgres if a SELECT forgot the column — a missing
         # engine must read as the safe legacy default, never crash.
@@ -86,7 +95,8 @@ def label_with_provider(alias: str, host: str | None) -> str:
 def list_enabled() -> list[TargetServer]:
     rows = db.fetch_all(
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
-        "       COALESCE(engine, 'postgres') AS engine "
+        "       COALESCE(engine, 'postgres') AS engine, "
+        "       COALESCE(tags, '{}'::jsonb) AS tags "
         "FROM target_servers WHERE enabled = TRUE ORDER BY alias"
     )
     return [_row_to_target(r) for r in rows]
@@ -99,7 +109,8 @@ def list_all() -> list[TargetServer]:
     role themselves."""
     rows = db.fetch_all(
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
-        "       COALESCE(engine, 'postgres') AS engine "
+        "       COALESCE(engine, 'postgres') AS engine, "
+        "       COALESCE(tags, '{}'::jsonb) AS tags "
         "FROM target_servers ORDER BY alias"
     )
     return [_row_to_target(r) for r in rows]
@@ -108,7 +119,8 @@ def list_all() -> list[TargetServer]:
 def search(prefix: str, limit: int = 100) -> list[TargetServer]:
     rows = db.fetch_all(
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
-        "       COALESCE(engine, 'postgres') AS engine "
+        "       COALESCE(engine, 'postgres') AS engine, "
+        "       COALESCE(tags, '{}'::jsonb) AS tags "
         "FROM target_servers "
         "WHERE enabled = TRUE AND alias ILIKE %s "
         "ORDER BY alias LIMIT %s",
@@ -120,7 +132,8 @@ def search(prefix: str, limit: int = 100) -> list[TargetServer]:
 def get(target_id: int) -> TargetServer | None:
     row = db.fetch_one(
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
-        "       COALESCE(engine, 'postgres') AS engine "
+        "       COALESCE(engine, 'postgres') AS engine, "
+        "       COALESCE(tags, '{}'::jsonb) AS tags "
         "FROM target_servers WHERE id = %s",
         (target_id,),
     )
@@ -137,7 +150,8 @@ def by_alias(alias: str) -> TargetServer | None:
     """
     row = db.fetch_one(
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
-        "       COALESCE(engine, 'postgres') AS engine "
+        "       COALESCE(engine, 'postgres') AS engine, "
+        "       COALESCE(tags, '{}'::jsonb) AS tags "
         "FROM target_servers WHERE alias = %s",
         (alias,),
     )
@@ -278,7 +292,8 @@ _ADMIN_COLS = (
     "       COALESCE(engine, 'postgres') AS engine, "
     "       COALESCE(secrets_provider, 'local') AS secrets_provider, "
     "       username, username_rw, username_ddl, "
-    "       password_encrypted, password_rw_encrypted, password_ddl_encrypted "
+    "       password_encrypted, password_rw_encrypted, password_ddl_encrypted, "
+    "       COALESCE(tags, '{}'::jsonb) AS tags "
     "FROM target_servers"
 )
 
@@ -317,6 +332,7 @@ def _admin_row(row: dict) -> dict:
         "notes": row["notes"],
         "engine": row["engine"],
         "secrets_provider": row["secrets_provider"],
+        "tags": row.get("tags") or {},
         "credentials": {
             mode: {
                 "username": row[ucol],
@@ -348,6 +364,7 @@ def create_in(
     default_database: str,
     engine: str = "postgres",
     notes: str | None = None,
+    tags: dict | None = None,
     credentials: dict[str, tuple[str | None, str | None]] | None = None,
 ) -> int:
     """Register a new target, DISABLED, and return its id.
@@ -372,15 +389,15 @@ def create_in(
         "INSERT INTO target_servers "
         "(alias, host, port, default_database, engine, username, "
         " password_encrypted, username_rw, password_rw_encrypted, "
-        " username_ddl, password_ddl_encrypted, enabled, notes) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s) "
+        " username_ddl, password_ddl_encrypted, enabled, notes, tags) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s, %s) "
         "RETURNING id",
         (alias, host, port, default_database, engine,
          ro_user or DEFAULT_RO_USERNAME,
          encrypt(ro_password or SENTINEL_PASSWORD),
          rw_user, encrypt(rw_password) if rw_password else None,
          ddl_user, encrypt(ddl_password) if ddl_password else None,
-         notes),
+         notes, Json(tags or {})),
     )
     return cur.fetchone()["id"]
 
@@ -395,7 +412,10 @@ def update_in(cur, target_id: int, changes: dict) -> list[str]:
     for col in _EDITABLE_COLUMNS:
         if col in changes:
             sets.append(f"{col} = %s")
-            params.append(changes[col])
+            # jsonb columns need the adapter told what they are; psycopg maps a
+            # bare dict to hstore-ish guessing otherwise.
+            params.append(Json(changes[col]) if col in _JSON_COLUMNS
+                          else changes[col])
     if not sets:
         return []
     params.append(target_id)

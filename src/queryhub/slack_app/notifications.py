@@ -217,12 +217,32 @@ def _fmt_result_format(request: dict) -> str:
     return {"csv": "CSV", "xlsx": "Excel (.xlsx)"}.get(fmt, fmt.upper())
 
 
+def hosting_md(target) -> str:
+    """`AWS · RDS` — where the target actually runs, from its tag bag.
+
+    Empty string when the connection carries no hosting tags, so an untagged
+    fleet reads exactly as it did before. The account id is deliberately left
+    out: this line exists to answer "which machine", and a cloud account
+    number is registry detail an approver does not need in a DM.
+    """
+    tags = (getattr(target, "tags", None) or {}) if target else {}
+    parts = [str(tags[k]) for k in ("provider", "service") if tags.get(k)]
+    return "  •  ".join(f"`{p}`" for p in parts)
+
+
 def request_context_md(request: dict) -> str:
     """One-line server+database summary for a /sql request DM."""
     target = targets.get(request["target_server_id"]) if request.get("target_server_id") else None
     target_alias = target.alias if target else "?"
     db = request.get("database_name") or "?"
-    return f"*Server:* `{target_alias}`  •  *Database:* `{db}`"
+    line = f"*Server:* `{target_alias}`  •  *Database:* `{db}`"
+    # Where it runs, for the approver with the least context in the flow. An
+    # approver saying yes to a DDL on the Huawei box is not saying yes to the
+    # same thing as on AWS, and Slack is where that judgement is usually made.
+    host = hosting_md(target)
+    if host:
+        line += f"  •  *Runs on:* {host}"
+    return line
 
 
 def request_context_with_query_md(request: dict, max_chars: int = 2500) -> str:

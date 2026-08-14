@@ -204,7 +204,7 @@ def non_admin_client(monkeypatch):
     monkeypatch.setattr(sessions, "verify_access",
                         lambda t: {"sub": NON_ADMIN, "sid": "sid-1",
                                    "provider": "slack"} if t == "good" else None)
-    monkeypatch.setattr(sessions, "session_alive", lambda sid: True)
+    monkeypatch.setattr(sessions, "session_alive", lambda sid, principal=None: True)
     monkeypatch.setattr(admins, "is_admin", lambda uid: False)
     monkeypatch.setattr(admins, "is_super_admin", lambda uid: False)
     monkeypatch.setattr(requesters, "is_allowed", lambda uid: True)

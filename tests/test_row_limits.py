@@ -12,6 +12,12 @@ def caps(monkeypatch):
     monkeypatch.setattr(rl.cfg, "get_int", lambda k, d=0: vals.get(k, d))
     state = {"override": None}
     monkeypatch.setattr(rl, "_override_rows", lambda uid: state["override"])
+    # The cap now consults identity: a super-admin has a raised FLOOR
+    # (config `super_admin_max_rows`), read live on every resolution.
+    # These cases are an ordinary user unless a test says otherwise.
+    state["super"] = False
+    monkeypatch.setattr(rl.admins, "is_super_admin",
+                        lambda uid: state["super"])
     return state
 
 

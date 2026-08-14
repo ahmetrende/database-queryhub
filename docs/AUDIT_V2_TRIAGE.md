@@ -105,16 +105,18 @@ These are real and not done. The reason matters more than the count.
 - Retention and maintenance jobs ship as documentation; nothing schedules them in
   the container. Wiring them needs a decision about whether the image runs a
   scheduler at all.
-- **Five 2026-05 commit messages carry what the gate forbids** — three name a
-  colleague, two hold an operator-specific absolute path. They sit before the
-  grandfather anchor, so upstream exempts them by an explicit cost decision (391
-  of 449 commits, nine branches, three tags to rewrite, for a repository that is
-  never published). They are also inherited by the downstream replica, where they
-  are *not* exempt and the org ruleset forbids the force push a rewrite needs. So
-  the choice is the operator's: ask the org to allow a one-off history rewrite on
-  the replica, or accept the messages there as grandfathered too and record that
-  decision. Narrowing the scan range makes the gate usable again; it does not make
-  these clean. Measured 2026-08-10.
+- ~~**Five 2026-05 commit messages carry what the gate forbids**~~ — **decided
+  2026-08-13: grandfathered downstream too.** Three name a colleague, two hold an
+  operator-specific absolute path. Upstream already exempts them by an explicit
+  cost decision (391 of 449 commits, nine branches, three tags to rewrite, for a
+  repository that is never published), and the replica inherits the same commits.
+  The alternative was a one-off force push the org ruleset forbids by default.
+  What settled it: **the public repository does not contain them at all** — its
+  history is a separate root of 21 commits, verified by SHA. So the residual
+  exposure is a colleague's first name visible to colleagues at the same company,
+  inside a private repository. That is not a leak, and the rewrite buys nothing
+  against it. The gate now scans what each event introduces, so nothing new can
+  join them.
 
 **Real, small, not yet done**
 

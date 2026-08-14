@@ -297,6 +297,12 @@
   .qh-ac-text b { color: var(--fg-primary); font-weight: 600; }
   .qh-ac-slash { color: var(--fg-tertiary); margin: 0 4px; }
   .qh-ac-none { padding: 12px 10px; font-size: 12.5px; color: var(--fg-tertiary); }
+  /* A tag completion is a query edit, not a place to go — mono, and marked. */
+  .qh-ac-opt.is-tok .qh-ac-ic { color: var(--fg-accent); }
+  .qh-ac-tok { font-family: var(--qh-mono); font-size: 12.5px; color: var(--fg-primary); }
+  /* The tag tokens are only discoverable if something says them. The dead end is
+     where a name search has already failed, so it costs nothing there. */
+  .qh-ac-hint { display: block; margin-top: 5px; font-family: var(--qh-mono); font-size: 10.5px; color: var(--fg-tertiary); }
 
   /* sidebar footer */
   .qh-side-foot { flex-shrink: 0; padding: 8px; border-top: 1px solid var(--stroke-medium); }
@@ -317,6 +323,12 @@
   .qh-envtag-sm.env-production { background: var(--danger-adaptive-light); color: var(--fg-danger); }
   .qh-envtag-sm.env-staging { background: var(--warning-adaptive-light); color: var(--fg-warning); }
   .qh-engine-logo { width: 17px; height: 17px; object-fit: contain; border-radius: 3px; display: block; }
+  /* Provider marks are the official logos, so they are files that carry their own
+     colour (like the engine logos). One is a wordmark and one a glyph, so the box
+     is fixed and the art is contained rather than scaled to fill — otherwise the
+     two never sit on the same baseline. */
+  .qh-prov-logo { width: 20px; height: 13px; object-fit: contain; object-position: left center; flex-shrink: 0; display: block; }
+  .qh-grp-ic .qh-prov-logo { width: 19px; height: 14px; }
   .qh-ac-logo { width: 16px; height: 16px; }
   .qh-conn-name { flex: 1; text-align: left; }
   .qh-conn-engine { font-size: 11px; color: var(--fg-tertiary); padding: 0 8px 4px 30px; margin-top: -2px; }
@@ -378,6 +390,11 @@
   .qh-tab-x:hover { background: var(--adaptive-bold); color: var(--fg-primary); }
   .qh-tab-new { width: 36px; border: 0; background: transparent; cursor: pointer; color: var(--fg-tertiary); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
   .qh-tab-new:hover { background: var(--adaptive-light); color: var(--fg-primary); }
+  /* The + is rendered in one of two places (see EditorTabs.newBtn), so each place
+     sizes it: inline it is a quiet 30px button after the last tab — full height
+     would read as one more tab; pinned it matches its 34x30 neighbours. */
+  .qh-tab-new-inline { align-self: center; height: 30px; margin-left: 2px; border-radius: var(--r-xs); }
+  .qh-tabs-fixed .qh-tab-new { width: 34px; height: 30px; border-radius: var(--r-xs); }
   .qh-kb-wrap { position: relative; display: flex; align-items: center; padding-right: 6px; }
   .qh-kb-btn { width: 34px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border: 0; background: transparent; border-radius: var(--r-xs); cursor: pointer; color: var(--fg-tertiary); }
   .qh-kb-btn:hover { background: var(--adaptive-medium); color: var(--fg-secondary); }
@@ -474,6 +491,22 @@
     font-size: 12px; font-weight: 600; color: var(--fg-warning); background: var(--warning-adaptive-light); }
   .qh-grant-warn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: var(--r-full); white-space: nowrap; flex-shrink: 0;
     font-size: 12px; font-weight: 600; color: var(--fg-danger); background: var(--danger-adaptive-light); }
+  /* PII masking switch — super-admin only (MaskToggle in qh-app.jsx). Masked is
+     the quiet default and keeps the PII chip's amber; unmasked is ringed and
+     danger-tinted, because it has to stay legible for as long as real values are
+     on screen. No filled solid: the fill colours do not hold in both themes. */
+  .qh-mask { position: relative; display: inline-flex; flex-shrink: 0; }
+  .qh-mask-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border: 0; border-radius: var(--r-full); white-space: nowrap;
+    font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer; color: var(--fg-warning); background: var(--warning-adaptive-light); }
+  .qh-mask-toggle:hover { box-shadow: inset 0 0 0 1px var(--warning-solid-light); }
+  .qh-mask-toggle.is-off { font-weight: 700; color: var(--fg-danger); background: var(--danger-adaptive-medium); box-shadow: inset 0 0 0 1.5px var(--danger-solid-light); }
+  .qh-mask-pop { position: absolute; top: 100%; left: 0; z-index: 70; width: 300px; padding: 12px 13px 11px; background: var(--bg-white);
+    border: 1px solid var(--stroke-medium); border-radius: var(--r-md); box-shadow: var(--shadow-medium); }
+  .qh-mask-pop-t { font-size: 13px; font-weight: 600; color: var(--fg-primary); }
+  .qh-mask-pop-b { font-size: 12px; line-height: 1.5; color: var(--fg-secondary); margin-top: 5px; text-wrap: pretty; }
+  .qh-mask-pop-a { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+  .qh-mask-go { color: var(--fg-danger); border-color: var(--danger-adaptive-strong); background: var(--danger-adaptive-light); }
+  .qh-mask-go:hover:not(:disabled) { border-color: var(--stroke-danger); background: var(--danger-adaptive-medium); }
 
   /* tier color tokens */
   .tier-ro { color: var(--fg-accent); background: var(--brand-adaptive-light); }
@@ -617,6 +650,13 @@
   .qh-td-num { text-align: right; }
   .qh-td-masked { color: var(--fg-warning); }
   .qh-pii-dot { display: inline-block; width: 5px; height: 5px; border-radius: 999px; background: var(--warning-solid-light); margin-left: 5px; vertical-align: middle; }
+  .qh-pii-dot.is-open { background: var(--danger-solid-light); }
+  .qh-res-unmasked { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: var(--r-full); white-space: nowrap;
+    font-size: 11.5px; font-weight: 700; color: var(--fg-danger); background: var(--danger-adaptive-medium); box-shadow: inset 0 0 0 1px var(--danger-solid-light); }
+  /* Where the rows came from. Context, not a state to act on — so it is the
+     quietest chip in the header, and the full tag line is on its hover. */
+  .qh-res-loc { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px 2px 6px; border-radius: var(--r-xs);
+    font-size: 11.5px; color: var(--fg-secondary); background: var(--adaptive-light); white-space: nowrap; flex-shrink: 0; }
 
   /* empty / affected */
   .qh-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
@@ -660,13 +700,24 @@
   .qh-textarea { height: auto; padding: 10px 12px; resize: vertical; line-height: 1.5; font-family: inherit; }
   .qh-fb-meta { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--fg-tertiary); background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); padding: 9px 11px; line-height: 1.4; }
   .qh-fb-meta svg { flex-shrink: 0; }
-  .qh-seg { display: flex; gap: 6px; }
-  .qh-seg-opt { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 38px;
+  .qh-seg { display: flex; gap: 6px; }  .qh-seg-opt { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 38px;
     background: var(--bg-light); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); cursor: pointer;
     font-family: inherit; font-size: 12.5px; font-weight: 500; color: var(--fg-secondary); transition: all var(--d-fast-02) var(--ease-standard); }
   .qh-seg-opt:hover { background: var(--adaptive-medium); }
   .qh-seg-opt.is-active { border-color: var(--brand-green); background: var(--brand-adaptive-light); color: var(--fg-accent); font-weight: 600; }
   .qh-modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 22px 22px; }
+  /* Destructive-statement confirmation (ConfirmRunModal). The reasons are the
+     server's own sentences, so they get room to be read: one block each, full
+     width, nothing clipped. */
+  .qh-conf-modal { width: 520px; }
+  .qh-conf-target { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--fg-primary); }
+  .qh-conf-tgt { font-family: var(--qh-mono); font-size: 12.5px; }
+  .qh-conf-reasons { list-style: none; display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; }
+  .qh-conf-reason { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border-radius: var(--r-sm);
+    background: var(--danger-adaptive-light); color: var(--fg-danger); font-size: 13px; line-height: 1.5; text-wrap: pretty; }
+  .qh-conf-reason > svg { flex-shrink: 0; margin-top: 2px; }
+  .qh-conf-go { font-weight: 700; background: var(--danger-adaptive-light); border-color: var(--danger-adaptive-strong); }
+  .qh-conf-go:hover:not(:disabled) { background: var(--danger-adaptive-medium); border-color: var(--stroke-danger); }
   .qh-closelist { display: flex; flex-direction: column; gap: 2px; max-height: 190px; overflow-y: auto; border: 1px solid var(--stroke-light); border-radius: var(--r-md); padding: 6px; }
   .qh-closelist-row { display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: var(--r-xs); }
   .qh-closelist-row:hover { background: var(--adaptive-light); }
@@ -702,6 +753,18 @@
     box-shadow: var(--shadow-md, 0 4px 14px -3px rgba(0,0,0,0.22)); pointer-events: none; opacity: 0; }
   .qh-treeview button:hover > span { opacity: 1; }
   .qh-treeview-n { margin-left: auto; font-family: var(--qh-mono); font-size: 10.5px; color: var(--fg-tertiary); }
+  /* The tree's own hover label — the same dark pill as the icon-tab and [data-kbd]
+     tooltips, rather than the OS one. Fixed position: inside the row it would be
+     clipped by the sidebar's scroll box and would widen the pane.
+     One fact per line, name first: as one dot-separated run it wrapped mid-value
+     and every fragment looked equally important. */
+  .qh-tip { position: fixed; z-index: 90; max-width: 320px; pointer-events: none;
+    display: grid; gap: 2px;
+    background: var(--fg-primary); color: var(--bg-white); font-family: var(--qh-mono); font-size: 11px; line-height: 1.4;
+    padding: 7px 10px; border-radius: var(--r-sm); box-shadow: var(--shadow-md, 0 4px 14px -3px rgba(0,0,0,0.22));
+    overflow-wrap: anywhere; }
+  .qh-tip-t { font-size: 12px; font-weight: 600; }
+  .qh-tip-s { opacity: 0.66; }
   /* Which server a database sits on — shown only when the name alone is
      ambiguous, and on its OWN line: inline it was a 25-character mono string
      competing with the name for the same 200px, and the name lost. */
@@ -824,6 +887,10 @@
   .qh-adetail-name { font-size: 16px; font-weight: 600; color: var(--fg-primary); }
   .qh-adetail-slack { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--fg-tertiary); font-family: var(--qh-mono); margin-top: 2px; }
   .qh-adetail-target { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--fg-secondary); font-family: var(--qh-mono); }
+  /* An approver decides on a statement against a machine, so the detail says
+     WHICH machine — cloud, service and account, resolved server-side. */
+  .qh-adetail-host { display: inline-flex; align-items: center; gap: 6px; font-family: inherit; font-size: 12px;
+    color: var(--fg-secondary); background: var(--adaptive-light); padding: 3px 9px 3px 7px; border-radius: var(--r-xs); }
   .qh-adetail-conn { font-weight: 600; color: var(--fg-primary); }
   .qh-adetail-analysis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 18px 0; }
   .qh-astat { background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-md); padding: 12px 14px; }
@@ -986,6 +1053,19 @@
   .qh-kill-msg { margin-top: 10px; max-width: 400px; }
   .qh-conncard-dbs { display: flex; flex-wrap: wrap; gap: 6px; }
   .qh-conn-controls { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  /* Hosting editor in the connection form. Provider is a row of real logos: the
+     admin recognises the mark faster than the word, and the word is there too. */
+  .qh-provseg { display: flex; flex-wrap: wrap; gap: 6px; }
+  .qh-provopt { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 11px; cursor: pointer;
+    background: var(--bg-light); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm);
+    font-family: inherit; font-size: 12.5px; font-weight: 500; color: var(--fg-secondary);
+    transition: all var(--d-fast-02) var(--ease-standard); }
+  .qh-provopt:hover { background: var(--adaptive-medium); }
+  .qh-provopt.is-active { background: var(--brand-adaptive-medium); border-color: var(--stroke-accent); color: var(--fg-accent); font-weight: 600; }
+  .qh-tagrow { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .qh-tagrow .qh-seg { flex: 1; }
+  .qh-tagrow-k { width: 60px; flex-shrink: 0; font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-tertiary); }
+  .qh-tagnew { margin-top: 7px; font-size: 11.5px; line-height: 1.45; color: var(--fg-warning); text-wrap: pretty; }
   .qh-sort-th { cursor: pointer; user-select: none; white-space: nowrap; }
   .qh-sort-th:hover { color: var(--fg-secondary); }
   .qh-sort-th.is-sorted { color: var(--fg-accent); }
@@ -993,6 +1073,10 @@
   .qh-conntable td { vertical-align: middle; }
   .qh-conn-namecell { display: flex; align-items: center; gap: 8px; font-size: 13px; }
   .qh-conn-namecell b { font-weight: 600; color: var(--fg-primary); }
+  /* One line, always: the hosting cell is a THIRD identity column, and a
+     three-line 'Huawei Cloud · ECS' pushed the row actions off screen. The
+     account and any custom tags live on the cell's hover. */
+  .qh-hostcell { white-space: nowrap; font-size: 12.5px; color: var(--fg-secondary); }
   .qh-conn-dbcell { display: flex; flex-wrap: wrap; gap: 6px; max-width: 460px; }
   .qh-conn-empty { text-align: center; color: var(--fg-tertiary); font-style: italic; padding: 24px 12px; }
   .qh-dbchip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); font-family: var(--qh-mono); font-size: 12px; color: var(--fg-secondary); }

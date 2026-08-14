@@ -217,7 +217,11 @@ def auth_callback(provider: str, request: Request,
         return bad
     redirect_uri = f"{base_url()}/api/auth/{provider}/callback"
     try:
-        ident = p.exchange(code, redirect_uri)
+        # `state` goes through as well: a generic OIDC provider derives its
+        # PKCE verifier and nonce from it, and both have to be recomputed
+        # here to be checked. It is safe to pass — it was just verified
+        # against the browser cookie and our own signature above.
+        ident = p.exchange(code, redirect_uri, state)
     except auth_providers.AuthError as e:
         log.warning("login failed via %s: %s", provider, e.code)
         return RedirectResponse(f"{base_url()}/?auth_error={e.code}", 302)
@@ -228,6 +232,26 @@ def auth_callback(provider: str, request: Request,
             or requesters.is_allowed(ident.principal_id)):
         log.warning("login rejected (not whitelisted): %s", ident.principal_id)
         return RedirectResponse(f"{base_url()}/?auth_error=not_whitelisted", 302)
+
+    # Still employed? This used to run only at refresh, which was enough while
+    # every redirect login WAS a Slack login: Slack will not authenticate a
+    # deactivated account, so the check could not fail here. An external SSO
+    # breaks that assumption — the company IdP may still authenticate someone
+    # Slack has deactivated, and the row that admits them stays enabled until a
+    # human removes it. Without this, such a login succeeded and held a session
+    # until its first refresh (web_access_token_minutes).
+    #
+    # Measured on live data 2026-08-14: one enabled requester is already
+    # deactivated in Slack, so this is not a hypothetical ordering.
+    #
+    # `local` is exempt: its principals are `local:<username>` and have no
+    # Slack identity to ask about. The check fails closed only on a definitive
+    # answer, so a Slack outage does not block sign-in.
+    if ident.provider != "local" and not deps.slack_employment_ok(
+            ident.principal_id):
+        log.warning("login rejected (Slack account gone): %s",
+                    ident.principal_id)
+        return RedirectResponse(f"{base_url()}/?auth_error=account_gone", 302)
 
     sid, refresh = sessions.create_session(
         ident.principal_id, provider=ident.provider,
@@ -312,11 +336,16 @@ def auth_refresh(request: Request):
         raise deps._error(401, "unauthenticated",
                           "Session ended for security reasons. Please sign in again.")
     uid = rotated["slack_user_id"]
-    # The live users.info "still employed?" check is Slack-specific — run
-    # it only for Slack logins. For a local (or other) provider, the
-    # whitelist re-check below (enabled requester/admin) is the liveness
-    # gate; a disabled local_users row also blocks login at /login time.
-    if rotated["auth_provider"] == "slack" and not deps.slack_employment_ok(uid):
+    # The live users.info "still employed?" check keys on a Slack id, so it
+    # runs for every provider whose principal IS one — which is all of them
+    # except `local`, whose ids are `local:<username>` and whose liveness
+    # gate is the whitelist re-check below plus its own disabled flag.
+    #
+    # This used to test `== "slack"`, which was right while Slack was the
+    # only redirect provider and silently wrong the moment a second one
+    # existed: an external SSO login would have skipped the offboarding
+    # check entirely and kept refreshing after the person left.
+    if rotated["auth_provider"] != "local" and not deps.slack_employment_ok(uid):
         sessions.revoke_session(rotated["id"], "users.info: gone at refresh")
         raise deps._error(401, "unauthenticated", "Slack account gone.")
     from .. import admins, requesters

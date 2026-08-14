@@ -19,6 +19,21 @@ function SlackMark({ size = 22 }) {
   );
 }
 
+// Stand-in glyph for an external SSO provider. Deliberately generic and
+// monochrome: the provider is whatever the deployment configured, and
+// shipping a guessed vendor logo would be wrong more often than right.
+// A shield with a key — "someone else vouched for you".
+function SsoMark({ size = 22 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 2 4 5v6c0 5 3.4 8.5 8 10 4.6-1.5 8-5 8-10V5l-8-3z" />
+      <circle cx="12" cy="10" r="2" />
+      <path d="M12 12v4" />
+    </svg>
+  );
+}
+
 // Built-in username/password sign-in (vanilla profile). Posts to
 // /api/auth/local/login; on success the server sets the session cookie and we
 // reload so the app's standard /api/me boot picks up the real user.
@@ -89,19 +104,24 @@ function LoginScreen({ onSignedIn, brand }) {
     return () => { alive = false; };
   }, []);
 
-  const signIn = () => {
-    // Real Slack OIDC: a full-page navigation to the backend, which builds
-    // the Slack authorize URL (state + openid/email/profile scopes), verifies
-    // team_id on callback, sets the session cookie, and redirects back here —
-    // the app's boot /api/me then loads the real user.
+  // A redirect login: a full-page navigation to the backend, which builds the
+  // provider's authorize URL (state, PKCE, scopes), verifies the callback, sets
+  // the session cookie and redirects back here — the app's boot /api/me then
+  // loads the real user. The route is generic, so the provider id is the only
+  // thing that varies.
+  const signIn = (id) => {
     setPhase('redirecting');
-    if (window.qhSignInWithSlack) window.qhSignInWithSlack();
-    else window.location.href = '/api/auth/slack/start';
+    if (id === 'slack' && window.qhSignInWithSlack) window.qhSignInWithSlack();
+    else window.location.href = '/api/auth/' + encodeURIComponent(id) + '/start';
   };
 
   const busy = phase !== 'idle';
   const list = providers || [];
-  const slackOn = list.some(p => p.kind === 'oauth' || p.id === 'slack');
+  // Every redirect provider gets its OWN button. This used to collapse them
+  // into one Slack button on the theory that oauth meant Slack; a deployment
+  // with a company IdP then showed a Slack logo that navigated to Slack.
+  const oauthList = list.filter(p => p.kind === 'oauth' || p.id === 'slack');
+  const slackOn = oauthList.some(p => p.id === 'slack');
   const localOn = list.some(p => p.kind === 'password');
 
   return (
@@ -119,23 +139,30 @@ function LoginScreen({ onSignedIn, brand }) {
           <div className="qh-login-loading"><span className="qh-spin" /></div>
         )}
 
-        {slackOn && (
-          <button className={'qh-slack-btn' + (busy ? ' is-busy' : '')} onClick={signIn} disabled={busy}>
-            {phase === 'idle' && <><SlackMark size={20} /><span>Sign in with Slack</span></>}
-            {phase === 'redirecting' && <><span className="qh-spin dark" /><span>Opening Slack…</span></>}
-            {phase === 'verifying' && <><span className="qh-spin dark" /><span>Verifying workspace…</span></>}
+        {oauthList.map(p => (
+          <button key={p.id} className={'qh-slack-btn' + (busy ? ' is-busy' : '')}
+            onClick={() => signIn(p.id)} disabled={busy}>
+            {phase === 'idle' && <>
+              {p.id === 'slack' ? <SlackMark size={20} /> : <SsoMark size={20} />}
+              <span>{p.label || (p.id === 'slack' ? 'Sign in with Slack' : 'Sign in with SSO')}</span>
+            </>}
+            {phase === 'redirecting' && <><span className="qh-spin dark" /><span>
+              {p.id === 'slack' ? 'Opening Slack…' : 'Opening sign-in…'}</span></>}
+            {phase === 'verifying' && <><span className="qh-spin dark" /><span>
+              {p.id === 'slack' ? 'Verifying workspace…' : 'Verifying…'}</span></>}
           </button>
-        )}
+        ))}
 
-        {providers !== null && !slackOn && !localOn && (
+        {providers !== null && !oauthList.length && !localOn && (
           <div className="qh-login-none" role="alert">
             No sign-in method is enabled on this deployment. An administrator has
-            to turn on Slack login (<code>web_auth_slack_enabled</code>) or local
-            accounts (<code>web_auth_local_enabled</code>).
+            to turn on Slack login (<code>web_auth_slack_enabled</code>), an
+            external SSO provider (<code>web_auth_&lt;id&gt;_enabled</code>) or
+            local accounts (<code>web_auth_local_enabled</code>).
           </div>
         )}
 
-        {slackOn && localOn && <div className="qh-login-or"><span>or</span></div>}
+        {!!oauthList.length && localOn && <div className="qh-login-or"><span>or</span></div>}
 
         {localOn && <LocalLoginForm />}
 

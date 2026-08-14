@@ -72,6 +72,62 @@ DDL_KEYWORDS = {
 
 WHERE_REQUIRED_KEYWORDS = {"UPDATE", "DELETE"}
 
+# ---------------------------------------------------------------------------
+# Unrestricted mode: what still stops, and what asks first
+# ---------------------------------------------------------------------------
+# A super-admin runs without tier gates and without an approver, because they
+# already hold unrestricted access to these databases through a desktop client.
+# Routing that work through here buys an audit trail, not a restriction — so
+# almost nothing is refused. Two narrow exceptions:
+#
+#   1. Statements that would silence the audit trail itself. The trail is the
+#      entire reason this path exists; a statement that turns it off makes the
+#      guarantee voluntary. This BLOCKS, in every mode.
+#   2. Statements that destroy or rewrite in bulk. These are not refused, they
+#      are confirmed — the operator says it out loud first.
+#
+# `DESTRUCTIVE_KEYWORDS` is deliberately NOT reused for (2): it includes CREATE,
+# INSERT, ALTER and GRANT, so confirming on it would prompt for nearly every
+# statement and the prompt would stop being read.
+IRREVERSIBLE_LEADING = {"DROP", "TRUNCATE"}
+
+# `ALTER TABLE ... DROP COLUMN|CONSTRAINT` drops data or a guarantee but leads
+# with ALTER, so the leading-word rule above cannot see it.
+_ALTER_DROPS_RE = re.compile(r"\bDROP\s+(COLUMN|CONSTRAINT)\b", re.IGNORECASE)
+
+# Server settings that decide whether anything is logged at all. Matched on the
+# PARAMETER name in an ALTER SYSTEM / ALTER DATABASE / ALTER ROLE ... SET|RESET.
+# `log_` covers log_statement, log_min_duration_statement, log_destination and
+# the rest; pgaudit is the audit extension's own namespace.
+_LOG_PARAM_RE = re.compile(
+    r"""\bALTER\s+(?:SYSTEM|DATABASE|ROLE|USER)\b   # who is being reconfigured
+        .*?                                         # object name, IN DATABASE…
+        \b(?:SET|RESET)\s+
+        (?P<param>log_[a-z_]*|logging_collector|pgaudit\.[a-z_]*)""",
+    re.IGNORECASE | re.VERBOSE | re.DOTALL)
+
+# `ALTER SYSTEM RESET ALL` / `ALTER DATABASE x RESET ALL` reach the same place
+# without naming a parameter.
+_RESET_ALL_RE = re.compile(
+    r"\bALTER\s+(?:SYSTEM|DATABASE|ROLE|USER)\b.*?\bRESET\s+ALL\b",
+    re.IGNORECASE | re.DOTALL)
+
+
+def _silences_audit(sql: str) -> str | None:
+    """The logging parameter this statement changes, or None.
+
+    Read on the raw text rather than the parse tree: sqlparse does not model
+    ALTER SYSTEM (it falls back to a generic Command), so there is no node to
+    inspect. Text matching is the honest tool here, and it errs toward
+    matching — a false positive costs one refused statement, a false negative
+    costs the audit trail.
+    """
+    m = _LOG_PARAM_RE.search(sql)
+    if m:
+        return m.group("param").lower()
+    return "ALL" if _RESET_ALL_RE.search(sql) else None
+
+
 # Strict allow-list for the leading word of a non-SET statement.
 ALLOWED_LEADING = {
     # Read
@@ -113,6 +169,34 @@ BANNED_LEADING_REASONS: dict[str, str] = {
     "CHECKPOINT":  "CHECKPOINT is not allowed.",
     "SECURITY":    "SECURITY LABEL is not allowed.",
 }
+
+# The banned-leading list mixes two kinds of refusal, and only one of them is
+# about permission.
+#
+#   CAPABILITY  — "you may not do this". A procedural block is the whole of
+#                 what a DBA does in a desktop client: create a role if it is
+#                 missing, backfill in a loop, guard a migration with an IF.
+#                 Refusing it to a super-admin does not prevent the work, it
+#                 just moves the work somewhere with no audit trail, which is
+#                 the one outcome this product exists to avoid.
+#
+#   STRUCTURAL  — "this would break the gateway itself", and it is not a
+#                 permission question at all:
+#                   BEGIN/COMMIT/ROLLBACK/SAVEPOINT/RELEASE — the executor
+#                     wraps every statement in its own transaction; a COMMIT
+#                     inside would end it early and take the roll-back-on-error
+#                     guarantee (and the audited statement boundary) with it.
+#                   RESET/DISCARD — would throw away the SET LOCAL hardening
+#                     the same session just installed: the pinned search_path,
+#                     the statement timeout, and the SET LOCAL ROLE elevation.
+#                   PREPARE/EXECUTE/DECLARE/FETCH — the reviewed text would
+#                     stop being the executed text.
+#                 These stay refused for everyone, super-admin included.
+#
+# So only the capability half lifts. A super-admin who needs COPY TO a server
+# file or a CHECKPOINT is asking for something outside SQL, and that stays a
+# deliberate out-of-band act.
+SUPER_ADMIN_LEADING: frozenset[str] = frozenset({"DO", "CALL"})
 
 # Default SET allowlist if bot_config.set_allowed_params is missing.
 # Production list lives in DB; this is just a safety floor.
@@ -238,14 +322,51 @@ class SafetyReport:
     statements: list[StatementInfo] = field(default_factory=list)
     main_tier: str = "ro"   # tier shared by all non-SET statements
     rewritten_sql: str = ""  # SET-rewritten + ;-joined; for legacy callers
+    # Reasons the caller must acknowledge before this runs. Only ever populated
+    # in `unrestricted` mode: for everyone else the same conditions are
+    # blockers, and a blocker is not something you can click past.
+    confirmations: list[str] = field(default_factory=list)
 
     @property
     def blocked(self) -> bool:
         return bool(self.blockers)
 
+    @property
+    def needs_confirmation(self) -> bool:
+        """True when nothing blocks this, but it deletes or rewrites in bulk.
 
-def analyze(sql: str, engine: str = "postgres") -> SafetyReport:
+        Separate from `blocked` on purpose: a blocker means "no", this means
+        "yes, once you have said so out loud". A caller that ignores it runs
+        the statement — the flag is the whole enforcement, so it belongs in the
+        submit path, not in the UI alone.
+        """
+        return bool(self.confirmations) and not self.blockers
+
+
+def analyze(sql: str, engine: str = "postgres",
+            unrestricted: bool = False) -> SafetyReport:
+    """Classify `sql` and decide what stops it.
+
+    `unrestricted` is the SUPER-ADMIN path and it is a boolean, not a principal:
+    this module stays pure and the caller does the identity work
+    (`admins.is_super_admin`). With it set, the bulk-destructive refusals become
+    `confirmations` instead of `blockers` — see IRREVERSIBLE_LEADING for what
+    still asks, and `_silences_audit` for the one thing that still refuses.
+
+    Default is False, so every existing caller keeps byte-identical behaviour.
+    """
     report = SafetyReport()
+    # Runs before any parsing: sqlparse models ALTER SYSTEM as a generic
+    # Command, so the text scan is the only thing that can see it, and this must
+    # not be reachable past an early return further down.
+    silenced = _silences_audit(sql)
+    if silenced:
+        report.blockers.append(
+            f"Changing the `{silenced}` logging setting is blocked, including "
+            f"for a super-admin. This path exists to leave an audit trail, and "
+            f"a statement that turns logging off would make that voluntary. "
+            f"Change it out-of-band if you mean to.")
+        return report
     # Per-engine classification. Each spec field that is None falls back to
     # the Postgres module constant below, so the postgres path is
     # byte-identical to the pre-engine code. A non-Postgres three-tier
@@ -370,11 +491,13 @@ def analyze(sql: str, engine: str = "postgres") -> SafetyReport:
             )
             return report
 
-        if upper in banned_leading:
+        if upper in banned_leading and not (unrestricted
+                                            and upper in SUPER_ADMIN_LEADING):
             report.blockers.append(banned_leading[upper])
             return report
 
-        if upper not in allowed_leading:
+        if upper not in allowed_leading and not (unrestricted
+                                                 and upper in SUPER_ADMIN_LEADING):
             report.blockers.append(
                 f"Unrecognized SQL: leading word '{leading}' is not allowed. "
                 f"Did you mistype a keyword like UPDATE / DELETE / SELECT?"
@@ -468,6 +591,36 @@ def analyze(sql: str, engine: str = "postgres") -> SafetyReport:
             if upper not in report.keywords_found:
                 report.keywords_found.append(upper)
 
+        # Bulk-destructive: refuse, or ask first in unrestricted mode.
+        #
+        # `_stop_or_confirm` is what keeps the two modes from drifting: one
+        # condition, evaluated once, routed to blockers or confirmations by one
+        # flag. Returning True means the caller must stop reading this statement
+        # (a blocker is final); False means carry on and let the confirmation
+        # ride along.
+        #
+        # Two messages rather than one, because a refusal and a question do not
+        # read the same — and because the refusal wording is asserted by tests
+        # that predate this mode, so it has to stay exactly as it was.
+        def _stop_or_confirm(blocked_msg: str, confirm_msg: str) -> bool:
+            if unrestricted:
+                report.confirmations.append(confirm_msg)
+                return False
+            report.blockers.append(blocked_msg)
+            return True
+
+        if unrestricted:
+            body = _raw_body(stmt)
+            if upper in IRREVERSIBLE_LEADING:
+                report.confirmations.append(
+                    f"{upper} cannot be undone — the objects and every row in "
+                    f"them are gone once this runs.")
+            elif _ALTER_DROPS_RE.search(body):
+                what = _ALTER_DROPS_RE.search(body).group(1).upper()
+                report.confirmations.append(
+                    f"This drops a {what.lower()}; a dropped column takes its "
+                    f"data with it.")
+
         # MERGE is a write whose row selector is the ON condition, not a WHERE
         # clause, so it slipped past both write guards below: `MERGE INTO t
         # USING s ON true WHEN MATCHED THEN UPDATE SET ...` touches every
@@ -476,33 +629,39 @@ def analyze(sql: str, engine: str = "postgres") -> SafetyReport:
         if upper == "MERGE":
             on_text = _extract_merge_on_text(sql, spec)
             if on_text is None:
-                report.blockers.append(
-                    "MERGE without an ON condition is blocked — the ON "
-                    "condition is what limits the rows it changes.")
-                return report
-            if _where_is_always_true(on_text):
-                report.blockers.append(
-                    "MERGE with an always-true ON condition is blocked "
-                    "(e.g. `ON TRUE`, `ON 1=1`). The ON condition must "
-                    "constrain the rows actually affected.")
-                return report
+                if _stop_or_confirm(
+                        "MERGE without an ON condition is blocked — the ON "
+                        "condition is what limits the rows it changes.",
+                        "This MERGE has no ON condition, so it can touch every "
+                        "row it matches."):
+                    return report
+            elif _where_is_always_true(on_text):
+                if _stop_or_confirm(
+                        "MERGE with an always-true ON condition is blocked "
+                        "(e.g. `ON TRUE`, `ON 1=1`). The ON condition must "
+                        "constrain the rows actually affected.",
+                        "This MERGE's ON condition is always true, so it "
+                        "touches every row."):
+                    return report
 
         # WHERE-required check (UPDATE, DELETE).
         if upper in WHERE_REQUIRED_KEYWORDS:
             where_text = _extract_where_text(stmt)
             if where_text is None:
-                report.blockers.append(
-                    f"{upper} without WHERE clause is blocked. Add a "
-                    f"WHERE filter that targets specific rows."
-                )
-                return report
-            if _where_is_always_true(where_text):
-                report.blockers.append(
-                    f"{upper} with always-true WHERE clause is blocked "
-                    f"(e.g. `WHERE 1=1`, `WHERE TRUE`, `OR 1=1`). WHERE "
-                    f"clause must constrain the rows actually affected."
-                )
-                return report
+                if _stop_or_confirm(
+                        f"{upper} without WHERE clause is blocked. Add a "
+                        f"WHERE filter that targets specific rows.",
+                        f"This {upper} has no WHERE clause, so it rewrites "
+                        f"every row in the table."):
+                    return report
+            elif _where_is_always_true(where_text):
+                if _stop_or_confirm(
+                        f"{upper} with always-true WHERE clause is blocked "
+                        f"(e.g. `WHERE 1=1`, `WHERE TRUE`, `OR 1=1`). WHERE "
+                        f"clause must constrain the rows actually affected.",
+                        f"This {upper}'s WHERE clause is always true, so it "
+                        f"rewrites every row in the table."):
+                    return report
 
         # Classify tier.
         #
@@ -514,7 +673,20 @@ def analyze(sql: str, engine: str = "postgres") -> SafetyReport:
         # the approver was shown the wrong thing and `CREATE TABLE AS`, the exact
         # same operation written differently, has always been ddl. Same operation,
         # same tier.
-        if upper == "SELECT" and _selects_into(_stripped_body(stmt)):
+        if upper in SUPER_ADMIN_LEADING:
+            # Only reachable in unrestricted mode (the gate above refuses it
+            # for everyone else). The body of a DO block or a procedure is
+            # OPAQUE to every guard in this module — no keyword scan, no AST
+            # pass, no WHERE-clause check reaches inside it — so it is
+            # classified at the HIGHEST tier rather than by what it appears to
+            # do. Anything else would be a hole with a polite name: the block
+            # in the report that prompted this classified as `ro` and would
+            # have been handed the read-only credential while its body created
+            # a LOGIN role. Top tier means the ddl credential, the elevated
+            # role, and the ddl-tier grant check — which is the honest price
+            # for running something nothing can inspect.
+            tier = "ddl"
+        elif upper == "SELECT" and _selects_into(_stripped_body(stmt)):
             tier = "ddl"
         elif upper in ddl_keywords:
             tier = "ddl"
@@ -573,7 +745,8 @@ def analyze(sql: str, engine: str = "postgres") -> SafetyReport:
     return report
 
 
-def required_mode(sql: str, engine: str = "postgres") -> str:
+def required_mode(sql: str, engine: str = "postgres",
+                  unrestricted: bool = False) -> str:
     """Backward-compatible thin wrapper. Returns the main_tier from
     analyze() — 'ro' for empty / unrecognized / blocked queries.
 
@@ -582,8 +755,18 @@ def required_mode(sql: str, engine: str = "postgres") -> str:
     'ro', so anything comparing this against a grant must call analyze() and
     return on `.blocked` FIRST. Every such caller does, and the ordering is
     pinned by tests/test_required_mode_ordering.py. Read on its own, treat this
-    as a display label."""
-    rep = analyze(sql, engine=engine)
+    as a display label.
+
+    `unrestricted` has to be forwarded for the same reason it exists on
+    analyze(): without it a super-admin's procedural block is BLOCKED here, and
+    a blocked query reports 'ro' by the rule above. Request 4116 stored
+    `required_tier='ro'` for a script whose two statements are a DO block and a
+    GRANT — the label on the record, and the value compared against the grant,
+    both said read-only for a role creation. Execution re-derived `ddl`
+    correctly, so nothing ran under the wrong credential; the stored tier was
+    simply a lie about what was submitted.
+    """
+    rep = analyze(sql, engine=engine, unrestricted=unrestricted)
     return rep.main_tier if not rep.blocked else "ro"
 
 

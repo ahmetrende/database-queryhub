@@ -18,10 +18,17 @@ SESSION_COOKIE = "qh_session"
 REFRESH_COOKIE = "qh_refresh"
 
 
-def _error(status: int, code: str, message: str) -> HTTPException:
-    """API_CONTRACT error envelope."""
-    return HTTPException(status_code=status,
-                         detail={"code": code, "message": message})
+def _error(status: int, code: str, message: str,
+           **extra) -> HTTPException:
+    """API_CONTRACT error envelope.
+
+    `extra` adds structured fields beside code/message for the errors that
+    have them — `reasons` on a confirmation-required 409. Keyword-only and
+    additive, so every existing call site produces a byte-identical body.
+    """
+    detail = {"code": code, "message": message}
+    detail.update({k: v for k, v in extra.items() if v not in (None, (), [])})
+    return HTTPException(status_code=status, detail=detail)
 
 
 def current_user(conn: HTTPConnection) -> dict:
@@ -52,7 +59,7 @@ def current_user(conn: HTTPConnection) -> dict:
     claims = sessions.verify_access(token)
     if claims is None:
         raise _error(401, "unauthenticated", "Session expired or invalid.")
-    if not sessions.session_alive(claims["sid"]):
+    if not sessions.session_alive(claims["sid"], claims.get("sub")):
         raise _error(401, "unauthenticated", "Session revoked.")
     # Liveness for local accounts: a disabled local_users row must
     # lock the account out on the very next request, without waiting for the

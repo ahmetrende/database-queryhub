@@ -204,6 +204,22 @@ def connections(claims: dict = Depends(deps.current_user)):
         if is_admin:
             entry["host"] = getattr(t, "host", None)
             entry["port"] = getattr(t, "port", None)
+        # Where it runs (migration 095). Display-only, and split the same way
+        # `host` above is split, for the same reason.
+        #
+        # `provider` and `service` answer the question the feature exists for —
+        # "did this run on the Huawei box or on AWS" — and a developer needs
+        # that to read their own result. `account` and any custom key are
+        # registry detail of exactly the class this endpoint already withholds:
+        # a cloud account id is infrastructure identity, not a fact about the
+        # query. Design asked for the whole bag for everyone on the grounds that
+        # it holds no credential, which is true; this narrows it to match the
+        # posture the endpoint already had rather than widening the endpoint to
+        # match the bag. Noted in CODE_TO_DESIGN_BRIEF.md.
+        tags = getattr(t, "tags", None) or {}
+        if tags:
+            entry["tags"] = tags if is_admin else {
+                k: v for k, v in tags.items() if k in ("provider", "service")}
         out.append(entry)
     return {"connections": out}
 

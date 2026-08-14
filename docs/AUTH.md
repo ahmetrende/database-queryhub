@@ -29,10 +29,60 @@ is to produce that id safely (`web/auth_providers.py`):
   (no-Slack) profile. Passwords are stored only as salted PBKDF2 hashes
   (`passwords.py`), never cleartext. Principal id: `local:<username>`.
   Toggle: `web_auth_local_enabled`.
+- **External OIDC providers — any number of them.** A deployment with a
+  company identity provider (authentik, Keycloak, Okta, Auth0, Google…)
+  configures it in the environment and gets a sign-in button; configuring
+  a second one is three more variables. These do **not** mint a principal:
+  the provider's *verified* email is looked up in `requesters` / `admins`
+  and the login proceeds as the principal already on that row. Toggle:
+  `web_auth_<id>_enabled`.
 
-The two are distinct principals (no cross-provider identity merge). Other
-OIDC providers (e.g. Google, mapping via verified email) would slot into
-the same registry; deferred for now.
+Slack and local accounts are distinct principals (no cross-provider identity
+merge). An OIDC provider is the opposite by design — it is a new way to prove
+an existing identity, so a person's grants, history and audit trail are the
+same whichever button they used.
+
+### 1.1 Configuring an OIDC provider
+
+Secrets live in the environment (`/etc/queryhub/web.env`), never in
+`bot_config` — that table is shared by every instance on the same bot DB and
+is readable through the admin config screen.
+
+```
+OIDC_CORP_ISSUER=https://sso.example.com/application/o/queryhub/
+OIDC_CORP_CLIENT_ID=…
+OIDC_CORP_CLIENT_SECRET=…
+OIDC_CORP_SCOPES=openid email profile     # optional
+OIDC_CORP_LABEL=Sign in with Corp SSO     # optional
+```
+
+`CORP` becomes the provider id `corp`, which fixes the URL you register with
+the identity provider:
+
+```
+https://<queryhub-base-url>/api/auth/corp/callback
+```
+
+The id is one lowercase alphanumeric token, must not be `slack` or `local`,
+and should be treated as permanent once registered. Endpoints are read from
+the issuer's `/.well-known/openid-configuration` (cached an hour), so a
+rotation on the provider's side needs no change here.
+
+**What the flow enforces**, beyond a plain authorization-code exchange:
+
+| Check | Why |
+| --- | --- |
+| PKCE (S256) + `nonce` | Both derived from the signed `state` via HMAC, so no server-side attempt table is needed and neither is guessable. Binds the callback to the attempt that started it. |
+| `id_token` signature, `iss`, `aud` | Standard OIDC verification, keys from the published JWKS. |
+| Algorithm allow-list | RSA/EC only. `none` and the HMAC family are refused — with `HS256` the client secret doubles as the verification key. |
+| `email_verified` | The email is the join to someone's grants. An unverified address would let a user type a colleague's. |
+| `web_allowed_email_domain` | Same domain gate the Slack provider uses. |
+| Unambiguous lookup | Two rows sharing an address resolve to **nothing**. Picking either would hand one person another person's grants. |
+| No auto-onboarding | An address with no row is refused, never created — otherwise everyone the company IdP knows becomes a QueryHub user. |
+
+A person who signs in this way still needs a Slack id on their row, because
+approvals and result delivery are Slack DMs, and `users.info` remains the
+"still employed?" oracle at every refresh (§4).
 
 ---
 

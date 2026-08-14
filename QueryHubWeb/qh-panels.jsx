@@ -25,6 +25,7 @@ function StatusPill({ status }) {
 
 // ---------- Schema tree (SSMS-like: server → db → tables → columns/indexes) ----------
 const TICN = {
+  cloud: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M17.4 19a4.4 4.4 0 00.6-8.76A6 6 0 006.3 11.1 3.95 3.95 0 006.6 19z"/></svg>,
   server: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="7" rx="1.6"/><rect x="3" y="13" width="18" height="7" rx="1.6"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>,
   db: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></svg>,
   folder: (o) => o
@@ -59,6 +60,9 @@ function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, ri
   // Names ellipsize in a narrow sidebar, so every row hovers its own full name —
   // rows with something more to say (a db's server/host, a server's engine/env)
   // pass an explicit title that already opens with the name.
+  // It is `data-tip`, not `title`: the tree draws its own dark pill (see the tip
+  // layer in SchemaTree), so a truncated name in the sidebar hovers the way a
+  // label on a button does instead of waiting a second for the OS tooltip.
   const rowTitle = title || (typeof label === 'string' ? label : undefined);
   const draggable = !!drag || !!connDrag || !!dbDrag;
   // A database row in the flat view carries BOTH payloads: the SQL text (drop on
@@ -72,7 +76,7 @@ function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, ri
     }
     : undefined;
   return (
-    <div title={rowTitle} data-node={nodeId} className={'qh-tr' + (active ? ' is-active' : '') + (muted ? ' is-muted' : '') + (strong ? ' is-strong' : '') + (pii ? ' is-pii' : '') + (drag ? ' is-drag' : '') + (connDrag ? ' is-conn-drag' : '') + (sub ? ' is-two' : '')}
+    <div data-tip={rowTitle} data-node={nodeId} className={'qh-tr' + (active ? ' is-active' : '') + (muted ? ' is-muted' : '') + (strong ? ' is-strong' : '') + (pii ? ' is-pii' : '') + (drag ? ' is-drag' : '') + (connDrag ? ' is-conn-drag' : '') + (sub ? ' is-two' : '')}
       style={{ paddingLeft: (6 + depth * 14) + 'px' }} onClick={handle} onContextMenu={onCtx} onDoubleClick={onDbl}
       draggable={draggable}
       onDragStart={onDragStart}>
@@ -92,12 +96,48 @@ function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, ri
   );
 }
 
-function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, open, setOpen, onPickDb, onOpenTable, onNewQuery, isSuper, reveal, narrow }) {
+function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, open, setOpen, onPickDb, onOpenTable, onNewQuery, isSuper, reveal, narrow, tagFilters, onToast }) {
+  // A `provider:aws` token in the search box narrows the TREE, not just the
+  // dropdown: the list you then browse is the answer to what you typed.
+  const conns = React.useMemo(() => (
+    tagFilters && tagFilters.length ? (allConns || []).filter(c => qhTagMatch(c, tagFilters)) : (allConns || [])
+  ), [allConns, tagFilters]);
   const tog = (id) => setOpen(o => ({ ...o, [id]: !o[id] }));
   const isOpen = (id) => !!open[id];
   const [menu, setMenu] = React.useState(null);
-  const openMenu = (e, c, db, table) => { e.preventDefault(); setMenu({ x: Math.min(e.clientX, window.innerWidth - 224), y: Math.min(e.clientY, window.innerHeight - 220), c, db, table }); };
+  const openMenu = (e, c, db, table) => { e.preventDefault(); hideTip(); setMenu({ x: Math.min(e.clientX, window.innerWidth - 224), y: Math.min(e.clientY, window.innerHeight - 220), c, db, table }); };
   const newQ = (c, db) => { if (onNewQuery) onNewQuery(c, db); };
+
+  // ----- the tree's own hover label -----
+  // One fixed-position pill for the whole tree, driven by delegation off
+  // `data-tip`. A per-row pseudo-element would be clipped by the sidebar's
+  // scroll box (and would widen it), and the native title takes about a second
+  // to appear — too slow for a list you scan.
+  const [tip, setTip] = React.useState(null);
+  const tipTimer = React.useRef(null);
+  const tipFor = React.useRef(null);
+  const hideTip = () => { clearTimeout(tipTimer.current); tipFor.current = null; setTip(t => (t ? null : t)); };
+  const overTip = (e) => {
+    const row = e.target.closest && e.target.closest('.qh-tr');
+    const text = row && row.getAttribute('data-tip');
+    if (!row || !text) { hideTip(); return; }
+    if (tipFor.current === row) return;
+    tipFor.current = row;
+    clearTimeout(tipTimer.current);
+    tipTimer.current = setTimeout(() => {
+      const r = row.getBoundingClientRect();
+      setTip({ text, x: r.left + 10, y: r.bottom + 4 });
+    }, 260);
+  };
+  // A pill anchored to a row that has since scrolled away points at nothing.
+  React.useEffect(() => {
+    if (!tip) return;
+    const off = () => hideTip();
+    window.addEventListener('scroll', off, true);
+    window.addEventListener('wheel', off, { passive: true });
+    return () => { window.removeEventListener('scroll', off, true); window.removeEventListener('wheel', off); };
+  }, [tip]);
+  React.useEffect(() => () => clearTimeout(tipTimer.current), []);
 
   // reveal a node found via search: scroll it into view within the sidebar and pulse it
   const treeRef = React.useRef(null);
@@ -125,7 +165,7 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
   // (persisted). The flat view is for people who think in databases, not hosts:
   // which box a database sits on is an operational detail, so it moves to the
   // hover title — the endpoint is still one hover away when it matters.
-  const [treeView, setTreeView] = React.useState(() => { try { return localStorage.getItem('qh.treeview.v1') === 'dbs' ? 'dbs' : 'servers'; } catch (e) { return 'servers'; } });
+  const [treeView, setTreeView] = React.useState(() => { try { const v = localStorage.getItem('qh.treeview.v1'); return v === 'dbs' || v === 'prov' ? v : 'servers'; } catch (e) { return 'servers'; } });
   React.useEffect(() => { try { localStorage.setItem('qh.treeview.v1', treeView); } catch (e) {} }, [treeView]);
   const [renaming, setRenaming] = React.useState(null);
   const [dropZone, setDropZone] = React.useState(null);
@@ -138,7 +178,7 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
   const deleteFolder = (id) => setOrg(o => ({ ...o, folders: o.folders.filter(f => f.id !== id) }));
   const gOpen = (k) => open[k] !== false;
   const gTog = (k) => setOpen(o => ({ ...o, [k]: !(o[k] !== false) }));
-  const openConnMenu = (e, c) => { e.preventDefault(); setMenu({ x: Math.min(e.clientX, window.innerWidth - 236), y: Math.min(e.clientY, window.innerHeight - 320), conn: c }); };
+  const openConnMenu = (e, c) => { e.preventDefault(); hideTip(); setMenu({ x: Math.min(e.clientX, window.innerWidth - 236), y: Math.min(e.clientY, window.innerHeight - 320), conn: c }); };
   const onDropZone = (zone, id) => { if (zone === 'fav') { if (!isFav(id)) toggleFav(id); } else if (zone === 'all') { moveToFolder(id, null); if (isFav(id)) toggleFav(id); } else { moveToFolder(id, zone); } };
   // The database view files DATABASES, not servers — same gestures, own keys
   // (`connId/dbId`), so favouriting `analytics` on prod-main does not drag
@@ -153,6 +193,9 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
   const deleteDbFolder = (id) => setOrg(o => ({ ...o, dbFolders: o.dbFolders.filter(f => f.id !== id) }));
   const onDropZoneDb = (zone, k) => { if (zone === 'dbfav') { if (!isDbFav(k)) toggleDbFav(k); } else if (zone === 'dball') { moveDbToFolder(k, null); if (isDbFav(k)) toggleDbFav(k); } else { moveDbToFolder(k, zone); } };
   const dz = (zone, kind) => {
+    // Provider groups pass no zone: where a machine runs is a fact about the
+    // machine, not a folder to file it in, so those headers accept no drop.
+    if (!zone) return { active: false };
     const type = kind === 'db' ? 'application/x-qh-db' : 'application/x-qh-conn';
     return {
       active: dropZone === zone,
@@ -199,7 +242,7 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
         <TreeRow depth={base} expandable open={isOpen(did)} onToggle={() => { tog(did); onLoadSchema && onLoadSchema(c.id, db.id); }}
           icon={rightExtra !== undefined ? <img className="qh-engine-logo" src={qhEngineLogo(c)} alt={qhEngine(c).label} draggable={false} /> : TICN.db()}
           label={db.name} sub={sub} tier={db.tier} active={act} drag={qhQuoteIdent(db.name)} dbDrag={dbDragKey} nodeId={did}
-          title={rightExtra !== undefined ? db.name + ' · ' + c.name + ' · ' + (c.host || c.name) + (c.port ? ':' + c.port : '') + ' · ' + c.engine : undefined}
+          title={rightExtra !== undefined ? [db.name, c.name + ' · ' + c.engine, (c.host || c.name) + (c.port ? ':' + c.port : ''), qhHosting(c)].filter(Boolean).join('\n') : undefined}
           right={rightExtra}
           onCtx={(e) => openMenu(e, c, db)} onDbl={() => newQ(c, db)} />
         {isOpen(did) && (
@@ -271,7 +314,7 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
         return (
           <div key={sid}>
             <TreeRow depth={0} expandable open={isOpen(sid)} onToggle={() => tog(sid)} strong
-              title={c.name + ' · ' + c.engine + ' · ' + c.env + (c.disabled ? ' · disabled' : '')}
+              title={[c.name, c.engine + ' · ' + c.env, (c.host || '') + (c.host && c.port ? ':' + c.port : ''), qhHosting(c), c.disabled ? 'disabled — still answers, with stale data' : ''].filter(Boolean).join('\n')}
               icon={<img className="qh-engine-logo" src={qhEngineLogo(c)} alt={qhEngine(c).label} draggable={false} />} label={srvLabel(c)} connDrag={sid}
               // A disabled connection stays in an admin's list so their saved
               // queries and history can still resolve its alias — but it has to
@@ -332,13 +375,24 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
   ), dbKey(row.c, row.db), dupDbNames.has(row.db.name) ? srvLabel(row.c) : null);
   const favDbs = flatDbs.filter(r => isDbFav(dbKey(r.c, r.db)));
   const ungroupedDbs = flatDbs.filter(r => !dbFolderOf(dbKey(r.c, r.db)));
+  // Provider view: the fleet grouped by who runs the machine (and which service
+  // of theirs), so “which of these is on Huawei” is one glance instead of
+  // fourteen hovers. Rows are the same server rows — only the grouping differs.
+  const provGroups = React.useMemo(() => qhProviderGroups(conns), [conns]);
   const ICN_STAR = <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9 6.8 19.2l1-5.8L3.5 9.2l5.9-.9z"/></svg>;
   const ICN_RENAME = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>;
   const ICN_FOLDER_DEL = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>;
   const ICN_FOLDER_NEW = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M12 11v6M9 14h6"/></svg>;
+  const ICN_COPY = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>;
+  // host:port — plus /database when the gesture started on a database row, since
+  // that is the whole connection string a driver wants.
+  const copyEndpoint = (c, db) => {
+    const ep = (c.host || c.name) + (c.port ? ':' + c.port : '') + (db ? '/' + db.name : '');
+    qhCopyText(ep).then(ok => onToast && onToast(ok ? 'Copied ' + ep : 'Could not copy — the browser blocked clipboard access.'));
+  };
 
   return (
-    <div className={'qh-tree' + (narrow ? ' is-narrow' : '')} ref={treeRef}>
+    <div className={'qh-tree' + (narrow ? ' is-narrow' : '')} ref={treeRef} onMouseOver={overTip} onMouseLeave={hideTip} onDragStart={hideTip}>
       <div className="qh-treeview" role="group" aria-label="Browse by">
         <button className={treeView === 'servers' ? 'is-on' : ''} onClick={() => setTreeView('servers')} aria-label="Server view">
           {TICN.server()}<span>Server view</span>
@@ -346,10 +400,25 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
         <button className={treeView === 'dbs' ? 'is-on' : ''} onClick={() => setTreeView('dbs')} aria-label="Database view">
           {TICN.db()}<span>Database view</span>
         </button>
-        <span className="qh-treeview-n">{treeView === 'dbs' ? flatDbs.length + ' databases' : conns.length + ' servers'}</span>
+        <button className={treeView === 'prov' ? 'is-on' : ''} onClick={() => setTreeView('prov')} aria-label="Provider view">
+          {TICN.cloud()}<span>Provider view</span>
+        </button>
+        <span className="qh-treeview-n">{treeView === 'dbs'
+          ? flatDbs.length + ' databases'
+          : treeView === 'prov'
+            ? provGroups.length + (provGroups.length === 1 ? ' provider' : ' providers')
+            : conns.length + (conns.length !== (allConns || []).length ? ' of ' + (allConns || []).length : '') + ' servers'}</span>
       </div>
 
-      {treeView === 'dbs' ? (<>
+      {treeView === 'prov' ? (<>
+      {provGroups.map(g => renderGroup({ gk: 'grp:prov:' + g.key,
+        icon: g.providerId
+          ? <img className="qh-engine-logo qh-prov-logo" src={qhProviderLogo(g.providerId)} alt="" draggable={false} />
+          : TICN.cloud(),
+        label: <span className="qh-grp-label">{g.label}</span>, count: g.conns.length,
+        body: g.conns.map(serverNode) }))}
+      {provGroups.length === 0 && <div className="qh-grp-empty">No connection matches that filter.</div>}
+      </>) : treeView === 'dbs' ? (<>
       {renderGroup({ kind: 'db', zone: 'dbfav', gk: 'grp:dbfav', favHead: true, icon: ICN_STAR,
         label: <span className="qh-grp-label">Favorites</span>, count: favDbs.length || null,
         empty: favDbs.length === 0, emptyHint: 'Drag a database here, or right-click → Add to favorites.',
@@ -439,6 +508,12 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
                 <button onClick={() => { onPickDb(menu.conn, menu.conn.databases[0]); setMenu(null); }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>Set as target
                 </button>
+                {/* The endpoint, not the alias: what you paste into a ticket, a
+                    driver or a psql line. Host and port only — never a
+                    credential, and the registry is still the only writer. */}
+                <button onClick={() => { copyEndpoint(menu.conn); setMenu(null); }}>
+                  {ICN_COPY}Copy endpoint
+                </button>
                 <div className="qh-ctx-sep" />
                 <button onClick={() => { toggleFav(menu.conn.id); setMenu(null); }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill={isFav(menu.conn.id) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9 6.8 19.2l1-5.8L3.5 9.2l5.9-.9z"/></svg>{isFav(menu.conn.id) ? 'Remove from favorites' : 'Add to favorites'}
@@ -468,6 +543,11 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
                 <button onClick={() => { onPickDb(menu.c, menu.db); setMenu(null); }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>Set as target
                 </button>
+                {/* Same endpoint, reachable from the database view — where no
+                    server row exists to right-click. */}
+                <button onClick={() => { copyEndpoint(menu.c, menu.db); setMenu(null); }}>
+                  {ICN_COPY}Copy endpoint
+                </button>
                 {treeView === 'dbs' && menu.db && (() => {
                   const k = dbKey(menu.c, menu.db);
                   return (<>
@@ -495,6 +575,10 @@ function SchemaTree({ conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles,
           </div>
         </>
       )}
+
+      {tip && <div className="qh-tip" style={{ left: Math.min(tip.x, window.innerWidth - 340), top: tip.y }}>
+        {tip.text.split('\n').map((ln, i) => <div key={i} className={i === 0 ? 'qh-tip-t' : 'qh-tip-s'}>{ln}</div>)}
+      </div>}
     </div>
   );
 }
@@ -521,7 +605,7 @@ function OriginBadge({ dest }) {
   );
 }
 
-function Sidebar({ mode, setMode, conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
+function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
   const [open, setOpen] = React.useState(() => ({ 'prod-main': true, 'prod-replica': true }));
   const [q, setQ] = React.useState('');
   const sqlFileRef = React.useRef(null);
@@ -533,23 +617,30 @@ function Sidebar({ mode, setMode, conns, schemaCache, onLoadSchema, rolesCache, 
   const [hi, setHi] = React.useState(0);
   const [focused, setFocused] = React.useState(false);
   const [reveal, setReveal] = React.useState(null);
+  const inRef = React.useRef(null);
   const modes = [['conns', DBIcons.tree], ['saved', DBIcons.star], ['sessions', DBIcons.layers], ['scheduled', DBIcons.calendar], ['history', DBIcons.clock]];
 
   // flat searchable list of conn/db pairs
   const flat = [];
   for (const c of conns) for (const db of c.databases) flat.push({ c, db });
-  const term = q.trim().toLowerCase();
+  // `key:value` words are tag filters, everything else is the name search.
+  const parsed = React.useMemo(() => qhParseTagQuery(q), [q]);
+  const term = parsed.text.toLowerCase();
+  const tagF = parsed.filters;
   const isTierTerm = ['ro', 'rw', 'ddl'].includes(term);
   const matches = React.useMemo(() => {
-    if (!term) return [];
+    if (!term && !tagF.length) return [];
+    // A tag token filters the POOL every kind of match is drawn from, so
+    // `provider:huawei users` cannot return a table on an AWS box.
+    const pool = tagF.length ? flat.filter(({ c }) => qhTagMatch(c, tagF)) : flat;
     const out = [];
-    for (const { c, db } of flat) {
-      if (c.name.toLowerCase().includes(term) || db.name.toLowerCase().includes(term) || c.engine.toLowerCase().includes(term) || (isTierTerm && db.tier.toLowerCase() === term))
+    for (const { c, db } of pool) {
+      if (!term || c.name.toLowerCase().includes(term) || db.name.toLowerCase().includes(term) || c.engine.toLowerCase().includes(term) || (isTierTerm && db.tier.toLowerCase() === term))
         out.push({ kind: 'db', c, db });
     }
     if (term.length >= 2 && !isTierTerm) {
-      for (const { c, db } of flat) for (const tb of (db.tables || [])) { if (tb.toLowerCase().includes(term)) out.push({ kind: 'table', c, db, table: tb }); if (out.length > 40) break; }
-      for (const { c, db } of flat) {
+      for (const { c, db } of pool) for (const tb of (db.tables || [])) { if (tb.toLowerCase().includes(term)) out.push({ kind: 'table', c, db, table: tb }); if (out.length > 40) break; }
+      for (const { c, db } of pool) {
         const sch = schemaCache && schemaCache[c.id + '/' + db.id];
         if (!sch) continue;
         for (const tb of Object.keys(sch.tables)) { for (const col of (sch.tables[tb].columns || [])) if (col.name.toLowerCase().includes(term)) out.push({ kind: 'column', c, db, table: tb, col: col.name, pii: !!col.pii }); if (out.length > 60) break; }
@@ -557,9 +648,24 @@ function Sidebar({ mode, setMode, conns, schemaCache, onLoadSchema, rolesCache, 
       }
     }
     return out.slice(0, 30);
-  }, [term, schemaCache]);
+  }, [term, tagF, schemaCache]);
+
+  // What the box can complete: the keys and values this fleet actually carries.
+  const vocab = React.useMemo(() => qhTagVocab(conns), [conns]);
+  const tokenSug = React.useMemo(() => (focused ? qhTokenSuggest(q, vocab) : []), [q, vocab, focused]);
+  // Completions first — they refine the query; matches below open something.
+  const items = React.useMemo(() => (
+    tokenSug.map(t => ({ kind: 'token', tok: t })).concat(matches)
+  ), [tokenSug, matches]);
 
   const choose = (m) => {
+    // A completion edits the query and keeps the cursor; it opens nothing.
+    if (m.kind === 'token') {
+      setQ(cur => qhApplyToken(cur, m.tok.insert));
+      setHi(0);
+      if (inRef.current) inRef.current.focus();
+      return;
+    }
     setQ(''); setHi(0);
     const sid = m.c.id, did = sid + '/' + m.db.id;
     const exp = { [sid]: true };
@@ -578,14 +684,21 @@ function Sidebar({ mode, setMode, conns, schemaCache, onLoadSchema, rolesCache, 
     setReveal({ id, n: Date.now() });
   };
   const onSearchKey = (e) => {
-    if (!matches.length) return;
-    if (e.key === 'ArrowDown') { e.preventDefault(); setHi(h => (h + 1) % matches.length); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => (h - 1 + matches.length) % matches.length); }
-    else if (e.key === 'Enter') { e.preventDefault(); choose(matches[Math.min(hi, matches.length - 1)]); }
+    if (e.key === 'Tab' && items.length && items[Math.min(hi, items.length - 1)].kind === 'token') {
+      e.preventDefault(); choose(items[Math.min(hi, items.length - 1)]); return;
+    }
+    if (!items.length) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHi(h => (h + 1) % items.length); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => (h - 1 + items.length) % items.length); }
+    else if (e.key === 'Enter') { e.preventDefault(); choose(items[Math.min(hi, items.length - 1)]); }
     else if (e.key === 'Escape') { setQ(''); setFocused(false); }
   };
 
-  const showDrop = focused && term && matches.length > 0;
+  // `!!term` and an explicit length test, not `term || tagF.length`: React
+  // renders a leading 0 from a falsy && chain, which is exactly what showed up
+  // under the empty search box.
+  const hasQuery = !!term || tagF.length > 0;
+  const showDrop = focused && items.length > 0;
 
   return (
     <div className={'qh-side' + (collapsed ? ' is-collapsed' : '')} style={width ? { width: width + 'px' } : undefined}>
@@ -620,7 +733,9 @@ function Sidebar({ mode, setMode, conns, schemaCache, onLoadSchema, rolesCache, 
             <svg className="qh-search-ic" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
             <input
               className="qh-search-in"
+              ref={inRef}
               placeholder="Search server, database, table, column…"
+              title="Type a name, or filter by tag: provider:aws · service:ecs · account:hw-proj-tr-01 · env:staging"
               value={q}
               onChange={(e) => { setQ(e.target.value); setHi(0); setFocused(true); }}
               onFocus={() => setFocused(true)}
@@ -634,24 +749,34 @@ function Sidebar({ mode, setMode, conns, schemaCache, onLoadSchema, rolesCache, 
           </div>
           {showDrop && (
             <div className="qh-ac">
-              {matches.map((m, i) => (
+              {items.map((m, i) => (m.kind === 'token' ? (
+                <button key={'tok:' + m.tok.label} className={'qh-ac-opt is-tok' + (i === hi ? ' is-hi' : '')}
+                  onMouseEnter={() => setHi(i)} onMouseDown={(e) => { e.preventDefault(); choose(m); }}>
+                  <span className="qh-ac-ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5h18l-7 8v6l-4-2v-4z"/></svg></span>
+                  <span className="qh-ac-text qh-ac-tok">{m.tok.label}<span className="qh-ac-loc">{m.tok.value
+                    ? (m.tok.key === 'provider' && QH_PROVIDERS[m.tok.value] ? QH_PROVIDERS[m.tok.value].label : 'value')
+                    : 'filter by ' + m.tok.key}</span></span>
+                  <span className="qh-ac-kind">tag</span>
+                </button>
+              ) : (
                 <button key={m.kind + m.c.id + m.db.id + (m.table || '') + (m.col || '')} className={'qh-ac-opt' + (i === hi ? ' is-hi' : '')}
+                  title={qhHosting(m.c) || undefined}
                   onMouseEnter={() => setHi(i)} onMouseDown={(e) => { e.preventDefault(); choose(m); }}>
                   {m.kind === 'db' && <><img className="qh-engine-logo qh-ac-logo" src={qhEngineLogo(m.c)} alt="" draggable={false} /><span className="qh-ac-text"><b>{m.c.name}</b><span className="qh-ac-slash">/</span>{m.db.name}</span>{m.c.disabled ? <span className="qh-conn-off">disabled</span> : (QH_SHOW_ENV_TAGS ? <span className={'qh-envtag-sm env-' + m.c.env}>{m.c.env === 'production' ? 'PROD' : m.c.env === 'staging' ? 'STG' : m.c.env}</span> : null)}<TierBadge tier={m.db.tier} sm /></>}
                   {m.kind === 'table' && <><span className="qh-ac-ic">{TICN.table()}</span><span className="qh-ac-text">{qhSchemaFor(m.c, m.db) + '.' + m.table}<span className="qh-ac-loc">{m.c.name}/{m.db.name}</span></span><span className="qh-ac-kind">table</span></>}
                   {m.kind === 'column' && <><span className="qh-ac-ic">{TICN.col({}, !!m.pii)}</span><span className="qh-ac-text">{m.col}<span className="qh-ac-loc">{m.db.name}.{m.table}</span></span><span className="qh-ac-kind">col</span></>}
                 </button>
-              ))}
+              )))}
             </div>
           )}
-          {focused && term && matches.length === 0 && (
-            <div className="qh-ac"><div className="qh-ac-none">No match for “{q}”</div></div>
+          {focused && hasQuery && items.length === 0 && (
+            <div className="qh-ac"><div className="qh-ac-none">No match for “{q}”<span className="qh-ac-hint">Tag filters: provider:aws · service:ecs · env:staging</span></div></div>
           )}
         </div>
       )}
 
       <div className="qh-side-body">
-        {mode === 'conns' && <SchemaTree conns={conns} schemaCache={schemaCache} onLoadSchema={onLoadSchema} rolesCache={rolesCache} onLoadRoles={onLoadRoles} active={active} open={open} setOpen={setOpen} onPickDb={onPick} onOpenTable={onOpenTable} onNewQuery={onNewQuery} isSuper={isSuper} reveal={reveal} narrow={!width || width < 330} />}
+        {mode === 'conns' && <SchemaTree conns={conns} schemaCache={schemaCache} onLoadSchema={onLoadSchema} rolesCache={rolesCache} onLoadRoles={onLoadRoles} active={active} open={open} setOpen={setOpen} onPickDb={onPick} onOpenTable={onOpenTable} onNewQuery={onNewQuery} isSuper={isSuper} reveal={reveal} narrow={!width || width < 330} tagFilters={tagF} onToast={onToast} />}
 
         {mode === 'saved' && saved.length === 0 && (
           <div className="qh-side-empty">
@@ -786,7 +911,7 @@ function RequestEndpointModal({ onClose, onSubmit }) {
 }
 
 // ---------- Bottom results panel ----------
-function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onExport, plan, onToast, colMeta, reqId }) {
+function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn }) {
   const [exp, setExp] = React.useState(false);
   // Click-away / Escape, not mouse-out: the 6px gap between the button and the
   // menu used to close it mid-reach. See qhUseDismiss.
@@ -808,6 +933,25 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onE
           ))}
         </div>
         <div className="qh-res-actions">
+          {/* Where these rows came from. The tab's target can be re-pointed after a
+              run, so this reads the connection the query WAS sent to — same rule
+              as the unmasked chip: the header describes the grid, not the
+              toolbar. */}
+          {result && conn && qhHosting(conn) && (
+            <span className="qh-res-loc" title={'Ran on ' + conn.name + (conn.host ? ' · ' + conn.host + (conn.port ? ':' + conn.port : '') : '') + ' · ' + qhHostingFull(conn)}>
+              <img className="qh-prov-logo" src={qhProviderLogo(qhTags(conn).provider)} alt="" draggable={false} />
+              {qhHosting(conn)}
+            </span>
+          )}
+          {/* A result that came back unmasked says so ON the result, not only on
+              the switch that produced it: the grid is what someone reads, quotes
+              and screenshots, and it must never look like a masked one. */}
+          {result && unmasked && (
+            <span className="qh-res-unmasked" title="This result came back unmasked — PII columns hold real values.">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 017.5-1.8"/></svg>
+              Unmasked
+            </span>
+          )}
           {reqId && <span className="qh-res-req" title="Request id — reserved when this tab opened">#{reqId}</span>}
           {status && <StatusPill status={status} />}
           {runMs != null && <span className="qh-res-time">{runMs} ms</span>}
@@ -841,7 +985,7 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onE
       </div>
 
       <div className="qh-res-body">
-        {tab === 'results' && <ResultsView result={result} status={status} onToast={onToast} colMeta={colMeta} />}
+        {tab === 'results' && <ResultsView result={result} status={status} onToast={onToast} colMeta={colMeta} unmasked={unmasked} />}
         {tab === 'plan' && <PlanView plan={plan} />}
         {tab === 'messages' && <MessagesView messages={messages} />}
         {tab === 'audit' && <AuditView audit={audit} />}
@@ -880,7 +1024,7 @@ function PlanView({ plan }) {
 }
 
 const QH_PAGE_SIZES = [100, 500, 1000];
-function ResultsView({ result, status, onToast, colMeta }) {
+function ResultsView({ result, status, onToast, colMeta, unmasked }) {
   // Column header tooltip. Two sources, in this order:
   //
   //   1. `result.colTypes[c]` — what the DRIVER reported for this exact result
@@ -915,6 +1059,12 @@ function ResultsView({ result, status, onToast, colMeta }) {
   const scrollRef = React.useRef(null);
 
   const isTable = result && result.kind === 'table';
+  // `piiCols` is documented as an object array ({col,label,mask}) and older
+  // payloads send bare strings. Accept either — with one shape assumed, the
+  // masked-column marker silently never appears (same normalisation as the
+  // admin queue's mapQueue).
+  const piiSet = React.useMemo(() => new Set(((result && result.piiCols) || [])
+    .map(c => (typeof c === 'string' ? c : (c && c.col))).filter(Boolean)), [result]);
   React.useEffect(() => { setPage(0); setColW({}); setSel(new Set()); setColSel(new Set()); setAnchor(null); setCursor(null); }, [result]);
 
   React.useEffect(() => {
@@ -1263,7 +1413,7 @@ function ResultsView({ result, status, onToast, colMeta }) {
                 onContextMenu={(e) => { if (!sel.size && !colSel.size) selectAll(); gridContextMenu(null, null, e); }}
                 title="Select all — right-click to copy the whole result">#</th>
               {cols.map((c, ci) => {
-                const pii = (result.piiCols || []).includes(c);
+                const pii = piiSet.has(c);
                 const colOn = colSel.has(ci);
                 return (
                   <th key={c} className={colOn ? 'is-sel' : ''} onMouseDown={(e) => colDown(ci, e)}
@@ -1274,7 +1424,7 @@ function ResultsView({ result, status, onToast, colMeta }) {
                       gridContextMenu(null, ci, e);
                     }}
                     title={colTitle(c)}>
-                    <span className="qh-th-name">{c}{pii && <span className="qh-pii-dot" title="Masked (PII)" />}</span>
+                    <span className="qh-th-name">{c}{pii && <span className={'qh-pii-dot' + (unmasked ? ' is-open' : '')} title={unmasked ? 'PII — returned unmasked (real values)' : 'Masked (PII)'} />}</span>
                     <span className="qh-col-grip" onMouseDown={(e) => startGrip(c, e)} />
                   </th>
                 );
@@ -1294,13 +1444,13 @@ function ResultsView({ result, status, onToast, colMeta }) {
                     gridContextMenu(null, null, e);
                   }}>{(offset + ri + 1).toLocaleString()}</td>
                 {cols.map((c, ci) => {
-                  const pii = (result.piiCols || []).includes(c);
+                  const pii = piiSet.has(c);
                   const seld = sel.has(keyOf(ri, ci)) || colSel.has(ci);
                   return (
                     <td key={c} data-cell={ri + ':' + ci} aria-selected={seld || undefined}
                       className={(seld ? 'qh-td-sel ' : '')
                         + (cursor && cursor.r === ri && cursor.c === ci ? 'qh-td-cursor ' : '')
-                        + (pii ? 'qh-td-masked' : (typeof r[c] === 'number' ? 'qh-td-num' : ''))}
+                        + (pii && !unmasked ? 'qh-td-masked' : (typeof r[c] === 'number' ? 'qh-td-num' : ''))}
                       title={dispVal(r, c)}
                       onMouseDown={(e) => cellDown(ri, ci, e)} onMouseEnter={() => cellEnter(ri, ci)}
                       onContextMenu={(e) => gridContextMenu(ri, ci, e)}

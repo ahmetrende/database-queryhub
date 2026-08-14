@@ -118,6 +118,29 @@ def _build_application_name(request: dict) -> str:
     return name[:63]
 
 
+def _super_role_for(principal_id: str, target_id: int) -> str | None:
+    """The role a super-admin's session enters on this target, or None.
+
+    The bot's login owns nothing on a target, so DDL fails with 42501 — and
+    giving that login standing privileges would put them in every session it
+    opens, for every user. Instead the session ENTERS a role for one statement
+    (`SET LOCAL ROLE`, the same machinery team grants already use), and the
+    membership is granted WITH INHERIT FALSE so it is inert until entered.
+
+    Read live and gated on is_super_admin here rather than passed in, for the same
+    reason the tier re-check is: this runs at EXECUTION, and standing can have
+    changed since the request was approved.
+
+    Returns None when the requester is not a super-admin or the target names no
+    role — both of which mean "run as the login, exactly as before".
+    """
+    if not admins.is_super_admin(principal_id):
+        return None
+    row = db.fetch_one(
+        "SELECT super_ddl_role FROM target_servers WHERE id = %s", (target_id,))
+    return (row or {}).get("super_ddl_role") or None
+
+
 def _team_role_for(principal_id: str, target_id: int) -> str | None:
     """If the user is a non-admin team member with a `target_role` set on
     their grant for this target, return that role name. The executor will
@@ -466,7 +489,20 @@ def _run(request: dict, client: WebClient) -> None:
         # Re-analyze the query NOW (instead of trusting the modal classification)
         # so we always pick the right credential tier even if the query was
         # edited via the Request-changes flow.
-        report = query_safety.analyze(request["query"], engine=target.engine)
+        #
+        # `unrestricted` is RE-DERIVED from the requester's CURRENT super-admin
+        # standing, never read off the request row. Two reasons, both load-bearing:
+        #
+        #   * authorization — a queued statement must not keep unrestricted
+        #     standing after the super-admin row is gone, exactly as the tier
+        #     re-check below refuses a grant that was revoked after approval.
+        #   * correctness — without it, a super-admin's CONFIRMED WHERE-less
+        #     UPDATE gets classified restricted here and dies at execution, after
+        #     they already answered for it. The submit-time question would have
+        #     meant nothing.
+        report = query_safety.analyze(
+            request["query"], engine=target.engine,
+            unrestricted=admins.is_super_admin(request["requester_slack_id"]))
         if report.blocked:
             _fail(client, request, " ".join(report.blockers))
             return
@@ -506,6 +542,23 @@ def _run(request: dict, client: WebClient) -> None:
                 "query was not run. Please re-submit if you still need it.")
             return
 
+        # Masking: the request row records what was ASKED for; whether it is
+        # allowed is decided here, now. `requests.unmasked` is intent — a request
+        # submitted by a super-admin who has since lost that standing runs MASKED,
+        # like every other authority question on this path.
+        #
+        # Decided once per request rather than per statement, so a multi-statement
+        # submission cannot come back half masked, and so the audit row is written
+        # once. Written BEFORE the query runs: "everything is logged" has to
+        # include the case where the run then fails.
+        unmask = bool(request.get("unmasked")) and admins.is_super_admin(requester)
+        if unmask:
+            audit.log(request["id"], requester, request.get("requester_name"),
+                      "result_unmasked",
+                      {"target": target.alias, "database": request["database_name"],
+                       "tier": mode,
+                       "reason": "super-admin ran this with masking turned off"})
+
         try:
             db_user, password = targets.get_credentials(target.id, mode)
         except LookupError:
@@ -544,6 +597,20 @@ def _run(request: dict, client: WebClient) -> None:
         # scheduler no longer pre-flips to 'executing' either (it moves due
         # rows to 'approved'), so this is the only writer of that state.
         #
+        # One variable, two sources that cannot both apply: `_team_role_for`
+        # returns None for admins by construction, so a super-admin only ever
+        # gets the elevation role and a team member only ever gets theirs.
+        #
+        # Resolved HERE, before the claim, so it can go into the
+        # execution_started audit row. It used to be computed further down,
+        # next to where it is applied, and the trail then recorded the login
+        # (`queryhub_ddl`) while the statement actually ran as something
+        # else entirely. For a path whose entire justification is that the
+        # powerful thing is the LOGGED thing, the one fact worth logging was
+        # the one missing.
+        assume_role = (_super_role_for(request["requester_slack_id"], target.id)
+                       or _team_role_for(request["requester_slack_id"], target.id))
+
         # rowcount==0 means the claim was lost — the row was cancelled,
         # rejected, superseded, or already claimed. Abort silently: whoever
         # owns the new state owns the user-facing message.
@@ -560,7 +627,15 @@ def _run(request: dict, client: WebClient) -> None:
                 return
             audit.log_in(cur, request_id, None, None, "execution_started",
                          {"mode": mode, "user": db_user,
-                          "n_statements": len(report.statements)})
+                          "n_statements": len(report.statements),
+                          # What the session actually BECAME, and why. `user`
+                          # above is only who it connected as; with an
+                          # elevation in play that is no longer who ran the
+                          # statement. Absent when nothing was assumed.
+                          **({"assumed_role": assume_role,
+                              "elevated": bool(_super_role_for(
+                                  request["requester_slack_id"], target.id))}
+                             if assume_role else {})})
 
         # SQL Server (MSSQL) uses a separate pyodbc flow — no search_path /
         # SET ROLE / SET LOCAL prelude / EXPLAIN plan / CONCURRENTLY rules.
@@ -569,11 +644,11 @@ def _run(request: dict, client: WebClient) -> None:
         # in engines.is_executable above). Postgres continues below unchanged.
         if target.engine == "mssql":
             _run_mssql(client, request, target, mode, report,
-                       db_user, password, timeout_sec, max_rows, max_csv_bytes)
+                       db_user, password, timeout_sec, max_rows, max_csv_bytes,
+                       unmask=unmask)
             return
 
         app_name = _build_application_name(request)
-        team_role = _team_role_for(request["requester_slack_id"], target.id)
 
         # Tighter cap on idle-in-transaction so a stalled bot can't hold
         # locks past the query's own timeout window. statement_timeout
@@ -633,17 +708,31 @@ def _run(request: dict, client: WebClient) -> None:
             options=options,
         ) as conn:
             with conn.cursor() as cur:
-                # Pin search_path with pg_catalog FIRST so a same-named
-                # object in a writable schema (e.g. a malicious public.now())
-                # can't shadow a built-in function/operator (CVE-2018-1058
-                # class). `public` still follows, so unqualified user tables
-                # resolve and an unqualified CREATE still lands in public
-                # (pg_catalog isn't writable). In a transaction we use SET
-                # LOCAL (undone at commit); in autocommit there's no
-                # transaction, so we use a plain session SET — safe because
-                # the connection is single-use and closed right after.
+                # Pin search_path with pg_catalog FIRST so a same-named object in
+                # a writable schema (e.g. a malicious public.now()) can't shadow a
+                # built-in function/operator (CVE-2018-1058 class). `public` still
+                # follows, so unqualified user tables resolve.
+                #
+                # EXCEPT for DDL, where that order is not a hardening but a wall.
+                # An unqualified CREATE lands in the FIRST schema on the path, so
+                # with pg_catalog leading, `CREATE TABLE t (...)` fails with
+                # "permission denied for schema pg_catalog" — measured, not
+                # theorised. The comment here used to claim it "still lands in
+                # public (pg_catalog isn't writable)"; that is simply not how
+                # PostgreSQL picks the creation target. Nobody hit it because no
+                # DDL had ever run through this pipeline.
+                #
+                # So for the ddl tier the writable schema leads. The exposure that
+                # buys back is narrow and bounded: shadowing would have to affect
+                # the DDL statement's own text, which is what the operator wrote
+                # and — for anything destructive — confirmed by hand. Read and
+                # write queries, where the bot runs someone else's SQL and a
+                # shadowed operator could change what it means, keep the strict
+                # order.
                 scope = "" if autocommit else "LOCAL "
-                cur.execute(f"SET {scope}search_path = pg_catalog, public")
+                path = ("public, pg_catalog" if mode == "ddl"
+                        else "pg_catalog, public")
+                cur.execute(f"SET {scope}search_path = {path}")
 
                 # Record which target backend is about to run this, so a user
                 # (or the runaway watchdog) can actually stop it. Without a pid
@@ -660,10 +749,10 @@ def _run(request: dict, client: WebClient) -> None:
                 except Exception:
                     log.debug("could not record backend pid for request %s",
                               request["id"], exc_info=True)
-                if team_role:
+                if assume_role:
                     set_role = pgsql.SQL(
                         "SET " + scope + "ROLE {}"
-                    ).format(pgsql.Identifier(team_role))
+                    ).format(pgsql.Identifier(assume_role))
                     cur.execute(set_role)
 
                 t_start = time.monotonic()
@@ -692,6 +781,7 @@ def _run(request: dict, client: WebClient) -> None:
                         database=request["database_name"],
                         engine=target.engine,
                         requester_id=request["requester_slack_id"],
+                    unmasked=unmask,
                         capture_plan=capture_plan,
                         # In autocommit mode a mutating (RW/DDL) statement is
                         # durable the instant it returns — mark it so a later
@@ -916,7 +1006,8 @@ def _finalize(client: WebClient, request: dict, stmt_results: list,
 
 def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
                db_user: str, password: str, timeout_sec: int,
-               max_rows: int, max_csv_bytes: int) -> None:
+               max_rows: int, max_csv_bytes: int,
+               unmask: bool = False) -> None:
     """SQL Server execution path (pyodbc). Reached only for a WIRED mssql
     target (fail-closed until then), called inside _run's try so the outer
     handler surfaces any error via _fail (the ordering guard applies). Reuses the
@@ -988,6 +1079,7 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
                     database=request["database_name"],
                     engine=target.engine,
                     requester_id=request["requester_slack_id"],
+                    unmasked=unmask,
                     capture_plan=False,   # no PG-style EXPLAIN plan on SQL Server
                 )
             except Exception:
@@ -1004,6 +1096,7 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
                     database=request["database_name"],
                     engine=target.engine,
                     requester_id=request["requester_slack_id"],
+                    unmasked=unmask,
                     capture_plan=False,
                 )
             stmt_results.append(res)
@@ -1030,6 +1123,7 @@ def _execute_main_statement(
     # operator's own dba.* toolkit), so the decision needs the reader; absent,
     # _load_exemptions gives the unprivileged answer.
     requester_id: str | None = None,
+    unmasked: bool = False,
     result_format: str = "csv",
     target_id: int | None = None,
     database: str | None = None,
@@ -1184,9 +1278,22 @@ def _execute_main_statement(
     # (email/phone/tckn/vkn/iban/card by value) + column-name catalog
     # (name/address/... by column). `pii_found` accumulates which kinds
     # fired for the audit log + user hint. None when masking is disabled.
-    pii_found: set | None = set() if pii.is_enabled() else None
+    # `unmasked` is the already-decided verdict from _run (intent AND a live
+    # super-admin check), not a request field — so this cannot be reached by
+    # a row that merely asks for it.
+    pii_found: set | None = (
+        None if unmasked else (set() if pii.is_enabled() else None))
     pii_skip: set[int] = set()
     pii_namescan: set[int] = set()
+    # The engine's own catalog is metadata, not people. Masking it turns
+    # `pg_roles.rolname` into a redacted string for the one person whose job is
+    # to read it, and protects nothing — see pii.system_catalog_only. Checked
+    # before the exemption rows because it needs no configuration: it is true of
+    # every deployment and every engine, not a policy someone opted into.
+    if pii_found is not None and pii.system_catalog_only(stmt.rewritten,
+                                                         engine=engine):
+        pii_found = None
+        res.pii_exempt = True
     if pii_found is not None and target_id is not None:
         # Public-data exemptions (pii_masking_exemptions): a target/db-wide
         # row (or an only-exempt-tables query) lifts masking entirely for

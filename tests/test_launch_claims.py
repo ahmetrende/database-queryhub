@@ -306,7 +306,7 @@ def test_me_actually_returns_the_flag_over_http(monkeypatch):
     monkeypatch.setattr(sessions, "verify_access",
                         lambda t: {"sub": "U0X", "sid": "s", "provider": "slack"}
                         if t == "good" else None)
-    monkeypatch.setattr(sessions, "session_alive", lambda s: True)
+    monkeypatch.setattr(sessions, "session_alive", lambda s, principal=None: True)
     monkeypatch.setattr(admins, "is_admin", lambda u: False)
     monkeypatch.setattr(requesters, "is_allowed", lambda u: True)
     try:

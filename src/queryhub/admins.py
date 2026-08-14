@@ -217,6 +217,28 @@ def can_approve(admin_slack_id: str, request: dict) -> bool:
     return any(_scope_admits(c, request) for c in candidates)
 
 
+def by_email(email: str) -> dict | None:
+    """Find an admin by address, for an external SSO login to land on.
+
+    Admins are not always requesters — a DBA who only ever approves has no
+    `requesters` row — so an email lookup that consulted only that table
+    would refuse exactly the people who run this thing. Same strictness as
+    `requesters.by_email`: normalised comparison, and two rows sharing an
+    address resolve to nothing rather than to a guess.
+    """
+    e = (email or "").strip().lower()
+    if not e:
+        return None
+    rows = db.fetch_all(
+        "SELECT slack_user_id, name, email, enabled "
+        "  FROM admins WHERE lower(btrim(email)) = %s",
+        (e,),
+    )
+    if len(rows) != 1:
+        return None
+    return rows[0]
+
+
 def get_scope(admin_slack_id: str) -> dict | None:
     """Permanent admins row + any active temp grants for one user.
     Useful for audit snapshots and `/sql whoami`. Returns None when

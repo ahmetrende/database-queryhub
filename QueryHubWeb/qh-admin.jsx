@@ -233,6 +233,14 @@ function ApprovalsView({ st, user, role }) {
                 <span className={'qh-env-dot env-' + cur.env} />
                 <span className="qh-adetail-conn">{cur.connectionId}</span><span className="qh-target-slash">/</span><span>{cur.databaseId}</span>
                 <TierBadge tier={cur.tier} />
+                {/* Where it would run. An approver saying yes to a DDL on the
+                    Huawei box is not saying yes to the same thing as on AWS. */}
+                {qhHosting(cur) && (
+                  <span className="qh-adetail-host" title={qhHostingFull(cur)}>
+                    <img className="qh-prov-logo" src={qhProviderLogo(qhTags(cur).provider)} alt="" draggable={false} />
+                    {qhHosting(cur)}
+                  </span>
+                )}
               </div>
             </div>
 

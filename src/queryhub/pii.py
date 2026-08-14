@@ -769,6 +769,57 @@ def _tables_in(sql: str, engine: str = "postgres") -> set[str] | None:
         return None
 
 
+def system_catalog_only(sql: str, engine: str = "postgres") -> bool:
+    """True when every relation the statement reads is the engine's OWN
+    catalog — so masking should not run at all.
+
+    A catalog holds metadata, not people. `pg_roles.rolname`,
+    `pg_stat_activity.usename`, `information_schema.columns.column_name` all
+    match the by-NAME rule for a person's name and come back mangled, which
+    makes the catalog unreadable for exactly the operator whose job is to read
+    it. Nothing is protected by that: the row is a role name or a column name,
+    and anyone who can query the catalog can already see it.
+
+    Engine-modular by construction — the two facts it needs
+    (`system_schemas`, `system_table_prefixes`) live on the engine spec, so a
+    new engine declares its own catalog namespaces and this works there
+    unchanged.
+
+    Deliberately ALL, not ANY: a join from `pg_class` to a user table is a
+    query about user data that happens to consult the catalog, and it keeps
+    masking. Unparseable SQL returns False (fail-closed) — the same rule the
+    table-scoped exemptions follow, for the same reason.
+    """
+    try:
+        import sqlglot
+        from sqlglot import exp
+        from . import engines
+        spec = engines.spec(engine)
+        sys_schemas = {s.lower() for s in (spec.system_schemas or ())}
+        prefixes = tuple(p.lower() for p in (spec.system_table_prefixes or ()))
+        if not sys_schemas and not prefixes:
+            return False
+        ctes: set[str] = set()
+        refs: list[tuple[str, str]] = []
+        for s in sqlglot.parse(sql, read=spec.sqlglot_dialect):
+            if s is None:
+                continue
+            for cte in s.find_all(exp.CTE):
+                ctes.add(cte.alias_or_name.lower())
+            for t in s.find_all(exp.Table):
+                refs.append(((t.db or "").lower(), t.name.lower()))
+        refs = [(d, n) for d, n in refs if n not in ctes]
+        if not refs:
+            return False
+        return all(
+            (schema in sys_schemas)
+            or (not schema and prefixes and name.startswith(prefixes))
+            for schema, name in refs
+        )
+    except Exception:
+        return False
+
+
 def _column_skips(col_rows: list[dict], tables: set[str] | None,
                   columns: list[str]) -> set[int]:
     """Pure: result-column indexes exempted by column-level rows.

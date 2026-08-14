@@ -585,6 +585,13 @@ function App() {
   const killed = !!(admin.killSwitch && admin.killSwitch.enabled);
   const riskHints = qhRiskHints(tab.sql, classify);
   const riskTop = riskHints.some(h => h.level === 'high') ? 'high' : riskHints.some(h => h.level === 'med') ? 'med' : 'low';
+  // Whether the result ON SCREEN came back unmasked. The result's own flag is the
+  // truth — the toggle may already have been switched back since — and
+  // `ranUnmasked` covers only a payload that does not carry the flag yet.
+  const resUnmasked = !!(tab.result && (tab.result.unmasked != null ? tab.result.unmasked : tab.ranUnmasked));
+  // The connection the rows on screen came from — the tab's target may have been
+  // re-pointed since the run, and the results header must not relabel a grid.
+  const resConn = conns.find(c => c.id === (tab.ranConn || tab.conn));
 
   // keep tab tier dot synced for tabs bar
   const tabsForBar = tabs.map(x => ({ ...x, tier: qhClassify(x.sql).tier }));
@@ -868,9 +875,10 @@ function App() {
     ws.onerror = () => { try { ws.close(); } catch (e) {} };
   };
 
-  const submitToServer = async (id, runAtISO, sqlOverride) => {
+  const submitToServer = async (id, runAtISO, sqlOverride, opts) => {
     const cur = tabs.find(x => x.id === id);
     if (!cur) return;
+    const o = opts || {};
     setResTab('messages');
     patch(id, { status: 'pending', result: null,
       messages: [{ kind: 'info', text: 'Submitting to QueryHub…', time: nowTime() }] });
@@ -879,15 +887,37 @@ function App() {
         connectionId: cur.conn, databaseId: cur.db, sql: sqlOverride || cur.sql,
         name: cur.name, justification: cur.justification || null,
         schedule: runAtISO ? { runAt: runAtISO } : null,
+        // Super-admin, this tab, this request: bring PII back as real values.
+        // Sent only while it is on, and never by anyone else — a non-super-admin
+        // request carrying it is answered 403, and that server check is the gate.
+        ...(cur.unmasked ? { unmasked: true } : null),
+        // Set only by the destructive-statement confirm, which re-sends this same
+        // request unchanged apart from this one flag.
+        ...(o.confirmed ? { confirmed: true } : null),
         // The id this tab has shown since it opened. The server takes it over
         // when it is still ours to take; a draft that expired gets a fresh id
         // instead, which is why qid below comes from the RESPONSE, not from here.
         draftId: cur.reqId || null,
       });
-      patch(id, { qid: r.id, reqId: r.id, status: r.status });
+      patch(id, { qid: r.id, reqId: r.id, status: r.status, ranUnmasked: !!cur.unmasked, ranConn: cur.conn });
       if (cur.justification) setReasons(rs => qhSaveReason(rs, cur.justification));
       track(id, r.id);
     } catch (e) {
+      // A 409 carrying reasons is not a failure — it is the server asking before
+      // it runs something irreversible. Nothing ran, so the tab goes back to how
+      // it was and the question is put to the user in the server's own words.
+      // qhConfirmReasons is what tells this apart from a duplicate-request 409.
+      const reasons = qhConfirmReasons(e);
+      if (reasons) {
+        const c2 = conns.find(c => c.id === cur.conn);
+        const d2 = c2 && c2.databases.find(d => d.id === cur.db);
+        patch(id, { status: null,
+          messages: [{ kind: 'info', text: 'Confirmation needed — nothing has run.', time: nowTime() }] });
+        setConfirmRun({ id, runAtISO: runAtISO || null, sqlOverride: sqlOverride || null, reasons,
+          target: (c2 ? c2.name : cur.conn) + ' / ' + (d2 ? d2.name : cur.db),
+          env: c2 ? c2.env : null, tier: qhClassify(sqlOverride || cur.sql).tier, scheduled: !!runAtISO });
+        return;
+      }
       patch(id, { status: null,
         messages: [{ kind: 'err', text: e.message || 'Submit failed.', time: nowTime() }] });
       setResTab('messages');
@@ -935,6 +965,22 @@ function App() {
   // wrapped line costs the one-line-one-number reading of the gutter.
   const [wrap, setWrap] = useState(() => { try { return localStorage.getItem('qh.wrap.v1') === '1'; } catch (e) { return false; } });
   useEffect(() => { try { localStorage.setItem('qh.wrap.v1', wrap ? '1' : '0'); } catch (e) {} }, [wrap]);
+
+  // Destructive-statement confirmation. The server answers a DROP / TRUNCATE /
+  // unqualified UPDATE with a question instead of running it; confirming re-sends
+  // the identical request with confirmed:true, and cancelling sends nothing at all
+  // — the SQL stays exactly where it is, untouched.
+  const [confirmRun, setConfirmRun] = useState(null);
+  const confirmRunGo = () => {
+    const c = confirmRun; if (!c) return;
+    setConfirmRun(null);
+    submitToServer(c.id, c.runAtISO, c.sqlOverride, { confirmed: true });
+  };
+  const confirmRunCancel = () => {
+    const c = confirmRun; if (!c) return;
+    setConfirmRun(null);
+    patch(c.id, { messages: [{ kind: 'info', text: 'Not sent — you cancelled the confirmation. Your SQL is untouched.', time: nowTime() }] });
+  };
 
   const selGet = React.useRef(null);
   const curSel = () => (selGet.current ? selGet.current() : '');
@@ -1122,6 +1168,7 @@ function App() {
 
   const sideEl = !t.hideSidebar && (
     <Sidebar mode={sideMode} setMode={setSideMode} conns={conns} schemaCache={schemaCache} onLoadSchema={loadSchema} rolesCache={rolesCache} onLoadRoles={loadRoles}
+      onToast={pushToast}
       active={{ conn: tab.conn, db: tab.db }} onPick={pickDb}
       saved={savedList} onLoadSaved={loadSaved} onDeleteSaved={deleteSaved}
       sessions={sessions} onSaveSession={() => setSessionModal(true)} onRestoreSession={restoreSession} onDeleteSession={deleteSession}
@@ -1214,6 +1261,7 @@ function App() {
                 tabCount={queryTabsForBar.length} onOpenBatch={() => setBatchOpen(true)}
                 schedOpen={schedOpen} setSchedOpen={setSchedOpen} onSchedule={schedule}
                 why={why} onWhy={setWhy} whyNeedSched={needWhySched} whyErr={whyErr}
+                isSuper={isSuper} unmasked={!!tab.unmasked} onUnmask={(v) => patch(activeId, { unmasked: v })}
               />
 
               <WhyBar show={showWhy} need={needWhy} value={why} onChange={setWhy} err={whyErr && needWhy}
@@ -1227,7 +1275,8 @@ function App() {
               <div className="qh-res-grip" onMouseDown={onDragStart}><span /></div>
               <div style={{ height: resH, flexShrink: 0 }}>
                 <ResultsPanel colMeta={colMeta} tab={resTab} setTab={setResTab} result={tab.result} messages={tab.messages}
-                  audit={tab.audit} status={tab.status} runMs={tab.runMs} onExport={exportResult} plan={tab.plan} onToast={pushToast} reqId={tab.reqId} />
+                  audit={tab.audit} status={tab.status} runMs={tab.runMs} onExport={exportResult} plan={tab.plan} onToast={pushToast} reqId={tab.reqId}
+                  unmasked={resUnmasked} conn={resConn} />
               </div>
             </>
           )}
@@ -1240,6 +1289,8 @@ function App() {
       {reqOpen && <RequestEndpointModal onClose={() => setReqOpen(false)} onSubmit={submitRequest} />}
       {feedbackOpen && <FeedbackModal user={user} view={view} onClose={() => setFeedbackOpen(false)} onSubmit={submitFeedback} />}
       {dlModal && <DownloadSqlModal defaultName={dlModal.name} onConfirm={performDownloadSql} onCancel={() => setDlModal(null)} />}
+      {confirmRun && <ConfirmRunModal reasons={confirmRun.reasons} target={confirmRun.target} env={confirmRun.env}
+        tier={confirmRun.tier} scheduled={confirmRun.scheduled} onConfirm={confirmRunGo} onCancel={confirmRunCancel} />}
       {batchOpen && (
         <BatchModal tabs={tabs} activeId={activeId} onClose={() => setBatchOpen(false)} onSubmit={submitBatch} recent={reasons} />
       )}
@@ -1519,8 +1570,55 @@ function WhyBar({ show, need, value, onChange, err, inputRef, recent, autoApprov
   );
 }
 
+// ---------- PII masking switch (super-admin only) ----------
+const ICN_MASK = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>;
+const ICN_UNMASK = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 017.5-1.8"/></svg>;
+// Results come back PII-masked for everyone, the DBA included. That is right
+// almost always and useless in the one case this exists for: debugging real rows.
+// So the chip that STATES the masking state is also the control that changes it —
+// no checkbox in a settings menu, no second surface, and no way to be reading an
+// unmasked grid while something elsewhere still says "masked".
+//
+// Off is two steps and on is one: the direction that reveals PII gets the extra
+// beat, and the popover is where the scope is spelled out (this tab, until you
+// switch it back, never remembered). Off is also loud — ringed, tinted, open
+// padlock, the word itself — because the state has to be legible at a glance for
+// as long as real values are on screen.
+function MaskToggle({ unmasked, pii, onUnmask }) {
+  const [ask, setAsk] = React.useState(false);
+  const close = React.useCallback(() => setAsk(false), []);
+  const wrapRef = qhUseDismiss(ask, close);
+  const n = (pii && pii.columns.length) || 0;
+  const cols = n ? pii.columns.map(c => c.label).join(', ') : '';
+  const label = unmasked ? 'Unmasked · real values'
+    : n ? n + ' PII column' + (n > 1 ? 's' : '') + ' masked'
+    : (pii && pii.star) ? 'PII masked' : 'Masked';
+  return (
+    <span className="qh-mask" ref={wrapRef}>
+      <button className={'qh-mask-toggle' + (unmasked ? ' is-off' : '')} aria-pressed={!unmasked}
+        onClick={() => { if (unmasked) onUnmask(false); else setAsk(a => !a); }}
+        title={unmasked
+          ? 'This tab returns real values for PII' + (cols ? ' (' + cols + ')' : '') + '. Click to mask again.'
+          : 'PII is masked in results' + (cols ? ' (' + cols + ')' : '') + '. Super-admins can return real values for this tab.'}>
+        {unmasked ? ICN_UNMASK : ICN_MASK}
+        {label}
+      </button>
+      {ask && (
+        <div className="qh-mask-pop">
+          <div className="qh-mask-pop-t">Return real values?</div>
+          <div className="qh-mask-pop-b">This tab's results come back unmasked{cols ? ' — ' + cols : ''} until you switch masking back on. Nothing is remembered: every other tab, and this one after a reload, starts masked.</div>
+          <div className="qh-mask-pop-a">
+            <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={close}>Keep masked</button>
+            <button className="qh-btn qh-btn-sm qh-mask-go" onClick={() => { close(); onUnmask(true); }}>Show real values</button>
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
 // ---------- Action bar (target context + security + actions) ----------
-function ActionBar({ why, onWhy, whyNeedSched, whyErr, conn, db, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun }) {
+function ActionBar({ why, onWhy, whyNeedSched, whyErr, conn, db, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask }) {
   const tierLabel = { RO: 'Read-only', RW: 'Read/Write', DDL: 'Schema (DDL)' }[classify.tier];
   const highRisks = (riskHints || []).filter(h => h.level !== 'low');
   const schedBtnRef = useRef(null);
@@ -1615,7 +1713,12 @@ function ActionBar({ why, onWhy, whyNeedSched, whyErr, conn, db, dbTier, classif
               {highRisks.length} risk{highRisks.length > 1 ? 's' : ''}
             </span>
           )}
-          {(pii.columns.length > 0 || pii.star) && (
+          {/* Masking. For a developer this is a statement of fact; for a
+              super-admin the same chip is the switch, so the state and the one
+              control that can change it are a single object. */}
+          {isSuper ? (
+            <MaskToggle unmasked={unmasked} pii={pii} onUnmask={onUnmask} />
+          ) : (pii.columns.length > 0 || pii.star) && (
             <span className="qh-pii-chip" title={pii.columns.map(c => c.label).join(', ')}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
               {pii.star ? 'PII may be masked' : pii.columns.length + ' PII column' + (pii.columns.length > 1 ? 's' : '') + ' masked'}
@@ -1676,6 +1779,49 @@ function ActionBar({ why, onWhy, whyNeedSched, whyErr, conn, db, dbTier, classif
         </>
       )}
     </div>
+  );
+}
+
+// ---------- Destructive statement — the server asks before it runs ----------
+// A super-admin is not refused a DROP, a TRUNCATE or an UPDATE with no WHERE:
+// the request comes back as a question with the consequence spelled out, and
+// confirming re-sends the identical request. The reasons are the SERVER's
+// sentences, rendered exactly as sent — they name what specifically is lost, and
+// any paraphrase would drop the part worth reading.
+//
+// Cancel is the easy act: Escape, click-away, and it holds the initial focus, so
+// Enter is always the safe answer. Confirming is a deliberate click on a
+// danger-weighted button — and nothing more than that. This is a working tool
+// someone uses dozens of times a day: no typing the table name, no countdown.
+function ConfirmRunModal({ reasons, target, env, tier, scheduled, onConfirm, onCancel }) {
+  return (
+    <QhModal onClose={onCancel} panelClass="qh-conf-modal">
+      <div className="qh-modal-head">
+        <div>
+          <div className="qh-modal-title">{reasons.length > 1 ? 'Confirm before these run' : 'Confirm before this runs'}</div>
+          <div className="qh-modal-sub">Nothing has run yet — {scheduled ? 'the schedule is not set' : 'the database has not been touched'}. Read what this does, then confirm.</div>
+        </div>
+      </div>
+      <div className="qh-modal-body">
+        <div className="qh-conf-target">
+          {env && <span className={'qh-envtag-sm env-' + env} title={env}>{env === 'production' ? 'PROD' : env === 'staging' ? 'STG' : env}</span>}
+          <span className="qh-conf-tgt">{target}</span>
+          {tier && <TierBadge tier={tier} sm />}
+        </div>
+        <ul className="qh-conf-reasons">
+          {reasons.map((r, i) => (
+            <li key={i} className="qh-conf-reason">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L14.7 3.9a2 2 0 00-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+              <span>{r}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="qh-modal-foot">
+        <button className="qh-btn qh-btn-ghost" onClick={onCancel}>Cancel</button>
+        <button className="qh-btn qh-btn-danger qh-conf-go" onClick={onConfirm}>{scheduled ? 'Schedule it' : 'Run it'}</button>
+      </div>
+    </QhModal>
   );
 }
 

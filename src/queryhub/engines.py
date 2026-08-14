@@ -65,6 +65,16 @@ class EngineSpec:
     # Namespaces that hold the engine's own catalog rather than user data.
     # The snapshot skips them; autocomplete offers them separately.
     system_schemas: frozenset = frozenset({"pg_catalog", "information_schema"})
+    # Name prefixes that identify a catalog relation even UNQUALIFIED, because
+    # the engine puts its catalog on the implicit search path. `pg_roles` is a
+    # catalog view whether or not anyone writes `pg_catalog.` in front of it.
+    # Needed as a separate field from `system_schemas` because the qualified
+    # form is not always available: this is matched against a bare table name.
+    # Empty for engines whose system objects are always schema-qualified (a
+    # bare `tables` is a user table, NOT information_schema.tables — that view
+    # is not on any default search path, so prefix-matching it would exempt
+    # ordinary user data).
+    system_table_prefixes: frozenset = frozenset({"pg_"})
     # Block table references that name a catalog/database (3-part:
     # database.schema.object) or a server (4-part: server.database.
     # schema.object). For an engine whose login is scoped to one database
@@ -257,6 +267,10 @@ MSSQL = EngineSpec(
     read_only=False,
     default_schema="dbo",
     system_schemas=frozenset({"sys", "INFORMATION_SCHEMA"}),
+    # T-SQL system objects are always reached as `sys.x` / `INFORMATION_SCHEMA.x`,
+    # so there is no unqualified form to recognise — and a prefix rule here
+    # would be a hole, not a convenience.
+    system_table_prefixes=frozenset(),
     blocked_functions=_MSSQL_BLOCKED,
     allowed_leading=_MSSQL_ALLOWED_LEADING,
     banned_leading=_MSSQL_BANNED_LEADING,

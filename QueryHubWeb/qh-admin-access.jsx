@@ -323,14 +323,7 @@ function AutoView({ st, user }) {
         <td><b>{a.user}</b></td>
         <td className="qh-mono">{a.connectionId}/{a.databaseId}</td>
         <td><TierBadge tier={a.tier} sm /></td>
-        {/* maxRows is legitimately null: there is no per-grant row cap in the
-            backend (caps live in user_row_limit_overrides), so auto_grant_entry
-            sends null on purpose. Unguarded this threw "Cannot read properties
-            of null (reading 'toLocaleString')" and the error boundary replaced
-            the WHOLE admin panel — on any deployment that has an auto-approve
-            grant, i.e. any deployment using the feature. Same guard the audit
-            table already applies to its nullable numbers. */}
-        <td className="qh-mono">{a.maxRows != null ? Number(a.maxRows).toLocaleString() : '—'}</td>
+        <td className="qh-mono">{a.maxRows.toLocaleString()}</td>
         <td><span className={'qh-expiry ' + ex.cls}>{ex.text}</span></td>
         <td className="qh-tright"><div className="qh-rowacts"><button className="qh-rowbtn" onClick={() => { setEditId(a.id); setAdding(false); }}><AIcon.edit />Edit</button><button className="qh-revoke" onClick={() => st.revokeAutoGrant(a.id, actor)}>Revoke</button></div></td>
       </tr>
@@ -635,6 +628,80 @@ function credNote(c) {
   return '';
 }
 
+// ---------- Registry tags: where the machine runs ----------
+// `provider` / `service` / `account` are reserved and get real controls; the rest
+// is a free key:value list a DBA-admin invents here. The vocabulary is DERIVED
+// from the fleet (GET /admin/tag-keys), so the form offers what other
+// connections already say instead of admitting a fourth spelling of one account
+// id. Tags describe the SERVER — its databases inherit them.
+function HostingFields({ tags, onChange, vocab }) {
+  const t = tags || {};
+  const set = (k, v) => {
+    const n = { ...t };
+    if (v === '' || v == null) delete n[k]; else n[k] = v;
+    // Services are per provider: keeping 'ECS' after a switch to AWS would name
+    // a service that provider does not sell.
+    if (k === 'provider') delete n.service;
+    onChange(n);
+  };
+  const prov = QH_PROVIDERS[t.provider];
+  const custom = Object.keys(t).filter(k => QH_TAG_RESERVED.indexOf(k) < 0).sort();
+  const [nk, setNk] = useAcc('');
+  const [nv, setNv] = useAcc('');
+  const known = (vocab || []).filter(v => !v.reserved).map(v => v.key);
+  const valuesFor = (k) => { const e = (vocab || []).find(v => v.key === k); return e ? e.values.map(x => x.value) : []; };
+  const addCustom = () => {
+    const k = nk.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '-');
+    if (!k || !nv.trim() || QH_TAG_RESERVED.indexOf(k) >= 0) return;
+    set(k, nv.trim()); setNk(''); setNv('');
+  };
+  return (
+    <div className="qh-field">
+      <span className="qh-field-lbl">Where it runs</span>
+      <div className="qh-provseg">
+        <button className={'qh-provopt' + (!t.provider ? ' is-active' : '')} onClick={() => set('provider', '')}>Untagged</button>
+        {Object.keys(QH_PROVIDERS).map(id => (
+          <button key={id} className={'qh-provopt' + (t.provider === id ? ' is-active' : '')} onClick={() => set('provider', id)}>
+            <img className="qh-prov-logo" src={qhProviderLogo(id)} alt="" draggable={false} />{QH_PROVIDERS[id].label}
+          </button>
+        ))}
+      </div>
+      {prov && (
+        <div className="qh-tagrow">
+          <span className="qh-tagrow-k">service</span>
+          <div className="qh-seg qh-seg-sm">
+            {prov.services.map(s => <button key={s} className={'qh-seg-opt' + (t.service === s ? ' is-active' : '')} onClick={() => set('service', t.service === s ? '' : s)}>{s}</button>)}
+          </div>
+        </div>
+      )}
+      <div className="qh-tagrow">
+        <span className="qh-tagrow-k">account</span>
+        <input className="qh-input qh-input-sm qh-flex1" list="qh-tagvals-account" placeholder="account / project id" value={t.account || ''} onChange={e => set('account', e.target.value)} />
+        <datalist id="qh-tagvals-account">{valuesFor('account').map(v => <option key={v} value={v} />)}</datalist>
+      </div>
+      {custom.map(k => (
+        <div className="qh-tagrow" key={k}>
+          <span className="qh-tagrow-k">{k}</span>
+          <input className="qh-input qh-input-sm qh-flex1" value={t[k]} onChange={e => set(k, e.target.value)} />
+          <button className="qh-icon-btn" onClick={() => set(k, '')} aria-label={'Remove ' + k} title={'Remove ' + k}><AIcon.x /></button>
+        </div>
+      ))}
+      <div className="qh-tagrow">
+        <input className="qh-input qh-input-sm" style={{ width: 132 }} list="qh-tagkeys" placeholder="new tag key" value={nk} onChange={e => setNk(e.target.value)} />
+        <datalist id="qh-tagkeys">{known.map(k => <option key={k} value={k} />)}</datalist>
+        <input className="qh-input qh-input-sm qh-flex1" placeholder="value" value={nv} onChange={e => setNv(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCustom(); } }} />
+        <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={addCustom} disabled={!nk.trim() || !nv.trim()}>Add</button>
+      </div>
+      {/* A new key is not a typo guard — it is a fleet-wide decision: it becomes a
+          filter every connection can carry, and two keys meaning the same thing
+          is how the tag stops being worth filtering by. */}
+      {nk.trim() && known.indexOf(nk.trim().toLowerCase()) < 0 && (
+        <div className="qh-tagnew">New key · it becomes a filter for the whole fleet.{known.length ? ' Existing keys: ' + known.join(', ') + '.' : ''}</div>
+      )}
+    </div>
+  );
+}
+
 // Add / edit / rotate, one component. `mode` is 'create' | 'edit' | 'rotate';
 // rotate shows only the credential block, because rotating a password is the
 // routine job and making someone scroll past the host and port to do it is how
@@ -648,6 +715,7 @@ function ConnectionForm({ st, init, mode, onDone }) {
     engine: init ? (init.engineId || 'postgres') : 'postgres',
     defaultDatabase: init ? (init.defaultDatabase || '') : '',
     notes: init ? (init.notes || '') : '',
+    tags: init && init.tags ? { ...init.tags } : {},
   }));
   const [creds, setCreds] = useAcc(() => {
     const c = qhBlankCreds();
@@ -658,6 +726,14 @@ function ConnectionForm({ st, init, mode, onDone }) {
   });
   const [busy, setBusy] = useAcc(false);
   const [probe, setProbe] = useAcc(null);
+  // The tag keys and values the fleet already uses, for the suggestions in
+  // HostingFields. Failure is silent: it costs the suggestions, not the form.
+  const [vocab, setVocab] = useAcc(null);
+  React.useEffect(() => {
+    let live = true;
+    qhApi.adminTagKeys().then(r => { if (live) setVocab(r.keys || []); }).catch(() => {});
+    return () => { live = false; };
+  }, []);
   const enginePort = (QH_CONN_ENGINES.find(e => e[0] === f.engine) || [])[2];
   const valid = f.alias.trim() && f.host.trim() && f.defaultDatabase.trim();
 
@@ -704,6 +780,8 @@ function ConnectionForm({ st, init, mode, onDone }) {
         port: f.port ? parseInt(f.port, 10) : null, engine: f.engine,
         defaultDatabase: f.defaultDatabase.trim(),
         notes: f.notes.trim(), credentials: changedCreds(),
+        // The whole bag, every save: a merge patch cannot say “this key is gone”.
+        tags: f.tags,
       };
     const p = editing ? st.updateConnection(init.id, payload) : st.addConnection(payload);
     p.then(ok => { setBusy(false); if (ok) onDone(); });
@@ -751,6 +829,7 @@ function ConnectionForm({ st, init, mode, onDone }) {
             <span className="qh-field-lbl">Notes</span>
             <input className="qh-input" placeholder="optional — who owns it, why it exists" value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} />
           </label>
+          <HostingFields tags={f.tags} vocab={vocab} onChange={tags => setF({ ...f, tags })} />
         </>)}
         {QH_CRED_TIERS.map(([t, label, hint]) => (
           <ConnCredRow key={t} label={label} hint={hint}
@@ -782,6 +861,7 @@ function ConnectionsView({ st, user }) {
   const [refreshing, setRefreshing] = React.useState(null);
   const [q, setQ] = React.useState('');
   const [envF, setEnvF] = React.useState('all');
+  const [provF, setProvF] = React.useState('all');
   const [sort, setSort] = React.useState({ key: 'name', dir: 'asc' });
   const [form, setForm] = React.useState(null);     // {mode, conn} while a modal is open
   const [testing, setTesting] = React.useState(null);
@@ -855,16 +935,27 @@ function ConnectionsView({ st, user }) {
         <div className="qh-seg qh-seg-sm">
           {[['all', 'All'], ['production', 'Production'], ['staging', 'Staging']].map(([v, l]) => <button key={v} className={'qh-seg-opt' + (envF === v ? ' is-active' : '')} onClick={() => setEnvF(v)}>{l}</button>)}
         </div>
+        {/* Which cloud runs it. 'Untagged' is a filter of its own, because the
+            registry gap is the thing an admin needs to find and close. */}
+        <div className="qh-seg qh-seg-sm">
+          {[['all', 'Any host'], ...Object.keys(QH_PROVIDERS).map(id => [id, QH_PROVIDERS[id].label]), ['none', 'Untagged']].map(([v, l]) => (
+            <button key={v} className={'qh-seg-opt' + (provF === v ? ' is-active' : '')} onClick={() => setProvF(v)}>
+              {QH_PROVIDERS[v] && <img className="qh-prov-logo" src={qhProviderLogo(v)} alt="" draggable={false} />}{l}
+            </button>
+          ))}
+        </div>
       </div>
       {(() => {
         const dir = sort.dir === 'asc' ? 1 : -1;
         const rows = (st.connections || [])
           .filter(c => envF === 'all' || c.env === envF)
-          .filter(c => { const t = q.trim().toLowerCase(); if (!t) return true; return (c.name + ' ' + c.engine + ' ' + (c.host || '') + ' ' + (c.databases || []).map(d => d.name).join(' ')).toLowerCase().includes(t); })
+          .filter(c => provF === 'all' || (provF === 'none' ? !qhProvider(c) : qhTags(c).provider === provF))
+          .filter(c => { const t = q.trim().toLowerCase(); if (!t) return true; return (c.name + ' ' + c.engine + ' ' + (c.host || '') + ' ' + qhHostingFull(c) + ' ' + (c.databases || []).map(d => d.name).join(' ')).toLowerCase().includes(t); })
           .slice()
           .sort((a, b) => {
             let av, bv;
             if (sort.key === 'dbs') { av = (a.databases || []).length; bv = (b.databases || []).length; }
+            else if (sort.key === 'hosting') { av = (qhHosting(a) || 'zzz').toLowerCase(); bv = (qhHosting(b) || 'zzz').toLowerCase(); }
             else { av = String(a[sort.key]).toLowerCase(); bv = String(b[sort.key]).toLowerCase(); }
             return av < bv ? -dir : av > bv ? dir : 0;
           });
@@ -872,7 +963,7 @@ function ConnectionsView({ st, user }) {
         const th = (k, label, cls) => <th className={'qh-sort-th' + (sort.key === k ? ' is-sorted' : '') + (cls || '')} onClick={() => toggleSort(k)}>{label}<span className="qh-sort-arw">{arrow(k)}</span></th>;
         return (
           <table className="qh-atable qh-conntable">
-            <thead><tr>{th('name', 'Connection')}{th('engine', 'Engine')}{th('enabled', 'Status')}{th('env', 'Environment')}{th('dbs', 'Databases')}<th className="qh-tright">Actions</th></tr></thead>
+            <thead><tr>{th('name', 'Connection')}{th('engine', 'Engine')}{th('hosting', 'Hosting')}{th('enabled', 'Status')}{th('env', 'Environment')}{th('dbs', 'Databases')}<th className="qh-tright">Actions</th></tr></thead>
             <tbody>
               {rows.map(c => {
                 const probe = tested[c.id];
@@ -880,6 +971,14 @@ function ConnectionsView({ st, user }) {
                 <tr key={c.id}>
                   <td><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b>{c.name}</b></div>{c.host && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}</td>
                   <td className="qh-muted">{c.engine}</td>
+                  {/* Provider + service on one line; the account and any custom
+                      tags are on the hover, because this column sits between two
+                      identity columns and must not widen the table. */}
+                  <td>
+                    {qhProvider(c)
+                      ? <div className="qh-conn-namecell qh-hostcell" title={qhHostingFull(c)}><img className="qh-prov-logo" src={qhProviderLogo(qhTags(c).provider)} alt="" draggable={false} />{qhHosting(c)}</div>
+                      : <span className="qh-expiry is-soon" title="No provider tag — nothing here says where this server runs.">untagged</span>}
+                  </td>
                   {/* `qh-expiry` is the table's existing "state worth
                       noticing" text: neutral normally, red for is-exp, amber
                       for is-soon. A disabled connection is the row you want

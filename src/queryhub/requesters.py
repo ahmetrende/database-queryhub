@@ -72,3 +72,37 @@ def get(principal_id: str) -> dict | None:
         "FROM requesters WHERE slack_user_id = %s",
         (principal_id,),
     )
+
+
+def by_email(email: str) -> dict | None:
+    """Find the principal that owns an address — the join an external SSO
+    login lands on.
+
+    An OIDC provider proves an email; every grant, approval, audit row and
+    masking exemption hangs off the principal id. This is the only bridge
+    between the two, which makes it authorization-critical rather than a
+    convenience lookup, so it is deliberately strict:
+
+      - case- and whitespace-insensitive, because an IdP is free to send
+        `Name.Surname@example.com` and the column stores it lowered;
+      - AMBIGUITY IS A REFUSAL. Two rows sharing an address cannot be
+        resolved into one identity, and picking either would hand one
+        person another person's grants. None of them is the safe answer;
+      - it does NOT create anything. An address with no row is not a new
+        user, it is a stranger — see the caller, which turns that into a
+        refusal rather than an onboarding.
+
+    Enabled and disabled rows both match on purpose: a disabled requester
+    must fail the entry gate as themselves, not read as an unknown address.
+    """
+    e = (email or "").strip().lower()
+    if not e:
+        return None
+    rows = db.fetch_all(
+        "SELECT slack_user_id, email, name, enabled "
+        "FROM requesters WHERE lower(btrim(email)) = %s",
+        (e,),
+    )
+    if len(rows) != 1:
+        return None
+    return rows[0]

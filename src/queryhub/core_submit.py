@@ -68,6 +68,11 @@ class Rejection:
     field: str
     message: str
     reason: str | None = None
+    # Structured detail a transport can render on its own terms. Today only
+    # `needs_confirmation` fills it: one sentence per statement, in statement
+    # order, so a client shows them as a list instead of re-splitting a string
+    # we already had in pieces.
+    reasons: tuple[str, ...] = ()
 
 
 @dataclass
@@ -88,6 +93,10 @@ class Prepared:
     origin: str = "slack"
     client_ip: str | None = None
     user_agent: str | None = None
+    # The requester asked to see this result unmasked. INTENT only: the
+    # executor re-derives whether they may, from their super-admin standing
+    # at run time. See migrations/093_requests_unmasked.sql.
+    unmasked: bool = False
 
 
 @dataclass
@@ -139,6 +148,8 @@ def validate_submission(
     origin: str = "slack",
     client_ip: str | None = None,
     user_agent: str | None = None,
+    confirmed: bool = False,
+    unmasked: bool = False,
 ) -> Prepared | Rejection:
     """Run every submit-time check in the exact order the Slack modal
     always has. Returns a Prepared on success, a Rejection on the first
@@ -185,12 +196,49 @@ def validate_submission(
     if target is None:
         return Rejection("server", "Selected server is no longer available.")
 
-    safety = query_safety.analyze(query, engine=target.engine)
+    # Whether the bulk-destructive refusals apply to this submitter.
+    #
+    # Derived from the identity the transport authenticated, never from anything
+    # in the submission — and re-derived at EXECUTION time in executor._run, so a
+    # queued statement cannot keep unrestricted standing after the super-admin
+    # row is gone. Nothing about this decision is stored on the request row.
+    unrestricted = admins.is_super_admin(user_id)
+    safety = query_safety.analyze(query, engine=target.engine,
+                                  unrestricted=unrestricted)
     if safety.blocked:
         return Rejection("query", " ".join(safety.blockers)[:3000])
 
-    # Mode required by the query: ro / rw / ddl
-    required_mode = query_safety.required_mode(query, engine=target.engine)
+    # Bulk-destructive work a super-admin may do, but not by accident. The
+    # transport shows these reasons and re-submits with confirmed=True; a
+    # transport that does not know about `confirm` yet renders the message as an
+    # error, which is the safe direction to fail in.
+    if safety.needs_confirmation and not confirmed:
+        return Rejection(
+            "confirm",
+            " ".join(safety.confirmations)[:3000],
+            reason="needs_confirmation",
+            # The joined message stays for transports that render one string
+            # (Slack, and any older client); the tuple is the same content
+            # unjoined, which is what the web modal renders one block each.
+            reasons=tuple(safety.confirmations))
+
+    # An unmasked result is a super-admin affordance. Asking for one without that
+    # standing is REFUSED rather than quietly downgraded: masking anyway would be
+    # just as safe for the data, but it would hide a client sending a flag it has
+    # no business sending, which is either a bug or an attempt. `unrestricted` is
+    # the same is_super_admin answer computed just above — no second lookup.
+    if unmasked and not unrestricted:
+        return Rejection(
+            "unmasked",
+            "Only a super-admin can run a query with masking turned off.",
+            reason="not_super_admin")
+
+    # Mode required by the query: ro / rw / ddl. Same `unrestricted` the
+    # analyze() above used — otherwise a super-admin's procedural block is
+    # blocked here, blocked reports 'ro', and the tier written to the row is a
+    # read-only label on a role creation.
+    required_mode = query_safety.required_mode(query, engine=target.engine,
+                                               unrestricted=unrestricted)
 
     # Effective grant: user_target_grants overrides team_target_grants;
     # admins / bypass requesters get a synthetic ddl-on-everything grant.
@@ -390,6 +438,7 @@ def validate_submission(
         origin=origin,
         client_ip=client_ip,
         user_agent=user_agent,
+        unmasked=unmasked,
     )
 
 
@@ -639,9 +688,9 @@ def create_request(
                 f" query, wants_result, result_format, justification, scheduled_for, "
                 f" explain_plan, risk_summary, query_fingerprint, status, "
                 f" decided_by_slack_id, decided_by_name, decided_at, decision_reason, "
-                f" origin, engine, required_tier) "
+                f" origin, engine, required_tier, unmasked) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, "
-                f"        %s, %s, %s, NOW(), %s, %s, %s, %s) "
+                f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s) "
                 "RETURNING id, requester_slack_id, requester_name, target_server_id, "
                 "          database_name, query, wants_result, result_format, "
                 "          justification, status, scheduled_for, decided_by_slack_id, "
@@ -666,6 +715,7 @@ def create_request(
                     prep.origin,
                     prep.target.engine,
                     prep.required_mode,
+                    prep.unmasked,
                 ),
             )
             row = cur.fetchone()
@@ -720,9 +770,9 @@ def create_request(
                 f"({id_col}requester_slack_id, requester_name, target_server_id, database_name, "
                 f" query, wants_result, result_format, justification, scheduled_for, "
                 f" explain_plan, risk_summary, query_fingerprint, origin, "
-                f" engine, required_tier) "
+                f" engine, required_tier, unmasked) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, "
-                f"        %s, %s) "
+                f"        %s, %s, %s) "
                 "RETURNING id, requester_slack_id, requester_name, target_server_id, "
                 "          database_name, query, wants_result, result_format, "
                 "          justification, status, scheduled_for, risk_summary, origin",
@@ -742,6 +792,7 @@ def create_request(
                     prep.origin,
                     prep.target.engine,
                     prep.required_mode,
+                    prep.unmasked,
                 ),
             )
             row = cur.fetchone()

@@ -5,6 +5,7 @@ strings, history rows, env labels) are unit-testable without a DB.
 """
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -12,6 +13,8 @@ from zoneinfo import ZoneInfo
 from .. import config as cfg
 from .. import query_safety
 from ..auto_approve import AUTO_DECIDED_BY
+
+log = logging.getLogger(__name__)
 
 # Timezone the web UI renders timestamps in. bot_config
 # `web_display_timezone` (an IANA name like "Europe/Istanbul"); defaults to
@@ -188,12 +191,16 @@ def _initials(name: str | None) -> str:
     return (parts[0][0] + parts[-1][0]).upper()
 
 
-def queue_item(row: dict, alias_of: "callable") -> dict:
+def queue_item(row: dict, alias_of: "callable", tags_of=None) -> dict:
     """One pending `requests` row → the ADMIN_API GET /admin/queue item.
 
     `trust` has no backend model yet (None); `estRows`/`estTables` aren't
     persisted as discrete fields — the render-ready `risk_summary` we do
     store is surfaced as `riskSummary` instead.
+
+    `tags_of` resolves the target's hosting bag SERVER-side. The client must
+    not join it: an approver saying yes to a DDL is being shown where it runs,
+    and a client-side join is a stale cloud name next to a DROP.
     """
     tid = row.get("target_server_id")
     alias = alias_of(tid) if tid else None
@@ -210,6 +217,7 @@ def queue_item(row: dict, alias_of: "callable") -> dict:
         },
         "connectionId": alias or (str(tid) if tid else None),
         "databaseId": row.get("database_name"),
+        "tags": (tags_of(tid) if (tags_of and tid) else {}) or {},
         "env": env_of(alias or ""),
         "tier": tier,
         "sql": query,
@@ -334,18 +342,37 @@ _EVENT_LABEL = {
 #     provider  →  what proved who you are      Slack SSO / local account
 #     origin    →  where the request came from   via web / via Slack
 #
-# One key per entry in auth_providers._ALL, which is the registry the login
-# screen is built from — a test fails if a provider is added without a label
-# here, because the fallback below is a safety net and not a plan.
+# One key per BUILT-IN provider (auth_providers._ALL) — a test fails if one is
+# added without a label here, because the fallback below is a safety net and
+# not a plan.
+#
+# Operator-configured OIDC providers cannot be in this map: their ids are
+# chosen per deployment and only the environment knows them. They are named
+# from the live registry instead, which is why `_provider_label` is a function.
 #
 # The fallback exists for a row written by an older or newer build than the one
-# rendering it: audit rows are permanent and the provider set is not. It shows
-# "<name> sign-in" rather than hiding the line, because a login nobody can
-# attribute is precisely what an audit reader needs to see.
+# rendering it, or by a provider since removed from the environment: audit rows
+# are permanent and the provider set is not. It shows "<name> sign-in" rather
+# than hiding the line, because a login nobody can attribute is precisely what
+# an audit reader needs to see.
 _PROVIDER_LABELS = {
     "slack": "Slack SSO",
     "local": "local account",
 }
+
+
+def _provider_label(provider: str) -> str:
+    name = str(provider).lower()
+    fixed = _PROVIDER_LABELS.get(name)
+    if fixed:
+        return fixed
+    from . import auth_providers
+    try:
+        if name in auth_providers.oidc_ids():
+            return f"{name} SSO"
+    except Exception:          # never let a label lookup break an audit page
+        log.warning("provider label lookup failed for %r", name, exc_info=True)
+    return f"{provider} sign-in"
 
 
 def _audit_info(d: dict) -> str | None:
@@ -366,8 +393,7 @@ def _audit_info(d: dict) -> str | None:
         # reported as a bug. It was not: someone signed into the web app using
         # Slack SSO, which is both true and the whole point of the provider
         # registry. One word, two meanings, one list.
-        bits.append(_PROVIDER_LABELS.get(
-            str(d["provider"]).lower(), f"{d['provider']} sign-in"))
+        bits.append(_provider_label(d["provider"]))
     if d.get("ip"):
         bits.append(f"IP {d['ip']}")
     ua = d.get("user_agent")

@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime
 import logging
 
+from . import admins
 from . import config as cfg
 from . import db
 
@@ -42,13 +43,24 @@ def effective_caps(principal_id: str) -> tuple[int, int]:
     base_mb = cfg.get_int("csv_size_mb", 10)
     ceiling_mb = cfg.get_int("csv_size_mb_ceiling", 100)
 
-    override = _override_rows(principal_id)
-    if override and override > base_rows:
-        rows = override
-        scaled = round(base_mb * override / max(base_rows, 1))
+    # A super-admin runs without tier gates and without an approver, but NOT
+    # without a row cap: the cap is what stops a mistyped SELECT from filling the
+    # disk, and that is a resource guard rather than an authorization one. Their
+    # floor is raised by config instead of removed, and it defaults to the global
+    # cap — so this key is inert until someone sets it deliberately.
+    #
+    # Read live, like every other authority question here: no cache, and the
+    # answer can change between two submissions.
+    floor = base_rows
+    if admins.is_super_admin(principal_id):
+        floor = max(floor, cfg.get_int("super_admin_max_rows", base_rows))
+
+    rows = max(base_rows, floor, _override_rows(principal_id) or 0)
+    if rows > base_rows:
+        scaled = round(base_mb * rows / max(base_rows, 1))
         mb = min(ceiling_mb, max(base_mb, scaled))
     else:
-        rows, mb = base_rows, base_mb
+        mb = base_mb
     return rows, mb * 1024 * 1024
 
 

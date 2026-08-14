@@ -18,7 +18,7 @@ def _req():
 
 def _session(monkeypatch, claims):
     monkeypatch.setattr(deps.sessions, "verify_access", lambda t: claims)
-    monkeypatch.setattr(deps.sessions, "session_alive", lambda sid: True)
+    monkeypatch.setattr(deps.sessions, "session_alive", lambda sid, principal=None: True)
 
 
 def test_disabled_local_account_is_rejected(monkeypatch):

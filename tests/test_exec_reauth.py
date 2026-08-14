@@ -23,6 +23,9 @@ def _wire(monkeypatch, current_mode, main_tier="rw"):
     })()
     monkeypatch.setattr(ex.query_safety, "analyze", lambda *a, **k: report)
     monkeypatch.setattr(ex.admins, "is_admin", lambda uid: False)
+    # The execution-time re-analysis re-derives `unrestricted` from the
+    # requester's CURRENT super-admin standing, so the executor asks too.
+    monkeypatch.setattr(ex.admins, "is_super_admin", lambda uid: False)
     monkeypatch.setattr(ex.requesters, "is_allowed", lambda uid: True)
     monkeypatch.setattr(ex.teams, "effective_mode_for_database",
                         lambda *a, **k: current_mode)

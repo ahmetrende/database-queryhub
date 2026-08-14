@@ -16,6 +16,7 @@ window.qhBrand = qhBrand;
 const QH_CONNECTIONS = [
   {
     id: 'prod-main', name: 'prod-main', engine: 'PostgreSQL 15', env: 'production',
+    tags: { provider: 'aws', service: 'RDS', account: '4417-0219-0871' },
     databases: [
       { id: 'users',     name: 'users',     tier: 'RO',  tables: ['users', 'user_kyc', 'sessions', 'login_history', 'CustomerNotes'] },
       { id: 'payments',  name: 'payments',  tier: 'RW',  tables: ['transactions', 'payouts', 'cards', 'invoices'] },
@@ -24,6 +25,7 @@ const QH_CONNECTIONS = [
   },
   {
     id: 'prod-replica', name: 'prod-replica', engine: 'PostgreSQL 15 (read replica)', env: 'production',
+    tags: { provider: 'aws', service: 'RDS', account: '4417-0219-0871' },
     databases: [
       { id: 'users_ro',     name: 'users',     tier: 'RO', tables: ['users', 'user_kyc', 'sessions'] },
       { id: 'analytics_ro', name: 'analytics', tier: 'RO', tables: ['events', 'daily_metrics', 'cohorts'] },
@@ -31,12 +33,14 @@ const QH_CONNECTIONS = [
   },
   {
     id: 'staging', name: 'staging', engine: 'PostgreSQL 15', env: 'staging',
+    tags: { provider: 'aws', service: 'RDS', account: '9930-4471-2205' },
     databases: [
       { id: 'app_stg', name: 'app', tier: 'DDL', tables: ['users', 'orders', 'feature_flags'] },
     ],
   },
   {
     id: 'reporting-mssql', name: 'reporting-mssql', engine: 'SQL Server 2022', env: 'production',
+    tags: { provider: 'huawei', service: 'ECS', account: 'hw-proj-tr-01' },
     databases: [
       { id: 'ReportingDW', name: 'ReportingDW', tier: 'RO', tables: ['FactTrades', 'DimUser', 'DimAsset', 'AuditLog'] },
     ],
@@ -80,9 +84,14 @@ function qhSvcTables(s) {
   };
   return per[s] || [s.replace(/-/g, '_') + '_records', 'events', 'settings', 'audit_log'];
 }
-QH_EXC_SERVICES.forEach(([s, tier]) => {
+// The sample fleet sits in two clouds on purpose: a half-migrated estate is the
+// normal case, and it is the case the provider tag exists for.
+QH_EXC_SERVICES.forEach(([s, tier], i) => {
   const dbid = s.replace(/-/g, '_') + '_service';
+  const hw = i % 3 === 1;
   QH_CONNECTIONS.push({ id: 'svc-prod-' + s, name: 'svc-prod-' + s, engine: 'PostgreSQL 15', env: 'production',
+    tags: hw ? { provider: 'huawei', service: 'RDS', account: 'hw-proj-tr-01' }
+             : { provider: 'aws', service: 'RDS', account: '4417-0219-0871' },
     databases: [{ id: dbid, name: dbid, tier, tables: qhSvcTables(s) }] });
 });
 
@@ -328,6 +337,151 @@ function qhEngineId(engineStr) {
 }
 function qhEngine(conn) { return QH_ENGINES[qhEngineId(conn && conn.engine)] || QH_ENGINES.postgres; }
 function qhEngineBadge(conn) { const v = (String(conn && conn.engine || '').match(/\d+/) || [''])[0]; return qhEngine(conn).badge + v; }
+// ---------- Where a target lives: connection tags ----------
+// One tag bag per CONNECTION — a server, or a managed instance. Its databases
+// INHERIT it: a database has no location of its own, and a second copy of the
+// value on every database is only a way for the two to disagree later.
+// Three keys are reserved (`provider`, `service`, `account`); everything else is
+// a free key:value pair a DBA-admin invents on the connection form. This map is
+// what the UI can DRAW, not what may exist — the server owns the vocabulary, and
+// an unknown provider degrades to plain text rather than to nothing.
+const QH_PROVIDERS = {
+  aws:    { label: 'AWS',          logo: '/brand/providers/aws.svg',    logoDark: '/brand/providers/aws-dark.svg', services: ['RDS', 'Aurora', 'EC2'] },
+  huawei: { label: 'Huawei Cloud', logo: '/brand/providers/huawei.svg', services: ['RDS', 'ECS', 'GaussDB'] },
+  onprem: { label: 'On-prem',      logo: '/brand/providers/onprem.svg', services: ['Bare metal', 'VM'] },
+};
+const QH_TAG_KEYS = [
+  { key: 'provider', label: 'Cloud provider',    hint: 'Who runs the machine' },
+  { key: 'service',  label: 'Service',           hint: 'A managed instance, or a VM someone patches' },
+  { key: 'account',  label: 'Account / project', hint: 'Which cloud account it is billed to' },
+];
+const QH_TAG_RESERVED = QH_TAG_KEYS.map(t => t.key);
+// Same blob-URL indirection as the engine logos — see qhEngineLogo. A provider
+// whose mark is dark ink (the AWS wordmark is navy) ships a dark-theme variant:
+// read live off <html data-theme> like qhBrand does, so a theme switch repaints
+// it on the next render instead of leaving an invisible logo behind.
+function qhProviderLogo(id) {
+  const p = QH_PROVIDERS[id];
+  if (!p) return '';
+  const dark = typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme') === 'dark';
+  const key = dark && p.logoDark ? id + '_dark' : id;
+  const path = dark && p.logoDark ? p.logoDark : p.logo;
+  const r = window.__resources;
+  if (r && r['prov_' + key]) return r['prov_' + key];
+  return (window.QH_MOCK && path.charAt(0) === '/') ? path.slice(1) : path;
+}
+function qhTags(conn) { return (conn && conn.tags) || {}; }
+function qhProvider(conn) { return QH_PROVIDERS[qhTags(conn).provider] || null; }
+// 'AWS · RDS' — the short form that fits a table cell or a group header.
+function qhHosting(conn) {
+  const t = qhTags(conn), p = QH_PROVIDERS[t.provider];
+  if (!p) return '';
+  return p.label + (t.service ? ' · ' + t.service : '');
+}
+// Everything the tags say, in one string. The developer-side placement is the
+// hover, so this has to be complete on its own — nothing else carries it.
+function qhHostingFull(conn) {
+  const t = qhTags(conn), parts = [];
+  const h = qhHosting(conn);
+  if (h) parts.push(h);
+  if (t.account) parts.push('account ' + t.account);
+  qhCustomTags(conn).forEach(([k, v]) => parts.push(k + ' ' + v));
+  return parts.join(' · ');
+}
+function qhCustomTags(conn) {
+  const t = qhTags(conn);
+  return Object.keys(t).filter(k => QH_TAG_RESERVED.indexOf(k) < 0 && t[k] != null && t[k] !== '')
+    .sort().map(k => [k, String(t[k])]);
+}
+// `provider:aws service:rds` in the sidebar search. Bare words stay a name
+// search, so a token can only ever NARROW what the tree already shows.
+function qhParseTagQuery(q) {
+  const filters = [], words = [];
+  String(q || '').trim().split(/\s+/).forEach(w => {
+    const m = w.match(/^([a-z][a-z0-9_.-]*):(.*)$/i);
+    if (m) filters.push({ k: m[1].toLowerCase(), v: m[2].toLowerCase() });
+    else if (w) words.push(w);
+  });
+  return { text: words.join(' '), filters };
+}
+// A filter with no value (`provider:`) asks whether the key is set at all.
+// Unknown keys fall back to the connection's own fields, so `env:staging` and
+// `engine:sql` work without anyone having to tag them.
+const QH_TAG_CONN_FIELDS = ['env', 'engine', 'host', 'name'];
+function qhTagMatch(conn, filters) {
+  if (!filters || !filters.length) return true;
+  const t = qhTags(conn);
+  return filters.every(f => {
+    let val = t[f.k];
+    if (f.k === 'provider') { const p = QH_PROVIDERS[t.provider]; val = p ? t.provider + ' ' + p.label : t.provider; }
+    if ((val == null || val === '') && QH_TAG_CONN_FIELDS.indexOf(f.k) >= 0) val = conn && conn[f.k];
+    if (val == null || val === '') return false;
+    return f.v === '' || String(val).toLowerCase().includes(f.v);
+  });
+}
+// The tag vocabulary the fleet actually carries — what the search box can
+// complete. Derived from the connections in hand, so a key or value appears in
+// the picker only while some target still has it.
+function qhTagVocab(conns) {
+  const values = {};
+  const add = (k, v) => { if (v == null || v === '') return; (values[k] = values[k] || {})[String(v)] = 1; };
+  (conns || []).forEach(c => {
+    const t = qhTags(c);
+    Object.keys(t).forEach(k => add(k, t[k]));
+    QH_TAG_CONN_FIELDS.forEach(f => { if (f !== 'name') add(f, c[f]); });
+  });
+  const keys = QH_TAG_KEYS.map(t => t.key);
+  Object.keys(values).sort().forEach(k => { if (keys.indexOf(k) < 0) keys.push(k); });
+  const out = {};
+  Object.keys(values).forEach(k => { out[k] = Object.keys(values[k]).sort(); });
+  return { keys, values: out };
+}
+// Completions for the word being typed: keys while there is no colon, values
+// after it. A filter syntax nobody can discover is a filter syntax nobody uses,
+// and the place to say it is the moment someone types the first three letters.
+function qhTokenSuggest(q, vocab) {
+  const s = String(q || '');
+  const cur = s.split(/\s+/).pop() || '';
+  if (!cur) return [];
+  const ci = cur.indexOf(':');
+  const out = [];
+  if (ci < 0) {
+    const lc = cur.toLowerCase();
+    (vocab.keys || []).forEach(k => {
+      if (k.indexOf(lc) === 0 && k !== lc) out.push({ key: k, value: null, insert: k + ':', label: k + ':' });
+    });
+  } else {
+    const k = cur.slice(0, ci).toLowerCase(), frag = cur.slice(ci + 1).toLowerCase();
+    ((vocab.values || {})[k] || []).forEach(v => {
+      if (v.toLowerCase().indexOf(frag) >= 0 && v.toLowerCase() !== frag) out.push({ key: k, value: v, insert: k + ':' + v + ' ', label: k + ':' + v });
+    });
+  }
+  return out.slice(0, 6);
+}
+// Replace the word being typed with the completion, leaving the rest alone —
+// `provider:aws use|` must not lose the token that is already there.
+function qhApplyToken(q, insert) {
+  const s = String(q || '');
+  const m = s.match(/[^\s]*$/);
+  return s.slice(0, s.length - (m ? m[0].length : 0)) + insert;
+}
+
+// One group per provider+service actually present in the fleet. Untagged
+// targets get their own group rather than disappearing: an unlabelled server is
+// a gap in the registry, and hiding it is how it stays one.
+function qhProviderGroups(conns) {
+  const map = new Map();
+  (conns || []).forEach(c => {
+    const t = qhTags(c);
+    const pid = QH_PROVIDERS[t.provider] ? t.provider : '';
+    const svc = pid ? (t.service || '') : '';
+    const key = pid + '|' + svc;
+    if (!map.has(key)) map.set(key, { key, providerId: pid, service: svc, label: pid ? qhHosting(c) : 'Untagged', conns: [] });
+    map.get(key).conns.push(c);
+  });
+  return Array.from(map.values()).sort((a, b) => (a.providerId ? 0 : 1) - (b.providerId ? 0 : 1) || a.label.localeCompare(b.label));
+}
+
 function qhQuoteIdentFor(name, engineId) {
   const e = QH_ENGINES[engineId] || QH_ENGINES.postgres;
   const s = String(name);
@@ -676,8 +830,51 @@ function qhFleetPrefixes(conns) {
   return pres;
 }
 
+// ---------- POST /queries 409 — a question, or a duplicate? ----------
+// Destructive SQL (DROP, TRUNCATE, ALTER … DROP COLUMN/CONSTRAINT, an UPDATE or
+// DELETE with no WHERE) is not refused for a super-admin: it comes back as 409
+// carrying one or more human-readable reasons, and the SAME request re-sent with
+// `confirmed: true` runs. The trouble is that 409 also means "duplicate request"
+// on this API, and the two must never be confused — answering a duplicate with a
+// confirm dialog re-sends it and duplicates it again.
+//
+// So the test is POSITIVE, in this order:
+//   1. `code: 'confirmation_required'` — the distinct code asked for in the brief.
+//      The day it exists, the text matching below is dead and can be deleted.
+//   2. a `reasons` array on the error — only the confirmation carries one.
+//   3. code `conflict` (or none) with a message that does not read as a
+//      duplicate. Fragile, which is why it is last and why it is one regex.
+// Returns the reasons to SHOW, or null when this 409 is not the question. The
+// reasons are never shortened or reworded: they name the specific consequence,
+// and that sentence is the whole point of asking.
+const QH_DUP_409 = /\b(duplicate|already (submitted|queued|pending|running|in flight))\b/i;
+function qhSplitReasons(text) {
+  return String(text == null ? '' : text).split(/\r?\n+/).map(s => s.trim()).filter(Boolean);
+}
+function qhConfirmReasons(err) {
+  if (!err || err.status !== 409) return null;
+  const code = err.code || '';
+  const list = Array.isArray(err.reasons)
+    ? err.reasons.map(r => String(r == null ? '' : r).trim()).filter(Boolean) : null;
+  if (code === 'confirmation_required') return (list && list.length) ? list : qhSplitReasons(err.message);
+  // The server sends the distinct code now, so `conflict` is DEFINITIVELY not
+  // the question — it is duplicate or rate-limit. Step 3 of the ladder above
+  // used to fall through to text matching here, and that was not merely
+  // fragile: the real duplicate wording ("You already have an active request
+  // (#5, status=pending)") matches none of QH_DUP_409's alternations, so a
+  // duplicate WAS being shown as a confirm dialog whose confirmation the
+  // server then refused again. Measured 2026-08-14 against the live backend.
+  if (code) return (code === 'conflict') ? null : ((list && list.length) ? list : null);
+  // No code at all: an older server, or a transport that lost it. Keep the
+  // last-resort text read for that case only, still guarded by the regex.
+  if (list && list.length) return list;
+  const msg = String(err.message == null ? '' : err.message).trim();
+  if (!msg || QH_DUP_409.test(msg)) return null;
+  return qhSplitReasons(msg);
+}
+
 Object.assign(window, {
-  qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget,
+  qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhConfirmReasons, qhSplitReasons,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,
   qhClassify, qhDetectPII, qhMockResult, qhMaskValue, qhStripComments,
@@ -685,5 +882,7 @@ Object.assign(window, {
   qhRiskHints, qhExplainPlan, qhQuoteIdent, qhQuoteList, qhApproxRows, qhFmtRows,
   QH_SHOW_ENV_TAGS,
   QH_ENGINES, qhEngineId, qhEngine, qhEngineBadge, qhEngineLogo, qhQuoteIdentFor, qhServerRoles,
+  QH_PROVIDERS, QH_TAG_KEYS, QH_TAG_RESERVED, qhProviderLogo, qhProvider, qhTags, qhHosting, qhHostingFull,
+  qhCustomTags, qhParseTagQuery, qhTagMatch, qhProviderGroups, qhTagVocab, qhTokenSuggest, qhApplyToken,
   qhAutoApproveRO, qhSchemaFor, qhSchemaOf, qhQualify, qhSelectSql,
 });

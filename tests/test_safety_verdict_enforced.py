@@ -35,6 +35,11 @@ def submit_env(monkeypatch):
     so the gate is the only thing under test."""
     monkeypatch.setattr(cs, "kill_switch_on", lambda: False)
     monkeypatch.setattr(cs.admins, "is_admin", lambda uid: False)
+    # The safety gate now consults identity: `unrestricted` (the
+    # super-admin path) is an INPUT to analyze(), so a submission cannot
+    # be classified without knowing who is asking. These tests are about
+    # an ordinary user, so answer no.
+    monkeypatch.setattr(cs.admins, "is_super_admin", lambda uid: False)
     monkeypatch.setattr(cs.requesters, "open_request_count", lambda uid: 0)
     monkeypatch.setattr(cs.cfg, "get_int",
                         lambda k, d=None: {"min_query_length": 1,
@@ -64,7 +69,7 @@ def _force_blocked(monkeypatch, message="nope"):
     report = query_safety.SafetyReport()
     report.blockers.append(message)
     monkeypatch.setattr(cs.query_safety, "analyze",
-                        lambda sql, engine="postgres": report)
+                        lambda sql, engine="postgres", unrestricted=False: report)
     return report
 
 
@@ -104,7 +109,7 @@ def test_an_unblocked_query_does_get_past_the_gate(submit_env, monkeypatch):
     what, the ones above would prove nothing about the gate specifically."""
     clean = query_safety.SafetyReport()
     monkeypatch.setattr(cs.query_safety, "analyze",
-                        lambda sql, engine="postgres": clean)
+                        lambda sql, engine="postgres", unrestricted=False: clean)
     with pytest.raises(AssertionError, match="reached past the safety gate"):
         cs.validate_submission(
             "U0EXAMPLE01", "someone", target_server_id=7, database_name="db",
@@ -129,11 +134,12 @@ def test_a_blocked_query_is_never_executed(monkeypatch):
                             "host": "h", "port": 5432, "enabled": True})()
     monkeypatch.setattr(executor.targets, "get", lambda tid: target)
     monkeypatch.setattr(executor.engines, "is_executable", lambda e: True)
+    monkeypatch.setattr(executor.admins, "is_super_admin", lambda uid: False)
 
     report = query_safety.SafetyReport()
     report.blockers.append("blocked at execution time")
     monkeypatch.setattr(executor.query_safety, "analyze",
-                        lambda sql, engine="postgres": report)
+                        lambda sql, engine="postgres", unrestricted=False: report)
 
     def _no_connections(*a, **k):
         raise AssertionError("opened a connection for a blocked query")
@@ -161,9 +167,18 @@ def test_the_execution_gate_reads_the_stored_query_not_the_submitted_one():
     Analyzing anything else would re-approve the text a DBA already saw and
     miss an edit made after approval."""
     import pathlib
+    import re
     src = (pathlib.Path(__file__).resolve().parent.parent / "src"
            / "queryhub" / "executor.py").read_text(encoding="utf-8")
-    assert 'query_safety.analyze(request["query"], engine=target.engine)' in src
+    # Matched on the first ARGUMENT rather than the whole call text: the call
+    # gained `unrestricted=` (re-derived from the requester's current super-admin
+    # standing) and wrapped onto three lines, which broke an exact-string
+    # assertion while this property was untouched.
+    m = re.search(r"query_safety\.analyze\(\s*(?P<first>[^,)]+)", src)
+    assert m, "the execution-time safety gate is gone from executor.py"
+    assert m.group("first").strip() == 'request["query"]', (
+        f"the gate analyses {m.group('first').strip()} rather than the stored "
+        f"query, so an edit made after approval would go unchecked")
 
 
 # ---------------------------------------------------------------------------

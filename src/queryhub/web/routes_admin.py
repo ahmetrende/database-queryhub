@@ -72,6 +72,20 @@ def _alias_of(target_id) -> str | None:
     return t.alias if t else None
 
 
+def _tags_of(target_id) -> dict:
+    """The target's hosting bag, resolved here rather than in the client.
+
+    The queue is the one place the join has to be server-side: the approver is
+    being told where a statement will run, and a client that joined it against
+    its own connection list would be showing a cloud name that may be minutes
+    or months out of date next to a DROP.
+    """
+    if target_id is None:
+        return {}
+    t = targets.get(int(target_id))
+    return (getattr(t, "tags", None) or {}) if t else {}
+
+
 def _slack_client():
     """Bot-token Slack client used to mirror a web decision back into
     Slack (same token deps' employment check uses). None in the vanilla
@@ -99,7 +113,7 @@ def admin_queue(escalate: bool | None = None,
     for r in rows:
         if not admins.can_approve(uid, r):
             continue
-        item = mapping.queue_item(r, _alias_of)
+        item = mapping.queue_item(r, _alias_of, _tags_of)
         if escalate is not None and item["escalate"] != escalate:
             continue
         out.append(item)
@@ -383,9 +397,55 @@ def _connection_entry(row: dict, databases: list[str]) -> dict:
         "defaultDatabase": row["default_database"],
         "notes": row["notes"],
         "secretsProvider": row["secrets_provider"],
+        "tags": row.get("tags") or {},
         "credentials": row["credentials"],
         "databases": [{"id": d, "name": d} for d in databases],
     }
+
+
+# The three keys the UI gives real controls to. Everything else is a free
+# key/value pair a DBA-admin invents on the connection form. Reserved keys are
+# always offered, at zero count, so the vocabulary does not depend on somebody
+# having used them first.
+TAG_RESERVED = ("provider", "service", "account")
+_TAG_KEY_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+TAG_MAX_KEYS = 24
+TAG_MAX_VALUE = 120
+
+
+def _clean_tags(raw: dict | None) -> dict:
+    """Validate and normalise a whole tag bag.
+
+    Keys are lower-case and shaped like identifiers because they become search
+    tokens (`provider:aws`) and a filter dimension across the fleet; a key with
+    a space or a colon in it could not be typed back. Values are trimmed
+    strings, and an empty value drops the key rather than storing a blank —
+    "the key is present but says nothing" is the state that makes a tag lie.
+
+    Bounded on both axes so one connection form cannot write a payload every
+    /connections call then has to carry.
+    """
+    if raw is None:
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        key = str(k or "").strip().lower()
+        if not _TAG_KEY_RE.match(key):
+            raise deps._error(
+                422, "validation",
+                f"Tag key '{k}' is not usable — lower-case letters, digits, "
+                f"'-' and '_' only, starting with a letter (max 32).")
+        val = ("" if v is None else str(v)).strip()
+        if not val:
+            continue
+        if len(val) > TAG_MAX_VALUE:
+            raise deps._error(422, "validation",
+                              f"Tag '{key}' is too long (max {TAG_MAX_VALUE}).")
+        out[key] = val
+    if len(out) > TAG_MAX_KEYS:
+        raise deps._error(422, "validation",
+                          f"Too many tags (max {TAG_MAX_KEYS}).")
+    return out
 
 
 def _connection_payload(row: dict) -> dict:
@@ -558,6 +618,7 @@ class ConnectionIn(BaseModel):
     port: int | None = None           # None = the engine's default port
     engine: str = "postgres"
     notes: str | None = None
+    tags: dict[str, str] | None = None
     credentials: dict[str, CredentialIn] = Field(default_factory=dict)
 
 
@@ -569,6 +630,11 @@ class ConnectionPatch(BaseModel):
     engine: str | None = None
     notes: str | None = None
     enabled: bool | None = None
+    # The WHOLE bag, replacing what is stored — never a merge. A merge patch
+    # cannot express "this key is gone", and a tag that survives its own
+    # deletion is worse than no tag: it keeps answering for a machine that has
+    # moved. `None` means "not editing tags"; `{}` means "remove them all".
+    tags: dict[str, str] | None = None
     credentials: dict[str, CredentialIn] = Field(default_factory=dict)
 
 
@@ -596,6 +662,55 @@ def admin_connections(claims: dict = Depends(deps.current_user)):
                             for r in targets.list_admin_rows()]}
 
 
+@router.get("/tag-keys")
+def admin_tag_keys(claims: dict = Depends(deps.current_user)):
+    """The tag vocabulary, DERIVED from the fleet rather than stored beside it.
+
+    A key exists because a connection carries it, so a key nobody uses cannot
+    linger in the picker and a key somebody invented is offered to the next
+    person without anyone maintaining a list. The form uses this for
+    suggestions and to warn when a new key is about to become a fleet-wide
+    filter dimension.
+
+    Reserved keys are always present, at zero count, so the three that have
+    real controls do not appear and disappear depending on whether anyone has
+    filled them in yet.
+    """
+    admin.require_admin(claims, "access")
+    counts: dict[str, dict] = {
+        k: {"key": k, "label": k.capitalize(), "reserved": True,
+            "count": 0, "values": {}}
+        for k in TAG_RESERVED
+    }
+    for row in db.fetch_all(
+            "SELECT COALESCE(tags, '{}'::jsonb) AS tags FROM target_servers"):
+        for k, v in (row["tags"] or {}).items():
+            e = counts.setdefault(k, {"key": k, "label": k.capitalize(),
+                                      "reserved": False, "count": 0,
+                                      "values": {}})
+            e["count"] += 1
+            e["values"][str(v)] = e["values"].get(str(v), 0) + 1
+    keys = []
+    for e in counts.values():
+        keys.append({
+            "key": e["key"], "label": e["label"], "reserved": e["reserved"],
+            "count": e["count"],
+            # Commonest first: the picker's job is to make the value somebody
+            # already used the easy one to pick again, which is what keeps a
+            # free-text field from turning into six spellings of "production".
+            "values": [{"value": val, "count": n} for val, n in
+                       sorted(e["values"].items(), key=lambda kv: (-kv[1], kv[0]))],
+        })
+    # Reserved keys first and in DECLARED order — provider, then service, then
+    # account — because that is how specific they are and how the form asks for
+    # them. Alphabetical would open with `account`, which is the one a DBA fills
+    # in last. Invented keys follow, alphabetically, having no natural order.
+    order = {k: i for i, k in enumerate(TAG_RESERVED)}
+    keys.sort(key=lambda e: (0, order[e["key"]], "") if e["reserved"]
+              else (1, 0, e["key"]))
+    return {"keys": keys}
+
+
 @router.post("/connections", status_code=201)
 def admin_create_connection(body: ConnectionIn,
                             claims: dict = Depends(deps.current_user)):
@@ -615,7 +730,7 @@ def admin_create_connection(body: ConnectionIn,
         new_id = targets.create_in(
             cur, alias=alias, host=host, port=port, default_database=database,
             engine=engine, notes=(body.notes or "").strip() or None,
-            credentials=creds)
+            tags=_clean_tags(body.tags), credentials=creds)
         # Deliberately no usernames in the details blob, let alone passwords:
         # keeping it to "which tiers were filled" means no reader of the audit
         # log ever has to judge whether a field in here was a secret.
@@ -668,6 +783,11 @@ def admin_update_connection(conn: str, body: ConnectionPatch,
         _set("engine", engine)
     if body.notes is not None:
         _set("notes", (body.notes or "").strip() or None)
+    if body.tags is not None:
+        # Whole-bag replace. `_set` compares against the stored value, so
+        # re-saving the form with the same tags is still not a change and still
+        # writes no audit row.
+        _set("tags", _clean_tags(body.tags))
     if body.enabled is not None and bool(body.enabled) != row["enabled"]:
         # Enabling is the moment a target becomes reachable by developers, so
         # it is the moment to insist the credential is real. Without this an
@@ -703,6 +823,17 @@ def admin_update_connection(conn: str, body: ConnectionPatch,
             details["enabled"] = changes["enabled"]
         if "alias" in changes:
             details["renamed_to"] = changes["alias"]
+        if "tags" in changes:
+            # Name the tag change, not just the fact that "tags" moved. These
+            # are the words an operator will search the log for six months from
+            # now — "when did prod-main stop saying AWS" — and they are labels,
+            # never credentials, so quoting them costs nothing. Both sides,
+            # because a tag that was REMOVED is the interesting half.
+            details["tags_before"] = row.get("tags") or {}
+            details["tags_after"] = changes["tags"]
+            details["hosting"] = " · ".join(
+                str(changes["tags"][k]) for k in TAG_RESERVED
+                if changes["tags"].get(k)) or None
         audit.log_in(cur, None, uid, claims.get("name"), "connection_updated",
                      details)
     return _connection_payload(targets.admin_row(target_id))

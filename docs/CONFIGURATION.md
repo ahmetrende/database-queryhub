@@ -28,9 +28,11 @@ they are inert in the vanilla (web-only) profile.
 |---|---|---|
 | `web_auth_slack_enabled` | `on` | Offer Slack SSO on the sign-in screen. **(Slack)** |
 | `web_auth_local_enabled` | `off` | Offer built-in username/password login (local accounts). Turn on for the vanilla profile. |
+| `web_auth_<id>_enabled` | `on` | Offer the external OIDC provider `<id>` (one row per provider you configured via `OIDC_<ID>_*` in the environment — see AUTH.md §1.1). Defaults to on because setting the secrets is the deliberate act; this switch turns a working provider off. |
+| `web_auth_<id>_label` | `""` | Button text for that provider. Falls back to `OIDC_<ID>_LABEL`, then `Sign in with SSO`. |
 | `web_local_login_max_failures` | `5` | Failed local-login attempts (per username and per IP) tolerated inside the window before a 429 lockout. |
 | `web_local_login_window_minutes` | `15` | Sliding window for the failure counter; the lock lifts as failures age out. |
-| `web_allowed_email_domain` | `""` | If set, restrict Slack SSO logins to this email domain (e.g. `example.com`). Empty = no domain gate. |
+| `web_allowed_email_domain` | `""` | If set, restrict Slack SSO and external-OIDC logins to this email domain (e.g. `example.com`). Empty = no domain gate. |
 | `auth_session_retention_days` | `7` | Expired/revoked login sessions (`web_sessions`) are deleted after this many days. Nothing removed them before, so the table grew for every sign-in. |
 | `auth_outbox_retention_days` | `14` | Processed authorization-change outbox rows are deleted after this many days. |
 | `web_refresh_grace_seconds` | `30` | How long a just-rotated refresh token still works, so two tabs refreshing at once are not treated as token theft. 0 = strict single-use. |

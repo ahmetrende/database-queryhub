@@ -111,12 +111,35 @@ def create_session(principal_id: str, *, provider: str,
     return row["id"], token
 
 
-def session_alive(session_id: int) -> bool:
-    """The per-request revocation check: one indexed lookup."""
+def session_alive(session_id: int, principal_id: str | None = None) -> bool:
+    """The per-request revocation check: one indexed lookup.
+
+    `principal_id` BINDS the session row to the identity claiming it. The access
+    token carries both `sub` and `sid`, and until this existed nothing checked
+    that the two belonged together — a token asserting `sub` = the operator while
+    riding another row's `sid` would have passed, and every authorization
+    decision downstream (is_admin, is_super_admin, grant lookups) is keyed on
+    `sub`.
+
+    Forging such a token needs the signing secret, so this was not reachable on
+    its own. It is here to remove the category rather than leave the secret as
+    the only thing in the way: identity now has to agree with itself in two
+    independent places, one of them a row this process did not mint.
+
+    Omitting `principal_id` keeps the original revocation-only behaviour.
+    """
+    if principal_id is None:
+        row = db.fetch_one(
+            "SELECT 1 AS ok FROM web_sessions "
+            "WHERE id = %s AND revoked_at IS NULL AND expires_at > NOW()",
+            (session_id,),
+        )
+        return row is not None
     row = db.fetch_one(
         "SELECT 1 AS ok FROM web_sessions "
-        "WHERE id = %s AND revoked_at IS NULL AND expires_at > NOW()",
-        (session_id,),
+        "WHERE id = %s AND slack_user_id = %s "
+        "  AND revoked_at IS NULL AND expires_at > NOW()",
+        (session_id, principal_id),
     )
     return row is not None
 
