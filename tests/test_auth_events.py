@@ -1,6 +1,6 @@
 """Pure tests for auth_events.build_notifications — the outbox-row →
 DM-text mapping. No DB: alias/team lookups are injected."""
-from dba_slack_bot import auth_events
+from queryhub import auth_events
 
 
 ALIAS = {52: "alpha-prod", 7: "beta-prod"}

@@ -8,7 +8,7 @@
 """
 import pytest
 
-from dba_slack_bot import pii, query_safety as qs
+from queryhub import pii, query_safety as qs
 
 
 # ---- 1. procedural blocks ---------------------------------------------------

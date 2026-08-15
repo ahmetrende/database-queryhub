@@ -1,7 +1,7 @@
 """Per-user row-limit override resolution: row cap + scaled size cap."""
 import pytest
 
-from dba_slack_bot import row_limits as rl
+from queryhub import row_limits as rl
 
 _MB = 1024 * 1024
 

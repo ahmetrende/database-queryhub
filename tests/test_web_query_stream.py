@@ -29,9 +29,9 @@ import logging
 import pytest
 from starlette.testclient import TestClient
 
-from dba_slack_bot import admins, db, requesters
-from dba_slack_bot.web import app as web_app
-from dba_slack_bot.web import routes_queries, sessions
+from queryhub import admins, db, requesters
+from queryhub.web import app as web_app
+from queryhub.web import routes_queries, sessions
 
 OWNER = "U0OWNER"
 
@@ -40,7 +40,7 @@ OWNER = "U0OWNER"
 def client(monkeypatch):
     logging.disable(logging.CRITICAL)
     monkeypatch.setattr(db, "init_pool", lambda: None)
-    from dba_slack_bot.slack_app import notifications
+    from queryhub.slack_app import notifications
     monkeypatch.setattr(notifications, "dm_all_admins", lambda *a, **k: None)
 
     monkeypatch.setattr(sessions, "verify_access",
@@ -149,7 +149,7 @@ def test_a_stream_for_someone_elses_request_is_refused(client, monkeypatch):
 
 def test_origin_helper_semantics():
     """Unit-level, because both the middleware and the handshake depend on it."""
-    from dba_slack_bot.web import deps
+    from queryhub.web import deps
 
     def conn(origin=None, host="queryhub.example.com"):
         headers = {"host": host}

@@ -21,7 +21,7 @@ silently becomes "this entire database for that reader".
 """
 import pytest
 
-from dba_slack_bot import pii
+from queryhub import pii
 
 DBA_ROW = {"database_name": None, "schema_name": "dba", "table_name": None,
            "column_name": None, "apply_in_joins": False,
@@ -97,8 +97,8 @@ def test_unparseable_sql_never_earns_the_exemption(monkeypatch):
 
 def test_only_super_admins_get_it(monkeypatch):
     """The same query, the same row, two readers, two answers."""
-    import dba_slack_bot.admins as admins_mod
-    import dba_slack_bot.db as db_mod
+    import queryhub.admins as admins_mod
+    import queryhub.db as db_mod
     monkeypatch.setattr(db_mod, "fetch_all", lambda *a, **k: [dict(DBA_ROW)])
     monkeypatch.setattr(admins_mod, "is_super_admin", lambda uid: uid == "U_SUPER")
 
@@ -112,8 +112,8 @@ def test_only_super_admins_get_it(monkeypatch):
 def test_an_unknown_reader_gets_the_strict_answer(monkeypatch):
     """A caller that cannot say who is asking must not receive the privileged
     answer by default."""
-    import dba_slack_bot.admins as admins_mod
-    import dba_slack_bot.db as db_mod
+    import queryhub.admins as admins_mod
+    import queryhub.db as db_mod
     monkeypatch.setattr(db_mod, "fetch_all", lambda *a, **k: [dict(DBA_ROW)])
     monkeypatch.setattr(admins_mod, "is_super_admin",
                         lambda uid: pytest.fail("looked up an absent reader"))
@@ -127,8 +127,8 @@ def test_an_unknown_reader_gets_the_strict_answer(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_loader_drops_privileged_rows_for_a_plain_reader(monkeypatch):
-    import dba_slack_bot.admins as admins_mod
-    import dba_slack_bot.db as db_mod
+    import queryhub.admins as admins_mod
+    import queryhub.db as db_mod
     rows = [dict(DBA_ROW), {"database_name": None, "schema_name": None,
                             "table_name": "public_data", "column_name": None,
                             "apply_in_joins": False, "keep_value_scan": False,
@@ -141,8 +141,8 @@ def test_loader_drops_privileged_rows_for_a_plain_reader(monkeypatch):
 
 
 def test_loader_fails_closed_when_the_admin_lookup_raises(monkeypatch):
-    import dba_slack_bot.admins as admins_mod
-    import dba_slack_bot.db as db_mod
+    import queryhub.admins as admins_mod
+    import queryhub.db as db_mod
 
     def _boom(_uid):
         raise RuntimeError("metadata DB down")
@@ -158,7 +158,7 @@ def test_loader_fails_closed_when_the_admin_lookup_raises(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("module,attr", [
-    ("dba_slack_bot.executor", "_execute_main_statement"),
+    ("queryhub.executor", "_execute_main_statement"),
 ])
 def test_the_executor_passes_the_requester(module, attr):
     import importlib
@@ -172,7 +172,7 @@ def test_the_executor_passes_the_requester(module, attr):
 def test_the_web_result_endpoint_passes_the_requester():
     import inspect
 
-    from dba_slack_bot.web import routes_queries
+    from queryhub.web import routes_queries
     src = inspect.getsource(routes_queries._masked_pii_cols)
     assert 'principal_id=row["requester_slack_id"]' in src, (
         "the header-dot hint would disagree with the delivered file for a "

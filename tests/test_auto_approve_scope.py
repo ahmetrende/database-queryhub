@@ -1,6 +1,6 @@
 """Unit tests for auto_approve.grant_covers — the pure scope/tier predicate
 behind target-scoped auto-approve grants (migration 051)."""
-from dba_slack_bot.auto_approve import grant_covers
+from queryhub.auto_approve import grant_covers
 
 
 def _g(max_tier, target=None, db=None):

@@ -202,7 +202,7 @@ jobs:
             -e BOT_DB_USER=smoke -e BOT_DB_PASSWORD=smoke \
             -e MASTER_KEY_PATH=/tmp/nonexistent-key \
             "ghcr.io/${GITHUB_REPOSITORY,,}:${{ steps.meta.outputs.version }}" \
-            -c "import dba_slack_bot, dba_slack_bot.web.app as a; \
+            -c "import queryhub, queryhub.web.app as a; \
                 app = a.create_app(); \
                 assert app.routes, 'create_app() produced no routes'; \
                 print('image OK —', len(app.routes), 'routes')"

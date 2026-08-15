@@ -53,7 +53,7 @@ export REPO_DIR=/path/to/dba-slack-bot   # where you cloned the repo
 export BOT_USER=$USER                    # the user the service runs as
 ```
 
-`/etc/slackbot/{env,master.key,secrets.enc}` and the runtime data
+`/etc/queryhub/{env,master.key,secrets.enc}` and the runtime data
 directories below are owned by `$BOT_USER` (mode 0600 for files).
 
 ## 1. System packages
@@ -66,9 +66,9 @@ sudo apt install -y python3.11 python3.11-venv python3-pip libpq-dev git
 ## 2. Service directories
 
 ```bash
-sudo mkdir -p /etc/slackbot /var/lib/slackbot/results /var/log/slackbot
-sudo chown -R "$BOT_USER:$BOT_USER" /etc/slackbot /var/lib/slackbot /var/log/slackbot
-sudo chmod 700 /etc/slackbot
+sudo mkdir -p /etc/queryhub /var/lib/queryhub/results /var/log/queryhub
+sudo chown -R "$BOT_USER:$BOT_USER" /etc/queryhub /var/lib/queryhub /var/log/queryhub
+sudo chmod 700 /etc/queryhub
 ```
 
 ## 3. Virtualenv + Python deps
@@ -79,7 +79,7 @@ python3.11 -m venv .venv
 # Vanilla (web-only) profile:
 .venv/bin/pip install -e .
 # To run the Slack bot (/sql + Slack approval/notifications), add the extra:
-.venv/bin/pip install -e '.[slack]'   # makes `python -m dba_slack_bot.main` resolvable
+.venv/bin/pip install -e '.[slack]'   # makes `python -m queryhub.main` resolvable
 ```
 
 ## 4. Generate the master key
@@ -89,8 +89,8 @@ until you type that fingerprint back, so you cannot skip the backup
 step.
 
 ```bash
-.venv/bin/python scripts/init_master_key.py /etc/slackbot/master.key
-chmod 600 /etc/slackbot/master.key
+.venv/bin/python scripts/init_master_key.py /etc/queryhub/master.key
+chmod 600 /etc/queryhub/master.key
 ```
 
 > Without this file, every credential in the bot DB is unrecoverable.
@@ -98,28 +98,28 @@ chmod 600 /etc/slackbot/master.key
 > stick stored offline, a sealed envelope in a safe. Do NOT store it
 > in git, Slack, email, or unencrypted shared drives.
 
-A sidecar `/etc/slackbot/master.key.fingerprint` is written so you can
+A sidecar `/etc/queryhub/master.key.fingerprint` is written so you can
 later verify the active key matches the one you backed up.
 
 ## 5. Bootstrap the bot's metadata DB
 
 Run once from any host that can `psql` to the chosen Postgres
-cluster as a superuser. Creates the `slackbot` database and the
-`slackbot` login role. The password you choose here is what goes into
+cluster as a superuser. Creates the `queryhub` database and the
+`queryhub` login role. The password you choose here is what goes into
 the encrypted secrets file in step 6.
 
 ```bash
 sudo apt install -y postgresql-client    # if needed
 
-read -s -p 'New slackbot password: ' BOT_DB_PASSWORD; echo
+read -s -p 'New queryhub password: ' BOT_DB_PASSWORD; echo
 read -s -p 'Admin password: ' PGPASSWORD; echo; export PGPASSWORD
 
 psql -h <dba-rds-host> -U <admin-user> -d postgres \
      -v bot_password="$BOT_DB_PASSWORD" \
      -f deploy/setup_db.sql
 
-# Verify the slackbot role can log in:
-PGPASSWORD="$BOT_DB_PASSWORD" psql -h <dba-rds-host> -U slackbot -d slackbot \
+# Verify the queryhub role can log in:
+PGPASSWORD="$BOT_DB_PASSWORD" psql -h <dba-rds-host> -U queryhub -d queryhub \
      -c 'select current_user, current_database();'
 
 unset PGPASSWORD
@@ -133,15 +133,15 @@ Keep `$BOT_DB_PASSWORD` in your shell — you'll need it in the next step.
 
 ## 6. Environment file + encrypted secrets
 
-The bot reads connection settings from `/etc/slackbot/env` (plaintext,
+The bot reads connection settings from `/etc/queryhub/env` (plaintext,
 no secrets) and reads tokens + DB password from
-`/etc/slackbot/secrets.enc` (Fernet-encrypted with the master key).
+`/etc/queryhub/secrets.enc` (Fernet-encrypted with the master key).
 
 ```bash
-sudo cp "$REPO_DIR/.env.example" /etc/slackbot/env
-sudo chown "$BOT_USER:$BOT_USER" /etc/slackbot/env
-sudo chmod 600 /etc/slackbot/env
-sudo nano /etc/slackbot/env   # fill BOT_DB_HOST / BOT_DB_NAME / BOT_DB_USER
+sudo cp "$REPO_DIR/.env.example" /etc/queryhub/env
+sudo chown "$BOT_USER:$BOT_USER" /etc/queryhub/env
+sudo chmod 600 /etc/queryhub/env
+sudo nano /etc/queryhub/env   # fill BOT_DB_HOST / BOT_DB_NAME / BOT_DB_USER
 ```
 
 > **Vanilla profile (no Slack):** leave the Slack token prompts blank — the
@@ -159,13 +159,13 @@ sudo .venv/bin/python scripts/manage_env_secrets.py init
 #   BOT_DB_PASSWORD
 ```
 
-This writes `/etc/slackbot/secrets.enc` (mode 0600). To rotate later:
+This writes `/etc/queryhub/secrets.enc` (mode 0600). To rotate later:
 `scripts/manage_env_secrets.py set <KEY>` then restart the service.
 
 ## 7. Apply migrations
 
 ```bash
-set -a; source /etc/slackbot/env; set +a
+set -a; source /etc/queryhub/env; set +a
 export BOT_DB_PASSWORD="$BOT_DB_PASSWORD"   # still in your shell from step 5
 .venv/bin/python scripts/apply_migrations.py
 unset BOT_DB_PASSWORD
@@ -174,7 +174,7 @@ unset BOT_DB_PASSWORD
 ## 8. Add yourself as the first admin
 
 Admin ops are raw SQL against the bot DB. Connect via psql / DataGrip
-/ DBeaver as `slackbot:slackbot` and use the templates in
+/ DBeaver as `queryhub:queryhub` and use the templates in
 `deploy/db_admin_templates.sql`.
 
 To add yourself (Slack profile → "..." → Copy member ID, looks like
@@ -231,16 +231,16 @@ Inspection views: `v_team_summary`, `v_user_targets`,
 
 ## 11. Install and start the systemd service
 
-The repo's `deploy/slackbot.service` file is a template with
+The repo's `deploy/queryhub.service` file is a template with
 `__USER__` and `__INSTALL_PATH__` placeholders. Substitute and copy:
 
 ```bash
-sudo cp "$REPO_DIR/deploy/slackbot.service" /etc/systemd/system/slackbot.service
+sudo cp "$REPO_DIR/deploy/queryhub.service" /etc/systemd/system/queryhub.service
 sudo sed -i "s|__USER__|$BOT_USER|g; s|__INSTALL_PATH__|$REPO_DIR|g" \
-     /etc/systemd/system/slackbot.service
+     /etc/systemd/system/queryhub.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now slackbot
-sudo journalctl -u slackbot -f
+sudo systemctl enable --now queryhub
+sudo journalctl -u queryhub -f
 ```
 
 ## Web UI (required for the vanilla profile; optional alongside Slack)
@@ -250,12 +250,12 @@ same code, env file and bot DB, but runs on its own:
 
 ```bash
 # behind TLS (Slack OIDC and cookie security both want https):
-.venv/bin/python -m dba_slack_bot.web        # serves on :8080
+.venv/bin/python -m queryhub.web        # serves on :8080
 ```
 
-Run it as its own systemd unit by copying `deploy/slackbot.service` to a
+Run it as its own systemd unit by copying `deploy/queryhub.service` to a
 second unit (e.g. `queryhub-web.service`) and changing `ExecStart` to
-`… -m dba_slack_bot.web`. Restarting the Slack bot does not restart the web
+`… -m queryhub.web`. Restarting the Slack bot does not restart the web
 process and vice-versa.
 
 **Frontend assets.** The web UI ships as source under `QueryHubWeb/`. For
@@ -273,7 +273,7 @@ source checkout (e.g. an installed wheel), point the server at the built
 assets with the `QH_WEB_STATIC_DIR` env var:
 
 ```bash
-QH_WEB_STATIC_DIR=/opt/queryhub/QueryHubWeb/app/dist .venv/bin/python -m dba_slack_bot.web
+QH_WEB_STATIC_DIR=/opt/queryhub/QueryHubWeb/app/dist .venv/bin/python -m queryhub.web
 ```
 
 **Login.** With Slack configured, the sign-in screen offers Slack SSO
@@ -292,7 +292,7 @@ execute → deliver loop works with no Slack workspace at all.
 ## 12. (Optional) Schedule CSV cleanup
 
 Bot CSV results live for `results_ttl_hours` (default 48; set in
-`bot_config`) on disk (`/var/lib/slackbot/results/`) and on Slack.
+`bot_config`) on disk (`/var/lib/queryhub/results/`) and on Slack.
 The cleanup helper deletes both and clears `requests.slack_file_id`.
 
 Run on demand:
@@ -305,7 +305,7 @@ Schedule daily via your preferred mechanism — for example a systemd
 timer:
 
 ```ini
-# /etc/systemd/system/slackbot-cleanup.service
+# /etc/systemd/system/queryhub-cleanup.service
 [Unit]
 Description=QueryHub — old results cleanup
 After=network-online.target
@@ -315,13 +315,13 @@ Type=oneshot
 User=__USER__
 WorkingDirectory=__INSTALL_PATH__
 ExecStart=__INSTALL_PATH__/.venv/bin/python scripts/cleanup_old_results.py
-EnvironmentFile=/etc/slackbot/env
+EnvironmentFile=/etc/queryhub/env
 ```
 
 ```ini
-# /etc/systemd/system/slackbot-cleanup.timer
+# /etc/systemd/system/queryhub-cleanup.timer
 [Unit]
-Description=Run slackbot-cleanup daily
+Description=Run queryhub-cleanup daily
 
 [Timer]
 OnCalendar=daily
@@ -333,9 +333,9 @@ WantedBy=timers.target
 
 ```bash
 sudo sed -i "s|__USER__|$BOT_USER|g; s|__INSTALL_PATH__|$REPO_DIR|g" \
-     /etc/systemd/system/slackbot-cleanup.{service,timer}
+     /etc/systemd/system/queryhub-cleanup.{service,timer}
 sudo systemctl daemon-reload
-sudo systemctl enable --now slackbot-cleanup.timer
+sudo systemctl enable --now queryhub-cleanup.timer
 ```
 
 A bare cron entry works just as well.
@@ -347,7 +347,7 @@ cd "$REPO_DIR"
 git pull
 .venv/bin/pip install -r requirements.txt    # only if requirements changed
 .venv/bin/python scripts/apply_migrations.py # only if new migrations
-sudo systemctl restart slackbot
+sudo systemctl restart queryhub
 ```
 
 ## Migrating to a new host
@@ -357,8 +357,8 @@ key file. To move:
 
 1. Repeat steps 1, 2, 3, 6 (env file only — keep the password from
    the original DB), 11 on the new host.
-2. Copy `/etc/slackbot/master.key` and `/etc/slackbot/secrets.enc`
+2. Copy `/etc/queryhub/master.key` and `/etc/queryhub/secrets.enc`
    from the old host (preserve mode 0600, owner `$BOT_USER`). Verify
-   the fingerprint matches `/etc/slackbot/master.key.fingerprint`.
-3. Point `BOT_DB_HOST` etc. in `/etc/slackbot/env` at the same RDS DB.
+   the fingerprint matches `/etc/queryhub/master.key.fingerprint`.
+3. Point `BOT_DB_HOST` etc. in `/etc/queryhub/env` at the same RDS DB.
 4. Start the service. All target servers are immediately usable.

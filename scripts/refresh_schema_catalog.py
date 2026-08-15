@@ -18,8 +18,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from dba_slack_bot import crypto, db, schema_catalog  # noqa: E402
-from dba_slack_bot import targets as targets_mod  # noqa: E402
+from queryhub import crypto, db, schema_catalog  # noqa: E402
+from queryhub import targets as targets_mod  # noqa: E402
 
 log = logging.getLogger("refresh_schema_catalog")
 

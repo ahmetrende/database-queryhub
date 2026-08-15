@@ -20,7 +20,7 @@ SENTINEL_PASSWORD = "PASSWORD_NOT_SET"
 # Fleet-standard read-only role. A target registered without an explicit RO
 # username gets this one, the same default the inventory importer writes, so a
 # hand-added target and an auto-imported one are indistinguishable afterwards.
-DEFAULT_RO_USERNAME = "dba_slackbot_ro"
+DEFAULT_RO_USERNAME = "queryhub_ro"
 
 # Per-tier credential columns. Mirrors the local secrets provider's own map;
 # duplicated rather than imported because that one is a private implementation

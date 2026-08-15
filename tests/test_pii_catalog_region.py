@@ -26,7 +26,7 @@ and 17 of 17 real PII ones; tr flags 7 of 40 (all Turkish tokens) and 31 of 31.
 """
 import pytest
 
-from dba_slack_bot import pii
+from queryhub import pii
 
 
 # The matcher is pure, so these exercise it with catalog rows directly rather
@@ -122,7 +122,7 @@ def test_the_loader_filters_by_region(monkeypatch):
     whole mechanism, and it lives in SQL rather than in Python."""
     import pathlib
     src = (pathlib.Path(__file__).resolve().parent.parent / "src"
-           / "dba_slack_bot" / "pii.py").read_text(encoding="utf-8")
+           / "queryhub" / "pii.py").read_text(encoding="utf-8")
     assert "AND (region IS NULL OR lower(region) = %s)" in src
     assert "(region(),)" in src
 
@@ -131,7 +131,7 @@ def test_the_loader_survives_a_database_without_the_new_columns(monkeypatch):
     """An install that has not run migration 088 must keep masking, not crash
     and not silently mask nothing. It falls back to loading every pattern, which
     is the pre-migration behaviour — never less than before."""
-    from dba_slack_bot import db
+    from queryhub import db
     calls = []
 
     def _fetch_all(sql, params=None):
@@ -150,7 +150,7 @@ def test_the_loader_survives_a_database_without_the_new_columns(monkeypatch):
 def test_the_loader_normalizes_exclude_tokens(monkeypatch):
     """Excludes are compared against a lowercased name, so a row entered in
     mixed case has to be folded or it would never match."""
-    from dba_slack_bot import db
+    from queryhub import db
     monkeypatch.setattr(db, "fetch_all", lambda sql, params=None: [
         {"pattern": "Name", "pii_type": "name", "match_type": "token",
          "exclude_tokens": ["Database", "TABLE"]}])
@@ -162,7 +162,7 @@ def test_the_loader_normalizes_exclude_tokens(monkeypatch):
 
 
 def test_a_null_exclude_column_is_an_empty_tuple(monkeypatch):
-    from dba_slack_bot import db
+    from queryhub import db
     monkeypatch.setattr(db, "fetch_all", lambda sql, params=None: [
         {"pattern": "email", "pii_type": "email", "match_type": "token",
          "exclude_tokens": None}])

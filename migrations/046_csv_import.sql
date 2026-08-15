@@ -4,7 +4,7 @@
 -- bot bulk-loads it (COPY FROM STDIN) into the `dba` schema — either a
 -- new auto-generated table (all TEXT columns) or an existing dba.* table.
 -- Admin approval is always required; the load runs with the target's DDL
--- credentials (dba_slackbot_ddl) since a new table needs CREATE.
+-- credentials (queryhub_ddl) since a new table needs CREATE.
 --
 -- Hard invariant: schema is ALWAYS 'dba'. The feature can never touch a
 -- prod schema — its blast radius is the dba staging schema only.

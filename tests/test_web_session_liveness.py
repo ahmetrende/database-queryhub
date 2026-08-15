@@ -8,8 +8,8 @@ Slack sessions are unaffected by both.
 """
 import pytest
 
-from dba_slack_bot import local_users
-from dba_slack_bot.web import deps
+from queryhub import local_users
+from queryhub.web import deps
 
 
 def _req():

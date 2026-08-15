@@ -4,7 +4,7 @@
 -- PostgreSQL; this column lets the bot pick a per-engine strategy (driver,
 -- SQL-safety dialect, dangerous-function blocklist, result handling) instead
 -- of assuming libpq/psycopg everywhere. Postgres is the default, so every
--- existing target keeps its exact current behavior. See src/dba_slack_bot/
+-- existing target keeps its exact current behavior. See src/queryhub/
 -- engines.py for the per-engine specs; SQL Server ('mssql') is added here so
 -- a target can be TAGGED with it (its safety profile applies immediately),
 -- but engines.WIRED_ENGINES keeps it fail-closed (unexecutable) until its

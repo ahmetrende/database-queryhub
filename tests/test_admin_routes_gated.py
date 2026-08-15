@@ -30,9 +30,9 @@ import typing
 import pytest
 from starlette.testclient import TestClient
 
-from dba_slack_bot import admins, db, requesters
-from dba_slack_bot.web import app as web_app
-from dba_slack_bot.web import routes_admin, sessions
+from queryhub import admins, db, requesters
+from queryhub.web import app as web_app
+from queryhub.web import routes_admin, sessions
 
 # Routes that deliberately do NOT require admin rights would go here, with the
 # reason. Empty on purpose: there are none, and an addition should have to argue
@@ -195,7 +195,7 @@ def _minimal_body(endpoint):
 def non_admin_client(monkeypatch):
     logging.disable(logging.CRITICAL)
     monkeypatch.setattr(db, "init_pool", lambda: None)
-    from dba_slack_bot.slack_app import notifications
+    from queryhub.slack_app import notifications
     monkeypatch.setattr(notifications, "dm_all_admins", lambda *a, **k: None)
 
     # A session that is genuinely valid — signature, expiry, liveness — and
@@ -209,7 +209,7 @@ def non_admin_client(monkeypatch):
     monkeypatch.setattr(admins, "is_super_admin", lambda uid: False)
     monkeypatch.setattr(requesters, "is_allowed", lambda uid: True)
     # Same objects, imported into the gate module's namespace.
-    from dba_slack_bot.web import admin as web_admin
+    from queryhub.web import admin as web_admin
     monkeypatch.setattr(web_admin.admins, "is_admin", lambda uid: False)
     monkeypatch.setattr(web_admin.admins, "is_super_admin", lambda uid: False)
 
@@ -264,6 +264,6 @@ def test_router_carries_the_password_change_gate():
     """Separate property, also easy to lose: a local account flagged
     must_change_pw is blocked from every admin route by a router-level
     dependency rather than by each handler remembering."""
-    from dba_slack_bot.web import deps
+    from queryhub.web import deps
     dependencies = [d.dependency for d in routes_admin.router.dependencies]
     assert deps.block_pw_gate in dependencies

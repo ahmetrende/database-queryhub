@@ -22,10 +22,10 @@ import logging
 import pytest
 from starlette.testclient import TestClient
 
-from dba_slack_bot import config as cfg
-from dba_slack_bot import db
-from dba_slack_bot.web import app as web_app
-from dba_slack_bot.web import ops_metrics
+from queryhub import config as cfg
+from queryhub import db
+from queryhub.web import app as web_app
+from queryhub.web import ops_metrics
 
 
 @pytest.fixture
@@ -48,7 +48,7 @@ def settings(monkeypatch):
 def client(monkeypatch, settings):
     logging.disable(logging.CRITICAL)
     monkeypatch.setattr(db, "init_pool", lambda: None)
-    from dba_slack_bot.slack_app import notifications
+    from queryhub.slack_app import notifications
     monkeypatch.setattr(notifications, "dm_all_admins", lambda *a, **k: None)
     # A rendered payload that needs no database.
     monkeypatch.setattr(ops_metrics, "render",
@@ -113,7 +113,7 @@ def test_the_token_comparison_is_constant_time(settings):
     through timing. Asserted structurally — a timing measurement in a unit test
     is flaky, but the presence of compare_digest is not."""
     import inspect
-    from dba_slack_bot.web import app as app_mod
+    from queryhub.web import app as app_mod
     src = inspect.getsource(app_mod.create_app)
     assert "compare_digest" in src, \
         "the metrics token must not be compared with =="

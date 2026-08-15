@@ -18,7 +18,7 @@ string containing more than one command.
 """
 import pytest
 
-from dba_slack_bot import query_safety as qs
+from queryhub import query_safety as qs
 
 SMUGGLING_PAYLOADS = [
     # The canonical form: the backslash swallows the `'` so the real WHERE
@@ -63,7 +63,7 @@ def test_legitimate_sql_still_passes(engine, sql):
 def test_gate_is_independent_of_ast_safety_toggle(monkeypatch):
     # The cross-check protects the product's central invariant, so it must NOT
     # be disabled by the operator-facing ast_safety_enabled escape hatch.
-    from dba_slack_bot import ast_safety
+    from queryhub import ast_safety
     monkeypatch.setattr(ast_safety, "check", lambda sql, engine="postgres": [])
     report = qs.analyze(r"UPDATE t SET a = '\'; DELETE FROM t; --' WHERE id = 5",
                         engine="postgres")
@@ -80,7 +80,7 @@ def test_disagreement_helper_ignores_unparseable_sql():
     # sqlglot failing to parse is not evidence of a differential — ast_safety
     # rejects unparseable SQL, and treating a parser gap as a differential
     # here would block legitimate engine-specific syntax.
-    from dba_slack_bot import engines
+    from queryhub import engines
     spec = engines.spec("postgres")
     assert qs._statement_count_disagrees("this is not sql at all !!!", spec) is False
 
@@ -155,7 +155,7 @@ def test_a_single_statement_that_loses_its_where_is_blocked(engine, sql):
 def test_the_count_check_alone_could_never_have_caught_it():
     """Pins WHY a second gate was needed rather than a wider count check: on
     this payload both parsers really do see one statement."""
-    from dba_slack_bot import engines
+    from queryhub import engines
     sql = r"UPDATE accounts SET balance = 0, note = '\' --' WHERE id = 42"
     assert qs._statement_count_disagrees(sql, engines.spec("postgres")) is False
     assert qs.analyze(sql).blocked          # ...and it is blocked anyway

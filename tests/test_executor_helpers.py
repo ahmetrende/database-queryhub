@@ -2,7 +2,7 @@
 import pytest
 from slack_sdk.errors import SlackApiError
 
-from dba_slack_bot import executor as ex
+from queryhub import executor as ex
 
 
 class _FakeUploadClient:

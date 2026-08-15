@@ -23,7 +23,7 @@ import logging
 
 import pytest
 
-from dba_slack_bot import logging_setup
+from queryhub import logging_setup
 
 
 @pytest.fixture
@@ -64,11 +64,11 @@ def test_text_is_the_default_and_is_not_json(capture, monkeypatch):
 
 def test_json_lines_parse_and_carry_the_standard_fields(capture):
     lines = capture("json")
-    logging.getLogger("dba_slack_bot.executor").warning("query timed out")
+    logging.getLogger("queryhub.executor").warning("query timed out")
     obj = json.loads(lines[-1])
     assert obj["message"] == "query timed out"
     assert obj["level"] == "WARNING"
-    assert obj["logger"] == "dba_slack_bot.executor"
+    assert obj["logger"] == "queryhub.executor"
     # RFC 3339 in UTC — correlating two hosts across a DST boundary is the kind
     # of problem that costs an hour at 3am.
     assert obj["timestamp"].endswith("+00:00")

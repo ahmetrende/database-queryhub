@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from dba_slack_bot.web import routes_queries as rq
+from queryhub.web import routes_queries as rq
 
 
 class _Target:
@@ -39,13 +39,13 @@ def wire(monkeypatch):
     monkeypatch.setattr(rq.admins, "is_admin", lambda uid: False)
     monkeypatch.setattr(rq.admins, "is_super_admin", lambda uid: state["super"])
 
-    import dba_slack_bot.teams as teams_mod
+    import queryhub.teams as teams_mod
     monkeypatch.setattr(teams_mod, "effective_grant_for_user",
                         lambda uid, tid: {"allowed_databases": None, "mode": state["granted"]})
     monkeypatch.setattr(teams_mod, "effective_mode_for_database",
                         lambda uid, tid, db: state["granted"])
 
-    import dba_slack_bot.auto_approve as aa
+    import queryhub.auto_approve as aa
     monkeypatch.setattr(aa, "effective_grant",
                         lambda *a, **k: state["auto"])
     return state
@@ -123,7 +123,7 @@ def test_unknown_connection_is_404_not_a_verdict(wire):
 
 
 def test_database_outside_the_grant_is_404(wire, monkeypatch):
-    import dba_slack_bot.teams as teams_mod
+    import queryhub.teams as teams_mod
     monkeypatch.setattr(teams_mod, "effective_grant_for_user",
                         lambda uid, tid: {"allowed_databases": ["payments"]})
     from fastapi import HTTPException

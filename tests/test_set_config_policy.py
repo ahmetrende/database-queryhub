@@ -10,7 +10,7 @@ auto-approval.
 """
 import pytest
 
-from dba_slack_bot import query_safety as qs
+from queryhub import query_safety as qs
 
 BLOCKED = [
     # Value policy: 0 disables the safety timeout (same message as SET LOCAL).
@@ -58,7 +58,7 @@ def test_statement_and_function_forms_agree(monkeypatch):
 
 
 def test_gate_is_independent_of_ast_safety_toggle(monkeypatch):
-    from dba_slack_bot import ast_safety
+    from queryhub import ast_safety
     monkeypatch.setattr(ast_safety, "check", lambda sql, engine="postgres": [])
     report = qs.analyze("SELECT set_config('role','postgres',true)",
                         engine="postgres")

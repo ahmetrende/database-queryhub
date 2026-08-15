@@ -9,7 +9,7 @@
 --
 -- For psql one-liners:
 --
---   psql -h <bot-db-host> -U slackbot -d slackbot \
+--   psql -h <bot-db-host> -U queryhub -d queryhub \
 --        -v team_name=payment \
 --        -v slack_user_id=U0PAYMENT01 \
 --        -v target_server_id=5 \

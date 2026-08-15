@@ -3,8 +3,8 @@ the same RDS as the bot DB. Currently used by the modal's database
 typeahead — we ask `v_all_databases` for the list of DBs on a given target
 endpoint, instead of opening a connection to each target ourselves.
 
-Connects with the bot's own credentials (slackbot user) but with
-`dbname='inventory'`. Requires `GRANT SELECT ON v_all_databases TO slackbot;`
+Connects with the bot's own credentials (queryhub user) but with
+`dbname='inventory'`. Requires `GRANT SELECT ON v_all_databases TO queryhub;`
 on the inventory DB (one-time DBA action).
 """
 from __future__ import annotations

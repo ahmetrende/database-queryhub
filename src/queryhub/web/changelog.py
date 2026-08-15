@@ -35,7 +35,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-# src/dba_slack_bot/web/changelog.py -> parents[3] is the repo root.
+# src/queryhub/web/changelog.py -> parents[3] is the repo root.
 _ROOT = Path(__file__).resolve().parents[3]
 
 # English label per language-neutral category key. A surface rendering another

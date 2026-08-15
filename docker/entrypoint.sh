@@ -89,7 +89,7 @@ fi
 if [ -n "${QH_ADMIN_USER:-}" ]; then
     if python - <<'PY'
 import os, sys
-from dba_slack_bot import local_users
+from queryhub import local_users
 sys.exit(0 if local_users.exists(
     local_users.normalize_username(os.environ["QH_ADMIN_USER"])) else 1)
 PY

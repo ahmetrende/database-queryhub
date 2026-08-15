@@ -6,7 +6,7 @@ clicking Approve — a fake "Safety review: PASSED", a fake @mention of another
 admin, or a hyperlink. The query fence could also be closed with the query's
 own triple backtick, turning the rest into rendered mrkdwn.
 """
-from dba_slack_bot.slack_app import notifications as notif
+from queryhub.slack_app import notifications as notif
 
 
 def test_escapes_the_mention_and_link_syntax():

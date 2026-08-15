@@ -25,7 +25,7 @@ def _setup_logging() -> None:
 
 def main() -> int:
     _setup_logging()
-    log = logging.getLogger("dba_slack_bot")
+    log = logging.getLogger("queryhub")
     # Build stamp: record the exact commit this process runs out of,
     # so an operator reading the logs knows which build is live without
     # guessing from the deploy time.

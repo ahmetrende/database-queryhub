@@ -19,7 +19,7 @@ from __future__ import annotations
 import pathlib
 import re
 
-SRC = (pathlib.Path(__file__).resolve().parents[1] / "src" / "dba_slack_bot"
+SRC = (pathlib.Path(__file__).resolve().parents[1] / "src" / "queryhub"
        / "executor.py").read_text(encoding="utf-8")
 
 

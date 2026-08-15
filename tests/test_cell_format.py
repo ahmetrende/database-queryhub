@@ -12,7 +12,7 @@ formatter that quietly rounded would be worse than the padding it replaced.
 from datetime import date, datetime, time, timezone, timedelta
 from decimal import Decimal
 
-from dba_slack_bot import cell_format
+from queryhub import cell_format
 
 
 class _Desc(tuple):
@@ -138,7 +138,7 @@ def test_the_csv_writer_actually_applies_it():
     """A formatter nobody calls fixes nothing. Pins the call site rather than
     just the function."""
     import pathlib
-    src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "dba_slack_bot"
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "queryhub"
            / "executor.py").read_text(encoding="utf-8")
     assert "cell_format.row_formatter(getattr(cur, \"description\", None))" in src
     assert "if fmt_row is not None:" in src
@@ -156,7 +156,7 @@ def test_datetimeoffset_parses_from_the_real_wire_bytes():
     `2026-07-30 15:29:39.3971278 +03:00`. Before the converter, ANY query
     touching a `datetimeoffset` column raised
     `ODBC SQL type -155 is not yet supported` and returned nothing at all."""
-    from dba_slack_bot import mssql_exec
+    from queryhub import mssql_exec
     raw = bytes.fromhex("ea0707001e000f001d00270078b0ab1703000000")
     got = mssql_exec.parse_datetimeoffset(raw)
     assert got.year == 2026 and got.month == 7 and got.day == 30
@@ -169,7 +169,7 @@ def test_datetimeoffset_handles_a_negative_zone():
     """SQL Server signs BOTH offset fields, so -05:30 arrives as (-5, -30).
     Verified live with TODATETIMEOFFSET(..., -330)."""
     import struct
-    from dba_slack_bot import mssql_exec
+    from queryhub import mssql_exec
     raw = struct.pack("<6hI2h", 2026, 3, 1, 8, 9, 10, 123456700, -5, -30)
     got = mssql_exec.parse_datetimeoffset(raw)
     assert got.utcoffset() == timedelta(hours=-5, minutes=-30)
@@ -177,14 +177,14 @@ def test_datetimeoffset_handles_a_negative_zone():
 
 
 def test_datetimeoffset_null_stays_null():
-    from dba_slack_bot import mssql_exec
+    from queryhub import mssql_exec
     assert mssql_exec.parse_datetimeoffset(None) is None
 
 
 def test_a_malformed_datetimeoffset_does_not_kill_the_result():
     """Fail-visible, not fail-closed: raising here would reproduce the very bug
     the converter fixes — a query that already produced rows dying at fetch."""
-    from dba_slack_bot import mssql_exec
+    from queryhub import mssql_exec
     got = mssql_exec.parse_datetimeoffset(b"\x01\x02\x03")
     assert got == "010203"
 
@@ -193,7 +193,7 @@ def test_the_converter_is_registered_on_every_connection():
     """Per-cursor registration would leave whichever path forgot it broken, so
     this pins the connection-level hook."""
     import pathlib
-    src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "dba_slack_bot"
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "queryhub"
            / "mssql_exec.py").read_text(encoding="utf-8")
     assert "conn.add_output_converter(SQL_SS_TIMESTAMPOFFSET, parse_datetimeoffset)" in src
     assert "SQL_SS_TIMESTAMPOFFSET = -155" in src
@@ -214,7 +214,7 @@ def test_sql_variant_needs_only_permission_not_parsing():
     sql_variant over ALREADY DECODED — pyodbc was only refusing to route the
     type, not failing to read it. So passing the value straight through is a
     complete fix rather than a workaround."""
-    from dba_slack_bot import mssql_exec
+    from queryhub import mssql_exec
     from decimal import Decimal as D
     assert mssql_exec.passthrough_or_hex("merhaba") == "merhaba"
     assert mssql_exec.passthrough_or_hex(D("1234.56")) == D("1234.56")
@@ -227,7 +227,7 @@ def test_an_opaque_udt_becomes_obvious_hex_not_a_plausible_guess():
     WKB. A wrong parse would put a plausible, WRONG coordinate in front of
     someone — worse than an obviously-opaque value that says "ask the server to
     convert this" (col.STAsText() / col.ToString())."""
-    from dba_slack_bot import mssql_exec
+    from queryhub import mssql_exec
     assert mssql_exec.passthrough_or_hex(b"\x5b\x5e") == "0x5B5E"
     assert mssql_exec.passthrough_or_hex(bytearray(b"\xe6\x10")) == "0xE610"
     assert mssql_exec.passthrough_or_hex(memoryview(b"\x00\xff")) == "0x00FF"
@@ -235,7 +235,7 @@ def test_an_opaque_udt_becomes_obvious_hex_not_a_plausible_guess():
 
 def test_both_codes_are_registered_so_no_query_can_die_on_them():
     import pathlib
-    src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "dba_slack_bot"
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "queryhub"
            / "mssql_exec.py").read_text(encoding="utf-8")
     assert "SQL_VARIANT = -16" in src and "SQL_SS_UDT = -151" in src
     assert "conn.add_output_converter(SQL_VARIANT, passthrough_or_hex)" in src

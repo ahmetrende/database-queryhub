@@ -92,7 +92,7 @@ def _source_path() -> Path:
     """
     try:
         sys.path.insert(0, str(_ROOT / "src"))
-        from dba_slack_bot.web import changelog  # noqa: PLC0415
+        from queryhub.web import changelog  # noqa: PLC0415
         return changelog._source_path()
     except Exception:
         return _ROOT.parent / "site" / "changelog.json"

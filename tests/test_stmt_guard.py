@@ -23,7 +23,7 @@ answer), and a test that needs a SQL Server instance would not run in CI.
 """
 import pytest
 
-from dba_slack_bot import stmt_guard
+from queryhub import stmt_guard
 
 
 def _plan(n_statements):
@@ -184,7 +184,7 @@ def test_the_executor_checks_before_it_opens_a_portal():
     execute would hang instead of protecting anything."""
     import pathlib
     src = (pathlib.Path(__file__).resolve().parent.parent / "src"
-           / "dba_slack_bot" / "executor.py").read_text(encoding="utf-8")
+           / "queryhub" / "executor.py").read_text(encoding="utf-8")
     i_guard = src.index("stmt_guard.check(cur, stmt.rewritten")
     i_stream = src.index("stream = cur.stream(stmt.rewritten)")
     i_exec = src.index("cur.execute(stmt.rewritten)")
@@ -196,5 +196,5 @@ def test_the_counted_text_is_the_text_that_runs():
     wrong string."""
     import pathlib
     src = (pathlib.Path(__file__).resolve().parent.parent / "src"
-           / "dba_slack_bot" / "executor.py").read_text(encoding="utf-8")
+           / "queryhub" / "executor.py").read_text(encoding="utf-8")
     assert "stmt_guard.check(cur, stmt.rewritten, engine=engine" in src

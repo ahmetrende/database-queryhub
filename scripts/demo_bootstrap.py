@@ -22,8 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from dba_slack_bot import db  # noqa: E402
-from dba_slack_bot.crypto import encrypt  # noqa: E402
+from queryhub import db  # noqa: E402
+from queryhub.crypto import encrypt  # noqa: E402
 
 DEMO_ALIAS = os.environ.get("QH_DEMO_TARGET_ALIAS", "demo-postgres")
 DEMO_HOST = os.environ.get("QH_DEMO_TARGET_HOST", "target")

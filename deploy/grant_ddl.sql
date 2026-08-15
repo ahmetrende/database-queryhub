@@ -2,7 +2,7 @@
 -- QueryHub — DDL role bootstrap on a TARGET Postgres server.
 --
 -- WHAT THIS DOES
---   Creates (or updates) a `dba_slackbot_ddl` login role and sets its
+--   Creates (or updates) a `queryhub_ddl` login role and sets its
 --   password / connection limit / CONNECT. It does NOT pick a DDL
 --   privilege model for you — that choice is cluster-specific and you
 --   must fill in section 5 below before the role can run CREATE / ALTER
@@ -38,17 +38,17 @@
 \set ON_ERROR_STOP on
 
 -- 1. Role: create if missing.
-SELECT format('CREATE ROLE dba_slackbot_ddl LOGIN PASSWORD %L', :'ddl_password')
-WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'dba_slackbot_ddl')\gexec
+SELECT format('CREATE ROLE queryhub_ddl LOGIN PASSWORD %L', :'ddl_password')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'queryhub_ddl')\gexec
 
 -- 2. Always (re-)set the password (rotation path).
-SELECT format('ALTER ROLE dba_slackbot_ddl WITH LOGIN PASSWORD %L', :'ddl_password')\gexec
+SELECT format('ALTER ROLE queryhub_ddl WITH LOGIN PASSWORD %L', :'ddl_password')\gexec
 
 -- 3. Connection limit — DDL traffic is rare, keep it tight.
-ALTER ROLE dba_slackbot_ddl CONNECTION LIMIT 3;
+ALTER ROLE queryhub_ddl CONNECTION LIMIT 3;
 
 -- 4. CONNECT on the current database.
-SELECT format('GRANT CONNECT ON DATABASE %I TO dba_slackbot_ddl', current_database())\gexec
+SELECT format('GRANT CONNECT ON DATABASE %I TO queryhub_ddl', current_database())\gexec
 
 -- 5. DDL PRIVILEGE MODEL — CHOOSE ONE, UNCOMMENT, AND ADJUST.
 --    All options are commented out by design; the role can't do DDL
@@ -58,8 +58,8 @@ SELECT format('GRANT CONNECT ON DATABASE %I TO dba_slackbot_ddl', current_databa
 --      Covers CREATE TABLE/INDEX and ALTER/DROP of objects this role
 --      owns. Cannot touch objects owned by other roles → those go to
 --      awaiting_dba_manual.
---        GRANT pg_read_all_data  TO dba_slackbot_ddl;
---        GRANT pg_write_all_data TO dba_slackbot_ddl;
+--        GRANT pg_read_all_data  TO queryhub_ddl;
+--        GRANT pg_write_all_data TO queryhub_ddl;
 --        DO $do$
 --        DECLARE s text;
 --        BEGIN
@@ -68,22 +68,22 @@ SELECT format('GRANT CONNECT ON DATABASE %I TO dba_slackbot_ddl', current_databa
 --                      AND nspname NOT LIKE 'pg\_temp\_%'
 --                      AND nspname NOT LIKE 'pg\_toast\_%'
 --          LOOP
---            EXECUTE format('GRANT USAGE, CREATE ON SCHEMA %I TO dba_slackbot_ddl', s);
+--            EXECUTE format('GRANT USAGE, CREATE ON SCHEMA %I TO queryhub_ddl', s);
 --          END LOOP;
 --        END $do$;
 --
 --    Option B — take ownership of a schema's objects (lets the role
 --      ALTER/DROP them). Run REASSIGN OWNED / per-object ALTER ... OWNER
---      to dba_slackbot_ddl for the schemas it should fully manage.
+--      to queryhub_ddl for the schemas it should fully manage.
 --      Cluster-specific; write the exact statements here.
 --
 --    Option C — rds_superuser membership (broadest; use with care).
 --      Gives the role near-unrestricted DDL on RDS. Only if a narrower
 --      model is impractical for this cluster.
---        GRANT rds_superuser TO dba_slackbot_ddl;
+--        GRANT rds_superuser TO queryhub_ddl;
 
 \echo
-\echo '== dba_slackbot_ddl role created/updated in:'
+\echo '== queryhub_ddl role created/updated in:'
 SELECT current_database() AS database;
 
 \echo
@@ -91,13 +91,13 @@ SELECT current_database() AS database;
 SELECT r.rolname AS member_of
 FROM pg_auth_members m
 JOIN pg_roles r ON r.oid = m.roleid
-WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = 'dba_slackbot_ddl')
+WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = 'queryhub_ddl')
 ORDER BY r.rolname;
 
 \echo
 \echo '== role attribute summary:'
 SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolconnlimit
-FROM pg_roles WHERE rolname = 'dba_slackbot_ddl';
+FROM pg_roles WHERE rolname = 'queryhub_ddl';
 
 \echo
 \echo 'NOTE: if section 5 is still commented out, the role can log in but'

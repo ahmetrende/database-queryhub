@@ -12,7 +12,7 @@ the result is fail-closed when nothing covers the database.
 """
 import pytest
 
-from dba_slack_bot import teams
+from queryhub import teams
 
 
 @pytest.fixture

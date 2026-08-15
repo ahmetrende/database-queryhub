@@ -1,4 +1,4 @@
--- Migrate config out of /etc/slackbot/env into the bot DB so all knobs are
+-- Migrate config out of /etc/queryhub/env into the bot DB so all knobs are
 -- managed via SQL.
 --
 --   * `requesters` table replaces the REQUESTER_ALLOWLIST env var. Bot reads

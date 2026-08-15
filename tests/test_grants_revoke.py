@@ -25,7 +25,7 @@ The properties here are the ones that would matter at 3am:
 """
 import pytest
 
-from dba_slack_bot import grants
+from queryhub import grants
 
 
 class FakeCursor:
@@ -146,7 +146,7 @@ def test_revoke_notifies_by_default(cursor, monkeypatch):
     seen = {}
     monkeypatch.setattr(grants, "notify_grantee_revoked",
                         lambda *a, **k: seen.setdefault("args", a))
-    monkeypatch.setattr("dba_slack_bot.targets.get",
+    monkeypatch.setattr("queryhub.targets.get",
                         lambda tid: type("T", (), {"alias": "demo-primary"})())
     grants.revoke(granter_id="U0DBA", granter_name=None,
                   grantee_id="U0DEV", target_id=7)
@@ -163,7 +163,7 @@ def test_revoke_notification_survives_an_unknown_target(cursor, monkeypatch):
     seen = {}
     monkeypatch.setattr(grants, "notify_grantee_revoked",
                         lambda *a, **k: seen.setdefault("args", a))
-    monkeypatch.setattr("dba_slack_bot.targets.get", lambda tid: None)
+    monkeypatch.setattr("queryhub.targets.get", lambda tid: None)
     assert grants.revoke(granter_id="U0DBA", granter_name=None,
                          grantee_id="U0DEV", target_id=99) is not None
     assert "99" in seen["args"], "falls back to the numeric id"

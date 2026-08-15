@@ -14,7 +14,7 @@ the tier ceiling that follows from it.
 """
 import pytest
 
-from dba_slack_bot import grants
+from queryhub import grants
 
 
 @pytest.fixture
@@ -141,7 +141,7 @@ def test_granting_on_an_ordinary_target_proceeds(monkeypatch):
 def test_control_plane_detection_prefers_explicit_config(monkeypatch):
     """An operator behind a pooler or a CNAME can't be auto-detected, so the
     config key has to win over detection."""
-    from dba_slack_bot import config as cfg
+    from queryhub import config as cfg
     monkeypatch.setattr(cfg, "get_setting",
                         lambda k, d=None: "3, 7" if k == "control_plane_target_ids" else d)
     assert grants.control_plane_target_ids() == {3, 7}
@@ -150,7 +150,7 @@ def test_control_plane_detection_prefers_explicit_config(monkeypatch):
 def test_control_plane_detection_ignores_garbage_config(monkeypatch):
     """A typo must not silently disable the protection — it falls through to
     detection rather than returning an empty set."""
-    from dba_slack_bot import config as cfg
+    from queryhub import config as cfg
     monkeypatch.setattr(cfg, "get_setting",
                         lambda k, d=None: "abc,," if k == "control_plane_target_ids" else d)
     monkeypatch.setattr(grants.db, "fetch_all", lambda *a, **k: [])

@@ -1,6 +1,6 @@
 """Unit tests for pii._column_skips — the pure column-exemption predicate,
 incl. the opt-in apply_in_joins relaxation (migration 053)."""
-from dba_slack_bot.pii import _column_skips
+from queryhub.pii import _column_skips
 
 
 def _r(table, col, joins=False):

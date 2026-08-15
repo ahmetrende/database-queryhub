@@ -13,7 +13,7 @@ is why `wrap_udt_projection` is allowed to be wrong: the executor tries it and
 falls back. What must never be wrong is the set of cases it declines outright,
 because those would change what the query returns.
 """
-from dba_slack_bot import mssql_exec as m
+from queryhub import mssql_exec as m
 
 
 def test_wraps_only_the_udt_columns():

@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from dba_slack_bot import access_requests as ar
+from queryhub import access_requests as ar
 
 
 # ---- pure helpers -----------------------------------------------------------

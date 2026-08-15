@@ -12,8 +12,8 @@ import tempfile
 
 import pytest
 
-from dba_slack_bot import config as cfg
-from dba_slack_bot import errors, executor
+from queryhub import config as cfg
+from queryhub import errors, executor
 
 
 @pytest.fixture
@@ -46,7 +46,7 @@ def test_ordinary_errors_are_untouched(tr_masking):
 
 
 def test_masking_failure_cannot_break_error_reporting(monkeypatch):
-    from dba_slack_bot import pii
+    from queryhub import pii
     monkeypatch.setattr(pii, "is_enabled", lambda: (_ for _ in ()).throw(RuntimeError))
     # Still returns a usable message rather than propagating.
     assert "does not exist" in errors.scrub('ERROR:  relation "x" does not exist')

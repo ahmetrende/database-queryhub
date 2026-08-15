@@ -15,7 +15,7 @@ falling back again.
 import inspect
 import re
 
-from dba_slack_bot.web import routes_data
+from queryhub.web import routes_data
 
 
 def test_the_fallback_is_filtered_and_not_the_other_way_round():

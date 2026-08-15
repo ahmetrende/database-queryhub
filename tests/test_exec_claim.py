@@ -7,7 +7,7 @@
   hard crash (the in-memory worker queue does not survive an ungraceful
   stop).
 """
-from dba_slack_bot import executor as ex
+from queryhub import executor as ex
 
 
 class _FakeCur:

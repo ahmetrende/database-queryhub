@@ -7,7 +7,7 @@ import csv as csvmod
 
 import pytest
 
-from dba_slack_bot import executor
+from queryhub import executor
 
 
 class _FakeCur:

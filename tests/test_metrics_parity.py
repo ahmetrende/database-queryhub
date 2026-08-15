@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from dba_slack_bot import metrics_defs
+from queryhub import metrics_defs
 
 BUILDER = Path(__file__).resolve().parents[1] / "scripts" / "build_metrics_dashboard.py"
 
@@ -102,7 +102,7 @@ def test_python_and_js_cost_formulas_agree(completed, config):
 def test_both_consumers_read_the_same_config_keys():
     """The web query and the dashboard query must select the same keys. They
     did, by coincidence; now they share the list."""
-    web = (Path(__file__).resolve().parents[1] / "src" / "dba_slack_bot"
+    web = (Path(__file__).resolve().parents[1] / "src" / "queryhub"
            / "web" / "metrics.py").read_text(encoding="utf-8")
     assert "metrics_defs.CONFIG_KEYS" in web
 
@@ -116,7 +116,7 @@ def test_both_consumers_read_the_same_config_keys():
 
 
 def test_terminal_statuses_have_one_definition():
-    web = (Path(__file__).resolve().parents[1] / "src" / "dba_slack_bot"
+    web = (Path(__file__).resolve().parents[1] / "src" / "queryhub"
            / "web" / "metrics.py").read_text(encoding="utf-8")
     assert "metrics_defs.TERMINAL_STATUSES" in web
     assert '("completed", "failed", "rejected", "cancelled")' not in web
@@ -132,7 +132,7 @@ def test_coerce_float_matches_javascript_parsefloat_on_junk():
 
 def test_views_list_matches_what_both_query():
     builder = BUILDER.read_text(encoding="utf-8")
-    web = (Path(__file__).resolve().parents[1] / "src" / "dba_slack_bot"
+    web = (Path(__file__).resolve().parents[1] / "src" / "queryhub"
            / "web" / "metrics.py").read_text(encoding="utf-8")
     for view in metrics_defs.VIEWS:
         assert view in builder, f"{view} not queried by the dashboard builder"

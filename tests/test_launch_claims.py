@@ -78,7 +78,7 @@ def test_the_readme_says_the_first_start_builds():
 
 def test_the_readme_engine_table_matches_the_code():
     """Three states, and each has to be the state the code is actually in."""
-    from dba_slack_bot import engines
+    from queryhub import engines
     readme = _read("README.md")
     i = readme.index("## Engines")
     table = readme[i:i + 2600]
@@ -95,7 +95,7 @@ def test_the_readme_engine_table_matches_the_code():
 def test_clickhouse_really_is_spec_only():
     """The README's middle row is a claim about behaviour; this is the
     behaviour. A spec exists, and execution is refused."""
-    from dba_slack_bot import engines
+    from queryhub import engines
     assert engines.spec("clickhouse").name == "clickhouse"
     assert engines.is_executable("clickhouse") is False
     assert engines.is_executable("postgres") is True
@@ -105,7 +105,7 @@ def test_clickhouse_really_is_spec_only():
 def test_no_engine_is_claimed_that_has_no_spec():
     """oracle / mysql / couchbase appeared in the prototype's logo map. The
     README must not present them as engines."""
-    from dba_slack_bot import engines
+    from queryhub import engines
     readme = _read("README.md")
     table = readme[readme.index("## Engines"):]
     table = table[:table.index("## Screenshots")]
@@ -188,16 +188,16 @@ def test_the_screenshot_folder_documents_itself():
 def test_me_exposes_whether_slack_is_enabled():
     """The frontend had no way to know: `slackEnabled` did not exist anywhere in
     the payload, so the copy could not be conditional even in principle."""
-    src = _read("src/dba_slack_bot/web/app.py")
+    src = _read("src/queryhub/web/app.py")
     assert 'out["slackEnabled"] = bool(cfg.ENV.slack_enabled)' in src
 
 
 def test_the_flag_is_the_same_one_the_backend_gates_on():
     """Two sources of truth for "is there a Slack" would let the copy drift from
     the behaviour, which is the bug rather than the fix."""
-    src = _read("src/dba_slack_bot/web/app.py")
+    src = _read("src/queryhub/web/app.py")
     assert "cfg.ENV.slack_enabled" in src
-    gates = _read("src/dba_slack_bot/web/routes_queries.py")
+    gates = _read("src/queryhub/web/routes_queries.py")
     assert "cfg.ENV.slack_enabled" in gates
 
 
@@ -324,9 +324,9 @@ def test_me_actually_returns_the_flag_over_http(monkeypatch):
     that was the original state — `slackEnabled` appeared nowhere at all."""
     import logging
     from starlette.testclient import TestClient
-    from dba_slack_bot import admins, db, requesters
-    from dba_slack_bot.web import app as web_app, sessions
-    from dba_slack_bot.slack_app import notifications
+    from queryhub import admins, db, requesters
+    from queryhub.web import app as web_app, sessions
+    from queryhub.slack_app import notifications
 
     logging.disable(logging.CRITICAL)
     monkeypatch.setattr(db, "init_pool", lambda: None)

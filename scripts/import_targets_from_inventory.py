@@ -38,13 +38,13 @@ For each new row:
     port             = 5432
     default_database = first non-'postgres' database_name on that endpoint
                        (fallback 'postgres' if only 'postgres' exists)
-    username         = 'dba_slackbot_ro'   (matches deploy/grant_readonly.sql)
+    username         = 'queryhub_ro'   (matches deploy/grant_readonly.sql)
     password_encrypted = encrypt('PASSWORD_NOT_SET')   sentinel
     enabled          = TRUE
     notes            = 'auto-imported from inventory.v_all_databases — fill creds.'
 
 Usage:
-    set -a; source /etc/slackbot/env; set +a
+    set -a; source /etc/queryhub/env; set +a
     .venv/bin/python scripts/import_targets_from_inventory.py
 """
 from __future__ import annotations
@@ -58,15 +58,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import psycopg  # noqa: E402
 
-from dba_slack_bot import db  # noqa: E402
-from dba_slack_bot import target_policy  # noqa: E402
-from dba_slack_bot.config import ENV  # noqa: E402
-from dba_slack_bot.crypto import decrypt, encrypt  # noqa: E402
+from queryhub import db  # noqa: E402
+from queryhub import target_policy  # noqa: E402
+from queryhub.config import ENV  # noqa: E402
+from queryhub.crypto import decrypt, encrypt  # noqa: E402
 
 log = logging.getLogger("import-targets")
 
 SENTINEL_PASSWORD = "PASSWORD_NOT_SET"
-DEFAULT_USERNAME = "dba_slackbot_ro"
+DEFAULT_USERNAME = "queryhub_ro"
 
 
 def _existing_hosts() -> set[str]:
@@ -175,7 +175,7 @@ def _notify_admins_disabled(plans: list[dict]) -> None:
     try:
         from slack_sdk.web import WebClient
 
-        from dba_slack_bot import admins
+        from queryhub import admins
 
         client = WebClient(token=ENV.slack_bot_token)
         lines = "\n".join(

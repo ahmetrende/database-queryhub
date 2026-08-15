@@ -15,7 +15,7 @@ wants, so running it only spends a scan and an approval round to reach nothing.
 """
 import pytest
 
-from dba_slack_bot import query_safety
+from queryhub import query_safety
 
 
 @pytest.mark.parametrize("sql", [

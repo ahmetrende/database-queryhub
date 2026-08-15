@@ -21,7 +21,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from dba_slack_bot import query_safety
+from queryhub import query_safety
 
 CORPUS = Path(__file__).parent / "corpus"
 

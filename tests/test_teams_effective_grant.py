@@ -26,7 +26,7 @@ so it is pinned on the user path and the team path separately.
 """
 import pytest
 
-from dba_slack_bot import teams
+from queryhub import teams
 
 
 @pytest.fixture

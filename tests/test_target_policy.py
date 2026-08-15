@@ -4,7 +4,7 @@ All aliases/hosts here are synthetic — never put real target
 aliases/hosts in tracked files (check_repo_clean forbids it)."""
 import pytest
 
-from dba_slack_bot import target_policy as tp
+from queryhub import target_policy as tp
 
 
 @pytest.fixture

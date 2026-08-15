@@ -8,7 +8,7 @@ needed", still holds.
 """
 import pytest
 
-from dba_slack_bot import config as cfg
+from queryhub import config as cfg
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +30,7 @@ def test_second_read_does_not_hit_the_database(monkeypatch):
         calls.append(params)
         return {"value": "300"}
 
-    import dba_slack_bot.db as dbmod
+    import queryhub.db as dbmod
     monkeypatch.setattr(dbmod, "fetch_one", fake_fetch_one)
     assert cfg.get_setting("query_timeout_sec", "1") == "300"
     assert cfg.get_setting("query_timeout_sec", "1") == "300"
@@ -41,7 +41,7 @@ def test_second_read_does_not_hit_the_database(monkeypatch):
 def test_invalidate_forces_a_reread(monkeypatch):
     cfg.invalidate_cache()
     values = iter(["off", "on"])
-    import dba_slack_bot.db as dbmod
+    import queryhub.db as dbmod
     monkeypatch.setattr(dbmod, "fetch_one",
                         lambda sql, params=None: {"value": next(values)})
     assert cfg.get_setting("kill_switch", "off") == "off"
@@ -52,7 +52,7 @@ def test_invalidate_forces_a_reread(monkeypatch):
 def test_missing_key_still_uses_the_default_and_is_cached(monkeypatch):
     cfg.invalidate_cache()
     calls = []
-    import dba_slack_bot.db as dbmod
+    import queryhub.db as dbmod
 
     def fake(sql, params=None):
         calls.append(1)

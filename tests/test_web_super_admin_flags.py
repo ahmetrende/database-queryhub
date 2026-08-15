@@ -19,9 +19,9 @@ import logging
 import pytest
 from fastapi.testclient import TestClient
 
-from dba_slack_bot import admins, core_submit, db, requesters
-from dba_slack_bot.web import app as web_app
-from dba_slack_bot.web import routes_queries, sessions
+from queryhub import admins, core_submit, db, requesters
+from queryhub.web import app as web_app
+from queryhub.web import routes_queries, sessions
 
 USER = "U0EXAMPLE01"
 
@@ -41,7 +41,7 @@ def client(monkeypatch):
     target = type("T", (), {"id": 7, "alias": "svc", "enabled": True,
                             "engine": "postgres", "default_database": "app"})()
     monkeypatch.setattr(routes_queries, "_target_by_alias", lambda a: target)
-    from dba_slack_bot import teams
+    from queryhub import teams
     monkeypatch.setattr(teams, "effective_grant_for_user",
                         lambda uid, tid: {"mode": "ddl"})
 

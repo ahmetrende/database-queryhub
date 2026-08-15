@@ -3,7 +3,7 @@
 #
 # Flow:
 #   1. Re-generate metrics_dashboard.html from the bot DB (uses the
-#      same /etc/slackbot/env credentials the bot itself uses).
+#      same /etc/queryhub/env credentials the bot itself uses).
 #   2. Upload to s3://${METRICS_DASHBOARD_BUCKET}/${METRICS_DASHBOARD_KEY}
 #      with a short Cache-Control so refreshes propagate quickly.
 #   3. Log the size and timestamp; non-zero exit on failure so the
@@ -12,7 +12,7 @@
 # Auth: relies on the EC2 instance's attached IAM role (preferred)
 # or a standard AWS credentials chain. No keys baked in.
 #
-# Env file expected: /etc/slackbot/dashboard.env
+# Env file expected: /etc/queryhub/dashboard.env
 #   METRICS_DASHBOARD_BUCKET   the S3 bucket name (DevOps provisions)
 #   METRICS_DASHBOARD_KEY      object key (default: dba-metrics/index.html)
 #   AWS_REGION                 e.g. eu-central-1 (optional if instance metadata is reachable)
@@ -28,11 +28,11 @@ DASHBOARD_HTML="${REPO_DIR}/metrics_dashboard.html"
 
 # Bot DB connection + master.key path come from the standard env file.
 set -a
-[ -f /etc/slackbot/env ] && . /etc/slackbot/env
-[ -f /etc/slackbot/dashboard.env ] && . /etc/slackbot/dashboard.env
+[ -f /etc/queryhub/env ] && . /etc/queryhub/env
+[ -f /etc/queryhub/dashboard.env ] && . /etc/queryhub/dashboard.env
 set +a
 
-: "${METRICS_DASHBOARD_BUCKET:?METRICS_DASHBOARD_BUCKET must be set (see /etc/slackbot/dashboard.env)}"
+: "${METRICS_DASHBOARD_BUCKET:?METRICS_DASHBOARD_BUCKET must be set (see /etc/queryhub/dashboard.env)}"
 METRICS_DASHBOARD_KEY="${METRICS_DASHBOARD_KEY:-dba-metrics/index.html}"
 
 cd "$REPO_DIR"

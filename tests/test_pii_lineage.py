@@ -8,7 +8,7 @@ column behind the alias is checked as well.
 """
 import pytest
 
-from dba_slack_bot import pii
+from queryhub import pii
 
 
 @pytest.fixture(autouse=True)
@@ -75,7 +75,7 @@ def test_alias_expansion_is_transitive():
 # ---------------------------------------------------------------------------
 import pathlib
 
-from dba_slack_bot import pii_lineage
+from queryhub import pii_lineage
 
 
 def test_root_output_comes_from_the_outermost_node_that_has_one():

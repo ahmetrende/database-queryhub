@@ -55,7 +55,7 @@ COMMENT ON TABLE requests IS
 $$Every /sql submission, regardless of outcome. The audit trail. Joined to request_notifications for chat.update lockstep, and to audit_log for state-transition history.$$;
 
 COMMENT ON COLUMN requests.status IS 'enum request_status: pending → (approved | rejected | changes_requested) → (executing → completed | failed) | cancelled.';
-COMMENT ON COLUMN requests.csv_file_path IS 'Local path under /var/lib/slackbot/results/. NULL''d by cleanup after TTL.';
+COMMENT ON COLUMN requests.csv_file_path IS 'Local path under /var/lib/queryhub/results/. NULL''d by cleanup after TTL.';
 COMMENT ON COLUMN requests.slack_file_id IS 'Slack file ID from files_upload_v2. NULL''d by cleanup after files.delete.';
 COMMENT ON COLUMN requests.row_count IS 'Number of rows returned (or affected, for write queries).';
 COMMENT ON COLUMN requests.truncated IS 'TRUE if result was capped at max_rows.';

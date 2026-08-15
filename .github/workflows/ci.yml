@@ -51,7 +51,7 @@ jobs:
         run: ruff check src tests scripts
 
       - name: Tests (pytest, with coverage)
-        run: pytest --cov=dba_slack_bot --cov-report=term-missing:skip-covered
+        run: pytest --cov=queryhub --cov-report=term-missing:skip-covered
 
       # Two gates, because one number would be either useless or unpayable.
       #
@@ -198,7 +198,7 @@ jobs:
           BOT_DB_PASSWORD: x
           MASTER_KEY_PATH: /tmp/nonexistent-key
         run: |
-          python -c "import pyodbc, boto3; import dba_slack_bot.mssql_exec; \
+          python -c "import pyodbc, boto3; import queryhub.mssql_exec; \
             print('optional extras import OK')"
       - name: Tests with the extras present
         run: pytest
@@ -231,7 +231,7 @@ jobs:
           BOT_DB_PASSWORD: x
           MASTER_KEY_PATH: /tmp/nonexistent-key
         run: |
-          python -c "import dba_slack_bot.config; import dba_slack_bot.web.app, dba_slack_bot.executor, dba_slack_bot.core_submit, dba_slack_bot.core_decide, dba_slack_bot.slack_app.notifications; assert not dba_slack_bot.config.ENV.slack_enabled; print('vanilla import OK')"
+          python -c "import queryhub.config; import queryhub.web.app, queryhub.executor, queryhub.core_submit, queryhub.core_decide, queryhub.slack_app.notifications; assert not queryhub.config.ENV.slack_enabled; print('vanilla import OK')"
 
   # CI never touched the frontend, so a JSX syntax error, a missing import, or a
   # broken symlink into the prototype tree was only discovered when a human happened

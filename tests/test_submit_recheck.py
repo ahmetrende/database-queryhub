@@ -6,7 +6,7 @@ These exercise the re-check logic directly with a scripted cursor; the
 advisory lock that makes it atomic is a plain pg_advisory_xact_lock call in
 create_request().
 """
-from dba_slack_bot import core_submit as cs
+from queryhub import core_submit as cs
 
 
 class _Cur:

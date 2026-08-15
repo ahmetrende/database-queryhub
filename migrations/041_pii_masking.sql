@@ -2,7 +2,7 @@
 --
 -- The bot masks sensitive values (email, Turkish mobile phone) in the
 -- result file as it streams, using content-based detection (regex +
--- validators) in src/dba_slack_bot/pii.py. Detection is by value, not
+-- validators) in src/queryhub/pii.py. Detection is by value, not
 -- column name, so aliased / wrapped columns can't slip PII past the
 -- mask. Which detector fired is recorded in audit_log.details
 -- ("pii_masked": [...]) and surfaced to the requester in the result DM.

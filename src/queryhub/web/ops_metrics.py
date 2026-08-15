@@ -9,7 +9,7 @@ Two deliberate design choices.
 
 **Derived from SQL at scrape time, not from in-process counters.** Counters held
 in memory would be wrong here in three ways: they reset on restart, they differ
-between the two processes (slackbot and queryhub-web both serve requests, so
+between the two processes (queryhub and queryhub-web both serve requests, so
 neither has the whole picture), and they would have to be threaded through every
 code path that changes state. The database already records every request with
 its timestamps and status — it is the only place that knows the truth, and

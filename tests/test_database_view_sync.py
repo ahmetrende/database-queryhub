@@ -32,7 +32,7 @@ def _read(name):
 
 
 def _routes_data():
-    return (ROOT / "src" / "dba_slack_bot" / "web"
+    return (ROOT / "src" / "queryhub" / "web"
             / "routes_data.py").read_text(encoding="utf-8")
 
 
