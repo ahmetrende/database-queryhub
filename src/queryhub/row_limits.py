@@ -52,8 +52,15 @@ def effective_caps(principal_id: str) -> tuple[int, int]:
     # Read live, like every other authority question here: no cache, and the
     # answer can change between two submissions.
     floor = base_rows
+    floor_mb = 0
     if admins.is_super_admin(principal_id):
         floor = max(floor, cfg.get_int("super_admin_max_rows", base_rows))
+        # A size floor of its own, because the scaled size below is DERIVED from
+        # the row count and therefore cannot express "more bytes at the same
+        # rows". At 100k rows the derivation yields 200 MB, so asking for 500
+        # was unreachable no matter how high `csv_size_mb_ceiling` went — the
+        # ceiling only ever trims. Symmetric with the row floor: inert until set.
+        floor_mb = cfg.get_int("super_admin_max_mb", 0)
 
     rows = max(base_rows, floor, _override_rows(principal_id) or 0)
     if rows > base_rows:
@@ -61,6 +68,10 @@ def effective_caps(principal_id: str) -> tuple[int, int]:
         mb = min(ceiling_mb, max(base_mb, scaled))
     else:
         mb = base_mb
+    # The floor is applied AFTER the ceiling, and deliberately outranks it: the
+    # ceiling exists to stop a row-count override dragging the size cap up by
+    # accident, while this is somebody naming the number on purpose.
+    mb = max(mb, floor_mb)
     return rows, mb * 1024 * 1024
 
 
