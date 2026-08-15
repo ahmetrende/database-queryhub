@@ -62,9 +62,11 @@ def list_targets_for_user(principal_id: str) -> list[TargetServer]:
         "WHERE ts.enabled = TRUE AND ( "
         "    ts.id IN (SELECT g.target_server_id FROM team_target_grants g "
         "                JOIN team_members tm ON tm.team_id = g.team_id "
-        "                WHERE tm.slack_user_id = %s) "
+        "                WHERE tm.slack_user_id = %s AND g.revoked_at IS NULL "
+        "                  AND (g.expires_at IS NULL OR g.expires_at > NOW())) "
         " OR ts.id IN (SELECT target_server_id FROM user_target_grants "
-        "                WHERE slack_user_id = %s AND revoked_at IS NULL)) "
+        "                WHERE slack_user_id = %s AND revoked_at IS NULL "
+        "                  AND (expires_at IS NULL OR expires_at > NOW()))) "
         "ORDER BY ts.alias",
         (principal_id, principal_id),
     )
@@ -105,9 +107,11 @@ def search_targets_for_user(
         "WHERE ts.enabled = TRUE AND ts.alias ILIKE %s AND ( "
         "    ts.id IN (SELECT g.target_server_id FROM team_target_grants g "
         "                JOIN team_members tm ON tm.team_id = g.team_id "
-        "                WHERE tm.slack_user_id = %s) "
+        "                WHERE tm.slack_user_id = %s AND g.revoked_at IS NULL "
+        "                  AND (g.expires_at IS NULL OR g.expires_at > NOW())) "
         " OR ts.id IN (SELECT target_server_id FROM user_target_grants "
-        "                WHERE slack_user_id = %s AND revoked_at IS NULL)) "
+        "                WHERE slack_user_id = %s AND revoked_at IS NULL "
+        "                  AND (expires_at IS NULL OR expires_at > NOW()))) "
         "ORDER BY ts.alias LIMIT %s",
         (f"%{prefix}%", principal_id, principal_id, limit),
     )
@@ -124,10 +128,13 @@ def can_use_target(principal_id: str, target_id: int) -> bool:
         "    SELECT 1 FROM team_target_grants g "
         "      JOIN team_members tm ON tm.team_id = g.team_id "
         "      WHERE tm.slack_user_id = %s AND g.target_server_id = %s "
+        "        AND g.revoked_at IS NULL "
+        "        AND (g.expires_at IS NULL OR g.expires_at > NOW()) "
         ") OR EXISTS ("
         "    SELECT 1 FROM user_target_grants "
         "      WHERE slack_user_id = %s AND target_server_id = %s "
         "        AND revoked_at IS NULL "
+        "        AND (expires_at IS NULL OR expires_at > NOW()) "
         ")",
         (principal_id, target_id, principal_id, target_id),
     )
@@ -184,16 +191,43 @@ def effective_grant_for_user(
       - Else aggregate team_target_grants for the user on this target:
         most-permissive mode, union of allowed_databases (NULL beats list).
         Source = 'team'.
+
+    EXPIRY (migration 096) is applied in SQL, on both levels, at RESOLUTION
+    time — never by a sweep. A background job that has not run yet is a window
+    in which this function answers with a grant that already ended, and this
+    function is the single authority the whole product asks.
+
+    One rule the ordering above does not make obvious: **an EXPIRED user
+    override does NOT fall through to the team grants.** A user row is often
+    written to NARROW what a team already allows ("this person, this target,
+    read-only, until Friday"). If expiry fell through, Friday would arrive and
+    silently restore the wider team access the override was written to replace
+    — an expiry that INCREASES someone's access. The invariant is that expiry
+    only ever removes: a dated grant that lapses leaves nothing behind.
+
+    A REVOKED user row keeps the older fall-through behaviour, deliberately
+    unchanged in this round: revocation predates expiry here and some revokes
+    were issued expecting the team grant to resume. If that is wrong it is
+    wrong on its own terms and should be changed knowingly, not as a side
+    effect of adding expiry.
     """
     if _is_unrestricted(principal_id):
         return {"mode": "ddl", "allowed_databases": None, "source": "admin_or_bypass"}
 
     # 1. user-level override
+    # Read the row WITHOUT the expiry filter, so an EXPIRED override can be told
+    # apart from an ABSENT one — the two mean different things here (see the
+    # docstring: an expiry must never widen).
     u = db.fetch_one(
-        "SELECT mode, allowed_databases FROM user_target_grants "
-        "WHERE slack_user_id = %s AND target_server_id = %s AND revoked_at IS NULL",
+        "SELECT mode, allowed_databases, "
+        "       (expires_at IS NOT NULL AND expires_at <= NOW()) AS expired "
+        "  FROM user_target_grants "
+        " WHERE slack_user_id = %s AND target_server_id = %s "
+        "   AND revoked_at IS NULL",
         (principal_id, target_id),
     )
+    if u is not None and u["expired"]:
+        return None
     if u is not None:
         return {
             "mode": u["mode"],
@@ -210,7 +244,9 @@ def effective_grant_for_user(
         "SELECT g.mode, g.allowed_databases "
         "FROM team_target_grants g "
         "JOIN team_members tm ON tm.team_id = g.team_id "
-        "WHERE tm.slack_user_id = %s AND g.target_server_id = %s",
+        "WHERE tm.slack_user_id = %s AND g.target_server_id = %s "
+        "  AND g.revoked_at IS NULL "
+        "  AND (g.expires_at IS NULL OR g.expires_at > NOW())",
         (principal_id, target_id),
     )
     if not rows:
@@ -253,7 +289,8 @@ def effective_mode_for_database(
     # exhaustive whitelist); it applies only if it covers this database.
     u = db.fetch_one(
         "SELECT mode, allowed_databases FROM user_target_grants "
-        "WHERE slack_user_id = %s AND target_server_id = %s AND revoked_at IS NULL",
+        "WHERE slack_user_id = %s AND target_server_id = %s AND revoked_at IS NULL "
+        "  AND (expires_at IS NULL OR expires_at > NOW())",
         (principal_id, target_id),
     )
     if u is not None:
@@ -266,7 +303,9 @@ def effective_mode_for_database(
         "SELECT g.mode, g.allowed_databases "
         "FROM team_target_grants g "
         "JOIN team_members tm ON tm.team_id = g.team_id "
-        "WHERE tm.slack_user_id = %s AND g.target_server_id = %s",
+        "WHERE tm.slack_user_id = %s AND g.target_server_id = %s "
+        "  AND g.revoked_at IS NULL "
+        "  AND (g.expires_at IS NULL OR g.expires_at > NOW())",
         (principal_id, target_id),
     )
     covering = [
@@ -288,10 +327,12 @@ def has_any_grant(principal_id: str) -> bool:
         "SELECT 1 WHERE EXISTS ("
         "    SELECT 1 FROM team_members tm "
         "      JOIN team_target_grants g ON g.team_id = tm.team_id "
-        "      WHERE tm.slack_user_id = %s "
+        "      WHERE tm.slack_user_id = %s AND g.revoked_at IS NULL "
+        "        AND (g.expires_at IS NULL OR g.expires_at > NOW()) "
         ") OR EXISTS ("
         "    SELECT 1 FROM user_target_grants WHERE slack_user_id = %s "
         "      AND revoked_at IS NULL "
+        "      AND (expires_at IS NULL OR expires_at > NOW()) "
         ")",
         (principal_id, principal_id),
     )

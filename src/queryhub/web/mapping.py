@@ -262,7 +262,10 @@ def grant_entry(row: dict, alias_of: "callable") -> dict:
         "tier": (row.get("mode") or "ro").upper(),
         "grantedBy": row.get("granted_by"),
         "grantedAt": iso(row.get("granted_at")),
-        "expiresAt": None,          # neither grant table stores an expiry
+        # Real since migration 096. It was hardcoded None because neither
+        # grant table could expire — the UI column existed and was permanently
+        # empty, which is a control that looks available and is not.
+        "expiresAt": iso(row.get("expires_at")),
     }
 
 

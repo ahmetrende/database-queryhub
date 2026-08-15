@@ -39,7 +39,14 @@ def db(monkeypatch):
 
     def fake_fetch_one(sql, params=None):
         box["queries"].append(sql)
-        return box["user"]
+        u = box["user"]
+        # The real query selects an `expired` flag alongside the grant
+        # (migration 096). A stub that omits it is not a lighter fixture, it is
+        # a different row than production returns — so default it here and let
+        # a test that cares set it explicitly.
+        if isinstance(u, dict) and "expired" not in u:
+            u = {**u, "expired": False}
+        return u
 
     def fake_fetch_all(sql, params=None):
         box["queries"].append(sql)
@@ -278,3 +285,48 @@ def test_has_any_grant_is_false_for_a_user_with_nothing(principals):
     assert teams.has_any_grant("U0DEV") is False
     principals["one"] = {"?column?": 1}
     assert teams.has_any_grant("U0DEV") is True
+
+
+# ------------------------------------------------- expiry (migration 096)
+
+
+def test_an_expired_user_grant_gives_no_access(db):
+    """A dated grant that has passed its date is simply gone."""
+    db["user"] = {"mode": "rw", "allowed_databases": None, "expired": True}
+    db["team"] = []
+    assert teams.effective_grant_for_user("U0DEV", 7) is None
+
+
+def test_an_expired_user_override_does_not_fall_back_to_a_wider_team_grant(db):
+    """The rule worth a test of its own.
+
+    A user row is often written to NARROW what a team already allows — "this
+    person, read-only on this target, until Friday". If expiry fell through to
+    the team aggregate, Friday would arrive and hand them the team's `ddl`
+    back: an expiry that INCREASES access. Expiry only ever removes.
+    """
+    db["user"] = {"mode": "ro", "allowed_databases": ["nova"], "expired": True}
+    db["team"] = [{"mode": "ddl", "allowed_databases": None}]
+    assert teams.effective_grant_for_user("U0DEV", 7) is None
+
+
+def test_a_live_user_grant_is_unaffected(db):
+    """The migration gave every existing row NULL, so the overwhelmingly common
+    case is `expired=False` and nothing about the answer changes."""
+    db["user"] = {"mode": "rw", "allowed_databases": None, "expired": False}
+    db["team"] = [{"mode": "ro", "allowed_databases": ["x"]}]
+    out = teams.effective_grant_for_user("U0DEV", 7)
+    assert out["mode"] == "rw" and out["source"] == "user"
+
+
+def test_team_expiry_is_filtered_in_sql_not_here(db):
+    """The team aggregate has no per-row flag to check: expired team grants are
+    excluded by the query itself, so what this pins is that the predicate is
+    still IN the SQL the function issues."""
+    db["user"] = None
+    db["team"] = [{"mode": "ro", "allowed_databases": None}]
+    teams.effective_grant_for_user("U0DEV", 7)
+    team_sql = [q for q in db["queries"] if "team_target_grants" in q]
+    assert team_sql, "the team aggregate did not run"
+    assert "g.expires_at" in team_sql[-1], "team expiry is not enforced in SQL"
+    assert "g.revoked_at" in team_sql[-1], "team revoke is not enforced in SQL"

@@ -10,6 +10,7 @@ is an alternative surface, never a parallel or bypass path.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 import re
 
 from fastapi import APIRouter, Depends
@@ -300,7 +301,7 @@ def admin_grants(claims: dict = Depends(deps.current_user)):
     for row in db.fetch_all(
             "SELECT g.slack_user_id AS subject, r.name AS subject_name, "
             "  g.target_server_id, g.allowed_databases, g.mode, "
-            "  g.granted_by, g.granted_at "
+            "  g.granted_by, g.granted_at, g.expires_at "
             "FROM user_target_grants g "
             "LEFT JOIN requesters r ON r.slack_user_id = g.slack_user_id "
             "WHERE g.revoked_at IS NULL ORDER BY g.granted_at DESC"):
@@ -309,9 +310,9 @@ def admin_grants(claims: dict = Depends(deps.current_user)):
         out.append(mapping.grant_entry(row, _alias_of))
     for row in db.fetch_all(
             "SELECT g.team_id, t.name AS subject_name, g.target_server_id, "
-            "  g.allowed_databases, g.mode, g.granted_at "
+            "  g.allowed_databases, g.mode, g.granted_at, g.expires_at "
             "FROM team_target_grants g LEFT JOIN teams t ON t.id = g.team_id "
-            "ORDER BY g.granted_at DESC"):
+            "WHERE g.revoked_at IS NULL ORDER BY g.granted_at DESC"):
         row["subject"] = str(row["team_id"])
         row["_subject_type"] = "team"
         row["_gid"] = f"t:{row['team_id']}:{row['target_server_id']}"
@@ -1049,6 +1050,10 @@ class GrantIn(BaseModel):
     databases: list[str] | None = None
     tier: str = "ro"
     reason: str | None = None
+    # ISO-8601, or null for "no expiry" — which is what every grant issued
+    # before migration 096 has, and what most will keep. A grant given for one
+    # afternoon's migration should be able to say so; nothing forces it to.
+    expiresAt: str | None = None
 
 
 @router.post("/grants", status_code=201)
@@ -1075,6 +1080,24 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
             "granting access to it would allow tampering with the audit log "
             "and the admin list.")
     dbs = body.databases or ([body.databaseId] if body.databaseId else None)
+    # Expiry (migration 096). Parsed here, before either branch writes, so a
+    # malformed date is a 400 rather than half a grant. A date already in the
+    # past is refused rather than accepted-and-inert: writing a grant that is
+    # dead on arrival reads to the admin as "access given", and the row would
+    # sit in the list looking live.
+    expires_at = None
+    if body.expiresAt:
+        try:
+            expires_at = datetime.fromisoformat(body.expiresAt.replace("Z", "+00:00"))
+        except ValueError:
+            raise deps._error(400, "bad_request",
+                              "expiresAt must be an ISO-8601 timestamp.")
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= datetime.now(timezone.utc):
+            raise deps._error(400, "bad_request",
+                              "expiresAt is in the past — that grant would "
+                              "never apply.")
 
     if stype == "team":
         team = _resolve_team(body.subject)
@@ -1087,15 +1110,18 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
         with db.transaction() as cur:
             cur.execute(
                 "INSERT INTO team_target_grants "
-                "  (team_id, target_server_id, allowed_databases, mode) "
-                "VALUES (%s, %s, %s, %s) "
+                "  (team_id, target_server_id, allowed_databases, mode, expires_at) "
+                "VALUES (%s, %s, %s, %s, %s) "
                 "ON CONFLICT (team_id, target_server_id) DO UPDATE "
                 "  SET allowed_databases = EXCLUDED.allowed_databases, "
-                "      mode = EXCLUDED.mode",
-                (team["id"], tid, dbs, tier))
+                "      mode = EXCLUDED.mode, "
+                "      expires_at = EXCLUDED.expires_at, "
+                "      revoked_at = NULL",
+                (team["id"], tid, dbs, tier, expires_at))
             audit.log_in(cur, None, uid, claims.get("name"), "team_grant_added",
                          {"team": team["name"], "team_id": team["id"],
-                          "target_id": tid, "databases": dbs, "tier": tier})
+                          "target_id": tid, "databases": dbs, "tier": tier,
+                          "expires_at": expires_at.isoformat() if expires_at else None})
         return {"id": f"t:{team['id']}:{tid}", "subjectType": "team",
                 "subject": team["name"], "connectionId": body.connectionId,
                 "databases": dbs or "*", "tier": tier.upper()}
@@ -1105,7 +1131,7 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
     summary = grants.grant(
         granter_id=uid, granter_name=claims.get("name"), grantee_id=body.subject,
         grantee_profile=_slack_profile(body.subject), target_id=tid, mode=tier,
-        databases=dbs, reason=body.reason, notify=True)
+        databases=dbs, reason=body.reason, notify=True, expires_at=expires_at)
     return {"id": f"u:{body.subject}:{tid}", "subjectType": "user",
             "subject": body.subject, "connectionId": body.connectionId,
             "databases": summary["databases"] or "*",

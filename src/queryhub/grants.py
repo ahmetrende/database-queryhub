@@ -115,6 +115,7 @@ def grant(
     databases: list[str] | None,
     reason: str | None,
     notify: bool = True,
+    expires_at=None,
 ) -> dict:
     """Whitelist (upsert enabled requester) + upsert the user_target_grants
     row + audit, in one transaction. `grantee_profile` carries name / email
@@ -166,14 +167,19 @@ def grant(
         cur.execute(
             "INSERT INTO user_target_grants "
             "  (slack_user_id, target_server_id, allowed_databases, mode, "
-            "   granted_at, granted_by, revoked_at) "
-            "VALUES (%s, %s, %s, %s, NOW(), %s, NULL) "
+            "   granted_at, granted_by, revoked_at, expires_at) "
+            "VALUES (%s, %s, %s, %s, NOW(), %s, NULL, %s) "
             "ON CONFLICT (slack_user_id, target_server_id) DO UPDATE "
             "  SET allowed_databases = EXCLUDED.allowed_databases, "
             "      mode = EXCLUDED.mode, granted_at = NOW(), "
-            "      granted_by = EXCLUDED.granted_by, revoked_at = NULL "
-            "RETURNING mode, allowed_databases",
-            (grantee_id, target_id, dbs, mode, granter_id),
+            "      granted_by = EXCLUDED.granted_by, revoked_at = NULL, "
+            # Re-granting REPLACES the expiry, including clearing it: an admin
+            # re-issuing a grant with no date means "no date", not "keep the
+            # old one". The alternative silently preserves a lapse the admin
+            # thought they had just removed.
+            "      expires_at = EXCLUDED.expires_at "
+            "RETURNING mode, allowed_databases, expires_at",
+            (grantee_id, target_id, dbs, mode, granter_id, expires_at),
         )
         row = cur.fetchone()
 

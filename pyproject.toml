@@ -42,8 +42,8 @@ dependencies = [
     # — a big jump from the tested baseline. These are the versions QueryHub
     # is verified against; widen the cap deliberately after testing a newer
     # FastAPI/Starlette, not implicitly on every fresh install.
-    "fastapi>=0.115.0,<0.141",
-    "uvicorn[standard]>=0.30.0,<0.52",
+    "fastapi>=0.115.0,<0.142",
+    "uvicorn[standard]>=0.30.0,<0.53",
     "PyJWT[crypto]>=2.9.0",
     "httpx>=0.27.0",
 ]
