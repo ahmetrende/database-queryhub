@@ -78,7 +78,7 @@ def test_the_readme_says_the_first_start_builds():
 
 def test_the_readme_engine_table_matches_the_code():
     """Three states, and each has to be the state the code is actually in."""
-    from queryhub import engines
+    from dba_slack_bot import engines
     readme = _read("README.md")
     i = readme.index("## Engines")
     table = readme[i:i + 2600]
@@ -95,7 +95,7 @@ def test_the_readme_engine_table_matches_the_code():
 def test_clickhouse_really_is_spec_only():
     """The README's middle row is a claim about behaviour; this is the
     behaviour. A spec exists, and execution is refused."""
-    from queryhub import engines
+    from dba_slack_bot import engines
     assert engines.spec("clickhouse").name == "clickhouse"
     assert engines.is_executable("clickhouse") is False
     assert engines.is_executable("postgres") is True
@@ -105,7 +105,7 @@ def test_clickhouse_really_is_spec_only():
 def test_no_engine_is_claimed_that_has_no_spec():
     """oracle / mysql / couchbase appeared in the prototype's logo map. The
     README must not present them as engines."""
-    from queryhub import engines
+    from dba_slack_bot import engines
     readme = _read("README.md")
     table = readme[readme.index("## Engines"):]
     table = table[:table.index("## Screenshots")]
@@ -188,16 +188,16 @@ def test_the_screenshot_folder_documents_itself():
 def test_me_exposes_whether_slack_is_enabled():
     """The frontend had no way to know: `slackEnabled` did not exist anywhere in
     the payload, so the copy could not be conditional even in principle."""
-    src = _read("src/queryhub/web/app.py")
+    src = _read("src/dba_slack_bot/web/app.py")
     assert 'out["slackEnabled"] = bool(cfg.ENV.slack_enabled)' in src
 
 
 def test_the_flag_is_the_same_one_the_backend_gates_on():
     """Two sources of truth for "is there a Slack" would let the copy drift from
     the behaviour, which is the bug rather than the fix."""
-    src = _read("src/queryhub/web/app.py")
+    src = _read("src/dba_slack_bot/web/app.py")
     assert "cfg.ENV.slack_enabled" in src
-    gates = _read("src/queryhub/web/routes_queries.py")
+    gates = _read("src/dba_slack_bot/web/routes_queries.py")
     assert "cfg.ENV.slack_enabled" in gates
 
 
@@ -266,14 +266,42 @@ def test_the_notices_match_the_installed_licence_metadata():
         f"copyleft dependencies missing from THIRD_PARTY_NOTICES.md: {unlisted}")
 
 
+# Which vendor owns the mark in each engine SVG. Derived from the FILE NAMES so
+# the check cannot drift: adding a logo without an owner here fails, and so does
+# shipping one whose owner is not named in the notices.
+_ENGINE_TRADEMARK_OWNER = {
+    "postgres": "PostgreSQL",
+    "mssql": "Microsoft",
+    "clickhouse": "ClickHouse",
+    "oracle": "Oracle",
+    "mysql": "MySQL",
+    "couchbase": "Couchbase",
+}
+
+
 def test_the_engine_logos_are_attributed():
-    """Six real vendor trademarks ship in the repo. Three of them are for
-    engines with no spec at all."""
+    """Every vendor trademark that SHIPS is attributed — read off the directory
+    rather than a hand-kept list.
+
+    It used to name all six, which stopped being true on 2026-08-15 when
+    `oracle`, `mysql` and `couchbase` were deleted: no engine spec exists for
+    them, so no connection could ever have rendered one, and they were
+    advertising capability the product does not have. A list in a test is the
+    wrong place to learn that — it would have gone on demanding attribution for
+    files that are not here, or (worse, later) stayed silent when a new logo
+    arrived unattributed."""
+    from pathlib import Path
+    engines = Path(__file__).resolve().parent.parent / "QueryHubWeb" / "brand" / "engines"
+    shipped = sorted(p.stem for p in engines.glob("*.svg"))
+    assert shipped, "no engine logos found — did the directory move?"
+
     notices = _read("THIRD_PARTY_NOTICES.md")
     assert "trademark" in notices.lower()
-    for mark in ("PostgreSQL", "Microsoft", "ClickHouse", "Oracle",
-                 "MySQL", "Couchbase"):
-        assert mark in notices
+    for stem in shipped:
+        owner = _ENGINE_TRADEMARK_OWNER.get(stem)
+        assert owner, (f"{stem}.svg ships with no known trademark owner — add "
+                       f"it to _ENGINE_TRADEMARK_OWNER and to the notices")
+        assert owner in notices, f"{stem}.svg ships but {owner} is not attributed"
 
 
 def test_the_msodbc_eula_is_disclosed():
@@ -296,9 +324,9 @@ def test_me_actually_returns_the_flag_over_http(monkeypatch):
     that was the original state — `slackEnabled` appeared nowhere at all."""
     import logging
     from starlette.testclient import TestClient
-    from queryhub import admins, db, requesters
-    from queryhub.web import app as web_app, sessions
-    from queryhub.slack_app import notifications
+    from dba_slack_bot import admins, db, requesters
+    from dba_slack_bot.web import app as web_app, sessions
+    from dba_slack_bot.slack_app import notifications
 
     logging.disable(logging.CRITICAL)
     monkeypatch.setattr(db, "init_pool", lambda: None)

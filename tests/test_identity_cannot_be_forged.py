@@ -27,9 +27,9 @@ os.environ.setdefault("WEB_SESSION_SECRET", "test-secret-not-for-prod")
 
 import jwt  # noqa: E402
 
-from queryhub.web import sessions  # noqa: E402
+from dba_slack_bot.web import sessions  # noqa: E402
 
-SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "queryhub"
+SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "dba_slack_bot"
 
 VICTIM = "U0SUPERADMIN1"   # a placeholder, not a real account
 ATTACKER = "U0999ATTACK1"

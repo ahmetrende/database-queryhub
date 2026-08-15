@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from queryhub import db
+from dba_slack_bot import db
 
 # Opt-in: these connect to a real control DB, so they stay OFF by default
 # (the fast unit suite must not probe or block on a network DB). Run them
@@ -33,7 +33,7 @@ pytestmark = [
 def test_readyz_reports_ready_against_real_db():
     from starlette.testclient import TestClient
 
-    from queryhub.web import app
+    from dba_slack_bot.web import app
     logging.disable(logging.CRITICAL)
     with TestClient(app.create_app()) as c:
         r = c.get("/readyz")
@@ -44,7 +44,7 @@ def test_readyz_reports_ready_against_real_db():
 def test_healthz_is_always_ok():
     from starlette.testclient import TestClient
 
-    from queryhub.web import app
+    from dba_slack_bot.web import app
     logging.disable(logging.CRITICAL)
     with TestClient(app.create_app()) as c:
         assert c.get("/healthz").json()["status"] == "ok"
@@ -191,7 +191,7 @@ def test_web_session_rotation_round_trips_against_real_sql():
     """create_session → rotate_refresh → replay. The reuse response and the
     grace window are pure SQL (make_interval, prev_refresh_hash), so a real
     server is the only place they can be checked."""
-    from queryhub.web import sessions
+    from dba_slack_bot.web import sessions
 
     sid, tok = sessions.create_session("U0INTEG01", provider="local",
                                        user_agent="integ")
@@ -234,7 +234,7 @@ def _enum_query_conn():
     import psycopg
     from psycopg.rows import dict_row
 
-    from queryhub.config import ENV
+    from dba_slack_bot.config import ENV
     return psycopg.connect(
         host=ENV.bot_db_host, port=ENV.bot_db_port, dbname=ENV.bot_db_name,
         user=ENV.bot_db_user, password=ENV.bot_db_password,
@@ -245,7 +245,7 @@ def _enum_query_conn():
 def test_the_enum_column_really_does_come_back_as_a_bare_oid():
     """The premise. If psycopg ever learns to name enums by itself, the lookup
     (and this whole hazard) becomes dead code — and this test says so."""
-    from queryhub import executor
+    from dba_slack_bot import executor
     with _enum_query_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT id, status FROM requests LIMIT 1")
         types, unknown = executor._column_types(cur.description)
@@ -263,7 +263,7 @@ def test_the_catalog_lookup_returns_promptly_after_the_stream_is_closed():
     two orders of magnitude of slack; the wedged version never returned.
     """
     import time
-    from queryhub import executor
+    from dba_slack_bot import executor
     with _enum_query_conn() as conn, conn.cursor() as cur:
         # Deliberately more rows than we read, so the portal is left holding
         # some. This is what a truncated result looks like.

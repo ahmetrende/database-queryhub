@@ -29,7 +29,7 @@ is the operator's to choose and stable once chosen. Adding a second company
 IdP is three more environment variables and nothing else; the built-ins are
 untouched and keep working alongside.
 
-Secrets live in the environment (`/etc/queryhub/web.env`), never in
+Secrets live in the environment (`/etc/slackbot/web.env`), never in
 bot_config: bot_config is shared by every instance on the same bot DB and
 is readable through the admin config screen. bot_config carries only the
 runtime switch `web_auth_<id>_enabled` and an optional

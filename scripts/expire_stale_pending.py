@@ -17,7 +17,7 @@ render/metrics path handles) with decision_reason 'expired ...'; the
 forensic record is the dedicated audit_log action 'request_expired'.
 
 Usage:
-    set -a; source /etc/queryhub/env; set +a
+    set -a; source /etc/slackbot/env; set +a
     .venv/bin/python scripts/expire_stale_pending.py            # dry-run report
     .venv/bin/python scripts/expire_stale_pending.py --commit   # act (if enabled)
 """
@@ -30,9 +30,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from queryhub import audit, db  # noqa: E402
-from queryhub import config as cfg  # noqa: E402
-from queryhub.config import ENV  # noqa: E402
+from dba_slack_bot import audit, db  # noqa: E402
+from dba_slack_bot import config as cfg  # noqa: E402
+from dba_slack_bot.config import ENV  # noqa: E402
 
 log = logging.getLogger("pending-expiry")
 
@@ -81,7 +81,7 @@ def main() -> int:
         return 0
 
     from slack_sdk.web import WebClient
-    from queryhub.slack_app import notifications
+    from dba_slack_bot.slack_app import notifications
     client = WebClient(token=ENV.slack_bot_token)
     reason = f"expired: no admin action within {hours}h"
     expired = 0

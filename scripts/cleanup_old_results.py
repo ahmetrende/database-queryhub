@@ -6,7 +6,7 @@ often as you like. Files are kept for `bot_config.results_ttl_hours` (default
     UPDATE bot_config SET value = '24' WHERE key = 'results_ttl_hours';
 
 Local cleanup:
-    /var/lib/queryhub/results/*.{csv,zip,xlsx}  →  removed if mtime older
+    /var/lib/slackbot/results/*.{csv,zip,xlsx}  →  removed if mtime older
     than TTL (all three artifact types the executor writes).
 
 Slack cleanup:
@@ -30,8 +30,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from queryhub import config as cfg  # noqa: E402
-from queryhub import db  # noqa: E402
+from dba_slack_bot import config as cfg  # noqa: E402
+from dba_slack_bot import db  # noqa: E402
 
 
 def _slack_client():
@@ -54,10 +54,10 @@ def _slack_client():
         return None
     return WebClient(token=cfg.ENV.slack_bot_token)
 
-RESULTS_DIR = Path(os.environ.get("RESULTS_DIR", "/var/lib/queryhub/results"))
-IMPORT_DIR = Path(os.environ.get("IMPORT_DIR", "/var/lib/queryhub/imports"))
+RESULTS_DIR = Path(os.environ.get("RESULTS_DIR", "/var/lib/slackbot/results"))
+IMPORT_DIR = Path(os.environ.get("IMPORT_DIR", "/var/lib/slackbot/imports"))
 
-log = logging.getLogger("queryhub-cleanup")
+log = logging.getLogger("slackbot-cleanup")
 
 
 def cleanup_local(ttl_hours: int) -> tuple[int, int]:

@@ -3,9 +3,9 @@ identity namespacing, verify_login timing guard, and the LocalPassword
 provider. No DB, no network — DB-touching functions are monkeypatched."""
 import pytest
 
-from queryhub import config as cfg
-from queryhub import local_users, passwords
-from queryhub.web import auth_providers
+from dba_slack_bot import config as cfg
+from dba_slack_bot import local_users, passwords
+from dba_slack_bot.web import auth_providers
 
 
 # ---- password hashing -------------------------------------------------------

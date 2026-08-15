@@ -15,11 +15,11 @@
 # the DB password + optional Slack tokens land Fernet-encrypted in
 # secrets.enc, and local-account passwords are stored only as salted PBKDF2
 # hashes. Run as a normal user; sudo is invoked only for /etc paths and
-# systemd. Config dir defaults to /etc/queryhub (override: QH_CONF_DIR).
+# systemd. Config dir defaults to /etc/slackbot (override: QH_CONF_DIR).
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONF_DIR="${QH_CONF_DIR:-/etc/queryhub}"
+CONF_DIR="${QH_CONF_DIR:-/etc/slackbot}"
 VENV="$REPO_DIR/.venv"
 PYTHON="${PYTHON:-python3}"
 WITH_SLACK=0
@@ -92,8 +92,8 @@ step "5/10 Env file ($CONF_DIR/env)"
 if [ ! -f "$CONF_DIR/env" ]; then
   read -rp "   Bot metadata DB host: " DB_HOST
   read -rp "   Bot metadata DB port [5432]: " DB_PORT; DB_PORT="${DB_PORT:-5432}"
-  read -rp "   Bot metadata DB name [queryhub]: " DB_NAME; DB_NAME="${DB_NAME:-queryhub}"
-  read -rp "   Bot metadata DB user [queryhub]: " DB_USER; DB_USER="${DB_USER:-queryhub}"
+  read -rp "   Bot metadata DB name [slackbot]: " DB_NAME; DB_NAME="${DB_NAME:-slackbot}"
+  read -rp "   Bot metadata DB user [slackbot]: " DB_USER; DB_USER="${DB_USER:-slackbot}"
   umask 177
   cat > "$CONF_DIR/env" <<EOF
 # Written by scripts/install.sh — non-secret runtime configuration.
@@ -213,7 +213,7 @@ WorkingDirectory=$REPO_DIR
 EnvironmentFile=$CONF_DIR/env
 Environment=WEB_SSL_CERTFILE=$TLS_DIR/cert.pem
 Environment=WEB_SSL_KEYFILE=$TLS_DIR/key.pem
-ExecStart=$VENV/bin/python -m queryhub.web
+ExecStart=$VENV/bin/python -m dba_slack_bot.web
 Restart=on-failure
 RestartSec=5
 # Graceful restart: on SIGTERM the app drains (refuses new submissions) and
@@ -224,12 +224,12 @@ RestartSec=5
 # drain guarantee silently does not hold.
 TimeoutStopSec=330s
 
-# Hardening — matches deploy/queryhub.service. Runs as a normal user; /, /usr,
+# Hardening — matches deploy/slackbot.service. Runs as a normal user; /, /usr,
 # /boot and /etc are read-only under ProtectSystem=strict, so only the runtime
 # dirs are writable.
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/queryhub /var/log/queryhub
+ReadWritePaths=/var/lib/slackbot /var/log/slackbot
 PrivateTmp=true
 
 [Install]
@@ -239,16 +239,16 @@ EOF
   sudo systemctl enable --now queryhub-web
   ok "queryhub-web.service running (https://localhost:8080)"
   if [ "$WITH_SLACK" = 1 ]; then
-    note "For the Slack bot unit, see deploy/INSTALL.md §11 (deploy/queryhub.service)."
+    note "For the Slack bot unit, see deploy/INSTALL.md §11 (deploy/slackbot.service)."
   fi
 else
   echo
   echo "Done. Start the web app with:"
   echo "  set -a; . $CONF_DIR/env; set +a"
   echo "  WEB_SSL_CERTFILE=$TLS_DIR/cert.pem WEB_SSL_KEYFILE=$TLS_DIR/key.pem \\"
-  echo "    $VENV/bin/python -m queryhub.web"
+  echo "    $VENV/bin/python -m dba_slack_bot.web"
   echo "then open https://localhost:8080 and sign in."
-  [ "$WITH_SLACK" = 1 ] && echo "Slack bot: $VENV/bin/python -m queryhub.main (see INSTALL.md §11 for systemd)."
+  [ "$WITH_SLACK" = 1 ] && echo "Slack bot: $VENV/bin/python -m dba_slack_bot.main (see INSTALL.md §11 for systemd)."
 fi
 echo
 echo "Next steps: add target servers (deploy/INSTALL.md §9) and grants (§10)."

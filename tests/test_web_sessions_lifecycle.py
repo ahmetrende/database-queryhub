@@ -13,7 +13,7 @@ cursor. No DB, no clock dependency.
 """
 import pytest
 
-from queryhub.web import sessions
+from dba_slack_bot.web import sessions
 
 
 class _Cur:

@@ -1,7 +1,7 @@
-"""CLI for the bot's encrypted env-secret store at /etc/queryhub/secrets.enc.
+"""CLI for the bot's encrypted env-secret store at /etc/slackbot/secrets.enc.
 
 Stores SLACK_BOT_TOKEN, SLACK_APP_TOKEN, BOT_DB_PASSWORD encrypted with
-the same Fernet master key (`/etc/queryhub/master.key`) that protects
+the same Fernet master key (`/etc/slackbot/master.key`) that protects
 target-server credentials.
 
 Usage:
@@ -10,7 +10,7 @@ Usage:
     sudo .venv/bin/python scripts/manage_env_secrets.py set SLACK_BOT_TOKEN
     sudo .venv/bin/python scripts/manage_env_secrets.py remove    # soft-delete the file
 
-After any change: `sudo systemctl restart queryhub` so the new values
+After any change: `sudo systemctl restart slackbot` so the new values
 load into the bot's environment.
 
 The script never echoes secret values to stdout. Reads use getpass
@@ -26,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from queryhub import secrets_store  # noqa: E402
+from dba_slack_bot import secrets_store  # noqa: E402
 
 
 def cmd_list(_args) -> int:
@@ -74,7 +74,7 @@ def cmd_init(_args) -> int:
     print(f"\nWrote encrypted secrets to {path} (mode 0600, "
           f"{len(secrets)} key(s)).")
     print("Restart the bot to pick up the new values:")
-    print("  sudo systemctl restart queryhub")
+    print("  sudo systemctl restart slackbot")
     return 0
 
 
@@ -101,7 +101,7 @@ def cmd_set(args) -> int:
     path = secrets_store.save(current)
     print(f"Updated {key} in {path}.")
     print("Restart the bot to pick up the new value:")
-    print("  sudo systemctl restart queryhub")
+    print("  sudo systemctl restart slackbot")
     return 0
 
 
@@ -121,7 +121,7 @@ def cmd_remove(_args) -> int:
     target = secrets_store.remove()
     print(f"Soft-deleted to {target}.")
     print("Bot will fall back to plaintext env vars on next restart "
-          "(if they are still present in /etc/queryhub/env).")
+          "(if they are still present in /etc/slackbot/env).")
     return 0
 
 

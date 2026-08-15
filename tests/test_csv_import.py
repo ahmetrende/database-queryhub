@@ -1,5 +1,5 @@
 """csv_import — header normalization, CSV parsing, user-supplied schema parse."""
-from queryhub import csv_import as ci
+from dba_slack_bot import csv_import as ci
 
 
 # --- normalize_column -------------------------------------------------------

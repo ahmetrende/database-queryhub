@@ -27,9 +27,9 @@ import pytest
 # (module, attribute) for every function that turns a tier into an authorization
 # or execution decision.
 AUTHZ_CALLERS = [
-    ("queryhub.core_submit", "validate_submission"),
-    ("queryhub.slack_app.handlers", "_validate_batch_item"),
-    ("queryhub.web.routes_queries", "explain_query"),
+    ("dba_slack_bot.core_submit", "validate_submission"),
+    ("dba_slack_bot.slack_app.handlers", "_validate_batch_item"),
+    ("dba_slack_bot.web.routes_queries", "explain_query"),
 ]
 # `classify_query` is NOT here on purpose — it reads `analyze().main_tier`
 # directly and so never meets the flattening. Its own test is below; a skip in
@@ -78,7 +78,7 @@ def test_the_approval_scope_prefers_the_persisted_tier():
     fallback for rows written before that column existed. Those rows already
     passed the submit-time blocked check, which is why deriving is safe here —
     but only while the persisted value is preferred."""
-    src = _code_only("queryhub.admins", "_request_tier")
+    src = _code_only("dba_slack_bot.admins", "_request_tier")
     persisted_at = src.index("required_tier")
     derived_at = src.index("required_mode(")
     assert persisted_at < derived_at, (
@@ -94,7 +94,7 @@ def test_classify_reads_the_report_and_reports_blocked_separately():
     `tierExceedsGrant` so the client is told both facts instead of inferring one
     from the other. Both halves matter: a client that saw only the tier would
     show a green RO chip for a query the submit path will refuse."""
-    src = _code_only("queryhub.web.routes_queries", "classify_query")
+    src = _code_only("dba_slack_bot.web.routes_queries", "classify_query")
     assert "required_mode(" not in src, (
         "classify_query started using the wrapper — add it to AUTHZ_CALLERS "
         "above so the ordering is checked")
@@ -107,7 +107,7 @@ def test_classify_reads_the_report_and_reports_blocked_separately():
 def test_the_wrapper_still_flattens_blocked_to_ro():
     """The behaviour the tests above exist for. If this ever stops being true,
     they are protecting nothing and should be revisited rather than deleted."""
-    from queryhub import query_safety
+    from dba_slack_bot import query_safety
 
     blocked = "SELECT 1;\nUPDATE t SET x = 1 WHERE id = 1;"   # mixed-tier
     report = query_safety.analyze(blocked, engine="postgres")
@@ -119,7 +119,7 @@ def test_the_wrapper_still_flattens_blocked_to_ro():
 
 def test_the_docstring_warns_about_authorization():
     """A future caller skims the docstring, not this file."""
-    from queryhub import query_safety
+    from dba_slack_bot import query_safety
 
     doc = (query_safety.required_mode.__doc__ or "").lower()
     assert "authoriz" in doc, (

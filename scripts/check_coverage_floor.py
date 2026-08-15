@@ -14,7 +14,7 @@ So: every listed file must clear the floor ON ITS OWN. The aggregate is still
 printed, because it is useful information, but it is not the gate.
 
 Run after a coverage run:
-    python -m pytest --cov=src/queryhub
+    python -m pytest --cov=src/dba_slack_bot
     python scripts/check_coverage_floor.py
 """
 from __future__ import annotations

@@ -9,8 +9,8 @@ whose confirmation the server then refused again.
 """
 import pytest
 
-from queryhub import core_submit
-from queryhub.web import deps, routes_queries
+from dba_slack_bot import core_submit
+from dba_slack_bot.web import deps, routes_queries
 
 
 def _raise(rej):

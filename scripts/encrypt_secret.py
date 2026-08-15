@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from queryhub.crypto import encrypt  # noqa: E402
+from dba_slack_bot.crypto import encrypt  # noqa: E402
 
 
 def main() -> int:

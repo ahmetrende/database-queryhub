@@ -5,7 +5,7 @@ new work so in-flight queries can finish. kill_switch defaults off in tests
 (conftest returns config defaults), so validate_submission reaches the drain
 check before any DB-touching step.
 """
-from queryhub import core_submit, lifecycle
+from dba_slack_bot import core_submit, lifecycle
 
 
 def test_lifecycle_flag(monkeypatch):

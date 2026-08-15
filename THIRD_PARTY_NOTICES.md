@@ -77,15 +77,15 @@ Not shipped in the image, listed for completeness: `pytest`, `pytest-cov`,
 `QueryHubWeb/brand/engines/*.svg` are vendor logos in the shape of the
 [Devicon](https://github.com/devicons/devicon) set (MIT). The **marks
 themselves are trademarks of their owners** — PostgreSQL (PostgreSQL Community
-Association), Microsoft SQL Server (Microsoft), ClickHouse (ClickHouse, Inc.),
-Oracle and MySQL (Oracle Corporation), Couchbase (Couchbase, Inc.). They are
-used to identify which engine a connection speaks, which is nominative use, and
-imply no endorsement or affiliation.
+Association), Microsoft SQL Server (Microsoft), ClickHouse (ClickHouse, Inc.).
+They are used to identify which engine a connection speaks, which is nominative
+use, and imply no endorsement or affiliation.
 
-The `oracle`, `mysql` and `couchbase` marks are **left over from an earlier
-prototype**: QueryHub has no engine spec for those three, so nothing it can
-connect to would ever display them. They are queued for removal (tracked upstream); until then
-they are listed here rather than shipped unattributed.
+The `oracle`, `mysql` and `couchbase` marks were **removed on 2026-08-15**.
+QueryHub has no engine spec for those three, so no connection could ever have
+displayed them: they were vendor trademarks shipped to advertise capability the
+product does not have. ClickHouse stays — that spec is real, even though
+execution against it is refused today.
 
 QueryHub's own logo and wordmark in `assets/` are **not** covered by the Apache
 licence on the code — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

@@ -8,8 +8,8 @@ Type=oneshot
 User=__USER__
 Group=__USER__
 WorkingDirectory=__INSTALL_PATH__
-EnvironmentFile=/etc/queryhub/env
-EnvironmentFile=-/etc/queryhub/dashboard.env
+EnvironmentFile=/etc/slackbot/env
+EnvironmentFile=-/etc/slackbot/dashboard.env
 ExecStart=/usr/bin/env bash __INSTALL_PATH__/scripts/publish_metrics_dashboard.sh
 
 # 2-minute hard cap. The build script's DB queries should finish in a
@@ -17,13 +17,13 @@ ExecStart=/usr/bin/env bash __INSTALL_PATH__/scripts/publish_metrics_dashboard.s
 # 2 min is a network or service problem and worth alerting on.
 TimeoutStartSec=120
 
-# Keep logs visible in journalctl without spamming the parent (queryhub)
+# Keep logs visible in journalctl without spamming the parent (slackbot)
 # service. systemd journal handles rotation.
 StandardOutput=journal
 StandardError=journal
 
-# Hardening — same defaults the queryhub.service template uses.
+# Hardening — same defaults the slackbot.service template uses.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=__INSTALL_PATH__ /var/lib/queryhub
+ReadWritePaths=__INSTALL_PATH__ /var/lib/slackbot

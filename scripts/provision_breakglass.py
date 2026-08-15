@@ -46,8 +46,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import psycopg  # noqa: E402
 from psycopg import sql as pgsql  # noqa: E402
 
-from queryhub import db  # noqa: E402
-from queryhub import targets as targets_mod  # noqa: E402
+from dba_slack_bot import db  # noqa: E402
+from dba_slack_bot import targets as targets_mod  # noqa: E402
 
 log = logging.getLogger("provision-breakglass")
 

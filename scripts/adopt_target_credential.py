@@ -32,7 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from queryhub import audit, db, targets  # noqa: E402
+from dba_slack_bot import audit, db, targets  # noqa: E402
 
 log = logging.getLogger("adopt-credential")
 

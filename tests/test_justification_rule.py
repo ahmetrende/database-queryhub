@@ -22,7 +22,7 @@ to normal approval, a human is in the loop after all, and the reason is needed.
 """
 import pytest
 
-from queryhub import core_submit as cs
+from dba_slack_bot import core_submit as cs
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ def test_classify_publishes_the_rule_rather_than_reimplementing_it():
     free to be wrong in a way nothing above would catch."""
     import inspect
 
-    from queryhub.web import routes_queries
+    from dba_slack_bot.web import routes_queries
 
     src = inspect.getsource(routes_queries.classify_query)
     assert "core_submit.needs_justification" in src, (
@@ -82,7 +82,7 @@ def test_classify_reports_the_scheduled_case_separately():
     would make a scheduled RW look exempt to a UI that trusted the first."""
     import inspect
 
-    from queryhub.web import routes_queries
+    from dba_slack_bot.web import routes_queries
 
     src = inspect.getsource(routes_queries.classify_query)
     assert "requiresJustificationWhenReviewed" in src
@@ -129,7 +129,7 @@ def test_every_registered_auth_provider_has_an_audit_label():
     two can drift. They must not: a provider with no label renders through the
     fallback, which is a safety net for old audit rows — not a way to ship a new
     login surface with a placeholder name in the audit trail."""
-    from queryhub.web import auth_providers, mapping
+    from dba_slack_bot.web import auth_providers, mapping
 
     registered = set(auth_providers._ALL)
     labelled = set(mapping._PROVIDER_LABELS)
@@ -143,7 +143,7 @@ def test_provider_labels_do_not_reuse_the_surface_wording():
     """`via` belongs to origin (via web / via Slack). A provider label that also
     said "via" would recreate the exact ambiguity this fixed: an audit line
     reading "Signed in to web · via slack"."""
-    from queryhub.web import mapping
+    from dba_slack_bot.web import mapping
 
     for name, label in mapping._PROVIDER_LABELS.items():
         assert not label.lower().startswith("via "), (

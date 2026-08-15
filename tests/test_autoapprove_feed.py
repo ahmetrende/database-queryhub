@@ -2,7 +2,7 @@
 with DM fallback when the channel is unset or the post fails."""
 import pytest
 
-from queryhub.slack_app import notifications
+from dba_slack_bot.slack_app import notifications
 
 
 class _Client:

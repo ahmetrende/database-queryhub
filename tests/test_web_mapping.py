@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from queryhub.web import mapping
+from dba_slack_bot.web import mapping
 
 
 @pytest.fixture(autouse=True)
@@ -60,7 +60,7 @@ def test_history_entry_shape():
         "id": 1328,
         "query": "SELECT count(*) FROM requests",
         "target_server_id": 1,
-        "database_name": "queryhub",
+        "database_name": "slackbot",
         "status": "completed",
         "row_count": 1,
         "created_at": datetime(2026, 7, 14, 12, 53, tzinfo=timezone.utc),
@@ -72,7 +72,7 @@ def test_history_entry_shape():
         "id": "1328",
         "sql": "SELECT count(*) FROM requests",
         "connectionId": "alpha-admin",
-        "databaseId": "queryhub",
+        "databaseId": "slackbot",
         "tier": "RO",
         "status": "done",
         "rowCount": 1,
@@ -111,7 +111,7 @@ def test_classification_single_ro():
 
 
 def test_pii_preview_star_and_columns(monkeypatch):
-    from queryhub import pii
+    from dba_slack_bot import pii
     monkeypatch.setattr(pii, "column_pii_map",
                         lambda cols: {i: "email" for i, c in enumerate(cols)
                                       if c.lower() == "email"})
@@ -220,7 +220,7 @@ def test_initials():
 
 
 def test_queue_item_ddl_escalates(monkeypatch):
-    from queryhub import pii
+    from dba_slack_bot import pii
     monkeypatch.setattr(pii, "column_pii_map", lambda cols: {})
     row = {
         "id": 8421,
@@ -247,7 +247,7 @@ def test_queue_item_ddl_escalates(monkeypatch):
 
 
 def test_queue_item_ro_no_escalate_and_piicols(monkeypatch):
-    from queryhub import pii
+    from dba_slack_bot import pii
     monkeypatch.setattr(pii, "column_pii_map",
                         lambda cols: {i: "email" for i, c in enumerate(cols)
                                       if c.lower() == "email"})

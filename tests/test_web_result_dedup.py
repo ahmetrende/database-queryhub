@@ -1,5 +1,5 @@
 """Duplicate result-column names must not collapse the JSON rows."""
-from queryhub.web.routes_queries import _dedup_cols
+from dba_slack_bot.web.routes_queries import _dedup_cols
 
 
 def test_no_duplicates_unchanged():

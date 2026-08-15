@@ -1,5 +1,5 @@
 """Requester self-cancel — card button wiring (pure blocks, no DB/Slack)."""
-from queryhub.slack_app import notifications as nt
+from dba_slack_bot.slack_app import notifications as nt
 
 
 def _req(**kw):

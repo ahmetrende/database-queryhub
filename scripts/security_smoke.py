@@ -9,8 +9,8 @@ auth. A PASS means the SECURE behavior held.
 
 Run against the local instance (needs the bot env for DB + master key):
 
-    source .venv/bin/activate && set -a && source /etc/queryhub/env \\
-      && source /etc/queryhub/web.env && set +a \\
+    source .venv/bin/activate && set -a && source /etc/slackbot/env \\
+      && source /etc/slackbot/web.env && set +a \\
       && python3 scripts/security_smoke.py
 
 Base URL override: QH_WEB_BASE (default https://127.0.0.1:8080).
@@ -32,8 +32,8 @@ import time
 
 import httpx
 
-from queryhub import db
-from queryhub.web import sessions
+from dba_slack_bot import db
+from dba_slack_bot.web import sessions
 
 BASE = os.environ.get("QH_WEB_BASE", "https://127.0.0.1:8080")
 UA = "security-smoke"
@@ -139,7 +139,7 @@ def run_http(c: httpx.Client, valid_uid: str) -> None:
     vid = db.fetch_one(
         "INSERT INTO requests (requester_slack_id, requester_name, target_server_id, "
         " database_name, query, status) "
-        "VALUES (%s,'smoke',1,'queryhub','SELECT 1 -- idor-smoke','completed') "
+        "VALUES (%s,'smoke',1,'slackbot','SELECT 1 -- idor-smoke','completed') "
         "RETURNING id", (FAKE_VICTIM,))["id"]
     _, _, tok = _mint(valid_uid)
     for suffix, label in [("", "status"), ("/result", "result"), ("/result.csv", "csv")]:
@@ -161,7 +161,7 @@ def run_http(c: httpx.Client, valid_uid: str) -> None:
     for pt in [f"/../{cfg_dir}/env", f"/../{cfg_dir}/web.env",
                f"/..%2f..%2f..%2f..%2f{enc_dir}%2fenv",
                "/%2e%2e/%2e%2e/%2e%2e/etc/passwd", "/app.py",
-               "/../src/queryhub/web/sessions.py"]:
+               "/../src/dba_slack_bot/web/sessions.py"]:
         r = c.get(BASE + pt)
         body = r.text if r.status_code == 200 else ""
         leaked = any(s in body for s in
@@ -182,7 +182,7 @@ def run_http(c: httpx.Client, valid_uid: str) -> None:
           r.status_code == 404 and "Traceback" not in r.text, r.status_code)
 
     # --- F. OAuth state forgery ---
-    from queryhub.web import auth_providers as ap
+    from dba_slack_bot.web import auth_providers as ap
     r = c.get(BASE + f"/api/auth/slack/callback?code=x&state={ap.make_state()}",
               follow_redirects=False)  # signed state but no matching browser cookie
     setc = r.headers.get_list("set-cookie") if hasattr(r.headers, "get_list") \
@@ -205,7 +205,7 @@ async def run_ws(valid_uid: str) -> None:
     vid = db.fetch_one(
         "INSERT INTO requests (requester_slack_id, requester_name, target_server_id, "
         " database_name, query, status) "
-        "VALUES (%s,'smoke',1,'queryhub','SELECT 1 -- ws-idor-smoke','completed') "
+        "VALUES (%s,'smoke',1,'slackbot','SELECT 1 -- ws-idor-smoke','completed') "
         "RETURNING id", (FAKE_VICTIM,))["id"]
     _, _, tok = _mint(valid_uid)
     ws_base = BASE.replace("https://", "wss://").replace("http://", "ws://")

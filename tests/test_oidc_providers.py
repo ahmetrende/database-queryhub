@@ -17,8 +17,8 @@ import urllib.parse  # noqa: E402
 
 import pytest  # noqa: E402
 
-from queryhub import config as cfg  # noqa: E402
-from queryhub.web import auth_providers as ap  # noqa: E402
+from dba_slack_bot import config as cfg  # noqa: E402
+from dba_slack_bot.web import auth_providers as ap  # noqa: E402
 
 DISCOVERY = {
     "issuer": "https://sso.example.test/application/o/queryhub/",
@@ -133,7 +133,7 @@ def _map(corp, monkeypatch, claims, requester=None, admin=None, domain=""):
     """Run only the post-verification half of exchange() — the part that
     turns verified claims into a principal — with the token round-trip and
     signature check stubbed out."""
-    from queryhub import admins, requesters
+    from dba_slack_bot import admins, requesters
     monkeypatch.setattr(cfg, "get_setting",
                         lambda k, d=None: domain if k == "web_allowed_email_domain" else d)
     monkeypatch.setattr(requesters, "by_email", lambda e: requester)
@@ -186,7 +186,7 @@ def test_the_domain_gate_still_applies(corp, monkeypatch):
 
 def test_email_is_normalised_before_lookup(corp, monkeypatch):
     seen = []
-    from queryhub import admins, requesters
+    from dba_slack_bot import admins, requesters
     monkeypatch.setattr(cfg, "get_setting", lambda k, d=None: d)
     monkeypatch.setattr(requesters, "by_email",
                         lambda e: (seen.append(e), ROW)[1])

@@ -13,7 +13,7 @@ RO query that ends up on the RW credential fails here instead of in production.
 """
 import pytest
 
-from queryhub import executor as ex
+from dba_slack_bot import executor as ex
 
 # Distinct credentials per tier, exactly as a real target has.
 CREDS = {
@@ -203,7 +203,7 @@ def test_csv_import_uses_ddl_credentials_deliberately(monkeypatch):
     # requester has to still be authorized: with `fetch_one` stubbed to None
     # above, `can_import` sees no import_grants row and refuses before the tier
     # is ever chosen.
-    from queryhub import csv_import as _ci
+    from dba_slack_bot import csv_import as _ci
     monkeypatch.setattr(_ci, "can_import", lambda uid: True)
     monkeypatch.setattr(ex.teams, "can_use_database", lambda u, t, d: True)
     imp = {"id": 5, "target_server_id": 7, "database_name": "app",

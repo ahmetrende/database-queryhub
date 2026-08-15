@@ -1,5 +1,5 @@
 """query_safety.analyze / required_mode — the static SQL safety gate."""
-from queryhub import query_safety as qs
+from dba_slack_bot import query_safety as qs
 
 
 def analyze(sql):

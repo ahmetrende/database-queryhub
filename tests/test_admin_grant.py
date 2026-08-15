@@ -1,7 +1,7 @@
 """Admin grant/revoke — pure helpers + modal structure (no DB/Slack)."""
-from queryhub import grants
-from queryhub.slack_app import admin_grant as ag
-from queryhub.slack_app import handlers
+from dba_slack_bot import grants
+from dba_slack_bot.slack_app import admin_grant as ag
+from dba_slack_bot.slack_app import handlers
 
 
 def test_db_options_read_targets_from_private_metadata(monkeypatch):

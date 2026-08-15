@@ -17,7 +17,7 @@ Safety / opt-in:
     never loosen. Each revert is audited and DM'd to active admins.
 
 Usage:
-    set -a; source /etc/queryhub/env; set +a
+    set -a; source /etc/slackbot/env; set +a
     .venv/bin/python scripts/revert_security_overrides.py            # dry-run
     .venv/bin/python scripts/revert_security_overrides.py --commit   # act (if enabled)
 """
@@ -30,9 +30,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from queryhub import admins, audit, db  # noqa: E402
-from queryhub import config as cfg  # noqa: E402
-from queryhub.config import ENV  # noqa: E402
+from dba_slack_bot import admins, audit, db  # noqa: E402
+from dba_slack_bot import config as cfg  # noqa: E402
+from dba_slack_bot.config import ENV  # noqa: E402
 
 log = logging.getLogger("security-revert")
 
@@ -83,7 +83,7 @@ def main() -> int:
         return 0
 
     from slack_sdk.web import WebClient
-    from queryhub.slack_app import notifications
+    from dba_slack_bot.slack_app import notifications
     client = WebClient(token=ENV.slack_bot_token)
     admin_ids = [a["slack_user_id"] for a in admins.list_active()]
     reverted = 0

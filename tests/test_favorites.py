@@ -5,8 +5,8 @@ manual smoke tests; here we cover the pure pieces and the modal parse so a
 silent wiring regression (e.g. the checkbox flag dropping out of
 parse_submission) fails loudly.
 """
-from queryhub import favorites
-from queryhub.slack_app import modal
+from dba_slack_bot import favorites
+from dba_slack_bot.slack_app import modal
 
 
 # --- favorites.preview (pure) ----------------------------------------------
@@ -38,7 +38,7 @@ def test_has_per_user_cap():
 def _state(favorite: bool) -> dict:
     return {"state": {"values": {
         modal.B_SERVER: {modal.A_SERVER: {"selected_option": {"value": "1"}}},
-        modal.B_DATABASE: {modal.A_DATABASE: {"selected_option": {"value": "queryhub"}}},
+        modal.B_DATABASE: {modal.A_DATABASE: {"selected_option": {"value": "slackbot"}}},
         modal.B_QUERY: {modal.A_QUERY: {"value": "SELECT 1"}},
         modal.B_JUSTIFICATION: {modal.A_JUSTIFICATION: {"value": ""}},
         modal.B_WANTS_RESULT: {modal.A_WANTS_RESULT: {"selected_option": {"value": "csv"}}},

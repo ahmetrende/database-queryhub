@@ -15,9 +15,9 @@ import re
 # Patterns that carry connection / role detail. Matched on the *scrubbed*
 # message, not the raw exception, so each substitution is whitespace-safe.
 _CONN_DETAIL_PATTERNS = [
-    # `host=foo.example.com port=5432 user=queryhub_rw_payments`
+    # `host=foo.example.com port=5432 user=slackbot_rw_payments`
     re.compile(r'\b(host|hostaddr|port|user|dbname)\s*=\s*\S+', re.IGNORECASE),
-    # `for user "queryhub_rw_payments"` — surfaces the role name
+    # `for user "slackbot_rw_payments"` — surfaces the role name
     re.compile(r'\bfor user\s+"[^"]+"', re.IGNORECASE),
     # libpq's own phrasing: `connection to server at "db.example.internal"
     # (192.0.2.10), port 5432 failed: ...`. Matching the PHRASE rather than the

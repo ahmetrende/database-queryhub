@@ -385,9 +385,13 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
   const ICN_FOLDER_NEW = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M12 11v6M9 14h6"/></svg>;
   const ICN_COPY = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>;
   // host:port — plus /database when the gesture started on a database row, since
-  // that is the whole connection string a driver wants.
+  // that is the whole connection string a driver wants. No host, no copy: the
+  // alias was the old fallback and it is not a degraded endpoint, it is a wrong
+  // one — it looks like a hostname and resolves nowhere. Both call sites are
+  // gated on a real host, so this is the guard for the third one somebody adds.
   const copyEndpoint = (c, db) => {
-    const ep = (c.host || c.name) + (c.port ? ':' + c.port : '') + (db ? '/' + db.name : '');
+    if (!c.host) { onToast && onToast('No endpoint recorded for ' + c.name + '.'); return; }
+    const ep = c.host + (c.port ? ':' + c.port : '') + (db ? '/' + db.name : '');
     qhCopyText(ep).then(ok => onToast && onToast(ok ? 'Copied ' + ep : 'Could not copy — the browser blocked clipboard access.'));
   };
 
@@ -510,9 +514,8 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
                 </button>
                 {/* The endpoint, not the alias: what you paste into a ticket, a
                     driver or a psql line. Host and port only — never a
-                    credential. Hidden when the payload carries no host: a
-                    developer's GET /connections withholds it, and copying the
-                    alias instead would be a lie in the shape of a hostname. */}
+                    credential. Every caller receives them since 2026-08-15 (b);
+                    the gate stays for a target with no host recorded. */}
                 {menu.conn.host && <button onClick={() => { copyEndpoint(menu.conn); setMenu(null); }}>
                   {ICN_COPY}Copy endpoint
                 </button>}

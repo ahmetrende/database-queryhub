@@ -1,4 +1,4 @@
--- DDL escalation path: when the bot's queryhub_ddl user lacks
+-- DDL escalation path: when the bot's dba_slackbot_ddl user lacks
 -- ownership / superuser to execute a DDL query, the executor catches
 -- Postgres's 42501 (insufficient_privilege) and routes the request to
 -- a new "awaiting_dba_manual" state instead of marking it failed.

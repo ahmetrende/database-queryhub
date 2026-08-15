@@ -10,7 +10,7 @@ adding the schema and reader dimensions did not change what an ordinary
 target/database/table/column exemption does.
 """
 
-from queryhub import pii
+from dba_slack_bot import pii
 
 
 def _patch(monkeypatch, rows):

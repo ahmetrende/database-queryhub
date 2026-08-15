@@ -23,9 +23,9 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi import HTTPException
 
-from queryhub import crypto, targets
-from queryhub.web import admin as web_admin
-from queryhub.web import routes_admin as ra
+from dba_slack_bot import crypto, targets
+from dba_slack_bot.web import admin as web_admin
+from dba_slack_bot.web import routes_admin as ra
 
 SUPER = {"sub": "U000EXAMPLE", "name": "Super Admin"}
 DBA = {"sub": "U000SCOPED1", "name": "Scoped Dba"}
@@ -70,7 +70,7 @@ def _row(**over):
         "port": 5432, "default_database": "ledger", "enabled": True,
         "notes": None, "engine": "postgres", "secrets_provider": "local",
         "credentials": {
-            "ro": {"username": "queryhub_ro", "configured": True,
+            "ro": {"username": "dba_slackbot_ro", "configured": True,
                    "placeholder": False},
             "rw": {"username": None, "configured": False, "placeholder": False},
             "ddl": {"username": None, "configured": False, "placeholder": False},
@@ -104,7 +104,7 @@ def wire(monkeypatch):
     monkeypatch.setattr(ra.audit, "log_in",
                         lambda cur, rid, uid, name, action, details=None:
                         state["audit"].append((action, details)))
-    from queryhub.web import routes_data
+    from dba_slack_bot.web import routes_data
     monkeypatch.setattr(routes_data, "_catalog_databases", lambda tid: ["ledger"])
     return state
 
@@ -388,7 +388,7 @@ def test_only_engines_the_bot_can_run_may_be_registered(wire):
 
 def test_a_target_with_placeholder_credentials_cannot_be_enabled(wire):
     wire["row"] = _row(enabled=False)
-    wire["row"]["credentials"]["ro"] = {"username": "queryhub_ro",
+    wire["row"]["credentials"]["ro"] = {"username": "dba_slackbot_ro",
                                         "configured": True, "placeholder": True}
     with pytest.raises(HTTPException) as e:
         ra.admin_update_connection("prod-beta", ra.ConnectionPatch(enabled=True),
@@ -402,7 +402,7 @@ def test_enabling_works_when_the_same_request_supplies_the_password(
     """Otherwise the only way to enable a freshly-imported target would be two
     round trips, and the form would have to guess which order works."""
     wire["row"] = _row(enabled=False)
-    wire["row"]["credentials"]["ro"] = {"username": "queryhub_ro",
+    wire["row"]["credentials"]["ro"] = {"username": "dba_slackbot_ro",
                                         "configured": True, "placeholder": True}
     written = []
     monkeypatch.setattr(ra.targets, "update_in",
@@ -445,11 +445,11 @@ def test_a_blank_password_box_does_not_wipe_a_stored_credential(wire, monkeypatc
     monkeypatch.setattr(ra.targets, "update_in", lambda cur, tid, changes: [])
     ra.admin_update_connection(
         "prod-beta",
-        ra.ConnectionPatch(credentials={"ro": {"username": "queryhub_ro",
+        ra.ConnectionPatch(credentials={"ro": {"username": "dba_slackbot_ro",
                                                "password": ""},
                                         "rw": {"username": "", "password": ""}}),
         claims=SUPER)
-    assert rotated == [("ro", "queryhub_ro", None)]
+    assert rotated == [("ro", "dba_slackbot_ro", None)]
 
 
 def test_set_credentials_encrypts_and_touches_only_the_named_tier(keyring):
@@ -503,13 +503,13 @@ def test_a_failed_probe_is_reported_without_the_connection_detail(monkeypatch):
     def _boom(**kw):
         raise psycopg.OperationalError(
             'connection to server at "db.example.internal", port 5432 failed: '
-            'FATAL: password authentication failed for user "queryhub_ro"')
+            'FATAL: password authentication failed for user "dba_slackbot_ro"')
     monkeypatch.setattr(psycopg, "connect", _boom)
     out = ra._probe("postgres", "db.example.internal", 5432, "ledger",
-                    "queryhub_ro", "wrong")
+                    "dba_slackbot_ro", "wrong")
     assert out["ok"] is False
     assert "db.example.internal" not in out["error"]
-    assert "queryhub_ro" not in out["error"]
+    assert "dba_slackbot_ro" not in out["error"]
     # ...and it still says something useful, or the admin learns nothing.
     assert "authentication failed" in out["error"]
 
@@ -522,12 +522,12 @@ def test_a_probe_failure_still_drops_libpq_keyword_fragments(monkeypatch):
     def _boom(**kw):
         raise psycopg.OperationalError(
             "could not connect: host=db.example.internal port=5432 "
-            "user=queryhub_ro dbname=ledger")
+            "user=dba_slackbot_ro dbname=ledger")
     monkeypatch.setattr(psycopg, "connect", _boom)
     out = ra._probe("postgres", "db.example.internal", 5432, "ledger",
-                    "queryhub_ro", "wrong")
+                    "dba_slackbot_ro", "wrong")
     assert "db.example.internal" not in out["error"]
-    assert "queryhub_ro" not in out["error"]
+    assert "dba_slackbot_ro" not in out["error"]
 
 
 def test_the_probe_timeout_stays_short_enough_to_answer_a_request():
@@ -538,7 +538,7 @@ def test_the_probe_timeout_stays_short_enough_to_answer_a_request():
 
 def test_testing_an_unprovisioned_target_never_dials_out(wire, monkeypatch):
     monkeypatch.setattr(ra.targets, "get_credentials",
-                        lambda tid, mode: ("queryhub_ro",
+                        lambda tid, mode: ("dba_slackbot_ro",
                                            targets.SENTINEL_PASSWORD))
     monkeypatch.setattr(ra, "_probe", lambda *a, **k: pytest.fail(
         "probed a target whose password is the not-provisioned sentinel"))

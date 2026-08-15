@@ -311,7 +311,12 @@ const QH_ENGINES = {
 // was the explicit ask, and a flag is the version of that which cannot rot.
 const QH_SHOW_ENV_TAGS = false;
 
-const QH_ENGINE_LOGO = { postgres: '/brand/engines/postgres.svg', mssql: '/brand/engines/mssql.svg', oracle: '/brand/engines/oracle.svg', mysql: '/brand/engines/mysql.svg', clickhouse: '/brand/engines/clickhouse.svg', couchbase: '/brand/engines/couchbase.svg' };
+// Only engines the product can execute or hold a spec for. `oracle`, `mysql` and
+// `couchbase` were dropped 2026-08-15: no engine spec exists for them, so no
+// connection could ever render one — they were vendor trademarks shipped to
+// advertise capability the product does not have (CODE_TO_DESIGN_BRIEF
+// 2026-07-30). `clickhouse` stays: the spec is real, execution is refused.
+const QH_ENGINE_LOGO = { postgres: '/brand/engines/postgres.svg', mssql: '/brand/engines/mssql.svg', clickhouse: '/brand/engines/clickhouse.svg' };
 // `window.__resources` only exists in the standalone/offline export, where the
 // bundler has inlined each logo and swapped the path for a blob URL (see the
 // ext-resource-dependency metas in QueryHub.html).

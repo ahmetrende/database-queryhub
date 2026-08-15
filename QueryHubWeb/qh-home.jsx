@@ -26,7 +26,7 @@ function HomeEmpty({ text }) {
   return <div className="qh-home-empty">{text}</div>;
 }
 
-function HomeScreen({ user, openTabs, onFocusTab, onNewQuery, onSaveSession, sessions, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, saved, onLoadSaved, onDeleteSaved, onBrowse, onWhatsNew, unseenNews }) {
+function HomeScreen({ user, openTabs, slackEnabled, onFocusTab, onNewQuery, onSaveSession, sessions, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, saved, onLoadSaved, onDeleteSaved, onBrowse, onWhatsNew, unseenNews }) {
   const first = (user && user.name ? user.name.split(' ')[0] : 'there');
   const nonEmpty = (openTabs || []).filter(t => t.sql && t.sql.trim());
 
@@ -37,7 +37,7 @@ function HomeScreen({ user, openTabs, onFocusTab, onNewQuery, onSaveSession, ses
           <QHMark size={44} variant="green" radius={0.3} />
           <div className="qh-home-hero-text">
             <h1 className="qh-home-title">Welcome back, {first}</h1>
-            <p className="qh-home-sub">Pick up where you left off, or start something new. Approvals still run in Slack.</p>
+            <p className="qh-home-sub">Pick up where you left off, or start something new. {slackEnabled ? 'Approvals still run in Slack.' : 'Approvals run in the admin panel.'}</p>
           </div>
           <div className="qh-home-actions">
             <button className="qh-btn qh-btn-primary qh-btn-lg" onClick={onNewQuery}>{QH_HOME_ICN.plus}New query</button>

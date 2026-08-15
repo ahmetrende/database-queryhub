@@ -7,8 +7,8 @@ is covered in test_pii_regions.py.
 """
 import pytest
 
-from queryhub import config as cfg
-from queryhub import pii
+from dba_slack_bot import config as cfg
+from dba_slack_bot import pii
 
 
 @pytest.fixture(autouse=True)

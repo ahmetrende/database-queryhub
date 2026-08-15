@@ -20,10 +20,10 @@ from pathlib import Path
 from datetime import datetime, timezone
 from decimal import Decimal
 
-# Make `from queryhub import ...` work when invoked from the repo root
+# Make `from dba_slack_bot import ...` work when invoked from the repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from queryhub import db, metrics_defs  # noqa: E402
+from dba_slack_bot import db, metrics_defs  # noqa: E402
 
 
 REPO_DIR = Path(__file__).resolve().parent.parent
@@ -203,7 +203,7 @@ HTML = r"""<!doctype html>
     --fg-primary:   #1F2229;
     --fg-secondary: rgba(31, 34, 41, 0.80);
     --fg-tertiary:  rgba(31, 34, 41, 0.60);
-    --fg-accent:    #A24628;
+    --fg-accent:    #7B9530;
     --fg-danger:    #E53D3D;
     --fg-warning:   #D97706;
 
@@ -216,8 +216,8 @@ HTML = r"""<!doctype html>
     --stroke-medium: rgba(31, 34, 41, 0.08);
     --stroke-strong: rgba(31, 34, 41, 0.15);
 
-    --brand-solid-light:  #C4603F;
-    --brand-solid-medium: #A24628;
+    --brand-solid-light:  #9BBA3C;
+    --brand-solid-medium: #7B9530;
     --brand-adaptive-md:  rgba(155, 186, 60, 0.20);
 
     --shadow-card: 0 1px 2px rgba(31, 34, 41, 0.04),
@@ -249,7 +249,7 @@ HTML = r"""<!doctype html>
       --fg-primary:   #FFFFFF;
       --fg-secondary: rgba(255, 255, 255, 0.80);
       --fg-tertiary:  rgba(255, 255, 255, 0.50);
-      --fg-accent:    #C4603F;
+      --fg-accent:    #9BBA3C;
       --fg-danger:    #E53D3D;
       --fg-warning:   #F59E0B;
 
@@ -262,8 +262,8 @@ HTML = r"""<!doctype html>
       --stroke-medium: rgba(255, 255, 255, 0.08);
       --stroke-strong: rgba(255, 255, 255, 0.15);
 
-      --brand-solid-light:  #C4603F;
-      --brand-solid-medium: #C4603F;
+      --brand-solid-light:  #9BBA3C;
+      --brand-solid-medium: #9BBA3C;
       --brand-adaptive-md:  rgba(155, 186, 60, 0.30);
 
       --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.48),
@@ -714,7 +714,7 @@ const CHARTS = {};
 
 // Color palette — tied to status / tier so semantics stay consistent.
 const C = {
-  completed: '#C4603F',
+  completed: '#9BBA3C',
   failed:    '#E53D3D',
   rejected:  '#F59E0B',
   cancelled: '#5A6170',
@@ -724,7 +724,7 @@ const C = {
   executing: '#144A66',
   awaiting_dba_manual: '#FF9933',
   changes_requested:   '#FF66B2',
-  ro:           '#C4603F',
+  ro:           '#9BBA3C',
   rw:           '#FF9933',
   ddl_or_other: '#E53D3D',
   overlay:      '#66CCFF',

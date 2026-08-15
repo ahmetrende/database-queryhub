@@ -15,7 +15,7 @@ hiding it from them would be a different bug.
 """
 import pytest
 
-from queryhub import executor as ex
+from dba_slack_bot import executor as ex
 
 
 def _target(enabled: bool):

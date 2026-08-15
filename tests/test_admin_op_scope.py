@@ -5,7 +5,7 @@ The Slack handlers shape each operation as a request-like dict and pass it
 through admins.can_approve (the same max_tier + target + team scope used for
 query approval). These tests exercise that scope logic for those shapes with
 a scoped admin whose team scope is wildcard (so no DB is touched)."""
-from queryhub import admins
+from dba_slack_bot import admins
 
 
 def _scoped(monkeypatch, *, max_tier, target_ids):

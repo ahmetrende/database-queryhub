@@ -66,7 +66,7 @@ def _results_dir() -> Path:
     QH_RESULTS_DIR overrides it (docker sets it to a volume).
     """
     raw = (os.environ.get("QH_RESULTS_DIR") or "").strip()
-    return Path(raw) if raw else Path("/var/lib/queryhub/results")
+    return Path(raw) if raw else Path("/var/lib/slackbot/results")
 
 
 CSV_DIR = _results_dir()
@@ -107,14 +107,14 @@ def _fmt_approve_ts(request: dict) -> str:
 
 def _build_application_name(request: dict) -> str:
     """Identify the connection in pg_stat_activity / log_line_prefix.
-    Pattern: `queryhub req=<id> by=<email-or-slack-id>`. Email is preferred
+    Pattern: `slackbot req=<id> by=<email-or-slack-id>`. Email is preferred
     (human-readable in logs); falls back to slack ID when the bot hasn't
     backfilled email yet. Truncated to Postgres' 63-byte application_name
     limit on the safe side (bytes ≠ chars for utf-8 emails). Don't bother
     raising on overflow — Postgres just truncates."""
     requester_id = request["requester_slack_id"]
     by = profile_sync.lookup_email(requester_id) or requester_id
-    name = f"queryhub req={request['id']} by={by}"
+    name = f"slackbot req={request['id']} by={by}"
     return name[:63]
 
 
@@ -604,7 +604,7 @@ def _run(request: dict, client: WebClient) -> None:
         # Resolved HERE, before the claim, so it can go into the
         # execution_started audit row. It used to be computed further down,
         # next to where it is applied, and the trail then recorded the login
-        # (`queryhub_ddl`) while the statement actually ran as something
+        # (`dba_slackbot_ddl`) while the statement actually ran as something
         # else entirely. For a path whose entire justification is that the
         # powerful thing is the LOGGED thing, the one fact worth logging was
         # the one missing.
@@ -831,7 +831,7 @@ def _run(request: dict, client: WebClient) -> None:
 
     except psycopg.errors.InsufficientPrivilege as e:
         # DDL-tier requests can hit "permission denied" / "must be owner"
-        # (SQLSTATE 42501) when our queryhub_ddl role lacks
+        # (SQLSTATE 42501) when our dba_slackbot_ddl role lacks
         # ownership / superuser for the operation. Escalate to DBA
         # manual execution instead of marking the request failed —
         # admin runs the query out-of-band with elevated creds and
@@ -2267,7 +2267,7 @@ def dispatch_due(client: WebClient, batch_limit: int = 50) -> int:
 # CSV bulk import (COPY) — separate pipeline from the SQL query path
 # ===========================================================================
 
-IMPORT_DIR = Path("/var/lib/queryhub/imports")
+IMPORT_DIR = Path("/var/lib/slackbot/imports")
 
 
 def submit_import(import_row: dict, client: WebClient) -> None:

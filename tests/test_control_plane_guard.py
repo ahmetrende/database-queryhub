@@ -11,8 +11,8 @@ and the web admin endpoint did not.
 """
 import pytest
 
-from queryhub import config as cfg
-from queryhub import grants
+from dba_slack_bot import config as cfg
+from dba_slack_bot import grants
 
 
 def _env(host="db.internal", port=5432, name="queryhub"):

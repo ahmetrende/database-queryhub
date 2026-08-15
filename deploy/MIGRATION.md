@@ -6,7 +6,7 @@ target clusters, and the Slack app stay exactly where they are.
 
 > All paths, IPs, IAM roles, bucket names, and hostnames below are
 > placeholders. Substitute the real values from the source host's
-> `/etc/queryhub/*` and your infrastructure inventory. Never commit the
+> `/etc/slackbot/*` and your infrastructure inventory. Never commit the
 > real values.
 
 ## Why this is a light move
@@ -26,7 +26,7 @@ unit. The real work is **network access**, not the application.
 
 ## What the target-cluster roles are NOT
 
-The `queryhub_ro/rw/ddl` login roles live *inside each target
+The `dba_slackbot_ro/rw/ddl` login roles live *inside each target
 cluster*, not on the bot host. A host move does not touch them — they
 keep working, and the new host connects with the same (encrypted)
 credentials. You only ever create these roles by hand when a **new
@@ -38,11 +38,11 @@ et al.), which is unrelated to moving the bot host.
 | Component | State | Action on the new host |
 |---|---|---|
 | Code (`queryhub` repo) | in Git | `git clone` |
-| `/etc/queryhub/master.key` | **most critical** | copy; every credential + Slack token is encrypted with it |
-| `/etc/queryhub/master.key.fingerprint` | verification sidecar | copy |
-| `/etc/queryhub/secrets.enc` | Slack tokens (Fernet-encrypted) | copy |
-| `/etc/queryhub/env` | DB connection + key path | copy |
-| `/etc/queryhub/dashboard.env` | dashboard S3 config | copy |
+| `/etc/slackbot/master.key` | **most critical** | copy; every credential + Slack token is encrypted with it |
+| `/etc/slackbot/master.key.fingerprint` | verification sidecar | copy |
+| `/etc/slackbot/secrets.enc` | Slack tokens (Fernet-encrypted) | copy |
+| `/etc/slackbot/env` | DB connection + key path | copy |
+| `/etc/slackbot/dashboard.env` | dashboard S3 config | copy |
 | Metadata DB | on managed Postgres, not moved | network access only |
 | Slack tokens | inside `secrets.enc`, Socket Mode | unchanged, no reinstall |
 | Python venv | rebuilt, not copied | `python3 -m venv` + `pip install -e .` |
@@ -82,11 +82,11 @@ et al.), which is unrelated to moving the bot host.
 - [ ] `apt install python3-venv libpq-dev git` (match the source host's
       Python minor version)
 - [ ] Create `<RESULTS_DIR>` and `<LOG_DIR>`, owned by the run user
-- [ ] Create `/etc/queryhub` (mode 700)
+- [ ] Create `/etc/slackbot` (mode 700)
 
 ### Phase 2 — Code + secrets + venv
 - [ ] `git clone` the repo into `<REPO_DIR>`
-- [ ] Securely copy the five secret files into `/etc/queryhub`
+- [ ] Securely copy the five secret files into `/etc/slackbot`
       (env, master.key, master.key.fingerprint, secrets.enc,
       dashboard.env) — each mode 600, correct owner
 - [ ] Verify the key fingerprint matches `master.key.fingerprint`
@@ -96,29 +96,29 @@ et al.), which is unrelated to moving the bot host.
 ### Phase 3 — Offline smoke test (safe while the old host still runs)
 Test everything that does NOT open a Slack connection:
 ```bash
-source .venv/bin/activate && set -a && source /etc/queryhub/env && set +a
-python3 -c "from queryhub import db; db.init_pool(); print('DB OK')"
+source .venv/bin/activate && set -a && source /etc/slackbot/env && set +a
+python3 -c "from dba_slack_bot import db; db.init_pool(); print('DB OK')"
 python3 scripts/check_repo_clean.py   # exercises DB access end to end
 ```
 - [ ] DB connects, secrets decrypt
 - [ ] **Do NOT start the full bot yet** — see the dual-instance warning
 
 ### Phase 4 — Cutover (brief downtime)
-- [ ] Old host: `sudo systemctl stop queryhub && sudo systemctl disable queryhub`
+- [ ] Old host: `sudo systemctl stop slackbot && sudo systemctl disable slackbot`
       (a slow SIGTERM → SIGKILL leaves the unit in `failed`; that's normal —
-      `systemctl reset-failed queryhub` tidies it for a clean standby)
+      `systemctl reset-failed slackbot` tidies it for a clean standby)
 - [ ] New host: install + **substitute the placeholders** in the unit
       template — it ships with `__USER__` / `__INSTALL_PATH__`, NOT real
       paths (`systemctl cat` on the *old* host shows the already-substituted
       copy, which is misleading). From the repo dir:
       ```
-      sudo cp deploy/queryhub.service /etc/systemd/system/queryhub.service
+      sudo cp deploy/slackbot.service /etc/systemd/system/slackbot.service
       sudo sed -i "s|__USER__|$(whoami)|g; s|__INSTALL_PATH__|$(pwd)|g" \
-           /etc/systemd/system/queryhub.service
-      sudo systemd-analyze verify /etc/systemd/system/queryhub.service   # catches a missed sub
-      sudo systemctl daemon-reload && sudo systemctl enable --now queryhub
+           /etc/systemd/system/slackbot.service
+      sudo systemd-analyze verify /etc/systemd/system/slackbot.service   # catches a missed sub
+      sudo systemctl daemon-reload && sudo systemctl enable --now slackbot
       ```
-- [ ] `journalctl -u queryhub` shows `Starting QueryHub` then
+- [ ] `journalctl -u slackbot` shows `Starting QueryHub` then
       `Bolt app is running!`
 
 ### Phase 5 — Verification
@@ -154,12 +154,12 @@ python3 scripts/check_repo_clean.py   # exercises DB access end to end
       works there (see the Phase 5 gotcha; until then the publish job stays
       on the old host)
 - [ ] Remove the old host's IP from the security groups
-- [ ] Securely wipe the old host's `/etc/queryhub` secrets (`shred`)
+- [ ] Securely wipe the old host's `/etc/slackbot` secrets (`shred`)
 
 **If keeping the old host as a hot standby (recommended for the first
 while):** skip all three above. Leave its secrets, its security-group
-entries, and its (disabled) `queryhub.service` in place so rollback is a
-single `systemctl start queryhub`. The old host's job timers keep running —
+entries, and its (disabled) `slackbot.service` in place so rollback is a
+single `systemctl start slackbot`. The old host's job timers keep running —
 in particular the dashboard publish keeps working there even after the bot
 moves, since it only reads the shared metadata DB. The only caveat: don't
 *also* enable a dashboard publish on the new host, or both would upload to

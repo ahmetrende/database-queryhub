@@ -21,7 +21,7 @@ What these tests pin:
 """
 import pytest
 
-from queryhub import executor
+from dba_slack_bot import executor
 
 
 class PsycopgColumn:

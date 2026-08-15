@@ -83,7 +83,8 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "brand": "warm",
   "editorFont": 14,
   "sidebarSide": "left",
-  "hideSidebar": false
+  "hideSidebar": false,
+  "noSlack": false
 }/*EDITMODE-END*/;
 
 const QH_SESSION_KEY = 'qh.session.v1';
@@ -367,16 +368,22 @@ function App() {
   }, [tabs.map(t => (!t.kind && !t.reqId && !t.qid) ? t.id : '').join(',')]);
 
   // ----- auth boot: load the real signed-in user from the session cookie -----
+  // `slackEnabled` rides along (outside `user`): the default install profile has
+  // no Slack, and the copy that says approvals run there has to follow the flag
+  // rather than the product's own history.
+  const [slackEnabled, setSlackEnabled] = useState(true);
   useEffect(() => {
     let alive = true;
     qhApi.me()
-      .then(m => { if (alive) { window.QH_TZ = (m && m.displayTz) || 'Europe/Istanbul'; setUser(m.user || null); } })
+      .then(m => { if (alive) { window.QH_TZ = (m && m.displayTz) || 'Europe/Istanbul'; setSlackEnabled(!m || m.slackEnabled !== false); setUser(m.user || null); } })
       .catch(() => { if (alive) setUser(null); })
       .finally(() => { if (alive) setAuthChecked(true); });
     const onSignedOut = () => setUser(null);
     window.addEventListener('qh:signed-out', onSignedOut);
     return () => { alive = false; window.removeEventListener('qh:signed-out', onSignedOut); };
   }, []);
+  // The served app has no such tweak: there the flag is whatever /me said.
+  const slackOn = slackEnabled && !t.noSlack;
 
   // ----- load real developer data once signed in -----
   // Tracked like the admin panel (Promise.allSettled): any failed section flips
@@ -1204,7 +1211,7 @@ function App() {
     <div className="qh-root">
       {pwOpen && <ChangePasswordScreen onCancel={() => setPwOpen(false)} />}
       <TopChrome resolvedDark={resolvedDark} theme={t.theme} setTheme={(v) => setTweak('theme', v)} user={user} onSignOut={signOut}
-        onChangePassword={() => setPwOpen(true)}
+        onChangePassword={() => setPwOpen(true)} slackEnabled={slackOn}
         view={view} setView={setView} pendingCount={admin.queue.length} onGoHome={goHome} role={(user && user.role) || 'developer'} lastSync={lastSync} onFeedback={() => setFeedbackOpen(true)} onWhatsNew={openWhatsNew} unseenNews={unseenNews} onDismissNews={markNewsSeen} />
 
       {view === 'admin' && <AdminPanel st={admin} adminRole={adminRole} setAdminRole={setAdminRole} user={user} />}
@@ -1240,7 +1247,7 @@ function App() {
           </div>
 
           {isWelcome ? (
-            <HomeScreen user={user} openTabs={queryTabsForBar}
+            <HomeScreen user={user} openTabs={queryTabsForBar} slackEnabled={slackOn}
               onFocusTab={(id) => { if (id) setActiveId(id); else newTab(); }}
               onNewQuery={newTab}
               onSaveSession={() => setSessionModal(true)}
@@ -1322,6 +1329,11 @@ function App() {
         <TweakSection label="Layout" />
         <TweakRadio label="Sidebar side" value={t.sidebarSide} options={['left', 'right']} onChange={(v) => setTweak('sidebarSide', v)} />
         <TweakToggle label="Hide sidebar" value={t.hideSidebar} onChange={(v) => setTweak('hideSidebar', v)} />
+        {/* A deployment fact, not a preference — the served app reads it from
+            GET /me. The toggle exists so the Slack-less install (which is the
+            DEFAULT install profile) can be seen here, where the copy is written. */}
+        <TweakSection label="Deployment" />
+        <TweakToggle label="No Slack" value={t.noSlack} onChange={(v) => setTweak('noSlack', v)} />
       </TweaksPanel>}
     </div>
   );
@@ -1428,7 +1440,7 @@ function NotificationBell({ unseenNews, onOpenNews, onDismissNews }) {
 }
 
 // ---------- Top chrome (logo + theme toggle) ----------
-function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePassword, view, setView, pendingCount, onGoHome, role, lastSync, onFeedback, onWhatsNew, unseenNews, onDismissNews }) {
+function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePassword, view, setView, pendingCount, onGoHome, role, lastSync, onFeedback, onWhatsNew, unseenNews, onDismissNews, slackEnabled }) {
   const toggle = () => setTheme(resolvedDark ? 'light' : 'dark');
   const [menu, setMenu] = useState(false);
   // Only admins (dba/super) get the Developer↔Admin switch. A plain developer
@@ -1458,7 +1470,13 @@ function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePas
       <div className="qh-top-right">
         <span className="qh-slack-note">
           <span className="qh-slack-dot" />
-          {view === 'admin' ? 'Actions mirror to Slack' : role === 'super' ? 'Full access · no approval' : 'Approvals run in Slack'}
+          {/* The claim follows the deployment: a Slack-less install told the
+              audience least able to check that approvals run in Slack. Same
+              policy either way — only the surface it happens on differs. */}
+          {view === 'admin'
+            ? (slackEnabled ? 'Actions mirror to Slack' : 'Actions are audited')
+            : role === 'super' ? 'Full access · no approval'
+              : (slackEnabled ? 'Approvals run in Slack' : 'Approvals run in the admin panel')}
         </span>
         <span className={'qh-role-badge role-' + (role || 'developer')} title="Change under Tweaks → Access"><span className="qh-role-emoji">{role === 'super' ? '⭐' : role === 'dba' ? '🔑' : '💻'}</span>{role === 'super' ? 'Super admin' : role === 'dba' ? 'DBA' : 'Developer'}</span>
         <button className="qh-icon-btn" onClick={onFeedback} title="Send feedback or report a bug" aria-label="Send feedback">

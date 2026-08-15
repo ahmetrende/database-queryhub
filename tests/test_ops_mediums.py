@@ -13,9 +13,9 @@
 """
 import pytest
 
-from queryhub import executor as ex
-from queryhub import lifecycle
-from queryhub.web import config_admin as ca
+from dba_slack_bot import executor as ex
+from dba_slack_bot import lifecycle
+from dba_slack_bot.web import config_admin as ca
 
 
 class _FakeFuture:
@@ -144,9 +144,9 @@ def test_results_dir_is_configurable(monkeypatch):
     assert str(ex._results_dir()) == "/tmp/qh-results-test"
     monkeypatch.delenv("QH_RESULTS_DIR")
     # The default is unchanged, so an existing install keeps finding its files.
-    assert str(ex._results_dir()) == "/var/lib/queryhub/results"
+    assert str(ex._results_dir()) == "/var/lib/slackbot/results"
     monkeypatch.setenv("QH_RESULTS_DIR", "   ")
-    assert str(ex._results_dir()) == "/var/lib/queryhub/results"
+    assert str(ex._results_dir()) == "/var/lib/slackbot/results"
 
 
 def test_an_exception_escaping_the_worker_is_logged(monkeypatch, caplog):
@@ -160,7 +160,7 @@ def test_an_exception_escaping_the_worker_is_logged(monkeypatch, caplog):
     class _Boom:
         def exception(self):
             return PermissionError("[Errno 13] Permission denied: "
-                                   "'/var/lib/queryhub/results'")
+                                   "'/var/lib/slackbot/results'")
 
         def add_done_callback(self, fn):
             fn(self)
@@ -168,7 +168,7 @@ def test_an_exception_escaping_the_worker_is_logged(monkeypatch, caplog):
     monkeypatch.setattr(ex._pool, "submit", lambda fn, *a, **k: _Boom())
     monkeypatch.setattr(lifecycle, "is_draining", lambda: False)
 
-    with caplog.at_level(logging.ERROR, logger="queryhub.executor"):
+    with caplog.at_level(logging.ERROR, logger="dba_slack_bot.executor"):
         ex.submit({"id": 99}, client=None)
 
     assert any("unhandled exception" in r.message for r in caplog.records), \
