@@ -242,7 +242,7 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
         <TreeRow depth={base} expandable open={isOpen(did)} onToggle={() => { tog(did); onLoadSchema && onLoadSchema(c.id, db.id); }}
           icon={rightExtra !== undefined ? <img className="qh-engine-logo" src={qhEngineLogo(c)} alt={qhEngine(c).label} draggable={false} /> : TICN.db()}
           label={db.name} sub={sub} tier={db.tier} active={act} drag={qhQuoteIdent(db.name)} dbDrag={dbDragKey} nodeId={did}
-          title={rightExtra !== undefined ? [db.name, c.name + ' · ' + c.engine, (c.host || c.name) + (c.port ? ':' + c.port : ''), qhHosting(c)].filter(Boolean).join('\n') : undefined}
+          title={rightExtra !== undefined ? [db.name, c.name + ' · ' + c.engine, c.host ? c.host + (c.port ? ':' + c.port : '') : '', qhHosting(c)].filter(Boolean).join('\n') : undefined}
           right={rightExtra}
           onCtx={(e) => openMenu(e, c, db)} onDbl={() => newQ(c, db)} />
         {isOpen(did) && (
@@ -510,10 +510,12 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
                 </button>
                 {/* The endpoint, not the alias: what you paste into a ticket, a
                     driver or a psql line. Host and port only — never a
-                    credential, and the registry is still the only writer. */}
-                <button onClick={() => { copyEndpoint(menu.conn); setMenu(null); }}>
+                    credential. Hidden when the payload carries no host: a
+                    developer's GET /connections withholds it, and copying the
+                    alias instead would be a lie in the shape of a hostname. */}
+                {menu.conn.host && <button onClick={() => { copyEndpoint(menu.conn); setMenu(null); }}>
                   {ICN_COPY}Copy endpoint
-                </button>
+                </button>}
                 <div className="qh-ctx-sep" />
                 <button onClick={() => { toggleFav(menu.conn.id); setMenu(null); }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill={isFav(menu.conn.id) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9 6.8 19.2l1-5.8L3.5 9.2l5.9-.9z"/></svg>{isFav(menu.conn.id) ? 'Remove from favorites' : 'Add to favorites'}
@@ -545,9 +547,9 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
                 </button>
                 {/* Same endpoint, reachable from the database view — where no
                     server row exists to right-click. */}
-                <button onClick={() => { copyEndpoint(menu.c, menu.db); setMenu(null); }}>
+                {menu.c.host && <button onClick={() => { copyEndpoint(menu.c, menu.db); setMenu(null); }}>
                   {ICN_COPY}Copy endpoint
-                </button>
+                </button>}
                 {treeView === 'dbs' && menu.db && (() => {
                   const k = dbKey(menu.c, menu.db);
                   return (<>

@@ -213,6 +213,11 @@
   .qh-login-submit { margin-top: 2px; }
   .qh-login-error { font-size: 12.5px; line-height: 1.45; color: var(--fg-danger); background: var(--danger-adaptive-light);
     border: 1px solid var(--stroke-danger); border-radius: var(--r-xs); padding: 8px 10px; text-wrap: pretty; }
+  /* Nothing is enabled on this deployment — a configuration state, not the user's
+     mistake, so it is a warning that names the keys rather than a red error. */
+  .qh-login-none { font-size: 12.5px; line-height: 1.5; color: var(--fg-warning); background: var(--warning-adaptive-light);
+    border: 1px solid var(--stroke-medium); border-radius: var(--r-xs); padding: 10px 12px; text-wrap: pretty; }
+  .qh-login-none code { font-family: var(--qh-mono); font-size: 11.5px; }
   .qh-login-or { display: flex; align-items: center; gap: 12px; margin: 18px 0; color: var(--fg-tertiary); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; }
   .qh-login-or::before, .qh-login-or::after { content: ''; flex: 1; height: 1px; background: var(--stroke-light); }
   .qh-login-cancel { background: none; border: none; color: var(--fg-tertiary); font-family: inherit; font-size: 13px; cursor: pointer; padding: 6px; margin-top: 2px; }

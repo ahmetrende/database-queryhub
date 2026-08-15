@@ -193,17 +193,35 @@ def connections(claims: dict = Depends(deps.current_user)):
             "disabled": not t.enabled,
             "databases": db_entries,
         }
-        # Endpoint, ADMINS ONLY. The database view shows it on hover so two
-        # same-named databases can be told apart and the endpoint pasted into a
-        # ticket. Never a credential and never a full connection string — but a
-        # hostname is still infrastructure detail, and every requester does not
-        # need the fleet's endpoints to write a query: the view already
-        # distinguishes duplicates by SERVER NAME, and the design's own hover
-        # falls back to it (`c.host || c.name`). So this is gated to the people
-        # who administer the fleet rather than sent to everyone.
-        if is_admin:
-            entry["host"] = getattr(t, "host", None)
-            entry["port"] = getattr(t, "port", None)
+        # Endpoint, to everyone this loop reaches. Never a credential and never
+        # a full connection string — the host and the port, which is what gets
+        # pasted into a ticket, a driver config or a psql line.
+        #
+        # This was admin-only, on the grounds that a hostname is infrastructure
+        # detail a requester does not need in order to write a query. That
+        # reasoning missed the bound that was already here: THIS LOOP IS
+        # GRANT-FILTERED — `effective_grant_for_user` returns None a few lines
+        # up and the target is skipped — so nobody is handed the endpoint of a
+        # target they cannot already query through us. Measured on the live
+        # fleet: 43 enabled targets, and the median developer's payload carries
+        # four of them.
+        #
+        # So the gate was not protecting the fleet from a requester; it was
+        # withholding the address of a machine they hold standing access to,
+        # and whose data they can already read. What it did protect against is
+        # nothing a hostname alone enables: the credentials are per-target,
+        # encrypted, and held by the bot.
+        #
+        # What it cost was real — design's Copy endpoint (right-click a server)
+        # had nothing to copy on the account most people have, and the first
+        # fallback written for it copied the ALIAS, which is worse than nothing
+        # because it looks like a hostname.
+        #
+        # `account` and invented tags stay admin-only below: a cloud account id
+        # is not an address anybody pastes anywhere, so the same argument does
+        # not carry it.
+        entry["host"] = getattr(t, "host", None)
+        entry["port"] = getattr(t, "port", None)
         # Where it runs (migration 095). Display-only, and split the same way
         # `host` above is split, for the same reason.
         #

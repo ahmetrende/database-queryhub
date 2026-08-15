@@ -651,9 +651,12 @@ function HostingFields({ tags, onChange, vocab }) {
   const known = (vocab || []).filter(v => !v.reserved).map(v => v.key);
   const valuesFor = (k) => { const e = (vocab || []).find(v => v.key === k); return e ? e.values.map(x => x.value) : []; };
   const addCustom = () => {
-    const k = nk.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '-');
+    // The server's own rule: ^[a-z][a-z0-9_-]{0,31}$ (a key becomes a search
+    // token, so a space could not be typed back). Sanitise here rather than let
+    // the 400 be the first time anyone hears about it.
+    const k = nk.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/^[^a-z]+/, '').slice(0, 32);
     if (!k || !nv.trim() || QH_TAG_RESERVED.indexOf(k) >= 0) return;
-    set(k, nv.trim()); setNk(''); setNv('');
+    set(k, nv.trim().slice(0, 120)); setNk(''); setNv('');
   };
   return (
     <div className="qh-field">
@@ -676,20 +679,20 @@ function HostingFields({ tags, onChange, vocab }) {
       )}
       <div className="qh-tagrow">
         <span className="qh-tagrow-k">account</span>
-        <input className="qh-input qh-input-sm qh-flex1" list="qh-tagvals-account" placeholder="account / project id" value={t.account || ''} onChange={e => set('account', e.target.value)} />
+        <input className="qh-input qh-input-sm qh-flex1" list="qh-tagvals-account" maxLength={120} placeholder="account / project id" value={t.account || ''} onChange={e => set('account', e.target.value)} />
         <datalist id="qh-tagvals-account">{valuesFor('account').map(v => <option key={v} value={v} />)}</datalist>
       </div>
       {custom.map(k => (
         <div className="qh-tagrow" key={k}>
           <span className="qh-tagrow-k">{k}</span>
-          <input className="qh-input qh-input-sm qh-flex1" value={t[k]} onChange={e => set(k, e.target.value)} />
+          <input className="qh-input qh-input-sm qh-flex1" maxLength={120} value={t[k]} onChange={e => set(k, e.target.value)} />
           <button className="qh-icon-btn" onClick={() => set(k, '')} aria-label={'Remove ' + k} title={'Remove ' + k}><AIcon.x /></button>
         </div>
       ))}
       <div className="qh-tagrow">
-        <input className="qh-input qh-input-sm" style={{ width: 132 }} list="qh-tagkeys" placeholder="new tag key" value={nk} onChange={e => setNk(e.target.value)} />
+        <input className="qh-input qh-input-sm" style={{ width: 132 }} maxLength={32} list="qh-tagkeys" placeholder="new tag key" value={nk} onChange={e => setNk(e.target.value)} />
         <datalist id="qh-tagkeys">{known.map(k => <option key={k} value={k} />)}</datalist>
-        <input className="qh-input qh-input-sm qh-flex1" placeholder="value" value={nv} onChange={e => setNv(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCustom(); } }} />
+        <input className="qh-input qh-input-sm qh-flex1" maxLength={120} placeholder="value" value={nv} onChange={e => setNv(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCustom(); } }} />
         <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={addCustom} disabled={!nk.trim() || !nv.trim()}>Add</button>
       </div>
       {/* A new key is not a typo guard — it is a fleet-wide decision: it becomes a

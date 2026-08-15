@@ -36,27 +36,46 @@ def _routes_data():
             / "routes_data.py").read_text(encoding="utf-8")
 
 
-def test_endpoint_fields_are_admin_gated():
-    """The whole point: `host`/`port` must sit under an admin check, not in the
-    payload every whitelisted requester receives."""
+def test_the_endpoint_never_escapes_the_grant_filter():
+    """`host`/`port` went from admin-only to everyone on 2026-08-15, and the
+    thing that makes that safe is not a role check — it is that this loop is
+    GRANT-FILTERED. `effective_grant_for_user` returns None and the target is
+    skipped, so a payload can only ever carry the endpoint of a machine the
+    caller already has standing access to.
+
+    That ordering is the invariant now. If the grant check ever moves below the
+    payload build, or the endpoint is assigned before it, every whitelisted
+    requester starts receiving the whole fleet's addresses — which is exactly
+    the outcome the old admin gate was reaching for."""
     src = _routes_data()
-    m = re.search(r"if is_admin:\s*\n\s*entry\[\"host\"\]", src)
-    assert m, ("host/port must be assigned under `if is_admin:` — if the "
-               "payload was refactored, re-gate it before shipping")
-    # and they must not ALSO be set unconditionally somewhere above
-    unconditional = re.search(r"^\s*(entry|out\.append\(\{[^}]*)\"host\"",
-                              src, re.MULTILINE)
-    assert unconditional is None or unconditional.start() > m.start(), \
-        "host is set outside the admin branch"
+    grant = re.search(r"grant = teams\.effective_grant_for_user\(uid, t\.id\)", src)
+    skip = re.search(r"if grant is None:\s*\n\s*continue", src)
+    host = re.search(r"^\s*entry\[\"host\"\]", src, re.MULTILINE)
+    assert grant and skip and host, "the connections loop was refactored — re-read it"
+    assert grant.start() < skip.start() < host.start(), (
+        "the endpoint is built before the ungranted target is skipped — a "
+        "requester would receive addresses they hold no grant on")
 
 
-def test_a_requester_payload_has_no_endpoint_and_the_ui_survives_that():
-    """The view must degrade, not break, when host is absent — that is what
-    makes the admin gate affordable."""
+def test_the_ui_drops_the_endpoint_when_there_is_none_rather_than_faking_one():
+    """A target row can still carry no host (an unfilled registry row). The
+    hover used to fall back to the server ALIAS in the hostname's place, which
+    reads as an endpoint and is not one; and Copy endpoint would have copied
+    it. Both are conditional on a real host now."""
     panels = _read("qh-panels.jsx")
-    assert "c.host || c.name" in panels, (
-        "the hover must fall back to the server name; without the fallback the "
-        "admin gate would leave non-admins with an 'undefined' tooltip")
+    # The HOVER: the endpoint line is emitted only when there is a host. It used
+    # to read `(c.host || c.name) + port`, which printed the alias where a
+    # hostname belongs.
+    assert "c.host ? c.host + (c.port ? ':' + c.port : '') : ''" in panels, (
+        "the database-view hover is back to putting the alias in the endpoint "
+        "position — that reads as a hostname and is not one")
+    # The MENU: both Copy endpoint items are gated on a real host. `copyEndpoint`
+    # keeps an internal `c.host || c.name` fallback, which is fine precisely
+    # because these guards make it unreachable — so the guards are the thing to
+    # pin, not the fallback's absence.
+    assert "{menu.conn.host && " in panels and "{menu.c.host && " in panels, (
+        "Copy endpoint must be hidden when the payload carries no host, or the "
+        "alias fallback inside copyEndpoint becomes reachable")
 
 
 def test_both_views_share_one_database_renderer():
