@@ -278,7 +278,10 @@ function AutoForm({ init, actor, st, onDone }) {
   const save = () => {
     if (!f.user.trim()) return;
     const expiresAt = f.ttl === 'keep' ? f.expiresAt : qhIso(new Date(Date.now() + 1000 * 86400 * parseInt(f.ttl)));
-    const payload = { user: f.user.trim(), tier: f.tier, connectionId: f.connectionId, databaseId: f.databaseId || '*', maxRows: parseInt(f.maxRows) || 0, expiresAt };
+    // `maxRows` is nullable by contract — row caps live in the row-limit
+    // overrides, not on the grant — so an empty field sends null, not 0. Zero
+    // would read as “cap of zero rows”, which is a different instruction.
+    const payload = { user: f.user.trim(), tier: f.tier, connectionId: f.connectionId, databaseId: f.databaseId || '*', maxRows: f.maxRows === '' ? null : (parseInt(f.maxRows) || null), expiresAt };
     if (editing) st.updateAutoGrant({ ...payload, id: f.id }, actor); else st.addAutoGrant(payload, actor);
     onDone();
   };
@@ -315,7 +318,7 @@ function AutoView({ st, user }) {
 
   const renderRow = (a) => {
     if (editId === a.id) return (
-      <tr key={a.id} className="qh-editrow"><td colSpan={6}><AutoForm init={{ ...a, maxRows: String(a.maxRows), ttl: 'keep' }} actor={actor} st={st} onDone={() => setEditId(null)} /></td></tr>
+      <tr key={a.id} className="qh-editrow"><td colSpan={6}><AutoForm init={{ ...a, maxRows: a.maxRows == null ? '' : String(a.maxRows), ttl: 'keep' }} actor={actor} st={st} onDone={() => setEditId(null)} /></td></tr>
     );
     const ex = expiryLabel(a.expiresAt);
     return (
@@ -323,7 +326,7 @@ function AutoView({ st, user }) {
         <td><b>{a.user}</b></td>
         <td className="qh-mono">{a.connectionId}/{a.databaseId}</td>
         <td><TierBadge tier={a.tier} sm /></td>
-        <td className="qh-mono">{a.maxRows.toLocaleString()}</td>
+        <td className="qh-mono">{a.maxRows == null ? <span className="qh-muted">—</span> : a.maxRows.toLocaleString()}</td>
         <td><span className={'qh-expiry ' + ex.cls}>{ex.text}</span></td>
         <td className="qh-tright"><div className="qh-rowacts"><button className="qh-rowbtn" onClick={() => { setEditId(a.id); setAdding(false); }}><AIcon.edit />Edit</button><button className="qh-revoke" onClick={() => st.revokeAutoGrant(a.id, actor)}>Revoke</button></div></td>
       </tr>
