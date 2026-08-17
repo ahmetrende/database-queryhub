@@ -70,6 +70,49 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
 | `052_auto_approve_requests.sql` | `auto_approve_requests` table — user-requested short RO auto-approve windows (RO-burst nudge): mandatory justification, admin-decided; on approval inserts a target-scoped `auto_approve_grants` row. `bot_config` keys `ro_burst_threshold` / `ro_burst_window_min` / `ro_window_minutes` seeded. |
 | `053_pii_exemption_apply_in_joins.sql` | `pii_masking_exemptions.apply_in_joins` (bool, default FALSE). When TRUE, a table+column-scoped exemption also fires in JOINs (its table just has to be among the query's tables) instead of only on single-table queries — opt-in, accepts a same-named co-joined column being unmasked too. For columns non-sensitive db-wide (e.g. event titles). |
 | `054_user_grant_revoked_at.sql` | `user_target_grants.revoked_at` (TIMESTAMPTZ, NULL = active). Soft-disable for the stale-grant reaper (`scripts/reap_stale_grants.py`): revokes a per-user grant when the user hasn't queried the target in `grant_idle_revoke_days`. Every read of `user_target_grants` (teams.py + `v_effective_user_grants`) filters `revoked_at IS NULL`. New `bot_config`: `grant_reaper_enabled` (off), `grant_idle_revoke_days` (30). |
+| `055_pending_expiry.sql` | Pending-request auto-expiry config. |
+| `056_security_config_audit.sql` | Audit + TTL for security-relevant `bot_config` toggles. |
+| `057_schema_catalog.sql` | Schema catalog: an hourly snapshot of every target's tables + columns, backing `/sql tables`, `/sql schema`, `/sql findcol` and the web browser. |
+| `058_admin_can_grant.sql` | `admins.can_grant` — capability flag for the Slack-native grant/revoke tool (`/sql grant`). |
+| `059_user_row_limit_overrides.sql` | Per-user result row-limit overrides, time-bounded. |
+| `060_auth_event_outbox.sql` | Universal authorization-change notifications: triggers on 8 auth tables feed `auth_event_outbox`, and a poller DMs affected users on ANY grant/revoke — including changes made straight from psql. Suppress with `SET LOCAL app.auth_dm_suppress = 'on'` on paths that DM on their own. |
+| `061_web_sessions.sql` | QueryHub Web: server-side session state (short JWT + refresh tokens). |
+| `062_web_session_reuse_detection.sql` | Refresh-token reuse detection for web sessions. |
+| `063_web_session_avatar.sql` | Carry the signed-in user's Slack avatar on the session row so `GET /api/me` returns it without a per-request Slack API call, and so it survives refresh-token rotation. |
+| `064_web_saved_sessions.sql` | Server-synced named workspaces (the web Sessions panel). Only `dest="server"` sessions live here; `dest="local"` ones stay in the browser and are never sent. |
+| `065_request_origin.sql` | Record which channel a request came from so the executor delivers the result back to it. Web-origin requests read their result in the web UI, so by default they are not also DMed the CSV. |
+| `066_config_delete_audit.sql` | Audit DELETEs of security-relevant `bot_config` keys (SEC-18). |
+| `067_execution_lease.sql` | Execution lease for orphaned-request reconciliation (STAB-01 / BUG-03). |
+| `068_target_engine.sql` | `target_servers.engine` — dispatch for multi-engine targets. |
+| `069_mssql_host_map.sql` | Bot-DB IP map for SQL Server Availability Group nodes. |
+| `070_target_pod_owner.sql` | `target_pod_owner`: each target → the engineering pod that owns it. |
+| `071_pii_exemption_keep_value_scan.sql` | Soft PII exemption: lift the column-NAME mask but keep the value scan. |
+| `072_web_notification_reads.sql` | Read-state for the web notification bell. |
+| `073_target_secrets_provider.sql` | Pluggable secrets provider per target. |
+| `074_request_engine_tier.sql` | SEC-ENG: persist the engine and the engine-aware required tier on each request. |
+| `075_local_accounts.sql` | Local (built-in) accounts for the vanilla profile — login without Slack. Widens the principal-id CHECK on 10 tables to accept `local:<username>`. |
+| `076_access_request_tier_autogrant.sql` | Access requests: persist the requested tier as a real column. |
+| `077_audit_indexes_and_session_sweep.sql` | Indexes for the audit trail's real access patterns, plus a session-sweep index. |
+| `078_report_start_date_install_default.sql` | Stop shipping the author's pilot date as every install's reporting start date. |
+| `079_seed_unseeded_config_keys.sql` | Seed the `bot_config` keys the code reads but no migration ever created — an unseeded key is invisible in the admin UI. |
+| `080_cookie_secure_auto.sql` | Derive the session cookie's `Secure` flag from the deployment instead of failing open. |
+| `081_ops_metrics_config.sql` | `GET /metrics` in Prometheus text format. |
+| `082_web_max_tables_per_db.sql` | How many tables one database contributes to the web `/connections` payload. |
+| `083_result_column_types.sql` | Per-column SQL types for a delivered result, captured from the driver. |
+| `084_cancellable_executions.sql` | Make a running query cancellable, and a runaway self-healing. |
+| `085_request_draft_status.sql` | A `draft` request status: the row that exists from the moment someone opens the composer. |
+| `086_request_draft_columns.sql` | Make a draft row storable while keeping every non-draft row exactly as strict. |
+| `087_draft_request_max_open.sql` | Seed the cap `reserve_request_id()` reads. |
+| `088_pii_pattern_region_and_excludes.sql` | Region-gate the PII column catalog, and stop the bare `name` token matching everything. |
+| `089_pii_pattern_broad_tokens.sql` | Two false positives that survived 088, both measured rather than guessed. |
+| `090_pii_exemption_schema_and_super_admin.sql` | Two new dimensions on `pii_masking_exemptions`: a schema, and a super-admin gate. |
+| `091_schema_functions.sql` | Functions and procedures in the schema catalog. |
+| `092_super_admin_max_rows.sql` | Seed `super_admin_max_rows`: the row-cap FLOOR for super-admins. |
+| `093_requests_unmasked.sql` | `requests.unmasked` — the requester asked to see this result without masking. Intent only; the authority is re-derived at execution. |
+| `094_target_super_ddl_role.sql` | `target_servers.super_ddl_role`: the role a super-admin's session assumes on this target via `SET LOCAL ROLE`. NULL = no elevation here (run as the login, exactly as before). |
+| `095_target_tags.sql` | `target_servers.tags` (JSONB, object-shaped CHECK) — where a target actually runs. |
+| `096_grant_expiry.sql` | Standing grants can expire: `expires_at` on `user_target_grants` AND `team_target_grants`, plus the `revoked_at` the team table never had. Partial indexes for the active-grant reads. |
+| `097_super_admin_max_mb.sql` | Seed `super_admin_max_mb`: the CSV size-cap FLOOR for super-admins. Its sibling 092 could not deliver this alone — the size cap is DERIVED from the row cap, so bytes were not expressible on their own. |
 
 ---
 
@@ -128,9 +171,49 @@ Fernet-encrypted with the master key on disk and stored as ciphertext in
 | `password_encrypted` | Fernet ciphertext of the RO user's password. Generate via `scripts/encrypt_secret.py` then INSERT raw. |
 | `username_rw`, `password_rw_encrypted` | RW login (typically `queryhub_rw` with `pg_read_all_data` + `pg_write_all_data`). Used when the effective tier for (user, target) is `rw` or `ddl` and the query classifies as write. NULL = RW not configured; write queries on this target are rejected. |
 | `username_ddl`, `password_ddl_encrypted` | DDL login (typically `queryhub_ddl`). Used when the effective tier is `ddl` and the query classifies as DDL. NULL = DDL not configured; DDL on this target is rejected before execution. |
+| `engine` | `postgres` (default) or `mssql`. Selects the driver and the engine spec (system schemas, tier classification, quoting). |
+| `super_ddl_role` | Name of a role a **super-admin's** session enters with `SET LOCAL ROLE` before the statement runs. NULL = no elevation on this target; the query runs as the login, exactly as for everyone else. See "Super-admin elevation" below. |
+| `tags` | JSONB object (CHECK enforces object shape) describing where the target actually runs. |
 | `enabled` | Soft-delete flag. Disabled targets disappear from the modal (admins still see them). |
 | `notes` | Free text — describe purpose, owner, on-call team, etc. |
 | `created_at`, `updated_at` | Timestamps. |
+
+#### Super-admin elevation
+
+`super_ddl_role` exists because a super-admin needs authority the bot's
+own login must not carry. Giving `queryhub_ddl` standing privileges
+would put them in **every** session it opens, for every user. Instead:
+
+```sql
+CREATE ROLE queryhub_superadmin NOLOGIN CREATEROLE CREATEDB;
+GRANT rds_superuser TO queryhub_superadmin;          -- or `root` on Huawei
+GRANT queryhub_superadmin TO queryhub_ddl
+      WITH INHERIT FALSE, SET TRUE;                      -- PostgreSQL 16+
+```
+
+`NOLOGIN` means there is no credential for the role to leak. `INHERIT
+FALSE, SET TRUE` means the membership is **inert** until an explicit
+`SET LOCAL ROLE`, so a leaked DDL password still buys only that login's
+own weak rights. `SET LOCAL` ties the elevation to the transaction: it
+is gone at COMMIT.
+
+Two properties worth stating because they are easy to get wrong:
+
+- **The platform admin role beats table ownership.** `rds_superuser` on
+  RDS and `root` on Huawei can ALTER a table owned by an unrelated role,
+  which is what makes one role per cluster sufficient — no ownership
+  transfer is needed.
+- **Role attributes are NOT inherited through membership.** `CREATEROLE`
+  and `CREATEDB` must be granted directly with `ALTER ROLE`; being a
+  member of a role that holds them is not enough.
+
+The authority is re-derived at execution from `admins.is_super_admin`,
+never cached and never taken from the request row — `requests.unmasked`
+stores the *intent*, and standing can change between approval and run.
+
+The control-plane target is deliberately excluded: `audit_log` lives on
+that cluster, and an elevated session able to write it could erase its
+own trail.
 
 ### `admins`
 
@@ -214,6 +297,8 @@ optionally which Postgres role on the target to impersonate.
 | `allowed_databases` | `text[]` — `NULL`/empty array = all DBs allowed; non-empty = only those DBs (bot-side check). |
 | `mode` | `ro` (default), `rw`, or `ddl`. The tier this grant authorises. The effective tier for (user, target) is the most permissive of the user's team grants (ro < rw < ddl), unless a `user_target_grants` row overrides it. |
 | `target_role` | Optional Postgres role name on the target. When set, the bot does `SET LOCAL ROLE <target_role>` inside the query transaction, so Postgres enforces the team's privileges natively. NULL = run as the bot's login user (`target_servers.username` / `username_rw` / `username_ddl`). Provision the role on the target with `deploy/grant_team_role.sql`. |
+| `expires_at` | NULL = no expiry, which stays the common case. When set, the grant stops authorising anything the moment `NOW()` passes it — see "Grant expiry" below. |
+| `revoked_at` | NULL = active. Soft revoke, so the record that the grant existed survives. Before migration 096 revoking a team grant meant DELETEing that record. |
 | `granted_at` | Audit. |
 
 PK is `(team_id, target_server_id)`. A team can have grants on multiple
@@ -249,11 +334,38 @@ Use it to:
 | `target_server_id` | FK to `target_servers`, ON DELETE CASCADE. |
 | `allowed_databases` | `text[]`. NULL / empty = all DBs on the target. |
 | `mode` | `ro` / `rw` / `ddl`. |
+| `expires_at` | NULL = no expiry. When set, the grant stops authorising anything once `NOW()` passes it. |
+| `revoked_at` | NULL = active (migration 054). |
 | `granted_at`, `granted_by` | Audit. |
 
 PK is `(slack_user_id, target_server_id)`. The view
 `v_effective_user_grants` shows the resolved row the bot will use at
 runtime (user override vs aggregated team grants).
+
+#### Grant expiry
+
+Before migration 096 a standing grant ended only when a human revoked
+it, so access accumulated invisibly. What prompted the change was an
+offboarding: someone deleted from Slack still held RW on four production
+databases through a team they had joined months earlier. Nothing was
+wrong with the grant — it simply had no way to end.
+
+Three behaviours to rely on:
+
+- **A past date is refused with 400**, not accepted and silently inert.
+- **Re-granting REPLACES the expiry**, including clearing it back to NULL.
+- **An expired USER grant does not fall back to the team grant.** A user
+  row is often written to *narrow* what a team allows, so falling through
+  would make expiry *increase* access. `teams.effective_grant_for_user()`
+  returns `None` instead.
+
+Expiry is enforced in every grant reader, live — there is no cache
+anywhere on the authorization path, so a grant lapsing takes effect on
+the next submission with no restart.
+
+**Known gap:** nothing warns before a grant lapses. The auth-event
+triggers (migration 060) fire on row changes, and time passing is not
+one, so access simply stops.
 
 ### `requests`
 

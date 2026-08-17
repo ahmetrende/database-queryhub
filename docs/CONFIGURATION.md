@@ -86,6 +86,8 @@ default rather than stopping the process.
 | `query_timeout_sec` | `300` | Statement timeout for an executing query. |
 | `execution_lease_sec` | `900` | How long a claimed execution lease is held before it is considered stale. |
 | `max_rows` | `1000` | Row cap on a delivered result set (Slack path). |
+| `super_admin_max_rows` | `0` | Row-cap **floor** for super-admins, applied as `max(derived, this)`. `0` = inert. It can never lower anyone's cap. |
+| `super_admin_max_mb` | `0` | Size-cap **floor** in MB for super-admins, applied after `csv_size_mb_ceiling`, which it outranks. `0` = inert. Needed because the size cap is otherwise *derived* from the row cap (`csv_size_mb × rows / max_rows`, trimmed by the ceiling), so bytes were not expressible on their own — and a ceiling only ever trims. |
 | `max_open_requests_per_user` | `5` | Max simultaneously pending requests one user may have. |
 | `min_query_length` | `6` | Reject trivially short queries. |
 | `ast_safety_enabled` | `on` | Run the sqlglot AST safety second pass (on top of the leading-keyword allow-list). |

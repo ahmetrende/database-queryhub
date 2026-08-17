@@ -1583,3 +1583,111 @@ process start, so a change needs a restart:
 ```bash
 sudo systemctl restart queryhub queryhub-web
 ```
+
+---
+
+## 25. Super-admin elevation on a target
+
+A super-admin runs without the tier and safety limits an ordinary
+requester has — the point is not to give them power they lack (a DBA
+already has it through their own tooling), but to make the work they were
+going to do anyway *land in the audit trail*. What follows provisions the
+one role that makes it possible on a cluster.
+
+The model is in `docs/SCHEMA.md` → "Super-admin elevation". This section
+is the runbook.
+
+### Once per cluster
+
+Run as an operator login that holds the platform's admin role
+(`rds_superuser` on RDS, `root` on Huawei):
+
+```sql
+DO $$
+BEGIN
+  IF current_setting('server_version_num')::int < 160000 THEN
+    RAISE EXCEPTION 'pre-16 server (%): WITH INHERIT FALSE is unavailable',
+                    current_setting('server_version');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'queryhub_superadmin') THEN
+    CREATE ROLE queryhub_superadmin NOLOGIN CREATEROLE CREATEDB;
+  END IF;
+  EXECUTE 'GRANT ' || (SELECT rolname FROM pg_roles
+                        WHERE rolname IN ('rds_superuser','root')
+                        ORDER BY 1 LIMIT 1)
+                   || ' TO queryhub_superadmin';
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'queryhub_ddl') THEN
+    EXECUTE 'GRANT queryhub_superadmin TO queryhub_ddl '
+            'WITH INHERIT FALSE, SET TRUE';
+  END IF;
+END $$;
+```
+
+The version guard is not decoration. `WITH INHERIT FALSE, SET TRUE` is
+PostgreSQL 16+; without the guard an older server would create the role,
+fail on the grant, and leave the login **inheriting** admin rights in
+every session — the exact property the design exists to prevent. Failing
+whole is the safe outcome.
+
+Picking the admin role from the catalog instead of naming it keeps one
+statement working on both clouds.
+
+### Then, in the bot DB
+
+```sql
+UPDATE target_servers
+   SET super_ddl_role = 'queryhub_superadmin'
+ WHERE alias = '<target>';
+```
+
+Runtime-effective — the executor reads it per request, no restart.
+
+### Verify from the catalog, not from the absence of errors
+
+```sql
+SELECT CASE WHEN pg_has_role('queryhub_superadmin','rds_superuser','USAGE')
+             AND EXISTS (SELECT 1 FROM pg_auth_members m
+                           JOIN pg_roles r ON r.oid = m.roleid
+                           JOIN pg_roles u ON u.oid = m.member
+                          WHERE r.rolname = 'queryhub_superadmin'
+                            AND u.rolname = 'queryhub_ddl'
+                            AND m.inherit_option = false
+                            AND m.set_option    = true)
+            THEN 'VERIFIED' ELSE 'INCOMPLETE' END;
+```
+
+And prove the property end to end by logging in as the DDL user:
+
+```sql
+SELECT pg_has_role(current_user,'rds_superuser','USAGE');  -- must be false
+BEGIN;
+  SET LOCAL ROLE queryhub_superadmin;
+  SELECT pg_has_role(current_user,'rds_superuser','USAGE'); -- true, inside only
+COMMIT;
+SELECT current_user;                                        -- back to the login
+```
+
+### What to exclude, and why
+
+- **The control-plane cluster.** `audit_log` lives there; an elevated
+  session able to write it could erase its own trail. This exclusion is
+  not negotiable.
+- **Non-PostgreSQL targets.** The role model is Postgres-specific.
+- **Read replicas need nothing.** Roles are cluster-global, so a replica
+  shows VERIFIED as soon as its primary is done. Do not write to it.
+
+### Traps measured on the real fleet
+
+- **`target_servers.username_ddl` and the cluster's actual roles disagree
+  in both directions.** A stored credential can name a role that was
+  never created, and a role can exist with no credential stored. Neither
+  is evidence of the other — check the cluster.
+- **A target with zero request history hides this indefinitely.** Grants
+  gate visibility, so a target nobody is granted is never exercised. When
+  auditing, start from the targets with no requests.
+- **Fernet ciphertext is not deterministic.** Two targets showing
+  different `password_ddl_encrypted` blobs may hold the identical
+  password; do not infer a mismatch from the ciphertext.
+- **`pg_authid` is not readable on RDS even as `rds_superuser`**, so a
+  SCRAM verifier cannot be copied between clusters to clone a login
+  without knowing its plaintext.
