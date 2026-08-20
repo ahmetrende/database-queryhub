@@ -237,6 +237,10 @@ def queue_item(row: dict, alias_of: "callable", tags_of=None) -> dict:
         "submittedAt": iso(row.get("created_at")),
         "escalate": tier == "DDL",
         "bundleId": row.get("bundle_id"),
+        # Where this item sits in its batch, and how big the batch is, so the
+        # queue can group and order them. Null for a standalone request.
+        "bundlePosition": row.get("position") if row.get("bundle_id") else None,
+        "bundleSize": row.get("bundle_size") if row.get("bundle_id") else None,
         "origin": (row.get("origin") or "slack"),
     }
 
@@ -276,6 +280,11 @@ def auto_grant_entry(row: dict, alias_of: "callable") -> dict:
     return {
         "id": str(row["id"]),
         "user": row.get("slack_user_id"),
+        # The id stays (it is the identity), but a person reviewing grants
+        # needs the name — a raw Slack id says nothing about whose access
+        # this is. Falls back to the id when the principal is not in either
+        # people table, e.g. an automated granter.
+        "userName": row.get("user_name") or row.get("slack_user_id"),
         "tier": (row.get("max_tier") or "ro").upper(),
         "connectionId": alias_of(row.get("target_server_id"))
         or (str(row["target_server_id"]) if row.get("target_server_id") else None),
@@ -284,6 +293,7 @@ def auto_grant_entry(row: dict, alias_of: "callable") -> dict:
         "reason": row.get("reason"),
         "expiresAt": iso(row.get("expires_at")),
         "createdBy": row.get("granted_by"),
+        "createdByName": row.get("granted_by_name") or row.get("granted_by"),
         "grantedAt": iso(row.get("granted_at")),
     }
 

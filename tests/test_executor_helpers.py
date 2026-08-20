@@ -198,3 +198,37 @@ def test_plan_code_blocks_hard_slices_overlong_single_line():
     blocks = ex._plan_code_blocks(plan)
     assert len(blocks) >= 2
     assert _all_within_slack_limit(blocks)
+
+
+# --- the classifier reads code, not prose ----------------------------------
+#
+# These words are ordinary vocabulary in a comment ABOUT an index build, and
+# the guard used to match the raw statement text. Request 4483 — entirely
+# read-only — was escalated to manual DBA execution because a note on it read
+# "CONCURRENTLY'siz unique index", Turkish for "a unique index WITHOUT
+# CONCURRENTLY". The sentence denying the keyword is what tripped on it.
+
+def test_concurrently_in_a_line_comment_is_not_incompatible():
+    sql = ("-- reservation.booking_items uzerinde CONCURRENTLY'siz unique index\n"
+           "SELECT count(*) FROM reservation.booking_items")
+    assert not ex._is_txn_incompatible(sql)
+
+
+def test_concurrently_in_a_block_comment_is_not_incompatible():
+    assert not ex._is_txn_incompatible("/* build it CONCURRENTLY later */ SELECT 1")
+
+
+def test_vacuum_in_a_comment_is_not_incompatible():
+    assert not ex._is_txn_incompatible("-- no VACUUM in this one\nSELECT 1")
+
+
+def test_keyword_inside_a_string_literal_is_not_incompatible():
+    assert not ex._is_txn_incompatible("SELECT 'run it CONCURRENTLY' AS note")
+    assert not ex._is_txn_incompatible("SELECT 'ALTER SYSTEM is banned' AS note")
+
+
+def test_a_commented_query_still_catches_the_real_statement():
+    """Stripping comments must not stop the guard seeing actual code."""
+    sql = ("-- this one really does need it\n"
+           "CREATE INDEX CONCURRENTLY ix ON t (a)")
+    assert ex._is_txn_incompatible(sql)

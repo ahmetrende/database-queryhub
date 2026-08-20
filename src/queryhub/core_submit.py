@@ -33,12 +33,20 @@ log = logging.getLogger(__name__)
 
 # Column list returned by request INSERT/UPDATE ... RETURNING across the
 # submit + decision paths. Shared with the Slack handlers.
+#
+# EVERY site that hands a request row to the executor must use this — the row
+# IS the executor's input, so a column missing here is not a missing field, it
+# is a silently wrong decision. `unmasked` was the one that proved it: added by
+# migration 093 and never added here, so `request.get("unmasked")` was None on
+# every path and a super-admin's unmasked result came back masked anyway, with
+# the intent recorded in the table the whole time.
 REQUEST_RETURNING = (
     "id, requester_slack_id, requester_name, target_server_id, "
     "database_name, query, wants_result, result_format, justification, status, "
     "decided_by_slack_id, decided_by_name, decided_at, scheduled_for, "
     "requester_dm_channel_id, requester_dm_message_ts, "
-    "bundle_id, position, risk_summary, origin, engine, required_tier"
+    "bundle_id, position, risk_summary, origin, engine, required_tier, "
+    "unmasked"
 )
 
 
@@ -691,10 +699,7 @@ def create_request(
                 f" origin, engine, required_tier, unmasked) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, "
                 f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s) "
-                "RETURNING id, requester_slack_id, requester_name, target_server_id, "
-                "          database_name, query, wants_result, result_format, "
-                "          justification, status, scheduled_for, decided_by_slack_id, "
-                "          decided_by_name, risk_summary, origin",
+                f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
                     prep.user_name,
@@ -773,9 +778,7 @@ def create_request(
                 f" engine, required_tier, unmasked) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, "
                 f"        %s, %s, %s) "
-                "RETURNING id, requester_slack_id, requester_name, target_server_id, "
-                "          database_name, query, wants_result, result_format, "
-                "          justification, status, scheduled_for, risk_summary, origin",
+                f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
                     prep.user_name,

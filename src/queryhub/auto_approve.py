@@ -26,6 +26,56 @@ def _covers(max_tier: str, required_mode: str) -> bool:
     return _TIER_RANK[max_tier] >= _TIER_RANK[required_mode]
 
 
+class ScopeError(ValueError):
+    """A database scope that could never match a request."""
+
+
+# What a caller might type meaning "every database on this target". The model
+# spells that as NULL, and `grant_covers` compares a non-NULL scope for
+# EQUALITY — so any of these stored literally is a grant that matches nothing.
+_ANY_DATABASE = {"", "*", "all", "any"}
+
+
+def normalise_scope(database_name: str | None) -> str | None:
+    """Fold the "every database" spellings down to NULL.
+
+    The web admin form defaults its database field to `*` and posted it
+    verbatim, which produced grants that silently never fired: the request
+    dropped to manual approval exactly as if no grant existed, with an active
+    grant sitting in the table. Nothing logged, because nothing failed.
+    """
+    if database_name is None:
+        return None
+    name = database_name.strip()
+    return None if name.lower() in _ANY_DATABASE else name
+
+
+def validate_scope(target_server_id: int | None,
+                   database_name: str | None) -> None:
+    """Refuse a database that does not exist on the target.
+
+    The other half of the same failure: a typo is indistinguishable from a
+    correct name until someone notices approvals still arriving by hand. Only
+    checked against a target whose catalog has actually been snapshotted —
+    a freshly onboarded server has no rows yet, and rejecting every database
+    on it would block onboarding to catch a typo.
+    """
+    if target_server_id is None or database_name is None:
+        return
+    known = db.fetch_one(
+        "SELECT count(*) FILTER (WHERE database_name = %s) AS hit, "
+        "       count(*) AS total "
+        "  FROM (SELECT DISTINCT database_name FROM schema_tables "
+        "         WHERE target_server_id = %s) d",
+        (database_name, target_server_id))
+    if not known or known["total"] == 0:
+        return                      # nothing catalogued yet — cannot judge
+    if known["hit"] == 0:
+        raise ScopeError(
+            f"No database named {database_name!r} on this connection. "
+            "Leave it empty to cover every database.")
+
+
 def grant_covers(
     grant: dict,
     required_mode: str,

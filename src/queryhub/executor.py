@@ -387,7 +387,11 @@ _TXN_INCOMPATIBLE_RE = re.compile(
 
 
 def _is_txn_incompatible(sql: str) -> bool:
-    return bool(_TXN_INCOMPATIBLE_RE.search(sql or ""))
+    # Scanned over code only. Matching the raw text meant a comment that
+    # MENTIONS one of these words escalated a read-only request to manual DBA
+    # execution — request 4483 was refused because a note read
+    # "CONCURRENTLY'siz unique index", i.e. explicitly without it.
+    return bool(_TXN_INCOMPATIBLE_RE.search(query_safety.code_text(sql)))
 
 
 # Transient Slack errors on the file-upload flow. These come back as

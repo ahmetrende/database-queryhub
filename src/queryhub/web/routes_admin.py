@@ -20,6 +20,7 @@ from .. import (
     access_requests,
     admins,
     audit,
+    auto_approve,
     core_decide,
     core_submit,
     db,
@@ -28,6 +29,7 @@ from .. import (
     grants,
     schema_catalog,
     targets,
+    teams,
 )
 from .. import config as cfg
 from . import admin, config_admin, deps, mapping, metrics
@@ -56,8 +58,15 @@ router = APIRouter(prefix="/api/admin", dependencies=[Depends(deps.block_pw_gate
 # target_server_id / requester_slack_id).
 _QUEUE_COLS = (
     "id, requester_slack_id, requester_name, target_server_id, database_name, "
-    "query, justification, status, scheduled_for, bundle_id, risk_summary, "
-    "origin, created_at, engine, required_tier"
+    "query, justification, status, scheduled_for, bundle_id, position, "
+    "risk_summary, origin, created_at, engine, required_tier, "
+    # Items of one `/sql batch` submission are one piece of work to the person
+    # who sent them and to the person approving them, but they arrive as N
+    # separate rows. `position` and the sibling count let the queue present
+    # them as the batch they are instead of N unrelated queries interleaved
+    # with everyone else's.
+    "(SELECT count(*) FROM requests sib "
+    "  WHERE sib.bundle_id = requests.bundle_id) AS bundle_size"
 )
 # Minimal slice for a scope check on a single request. Carries engine +
 # required_tier so can_approve reads the engine-aware tier persisted at
@@ -326,11 +335,23 @@ def admin_auto_grants(claims: dict = Depends(deps.current_user)):
     """Active (unexpired) auto-approve grants — the rows that let a
     developer's query skip DBA review."""
     admin.require_admin(claims, "access")
+    # Names, not just ids. The table's subject column showed a raw Slack id,
+    # which reads as an opaque token to the person deciding whether a grant
+    # should still exist. A principal is a requester or an admin (or both), so
+    # both tables are consulted and the first name found wins.
     rows = db.fetch_all(
-        "SELECT id, slack_user_id, max_tier, target_server_id, database_name, "
-        "  reason, expires_at, granted_by, granted_at FROM auto_approve_grants "
-        "WHERE expires_at IS NULL OR expires_at > NOW() "
-        "ORDER BY granted_at DESC")
+        "SELECT g.id, g.slack_user_id, g.max_tier, g.target_server_id, "
+        "       g.database_name, g.reason, g.expires_at, g.granted_by, "
+        "       g.granted_at, "
+        "       COALESCE(r.name,  a.name)  AS user_name, "
+        "       COALESCE(gr.name, ga.name) AS granted_by_name "
+        "  FROM auto_approve_grants g "
+        "  LEFT JOIN requesters r  ON r.slack_user_id  = g.slack_user_id "
+        "  LEFT JOIN admins     a  ON a.slack_user_id  = g.slack_user_id "
+        "  LEFT JOIN requesters gr ON gr.slack_user_id = g.granted_by "
+        "  LEFT JOIN admins     ga ON ga.slack_user_id = g.granted_by "
+        " WHERE g.expires_at IS NULL OR g.expires_at > NOW() "
+        " ORDER BY g.granted_at DESC")
     return {"autoGrants": [mapping.auto_grant_entry(r, _alias_of) for r in rows]}
 
 
@@ -925,14 +946,20 @@ def admin_test_connection(conn: str,
 
 
 @router.post("/connections/{conn}/schema-refresh")
-def admin_schema_refresh(conn: str, claims: dict = Depends(deps.current_user)):
-    """Re-snapshot ONE connection's schema on demand (admin-panel button).
+def admin_schema_refresh(conn: str, database: str | None = None,
+                         claims: dict = Depends(deps.current_user)):
+    """Re-snapshot a connection's schema on demand (admin-panel button).
 
     The hourly cron refreshes the whole fleet; this lets an admin pull a
     single target's tables/columns right after a DDL change instead of
     waiting up to an hour. Reuses the exact snapshot path the cron uses (RO,
     read-only, 8s connect + 60s statement timeout), one target only — bounded
-    work, no background job needed."""
+    work, no background job needed.
+
+    `database` narrows it to one. A connection can carry a dozen databases and
+    re-reading all of them to pick up one changed table is most of a minute of
+    waiting for a result the caller did not ask for — which is the difference
+    between a right-click on a database being useful and being avoided."""
     uid = admin.require_admin(claims, "review")
     t = targets.by_alias(conn)
     if t is None:
@@ -950,6 +977,15 @@ def admin_schema_refresh(conn: str, claims: dict = Depends(deps.current_user)):
         log.warning("schema refresh: cannot reach %s: %r", conn, e)
         raise deps._error(502, "upstream",
                           f"Could not reach '{conn}' to refresh its schema.")
+    if database is not None:
+        # Checked against what the server actually serves, not against the
+        # catalog: refreshing is precisely what you do when the catalog is
+        # stale, so a database missing from it is not evidence of anything.
+        if database not in databases:
+            raise deps._error(
+                404, "not_found",
+                f"'{conn}' has no database named '{database}'.")
+        databases = [database]
     results: dict[str, dict] = {}
     total_tables = 0
     for dbname in databases:
@@ -962,8 +998,10 @@ def admin_schema_refresh(conn: str, claims: dict = Depends(deps.current_user)):
             results[dbname] = {"error": True}
     with db.transaction() as cur:
         audit.log_in(cur, None, uid, claims.get("name"), "schema_refreshed",
-                     {"connection": conn, "databases": results})
-    return {"connection": conn, "databases": results, "tables": total_tables}
+                     {"connection": conn, "databases": results,
+                      "scope": database or "all"})
+    return {"connection": conn, "databases": results, "tables": total_tables,
+            "scope": database or "all"}
 
 
 @router.get("/endpoint-requests")
@@ -1344,6 +1382,194 @@ def admin_set_person_teams(slack_id: str, body: PersonTeamsIn,
     return {"slackId": slack_id, "teams": [str(t) for t in sorted(desired)]}
 
 
+class CopyAccessIn(BaseModel):
+    """Give one person the access another already has."""
+    source: str                       # principal to copy FROM
+    includeTeams: bool = True         # copy team membership as well as grants
+    tier: str | None = None           # override every copied tier, e.g. "rw"
+
+
+@router.post("/people/{slack_id}/copy-access", status_code=201)
+def admin_copy_access(slack_id: str, body: CopyAccessIn,
+                      claims: dict = Depends(deps.current_user)):
+    """Copy a colleague's access onto this person.
+
+    Onboarding is nearly always "give them what X has", and doing it by hand
+    means reading X's grants, remembering that some of them arrive through a
+    team, and typing the list back. That is where targets get missed.
+
+    Two shapes, and the difference matters:
+
+    * `includeTeams` (default) — join the same teams and copy the source's own
+      per-user grants. Access keeps tracking the team, including grants the
+      team gains later.
+    * `includeTeams: false` — write EXPLICIT per-user grants for everything the
+      source can reach today, team-derived targets included. Without expanding
+      those, dropping team membership silently drops most of the access, since
+      that is where it usually comes from. This is the shape to use while teams
+      are being replaced by pods: no new membership rows to migrate, and the
+      newcomer does not inherit whatever the team is granted later.
+
+    `tier` overrides every copied grant, because "the same servers, but
+    read-only" is a routine ask and copying RW by accident is not recoverable
+    by the person who notices.
+    """
+    uid = admin.require_admin(claims, "access")
+    for pid in (slack_id, body.source):
+        if not _valid_principal(pid):
+            raise deps._error(400, "bad_request",
+                              f"Bad principal id: {pid!r}.")
+    if slack_id == body.source:
+        raise deps._error(400, "bad_request", "Source and target are the same person.")
+    tier = (body.tier or "").lower() or None
+    if tier is not None and tier not in ("ro", "rw", "ddl"):
+        raise deps._error(400, "bad_request", "tier must be RO, RW, or DDL.")
+
+    # Never copy a grant on the bot's own control-plane database, whatever the
+    # source happens to hold: that is the one target whose access would allow
+    # editing the audit trail this endpoint writes to.
+    forbidden = set(grants.control_plane_target_ids())
+
+    with db.transaction() as cur:
+        cur.execute(
+            "SELECT target_server_id, allowed_databases, mode "
+            "  FROM user_target_grants "
+            " WHERE slack_user_id = %s AND revoked_at IS NULL "
+            "   AND (expires_at IS NULL OR expires_at > NOW())",
+            (body.source,))
+        src_grants = {r["target_server_id"]: r for r in cur.fetchall()}
+
+        cur.execute(
+            "SELECT g.target_server_id, g.allowed_databases, g.mode "
+            "  FROM team_target_grants g "
+            "  JOIN team_members m ON m.team_id = g.team_id "
+            " WHERE m.slack_user_id = %s AND g.revoked_at IS NULL "
+            "   AND (g.expires_at IS NULL OR g.expires_at > NOW())",
+            (body.source,))
+        team_grants = list(cur.fetchall())
+
+        teams_joined: list[int] = []
+        if body.includeTeams:
+            cur.execute(
+                "INSERT INTO team_members (team_id, slack_user_id) "
+                "SELECT team_id, %s FROM team_members WHERE slack_user_id = %s "
+                "ON CONFLICT DO NOTHING RETURNING team_id",
+                (slack_id, body.source))
+            teams_joined = [r["team_id"] for r in cur.fetchall()]
+            to_write = src_grants
+        else:
+            # Team-derived targets become explicit grants. A user row supersedes
+            # the team's for that target, so where both exist the source's own
+            # grant wins — it is the narrower, deliberate one.
+            merged = {r["target_server_id"]: r for r in team_grants}
+            merged.update(src_grants)
+            to_write = merged
+
+        written: list[int] = []
+        for tid, g in sorted(to_write.items()):
+            if tid in forbidden:
+                continue
+            cur.execute(
+                "INSERT INTO user_target_grants "
+                "  (slack_user_id, target_server_id, allowed_databases, mode, granted_by) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (slack_user_id, target_server_id) DO NOTHING",
+                (slack_id, tid, g["allowed_databases"], tier or g["mode"], uid))
+            if cur.rowcount:
+                written.append(tid)
+
+        audit.log_in(cur, None, uid, claims.get("name"), "access_copied",
+                     {"to": slack_id, "from": body.source,
+                      "targets_granted": written,
+                      "teams_joined": teams_joined,
+                      "include_teams": body.includeTeams,
+                      "tier_override": tier,
+                      "skipped_control_plane": sorted(
+                          set(to_write) & forbidden)})
+
+    return {"slackId": slack_id, "copiedFrom": body.source,
+            "targetsGranted": len(written), "teamsJoined": len(teams_joined),
+            "tier": tier}
+
+
+@router.get("/people/{slack_id}/effective-access")
+def admin_effective_access(slack_id: str,
+                           claims: dict = Depends(deps.current_user)):
+    """What this person can actually reach, resolved the way a submission
+    resolves it.
+
+    "Why can they not see that server?" is answered today by reading three
+    tables and applying the precedence rules by hand — user grant beats team
+    grant, an expired grant is not a grant, an admin bypasses the whole
+    question. Getting that wrong in either direction is expensive: a real
+    problem dismissed, or access handed out that was already there.
+
+    So this asks `teams.effective_grant_for_user`, the same resolver the
+    executor uses, rather than re-deriving the answer. It reports; it changes
+    nothing and impersonates nobody, and the audit row names the admin who
+    looked.
+    """
+    uid = admin.require_admin(claims, "access")
+    if not _valid_principal(slack_id):
+        raise deps._error(400, "bad_request",
+                          "Bad principal id (expected a Slack user id or local:<username>).")
+
+    person = db.fetch_one(
+        "SELECT slack_user_id, name, email, enabled, 'requester' AS kind "
+        "  FROM requesters WHERE slack_user_id = %s "
+        "UNION ALL "
+        "SELECT slack_user_id, name, email, enabled, 'admin' "
+        "  FROM admins WHERE slack_user_id = %s",
+        (slack_id, slack_id))
+
+    teams_of = db.fetch_all(
+        "SELECT t.id, t.name FROM team_members m JOIN teams t ON t.id = m.team_id "
+        " WHERE m.slack_user_id = %s ORDER BY t.name", (slack_id,))
+
+    out = []
+    for t in targets.list_all():
+        g = teams.effective_grant_for_user(slack_id, t.id)
+        if g is None:
+            continue
+        out.append({
+            "connectionId": t.alias,
+            "enabled": t.enabled,
+            "tier": (g.get("mode") or "ro").upper(),
+            # NULL means every database on the target, which is not the same
+            # as an empty list and must not render as "no databases".
+            "databases": g.get("allowed_databases"),
+            "allDatabases": g.get("allowed_databases") is None,
+            "source": g.get("source"),
+        })
+
+    auto = db.fetch_all(
+        "SELECT max_tier, target_server_id, database_name, expires_at "
+        "  FROM auto_approve_grants "
+        " WHERE slack_user_id = %s AND starts_at <= NOW() "
+        "   AND (expires_at IS NULL OR expires_at > NOW())", (slack_id,))
+
+    with db.transaction() as cur:
+        audit.log_in(cur, None, uid, claims.get("name"), "effective_access_viewed",
+                     {"subject": slack_id, "targets": len(out)})
+
+    return {
+        "slackId": slack_id,
+        "name": (person or {}).get("name"),
+        "kind": (person or {}).get("kind"),
+        "enabled": (person or {}).get("enabled"),
+        "known": person is not None,
+        "teams": [{"id": str(r["id"]), "name": r["name"]} for r in teams_of],
+        "access": out,
+        "autoApprove": [{
+            "connectionId": _alias_of(r["target_server_id"]),
+            "tier": (r["max_tier"] or "ro").upper(),
+            "databaseId": r["database_name"],
+            "allDatabases": r["database_name"] is None,
+            "expiresAt": mapping.iso(r["expires_at"]),
+        } for r in auto],
+    }
+
+
 class AutoGrantIn(BaseModel):
     user: str
     connectionId: str
@@ -1366,6 +1592,14 @@ def admin_create_auto_grant(body: AutoGrantIn,
     tid = _target_id_of(body.connectionId)
     if tid is None:
         raise deps._error(404, "not_found", "Unknown connection.")
+    # `*` (the form's own default for "every database") is not a wildcard the
+    # matcher understands — it compares a non-NULL scope for equality, so the
+    # literal star produced a grant that never fired and never complained.
+    db_scope = auto_approve.normalise_scope(body.databaseId)
+    try:
+        auto_approve.validate_scope(tid, db_scope)
+    except auto_approve.ScopeError as e:
+        raise deps._error(400, "bad_request", str(e))
     # NOT suppressing app.auth_dm_suppress: the auth-event trigger DMs the user.
     with db.transaction() as cur:
         if body.expiresInMinutes:
@@ -1374,19 +1608,19 @@ def admin_create_auto_grant(body: AutoGrantIn,
                 "  target_server_id, database_name, expires_at, reason, granted_by) "
                 "VALUES (%s, %s, %s, %s, NOW() + make_interval(mins => %s), %s, %s) "
                 "RETURNING id",
-                (body.user, tier, tid, body.databaseId, body.expiresInMinutes,
+                (body.user, tier, tid, db_scope, body.expiresInMinutes,
                  body.reason, uid))
         else:
             cur.execute(
                 "INSERT INTO auto_approve_grants (slack_user_id, max_tier, "
                 "  target_server_id, database_name, expires_at, reason, granted_by) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
-                (body.user, tier, tid, body.databaseId, body.expiresAt,
+                (body.user, tier, tid, db_scope, body.expiresAt,
                  body.reason, uid))
         new_id = cur.fetchone()["id"]
         audit.log_in(cur, None, uid, claims.get("name"), "auto_approve_granted",
                      {"user": body.user, "target_id": tid,
-                      "database": body.databaseId, "tier": tier})
+                      "database": db_scope, "tier": tier})
     return {"id": str(new_id), "user": body.user, "tier": tier.upper(),
             "connectionId": body.connectionId, "databaseId": body.databaseId}
 

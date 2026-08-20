@@ -946,6 +946,28 @@ def _extract_where_text(stmt: Statement) -> str | None:
     return None
 
 
+def code_text(sql: str) -> str:
+    """`sql` with comments and string literals blanked out.
+
+    For keyword scans that must not fire on prose. A raw regex over the
+    statement text cannot tell code from a note about code: a read-only query
+    was escalated to manual DBA execution because a Turkish comment read
+    "CONCURRENTLY'siz unique index" — a sentence that says the index is built
+    WITHOUT it. String literals go too, so `SELECT 'run this CONCURRENTLY'`
+    cannot trip the same wire.
+
+    Tokens are replaced by spaces rather than deleted so offsets stay usable
+    and adjacent words cannot fuse into one.
+    """
+    out: list[str] = []
+    for tok in sqlparse.parse(sql or "")[0].flatten() if (sql or "").strip() else []:
+        if tok.ttype in sqlparse.tokens.Comment or tok.ttype in sqlparse.tokens.String:
+            out.append(" " * len(tok.value))
+        else:
+            out.append(tok.value)
+    return "".join(out)
+
+
 def _has_real_tokens(stmt: Statement) -> bool:
     for tok in stmt.flatten():
         if tok.is_whitespace:

@@ -294,10 +294,28 @@ def test_auto_grant_entry():
            "expires_at": None, "granted_by": "U0ADMIN",
            "granted_at": datetime(2026, 7, 14, tzinfo=timezone.utc)}
     e = mapping.auto_grant_entry(row, lambda tid: "beta-cache")
-    assert e == {"id": "25", "user": "U9", "tier": "RO",
+    # No name columns on this row, so both name fields fall back to the id —
+    # the grid still shows something identifying rather than an empty cell.
+    assert e == {"id": "25", "user": "U9", "userName": "U9", "tier": "RO",
                  "connectionId": "beta-cache", "databaseId": "catalog",
                  "maxRows": None, "reason": "pilot", "expiresAt": None,
-                 "createdBy": "U0ADMIN", "grantedAt": "2026-07-14T00:00:00+00:00"}
+                 "createdBy": "U0ADMIN", "createdByName": "U0ADMIN",
+                 "grantedAt": "2026-07-14T00:00:00+00:00"}
+
+
+def test_auto_grant_entry_prefers_the_resolved_names():
+    """The subject column showed a raw Slack id, which tells a reviewer
+    nothing about whose access they are looking at."""
+    row = {"id": 48, "slack_user_id": "U0AB12CD34", "max_tier": "ro",
+           "target_server_id": 21, "database_name": None, "reason": None,
+           "expires_at": None, "granted_by": "U0ADMIN123",
+           "granted_at": None,
+           "user_name": "Jordan Ray", "granted_by_name": "Sam Ellis"}
+    e = mapping.auto_grant_entry(row, lambda tid: "prod-main")
+    assert e["user"] == "U0AB12CD34"          # the identity is still the id
+    assert e["userName"] == "Jordan Ray"
+    assert e["createdByName"] == "Sam Ellis"
+    assert e["databaseId"] is None             # NULL = every database
 
 
 def test_endpoint_request_entry():
@@ -373,3 +391,28 @@ def test_the_table_renders_the_column():
     assert len(tracks) == 10, (
         f"the audit row has 10 cells but the grid declares {len(tracks)} tracks: "
         f"{m.group(1).strip()}")
+
+
+def test_queue_item_carries_its_batch_position(monkeypatch):
+    """Items of one `/sql batch` are one piece of work to the approver, but
+    arrive as N rows. Without these the queue cannot group them."""
+    from queryhub import pii
+    monkeypatch.setattr(pii, "column_pii_map", lambda cols: {})
+    row = {"id": 4370, "requester_slack_id": "U9", "target_server_id": 1,
+           "database_name": "d", "query": "SELECT 1", "status": "pending",
+           "bundle_id": 58, "position": 1, "bundle_size": 2,
+           "required_tier": "ro", "origin": "slack"}
+    e = mapping.queue_item(row, lambda tid: "conn")
+    assert (e["bundleId"], e["bundlePosition"], e["bundleSize"]) == (58, 1, 2)
+
+
+def test_a_standalone_request_has_no_batch_fields(monkeypatch):
+    from queryhub import pii
+    monkeypatch.setattr(pii, "column_pii_map", lambda cols: {})
+    row = {"id": 4371, "requester_slack_id": "U9", "target_server_id": 1,
+           "database_name": "d", "query": "SELECT 1", "status": "pending",
+           "bundle_id": None, "position": None, "bundle_size": None,
+           "required_tier": "ro", "origin": "web"}
+    e = mapping.queue_item(row, lambda tid: "conn")
+    assert e["bundleId"] is None
+    assert e["bundlePosition"] is None and e["bundleSize"] is None

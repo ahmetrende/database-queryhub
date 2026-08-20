@@ -11,9 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import io
 import logging
 import os
+import re
 import tempfile
+import zipfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -966,6 +970,50 @@ def _result_file(row: dict) -> Path:
     return p
 
 
+_STMT_NO_RE = re.compile(r"_q(\d+)_")
+
+
+def _statement_members(p: Path) -> list[str]:
+    """CSV members of a stored result, in statement order.
+
+    A single-statement request stores one plain CSV; a multi-statement one
+    stores a zip of per-statement CSVs named `req_<id>_q<n>_<ts>.csv`. Sorted
+    on the parsed `q<n>` rather than the name, or q10 would land between q1
+    and q2 and the grid would show the wrong statement.
+    """
+    if p.suffix.lower() != ".zip":
+        return [p.name]
+    with zipfile.ZipFile(p) as zf:
+        names = [n for n in zf.namelist() if n.lower().endswith(".csv")]
+    def key(n: str):
+        m = _STMT_NO_RE.search(n)
+        return (0, int(m.group(1))) if m else (1, 0), n
+    return sorted(names, key=key)
+
+
+@contextmanager
+def _open_statement(p: Path, index: int):
+    """Text stream over the 1-based statement `index` of a stored result.
+
+    Multi-statement results used to be unreadable here: the endpoints refused
+    anything that was not a plain `.csv`, so a request with two SELECTs
+    answered 409 and the UI — having nothing to render — sat on the Messages
+    tab while the row count in the header said the query had returned data.
+    """
+    members = _statement_members(p)
+    if not members:
+        raise deps._error(409, "conflict", "This result has no table to show.")
+    if index < 1 or index > len(members):
+        raise deps._error(404, "not_found",
+                          f"Statement {index} — this result has {len(members)}.")
+    if p.suffix.lower() != ".zip":
+        with p.open(newline="", encoding="utf-8") as fh:
+            yield fh
+        return
+    with zipfile.ZipFile(p) as zf, zf.open(members[index - 1]) as raw:
+        yield io.TextIOWrapper(raw, encoding="utf-8", newline="")
+
+
 def _dedup_cols(cols: list[str]) -> list[str]:
     """Make column names unique so a result with two same-named columns
     (e.g. `SELECT a.id, b.id FROM a JOIN b`) doesn't collapse to one key when
@@ -1020,7 +1068,8 @@ def _masked_pii_cols(row: dict, cols: list[str],
 
 
 @router.get("/queries/{request_id}/result")
-def query_result(request_id: int, claims: dict = Depends(deps.current_user)):
+def query_result(request_id: int, statement: int = 1,
+                 claims: dict = Depends(deps.current_user)):
     deps.require_whitelisted(claims)
     row = _own_request(request_id, claims["sub"])
     if row["status"] != "completed":
@@ -1035,10 +1084,7 @@ def query_result(request_id: int, claims: dict = Depends(deps.current_user)):
                 "runMs": mapping.run_ms(row)}
 
     p = _result_file(row)
-    if p.suffix.lower() != ".csv":
-        raise deps._error(409, "conflict",
-                          "Stored result is not CSV — download it instead "
-                          f"(/api/queries/{request_id}/result.csv).")
+    members = _statement_members(p)
 
     # A single result cell can exceed csv's default 128 KB field limit
     # (e.g. a big JSON/text column); the executor already stored it, so
@@ -1049,7 +1095,7 @@ def query_result(request_id: int, claims: dict = Depends(deps.current_user)):
     cols: list[str] = []
     rows: list[dict] = []
     truncated = False
-    with p.open(newline="", encoding="utf-8") as fh:
+    with _open_statement(p, statement) as fh:
         reader = csv.reader(fh)
         for i, rec in enumerate(reader):
             if i == 0:
@@ -1071,7 +1117,15 @@ def query_result(request_id: int, claims: dict = Depends(deps.current_user)):
         # schema snapshot, which dropped any name found in two tables with
         # different types — so `id`, `user_id` and `created_at` never had one.
         # NULL for requests executed before 083; the grid falls back.
-        "colTypes": row.get("result_column_types") or None,
+        # Which statement these rows came from, and how many the request
+        # produced. A multi-statement result carries one table per statement;
+        # without these the client cannot tell it is looking at one of several.
+        "statement": statement,
+        "statementCount": len(members),
+        # Only meaningful for a single-statement result — the executor records
+        # types for one table, and with several there is no single right answer.
+        "colTypes": (row.get("result_column_types") or None)
+                    if len(members) == 1 else None,
         "piiCols": _masked_pii_cols(row, raw_cols, cols),
         # Were these rows returned with masking OFF? The client used to fall
         # back to what its own tab submitted, which is wrong the moment a
@@ -1087,14 +1141,17 @@ def query_result(request_id: int, claims: dict = Depends(deps.current_user)):
         "runMs": mapping.run_ms(row),
         "rowCount": row.get("row_count"),
         # Full row count so the grid can page the whole result via /rows,
-        # not just the first page returned inline here.
-        "total": row.get("row_count") if row.get("row_count") is not None else len(rows),
+        # not just the first page returned inline here. `row_count` is the SUM
+        # across statements, so it is only the right total when there is one.
+        "total": (row.get("row_count") if row.get("row_count") is not None
+                  else len(rows)) if len(members) == 1 else len(rows),
         "truncated": truncated or bool(row.get("truncated")),
     }
 
 
 @router.get("/queries/{request_id}/rows")
 def query_rows(request_id: int, offset: int = 0, limit: int = 100,
+               statement: int = 1,
                claims: dict = Depends(deps.current_user)):
     """A page of a completed table result. Reads a window from the stored
     (already PII-masked) CSV so the grid pages large results without holding
@@ -1105,15 +1162,12 @@ def query_rows(request_id: int, offset: int = 0, limit: int = 100,
     if row["status"] != "completed" or not row.get("csv_file_path"):
         raise deps._error(409, "conflict", "No table result to page.")
     p = _result_file(row)
-    if p.suffix.lower() != ".csv":
-        raise deps._error(409, "conflict",
-                          "This result isn't pageable in the grid — download it.")
     offset = max(0, int(offset))
     limit = max(1, min(int(limit), 2000))
     csv.field_size_limit(cfg.get_int("csv_size_mb_ceiling", 100) * 1024 * 1024)
     cols: list[str] = []
     out: list[dict] = []
-    with p.open(newline="", encoding="utf-8") as fh:
+    with _open_statement(p, statement) as fh:
         reader = csv.reader(fh)
         for i, rec in enumerate(reader):
             if i == 0:
@@ -1124,7 +1178,8 @@ def query_rows(request_id: int, offset: int = 0, limit: int = 100,
             if len(out) >= limit:
                 break
             out.append(dict(zip(cols, rec)))
-    return {"cols": cols, "rows": out, "offset": offset, "limit": limit}
+    return {"cols": cols, "rows": out, "offset": offset, "limit": limit,
+            "statement": statement, "statementCount": len(_statement_members(p))}
 
 
 @router.get("/queries/{request_id}/result.csv")

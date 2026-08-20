@@ -3320,7 +3320,8 @@ def handle_ro_window_approve(ack: Ack, body: dict, client: WebClient) -> None:
                 "VALUES (%s, %s, %s, %s, NOW() + make_interval(mins => %s), %s, %s) "
                 "RETURNING id",
                 (req["requester_slack_id"], req["max_tier"], req["target_server_id"],
-                 req["database_name"], req["window_minutes"],
+                 auto_approve.normalise_scope(req["database_name"]),
+                 req["window_minutes"],
                  f"window request #{rid}: {req['reason']}", actor["id"]),
             )
             grant_id = cur.fetchone()["id"]

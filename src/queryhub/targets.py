@@ -111,7 +111,11 @@ def list_all() -> list[TargetServer]:
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
         "       COALESCE(tags, '{}'::jsonb) AS tags "
-        "FROM target_servers ORDER BY alias"
+        # Disabled targets sort last. They are unusable, so alphabetical
+        # placement buries a working connection between two that are not —
+        # `prod-archive` sitting between `beta` and `gamma` is noise in
+        # every picker that shows them.
+        "FROM target_servers ORDER BY enabled DESC, alias"
     )
     return [_row_to_target(r) for r in rows]
 
@@ -346,7 +350,8 @@ def _admin_row(row: dict) -> dict:
 
 def list_admin_rows() -> list[dict]:
     """Every target — enabled or not — in admin-editor shape."""
-    return [_admin_row(r) for r in db.fetch_all(f"{_ADMIN_COLS} ORDER BY alias")]
+    return [_admin_row(r)
+            for r in db.fetch_all(f"{_ADMIN_COLS} ORDER BY enabled DESC, alias")]
 
 
 def admin_row(target_id: int) -> dict | None:

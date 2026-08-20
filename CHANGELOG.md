@@ -9,6 +9,67 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.11] — 2026-08-20
+
+Releases for 1.0.8 through 1.0.10 were never cut; their notes are in the
+sections below and their content is included here.
+
+### Fixed
+
+- **A super-admin who asked for an unmasked result got a masked one.** The
+  intent was recorded correctly on the request the whole time — it just never
+  reached the code that acts on it. The column list handed to the executor is
+  the executor's input, and `unmasked` had never been added to it, so the flag
+  arrived as null on every path and masking took the default. A missing key is
+  indistinguishable from an explicit "no" here, which is why nothing failed.
+  Two other columns had drifted out of the same list; a test now walks the
+  executor for every field it reads and fails if the list omits one.
+
+- **A read-only query could be pushed to manual DBA execution by a comment.**
+  The check that spots statements which cannot run inside a transaction
+  searched the raw text, so a note *about* an index build — one that said the
+  index was created WITHOUT `CONCURRENTLY` — matched the keyword it was
+  denying. Comments and string literals are now excluded from that scan.
+
+- **Multi-statement results showed nothing.** Running two queries in one
+  submission stores a per-statement archive rather than a single table, and
+  the grid refused to read anything else — so the header reported the rows
+  returned while the view stayed empty. Results now serve per statement, with
+  the first shown by default and the statement count alongside it.
+
+- **An auto-approve grant scoped to "every database" never fired.** The form's
+  own default posted a literal `*`, which is not a wildcard the matcher
+  understands: the request fell through to manual approval exactly as if no
+  grant existed, with an active grant sitting in the table looking correct. A
+  database name that does not exist on the connection is now refused when the
+  grant is created, rather than becoming the same silent no-op.
+
+### Added
+
+- **Copy one person's access onto another**, which is what onboarding actually
+  asks for. Either by joining the same teams, or by writing out explicit
+  per-user grants covering everything the source can reach — including the
+  targets they reach through a team, which is where access is usually lost
+  when membership is not copied. The tier can be overridden for the whole
+  copy, so "the same servers, but read-only" is one request.
+
+- **A resolved view of what any person can reach**, answered by the same
+  resolver a submission uses rather than re-derived, so it cannot disagree
+  with what actually happens at run time.
+
+- **Schema refresh can target a single database** instead of re-reading every
+  database on a connection.
+
+- **The approval queue can group a batch.** Items of one batch submission
+  arrive as separate rows; each now carries its position and the size of the
+  batch it belongs to.
+
+### Changed
+
+- Auto-approve grants show the person's name, not just their Slack id.
+- Disabled connections sort after enabled ones instead of alphabetically
+  among them.
+
 ## [1.0.10] — 2026-08-10
 
 ### Fixed
