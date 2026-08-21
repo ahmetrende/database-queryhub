@@ -179,7 +179,12 @@ def _max_mode(modes) -> str:
     return best
 
 
-def expired_grant_note(principal_id: str, target_id: int) -> str | None:
+def fmt_lapsed(at) -> str:
+    """The human form of a lapsed date. `%-d` so the 4th is "4 Aug", not "04"."""
+    return at.strftime("%-d %b %Y")
+
+
+def expired_grant_at(principal_id: str, target_id: int):
     """If this principal HELD a grant here that has since lapsed, its date.
 
     `effective_grant_for_user` returns None for two different situations that
@@ -188,9 +193,10 @@ def expired_grant_note(principal_id: str, target_id: int) -> str | None:
     answering it costs one query on a path that only runs when the request is
     already being turned down.
 
-    Returns the LATEST expiry across their own grant and any team grant, since
-    that is the one they would have been relying on. None when nothing here
-    ever applied to them.
+    Returns the datetime of the LATEST expiry across their own grant and any
+    team grant, since that is the one they would have been relying on, or None
+    when nothing here ever applied to them. The caller formats it — a transport
+    that can render a state wants the date, not a sentence.
     """
     row = db.fetch_one(
         "SELECT max(expires_at) AS at FROM ("
@@ -206,8 +212,7 @@ def expired_grant_note(principal_id: str, target_id: int) -> str | None:
         "     AND g.expires_at <= NOW()"
         ") x",
         (principal_id, target_id, principal_id, target_id))
-    at = (row or {}).get("at")
-    return at.strftime("%-d %b %Y") if at else None
+    return (row or {}).get("at")
 
 
 def effective_grant_for_user(

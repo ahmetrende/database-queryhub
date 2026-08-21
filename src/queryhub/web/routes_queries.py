@@ -135,6 +135,11 @@ _REJECTION_HTTP = {
     "needs_confirmation": (409, "confirmation_required"),
     # Asked for an unmasked result without super-admin standing.
     "not_super_admin": (403, "forbidden"),
+    # The access existed and ran out. Its own code, not the `forbidden` it
+    # would otherwise share with "you were never allowed here": one is a
+    # renewal, the other is a mistake, and they are different screens. The
+    # date rides along in `expiredOn` so nothing has to parse the sentence.
+    "access_expired": (403, "access_expired"),
 }
 
 
@@ -142,7 +147,8 @@ def _reject(rej: core_submit.Rejection):
     status, code = _REJECTION_HTTP.get(
         rej.reason or rej.field, (422, "validation"))
     raise deps._error(status, code, rej.message.replace("*", ""),
-                      reasons=[r.replace("*", "") for r in rej.reasons])
+                      reasons=[r.replace("*", "") for r in rej.reasons],
+                      **(rej.detail or {}))
 
 
 def _ran_unmasked(request_id: int) -> bool:

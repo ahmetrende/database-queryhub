@@ -98,6 +98,15 @@ function subjLabel(people, subjectType, subject) {
   if (subjectType === 'user') { const p = (people || []).find(x => x.handle === subject); return p ? p.name : subject; }
   return subject;
 }
+// GET /admin/grants resolves the display name server-side as `subjectName`,
+// against BOTH people tables (CODE brief 2026-08-21 §1). The client-side lookup
+// above can only see the requester roster, so an **admin-only principal** — an
+// admins row with no requesters row — rendered as a raw handle beside rows that
+// rendered as names. `subjLabel` stays as the fallback for a row this client
+// built locally and has not reloaded yet.
+// For a team `subjectName` is the TEAM NAME rather than null, so the handle line
+// below is suppressed by `subjectType`, never by a missing name.
+function grantName(g, people) { return g.subjectName || subjLabel(people, g.subjectType, g.subject); }
 
 // Shared controls: search box + group-by segmented.
 function AccSearch({ q, setQ, placeholder }) {
@@ -124,7 +133,7 @@ function accGroup(rows, keyFn) {
 }
 
 // ---------- Subject-centric access editor: one subject → many targets ----------
-function SubjectAccessEditor({ st, actor, subjectType0, subject0, lockSubject, onDone }) {
+function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSubject, onDone }) {
   const people = st.people, teams = st.teams;
   const conns = st.connections || [];
   const [subjectType, setSubjectType] = useAcc(subjectType0 || 'user');
@@ -168,7 +177,7 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, lockSubject, o
           {['user', 'team'].map(v => <button key={v} disabled={lockSubject} className={'qh-seg-opt' + (subjectType === v ? ' is-active' : '')} onClick={() => pickType(v)}>{v}</button>)}
         </div>
         {lockSubject
-          ? <span className="qh-accedit-subjname"><span className={'qh-subj-type ' + subjectType}>{subjectType}</span> <b>{subjLabel(people, subjectType, subject)}</b></span>
+          ? <span className="qh-accedit-subjname"><span className={'qh-subj-type ' + subjectType}>{subjectType}</span> <b>{name0 || subjLabel(people, subjectType, subject)}</b></span>
           : subjectType === 'user'
             ? <select className="qh-select" value={subject} onChange={e => pickSubject(e.target.value)}><option value="">Select user…</option>{people.map(p => <option key={p.handle} value={p.handle}>{p.name} · {p.handle}</option>)}</select>
             : <select className="qh-select" value={subject} onChange={e => pickSubject(e.target.value)}><option value="">Select team…</option>{teams.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}</select>}
@@ -245,10 +254,10 @@ function GrantsView({ st, user }) {
   // By-subject: fold the flat grants into one card per subject.
   const subjects = (() => {
     const m = new Map();
-    st.grants.forEach(g => { const k = g.subjectType + '\u0000' + g.subject; if (!m.has(k)) m.set(k, { subjectType: g.subjectType, subject: g.subject, targets: [] }); m.get(k).targets.push(g); });
+    st.grants.forEach(g => { const k = g.subjectType + '\u0000' + g.subject; if (!m.has(k)) m.set(k, { subjectType: g.subjectType, subject: g.subject, subjectName: g.subjectName, targets: [] }); m.get(k).targets.push(g); });
     let arr = [...m.values()];
     const t = q.trim().toLowerCase();
-    if (t) arr = arr.filter(s => (subjLabel(st.people, s.subjectType, s.subject) + ' ' + s.subject + ' ' + s.targets.map(g => g.connectionId + ' ' + qhGrantDbNames(g) + ' ' + g.tier).join(' ')).toLowerCase().includes(t));
+    if (t) arr = arr.filter(s => ((s.subjectName || subjLabel(st.people, s.subjectType, s.subject)) + ' ' + s.subject + ' ' + s.targets.map(g => g.connectionId + ' ' + qhGrantDbNames(g) + ' ' + g.tier).join(' ')).toLowerCase().includes(t));
     return arr.sort((a, b) => a.subjectType !== b.subjectType ? (a.subjectType === 'team' ? -1 : 1) : (a.subject < b.subject ? -1 : 1));
   })();
 
@@ -273,11 +282,11 @@ function GrantsView({ st, user }) {
           <div className="qh-subjlist">
             {subjects.map(s => {
               const key = s.subjectType + '\u0000' + s.subject;
-              if (editKey === key) return <div key={key} className="qh-subjcard is-editing"><SubjectAccessEditor st={st} actor={actor} subjectType0={s.subjectType} subject0={s.subject} lockSubject onDone={() => setEditKey(null)} /></div>;
+              if (editKey === key) return <div key={key} className="qh-subjcard is-editing"><SubjectAccessEditor st={st} actor={actor} subjectType0={s.subjectType} subject0={s.subject} name0={s.subjectName} lockSubject onDone={() => setEditKey(null)} /></div>;
               return (
                 <div key={key} className="qh-subjcard">
                   <div className="qh-subjcard-main">
-                    <div className="qh-subjcard-head"><span className={'qh-subj-type ' + s.subjectType}>{s.subjectType}</span><span className="qh-subjcard-name">{subjLabel(st.people, s.subjectType, s.subject)}</span><span className="qh-subjcard-count">{s.targets.length} connection{s.targets.length === 1 ? '' : 's'}</span></div>
+                    <div className="qh-subjcard-head"><span className={'qh-subj-type ' + s.subjectType}>{s.subjectType}</span><span className="qh-subjcard-name">{s.subjectName || subjLabel(st.people, s.subjectType, s.subject)}</span><span className="qh-subjcard-count">{s.targets.length} connection{s.targets.length === 1 ? '' : 's'}</span></div>
                     <div className="qh-subjcard-targets">
                       {s.targets.map(g => <span key={g.id} className="qh-acctarget"><span className="qh-acctarget-t">{qhGrantTarget(g)}</span><TierBadge tier={g.tier} sm /><ExpiryChip iso={g.expiresAt} /></span>)}
                     </div>
@@ -293,7 +302,7 @@ function GrantsView({ st, user }) {
         <>
           {adding && <GrantForm init={blank} actor={actor} st={st} people={st.people} teams={st.teams} onDone={() => setAdding(false)} />}
           {(() => {
-            const rows = st.grants.filter(g => { const t = q.trim().toLowerCase(); if (!t) return true; return (subjLabel(st.people, g.subjectType, g.subject) + ' ' + g.subject + ' ' + g.connectionId + ' ' + qhGrantDbNames(g) + ' ' + g.tier + ' ' + (g.grantedBy || '')).toLowerCase().includes(t); });
+            const rows = st.grants.filter(g => { const t = q.trim().toLowerCase(); if (!t) return true; return (grantName(g, st.people) + ' ' + g.subject + ' ' + g.connectionId + ' ' + qhGrantDbNames(g) + ' ' + g.tier + ' ' + (g.grantedBy || '')).toLowerCase().includes(t); });
             const keyFn = group === 'subject' ? (g => g.subjectType + ' · ' + g.subject) : group === 'server' ? (g => g.connectionId) : group === 'database' ? (g => qhGrantTarget(g)) : null;
             const grouped = keyFn ? accGroup(rows, keyFn) : [['', rows]];
             function renderRow(g) {
@@ -301,7 +310,7 @@ function GrantsView({ st, user }) {
               const ex = expiryLabel(g.expiresAt);
               return (
                 <tr key={g.id}>
-                  <td><span className={'qh-subj-type ' + g.subjectType}>{g.subjectType}</span> <b>{subjLabel(st.people, g.subjectType, g.subject)}</b></td>
+                  <td><span className={'qh-subj-type ' + g.subjectType}>{g.subjectType}</span> <b>{grantName(g, st.people)}</b>{g.subjectType === 'user' && grantName(g, st.people) !== g.subject && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{g.subject}</div>}</td>
                   <td className="qh-mono">{qhGrantTarget(g)}</td>
                   <td><TierBadge tier={g.tier} sm /></td>
                   <td><span className={'qh-expiry ' + ex.cls}>{ex.text}</span></td>

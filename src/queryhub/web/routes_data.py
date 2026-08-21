@@ -45,6 +45,43 @@ def _alias_of(target_id: int | None) -> str | None:
     return t.alias if t else None
 
 
+def _conn_state_resolver(uid: str):
+    """Why a saved query or history row may not resolve to a connection.
+
+    A tab pointing at a target the caller cannot currently reach fails the same
+    way for three different reasons, and each one deserves a different screen:
+    the server was retired, the grant went away, or the row is gone entirely.
+    Until now all three produced a `connectionId` the sidebar simply did not
+    contain — two of them a real-looking alias, the third the numeric id as a
+    string — so the UI could only render a dash.
+
+    Returns a callable so the per-request grant lookups are memoised: a long
+    history page would otherwise re-resolve the same handful of targets once
+    per row.
+    """
+    cache: dict[int, str] = {}
+
+    def state_of(target_id) -> str:
+        if target_id is None:
+            return "none"
+        tid = int(target_id)
+        if tid in cache:
+            return cache[tid]
+        t = targets.get(tid)
+        if t is None:
+            st = "gone"                 # target row deleted
+        elif not t.enabled:
+            st = "retired"              # still on file, taken out of service
+        elif teams.effective_grant_for_user(uid, tid) is None:
+            st = "no_access"            # exists and live; the grant does not
+        else:
+            st = "ok"
+        cache[tid] = st
+        return st
+
+    return state_of
+
+
 # ---- /connections -----------------------------------------------------------
 
 def _catalog_databases(target_id: int) -> list[str]:
@@ -271,7 +308,8 @@ def saved_list(claims: dict = Depends(deps.current_user)):
         "ORDER BY last_used_at DESC",
         (claims["sub"],),
     )
-    return {"saved": [mapping.saved_entry(r, _alias_of) for r in rows]}
+    state_of = _conn_state_resolver(claims["sub"])
+    return {"saved": [mapping.saved_entry(r, _alias_of, state_of) for r in rows]}
 
 
 @router.post("/saved", status_code=201)
@@ -285,7 +323,7 @@ def saved_create(body: SavedIn, claims: dict = Depends(deps.current_user)):
         database_name=body.databaseId,
         label=(body.name or "").strip() or None,
     )
-    return mapping.saved_entry(row, _alias_of)
+    return mapping.saved_entry(row, _alias_of, _conn_state_resolver(claims["sub"]))
 
 
 @router.delete("/saved/{saved_id}", status_code=204)
@@ -364,7 +402,8 @@ def history(limit: int = 50, claims: dict = Depends(deps.current_user)):
         "ORDER BY id DESC LIMIT %s",
         (claims["sub"], limit),
     )
-    return {"history": [mapping.history_entry(r, _alias_of) for r in rows]}
+    state_of = _conn_state_resolver(claims["sub"])
+    return {"history": [mapping.history_entry(r, _alias_of, state_of) for r in rows]}
 
 
 # ---- schema tree + fleet search (v2 new features) ---------------------------

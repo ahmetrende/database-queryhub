@@ -120,12 +120,23 @@ def web_text(s: str | None) -> str | None:
     return " ".join(s.split()).strip()
 
 
-def history_entry(row: dict, alias_of: "callable") -> dict:
-    """One requests row → the /history shape."""
+def history_entry(row: dict, alias_of: "callable",
+                  state_of: "callable" = None) -> dict:
+    """One requests row → the /history shape.
+
+    `state_of` says whether the caller can still reach that connection, and
+    when not, why — see `_conn_state_resolver`. Optional so a caller that does
+    not care (or has no viewer) keeps the old shape.
+    """
     return {
         "id": str(row["id"]),
         "sql": row["query"],
         "connectionId": alias_of(row["target_server_id"]) or str(row["target_server_id"]),
+        # ok | no_access | retired | gone. The connectionId above is a real
+        # alias for the first three and the numeric id for `gone`, so this is
+        # the field to branch on rather than trying to read the name.
+        **({"connectionState": state_of(row["target_server_id"])}
+           if state_of else {}),
         "databaseId": row["database_name"],
         "tier": query_safety.required_mode(row["query"]).upper(),
         "status": status_to_web(row["status"]),
@@ -136,13 +147,19 @@ def history_entry(row: dict, alias_of: "callable") -> dict:
     }
 
 
-def saved_entry(row: dict, alias_of: "callable") -> dict:
-    """One query_favorites row → the /saved shape."""
+def saved_entry(row: dict, alias_of: "callable",
+                state_of: "callable" = None) -> dict:
+    """One query_favorites row → the /saved shape.
+
+    `state_of` reports why the connection may not resolve, so a saved query
+    whose server was retired can say so instead of rendering a dash.
+    """
     tid = row.get("target_server_id")
     return {
         "id": str(row["id"]),
         "name": row.get("label") or (row["query"][:40] + ("…" if len(row["query"]) > 40 else "")),
         "connectionId": (alias_of(tid) if tid else None),
+        **({"connectionState": state_of(tid)} if state_of else {}),
         "databaseId": row.get("database_name"),
         "sql": row["query"],
     }
@@ -265,6 +282,13 @@ def grant_entry(row: dict, alias_of: "callable") -> dict:
         "databases": sorted(dbs) if dbs else "*",
         "tier": (row.get("mode") or "ro").upper(),
         "grantedBy": row.get("granted_by"),
+        # The resolved name, so the Granted-by column reads like the one on the
+        # auto-approve table. Null for a TEAM grant — that table has no
+        # granted_by column at all — and for the rows where nothing was
+        # recorded. Falls back to the raw value rather than blanking, because a
+        # few legacy rows hold a free-text note there instead of a principal id.
+        "grantedByName": (row.get("granted_by_name")
+                          or row.get("granted_by")),
         "grantedAt": iso(row.get("granted_at")),
         # Real since migration 096. It was hardcoded None because neither
         # grant table could expire — the UI column existed and was permanently

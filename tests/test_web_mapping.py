@@ -416,3 +416,39 @@ def test_a_standalone_request_has_no_batch_fields(monkeypatch):
     e = mapping.queue_item(row, lambda tid: "conn")
     assert e["bundleId"] is None
     assert e["bundlePosition"] is None and e["bundleSize"] is None
+
+
+def test_grant_entry_resolves_the_granter_name():
+    """The Granted-by column showed a handle beside an auto-approve table that
+    showed a name — the same column, two vocabularies."""
+    row = {"_gid": "u:U0AB12CD34:3", "_subject_type": "user",
+           "subject": "U0AB12CD34", "subject_name": "Jordan Ray",
+           "target_server_id": 3, "allowed_databases": None, "mode": "ro",
+           "granted_by": "U0ADMIN123", "granted_by_name": "Sam Ellis",
+           "granted_at": None, "expires_at": None}
+    e = mapping.grant_entry(row, lambda tid: "prod-main")
+    assert e["grantedBy"] == "U0ADMIN123"      # the id is still the identity
+    assert e["grantedByName"] == "Sam Ellis"
+
+
+def test_grant_entry_falls_back_to_the_raw_granter():
+    """A few legacy rows hold a free-text note there instead of a principal id;
+    blanking the column would hide information rather than tidy it."""
+    row = {"_gid": "u:U0AB12CD34:3", "_subject_type": "user",
+           "subject": "U0AB12CD34", "subject_name": "Jordan Ray",
+           "target_server_id": 3, "allowed_databases": None, "mode": "ro",
+           "granted_by": "migrated from the old cluster", "granted_by_name": None,
+           "granted_at": None, "expires_at": None}
+    e = mapping.grant_entry(row, lambda tid: "prod-main")
+    assert e["grantedByName"] == "migrated from the old cluster"
+
+
+def test_a_team_grant_has_no_granter():
+    """team_target_grants has no granted_by column at all, so the field is
+    null rather than wrong."""
+    row = {"_gid": "t:4:3", "_subject_type": "team", "subject": "4",
+           "subject_name": "petrels", "target_server_id": 3,
+           "allowed_databases": None, "mode": "rw",
+           "granted_by": None, "granted_at": None, "expires_at": None}
+    e = mapping.grant_entry(row, lambda tid: "prod-main")
+    assert e["grantedBy"] is None and e["grantedByName"] is None

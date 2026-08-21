@@ -81,6 +81,13 @@ class Rejection:
     # order, so a client shows them as a list instead of re-splitting a string
     # we already had in pieces.
     reasons: tuple[str, ...] = ()
+    # Machine-readable facts about THIS failure, for a transport that can draw
+    # a state rather than a toast. Kept separate from `message`, because a
+    # client parsing a date out of prose is the pattern that already misfired
+    # here once: the duplicate wording stopped matching the client's regex and
+    # the mismatch was live. Typed loosely on purpose — each `reason` owns its
+    # own keys, and the envelope only forwards what is set.
+    detail: dict | None = None
 
 
 @dataclass
@@ -255,12 +262,17 @@ def validate_submission(
         # "Not authorized" is true but unhelpful when the access existed until
         # last Thursday: the person reads it as a mistake and asks why it broke.
         # Naming the date turns a support question into a renewal request.
-        lapsed = teams.expired_grant_note(user_id, target_server_id)
-        if lapsed:
+        lapsed_at = teams.expired_grant_at(user_id, target_server_id)
+        if lapsed_at:
             return Rejection(
                 "server",
-                f"Your access to this server expired on {lapsed}. "
-                "Ask an admin to extend it.")
+                f"Your access to this server expired on "
+                f"{teams.fmt_lapsed(lapsed_at)}. Ask an admin to extend it.",
+                reason="access_expired",
+                # ISO date, not the prose form: the client formats for its own
+                # locale, and "Request access" is a different button from a red
+                # toast — which is the whole reason this is a distinct code.
+                detail={"expiredOn": lapsed_at.date().isoformat()})
         return Rejection("server", "You are not authorized to query this server.")
 
     database = database_name or target.default_database

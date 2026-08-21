@@ -316,10 +316,17 @@ def admin_grants(claims: dict = Depends(deps.current_user)):
             # been found by someone reading a screen rather than by a test.
             "       COALESCE(r.name, a.name) AS subject_name, "
             "  g.target_server_id, g.allowed_databases, g.mode, "
-            "  g.granted_by, g.granted_at, g.expires_at "
+            "  g.granted_by, g.granted_at, g.expires_at, "
+            # Resolved the same way as the subject, so the Granted-by column
+            # stops showing a handle beside an auto-approve table that shows a
+            # name. Falls back to the raw value, which for a handful of legacy
+            # rows is a free-text note rather than a principal id.
+            "       COALESCE(gr.name, ga.name) AS granted_by_name "
             "FROM user_target_grants g "
-            "LEFT JOIN requesters r ON r.slack_user_id = g.slack_user_id "
-            "LEFT JOIN admins     a ON a.slack_user_id = g.slack_user_id "
+            "LEFT JOIN requesters r  ON r.slack_user_id  = g.slack_user_id "
+            "LEFT JOIN admins     a  ON a.slack_user_id  = g.slack_user_id "
+            "LEFT JOIN requesters gr ON gr.slack_user_id = g.granted_by "
+            "LEFT JOIN admins     ga ON ga.slack_user_id = g.granted_by "
             "WHERE g.revoked_at IS NULL ORDER BY g.granted_at DESC"):
         row["_subject_type"] = "user"
         row["_gid"] = f"u:{row['subject']}:{row['target_server_id']}"
