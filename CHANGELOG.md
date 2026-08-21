@@ -9,6 +9,56 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.12] — 2026-08-21
+
+### Added
+
+- **A warning before a standing grant lapses.** A DM 24 hours and again 4
+  hours before the deadline, to the people who will actually be refused — the
+  grantee, or every member of the team for a team grant. Sent once per grant
+  per threshold, recorded in a ledger keyed by the deadline itself, so
+  extending a grant re-arms the warnings rather than suppressing them for
+  good. Off unless `grant_expiry_warn_enabled` is on; the thresholds are
+  configurable.
+
+- **A resolved access panel per person**, answered by the resolver a
+  submission uses rather than re-derived for the screen: every server, the
+  tier, the team it came from, and any expiry. An admin's blanket reach is
+  reported as its own source instead of being flattened into a direct grant
+  that nothing can revoke.
+
+- **Per-statement export.** `result.csv` and `result.xlsx` take
+  `?statement=N`, so a download can follow the result the reader is looking
+  at rather than the first one.
+
+### Fixed
+
+- **A query refused for expired access said only that you were not
+  authorized** — the same sentence as for a server never granted. The
+  refusal now carries its own code (`access_expired`) and the date as a
+  field, rendered in the configured display timezone so it cannot name the
+  wrong calendar day near midnight.
+
+- **Export on a multi-statement result served the whole archive under the
+  media type for an Excel workbook.** A zip arrived claiming to be a
+  spreadsheet, with a correct-looking filename. A zip now says
+  `application/zip`, and asking for one statement returns one table.
+
+- **A saved query or history row pointing at an unreachable server gave no
+  reason, and three different reasons were indistinguishable.** Two produced
+  the same confident-looking alias and the third a bare id that read like
+  one. Both endpoints now carry `connectionState`
+  (`ok | no_access | retired | gone | none`) alongside the alias.
+
+- **One DM per person instead of one per authorization row.** A bulk grant
+  change produced a message per row; a burst is now a single DM naming the
+  count, with a bullet per change. A lone change keeps its exact previous
+  wording.
+
+- **The granter column showed a raw handle** where the neighbouring table
+  already showed a name, and two of three listings undid the
+  enabled-first ordering they were given.
+
 ## [1.0.11] — 2026-08-20
 
 Releases for 1.0.8 through 1.0.10 were never cut; their notes are in the
