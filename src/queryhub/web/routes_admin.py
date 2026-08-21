@@ -1403,6 +1403,48 @@ class CopyAccessIn(BaseModel):
     tier: str | None = None           # override every copied tier, e.g. "rw"
 
 
+@router.get("/people/resolve")
+def admin_resolve_person(principal: str | None = None,
+                         claims: dict = Depends(deps.current_user)):
+    """Who is this principal id — before anything is written.
+
+    Adding a person is not a create: granting them access IS the create
+    (`POST /grants` whitelists an id QueryHub has never seen, filling name /
+    email / tz from their Slack profile). What a form cannot do without this is
+    show WHO it is about to grant, so a mistyped id is caught after the grant
+    exists rather than before.
+
+    `known` says whether they already have a row here, so the caller can offer
+    "grant" or "edit" rather than guessing.
+    """
+    # `principal` is optional in the SIGNATURE on purpose: FastAPI validates
+    # query params before the handler runs, so a required one answers 422 to a
+    # non-admin — before the admin gate, which is the one thing every route
+    # under /api/admin must do first (tests/test_admin_routes_gated.py).
+    admin.require_admin(claims, "access")
+    pid = (principal or "").strip()
+    if not _valid_principal(pid):
+        raise deps._error(400, "bad_request",
+                          "principal must be a Slack user id or local:<username>.")
+    row = db.fetch_one(
+        "SELECT r.slack_user_id, r.name, r.email, r.enabled, "
+        "       (a.slack_user_id IS NOT NULL) AS is_admin "
+        "  FROM requesters r "
+        "  LEFT JOIN admins a ON a.slack_user_id = r.slack_user_id "
+        " WHERE r.slack_user_id = %s", (pid,))
+    if row is None:
+        row = db.fetch_one(
+            "SELECT slack_user_id, name, NULL AS email, enabled, TRUE AS is_admin "
+            "  FROM admins WHERE slack_user_id = %s", (pid,))
+    if row is not None:
+        return {"principal": pid, "known": True, "name": row["name"],
+                "email": row["email"], "enabled": bool(row["enabled"]),
+                "admin": bool(row["is_admin"])}
+    prof = _slack_profile(pid) if pid.startswith("U") else {}
+    return {"principal": pid, "known": False, "name": prof.get("name"),
+            "email": prof.get("email"), "enabled": False, "admin": False}
+
+
 @router.post("/people/{slack_id}/copy-access", status_code=201)
 def admin_copy_access(slack_id: str, body: CopyAccessIn,
                       claims: dict = Depends(deps.current_user)):
@@ -1446,6 +1488,27 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
     team_names: list[str] = []
 
     with db.transaction() as cur:
+        # Whitelist the destination FIRST. This endpoint writes team_members and
+        # user_target_grants directly, so pointing it at a Slack id QueryHub has
+        # never seen produced grant rows for someone with no `requesters` row:
+        # every submission still refused (the whitelist gate), and the person
+        # invisible in the people list — grants that look right and do nothing.
+        # `grants.grant` has always done this; the copy path had to as well.
+        # A profile lookup fills the name so the row is not just an id, and the
+        # upsert never downgrades an existing person.
+        prof = _slack_profile(slack_id)
+        cur.execute("SET LOCAL app.auth_dm_suppress = 'on'")
+        cur.execute(
+            "INSERT INTO requesters (slack_user_id, name, email, tz, enabled, "
+            "                        added_at, added_by) "
+            "VALUES (%s, %s, %s, %s, TRUE, NOW(), %s) "
+            "ON CONFLICT (slack_user_id) DO UPDATE "
+            "  SET enabled = TRUE, "
+            "      name  = COALESCE(requesters.name,  EXCLUDED.name), "
+            "      email = COALESCE(requesters.email, EXCLUDED.email), "
+            "      tz    = COALESCE(requesters.tz,    EXCLUDED.tz)",
+            (slack_id, prof.get("name"), prof.get("email"), prof.get("tz"),
+             uid))
         cur.execute(
             "SELECT target_server_id, allowed_databases, mode "
             "  FROM user_target_grants "

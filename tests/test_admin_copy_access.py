@@ -19,6 +19,7 @@ class _Cur:
         self._last = None
         self.rowcount = 0
         self.inserted = []          # (target_id, mode, allowed_databases)
+        self.whitelisted = []       # slack ids given a requesters row
         self.audit = {}
 
     def execute(self, sql, params=()):
@@ -27,6 +28,11 @@ class _Cur:
             self._rows = self._user
         elif "team_target_grants" in sql and "SELECT" in sql.split("FROM")[0]:
             self._rows = self._team
+        elif "INSERT INTO requesters" in sql:
+            self.whitelisted.append(params[0])
+            self._rows = []
+        elif "SET LOCAL app.auth_dm_suppress" in sql:
+            self._rows = []
         elif "INSERT INTO team_members" in sql:
             self._rows = [{"team_id": t} for t in self._joined]
         elif "INSERT INTO user_target_grants" in sql:
@@ -120,3 +126,20 @@ def test_a_bad_tier_is_refused(wired):
     with pytest.raises(Exception):
         ra.admin_copy_access("U06NEWUSER1",
                              ra.CopyAccessIn(source="U07SOURCE01", tier="admin"), {})
+
+
+def test_the_destination_is_whitelisted_first(wired, monkeypatch):
+    """A copy onto someone QueryHub has never seen must make them real.
+
+    This endpoint writes team_members and user_target_grants directly, so
+    without a `requesters` row the newcomer ended up with grants that look
+    correct and refuse every query — the whitelist gate runs on submit, and the
+    people list is built from requesters, so they were invisible too. That is
+    exactly the shape "add a person and copy X's access" would have produced.
+    """
+    cur = wired([{"target_server_id": 4, "allowed_databases": None, "mode": "ro"}], [])
+    monkeypatch.setattr(ra, "_slack_profile",
+                        lambda uid: {"name": "New Person", "email": None, "tz": None})
+    ra.admin_copy_access("U0NEWCOMER01", ra.CopyAccessIn(source="U0SOURCE001"),
+                         claims={"sub": "UADMIN"})
+    assert cur.whitelisted == ["U0NEWCOMER01"]

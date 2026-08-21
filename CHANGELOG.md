@@ -18,7 +18,22 @@ frontend and the endpoints it calls are explicitly outside it.
   `infinity` / `-infinity`, which is what Postgres calls them; a real timestamp
   is unaffected. Applies to `date`, `timestamp` and `timestamptz`.
 
+- **Copying access onto a person QueryHub had never seen half-onboarded them.**
+  `POST /admin/people/{id}/copy-access` wrote the team memberships and the
+  grants but no `requesters` row, so every query was still refused by the
+  whitelist gate and the person did not appear in the people list. It
+  whitelists first now, the way `grants.grant` always has.
+
 ### Changed
+
+- **Access can be requested from a list.** `GET /requestable` returns the
+  enabled connections a person cannot reach, with the databases they do not
+  hold — control plane, maintenance databases, disabled targets and
+  already-granted pairs excluded. `POST /endpoint-requests` accepts a
+  `connectionId` from that list and treats it as authoritative (unknown → 404,
+  a database not on it → 400) instead of falling back to free text, which is
+  what produced requests nobody could resolve. Free text still works for a
+  database QueryHub does not have yet.
 
 - **A server's name is shown whole.** The sidebar dimmed the head every target
   shares (`svc-prod-`) and dropped it entirely in a narrow pane. A target name
