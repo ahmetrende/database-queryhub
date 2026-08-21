@@ -2523,4 +2523,14 @@ def scheduler_loop(client: WebClient, stop_event, interval_sec: int = 60) -> Non
                 log.info("scheduler reaped %d stale draft request(s)", reaped)
         except Exception:
             log.exception("scheduler draft reap failed")
+        # Grants that are about to lapse. Belongs beside the other sweeps for
+        # the same reason: cheap, and in-process so an install running no cron
+        # still warns.
+        try:
+            from . import grant_expiry
+            warned = grant_expiry.sweep(client)
+            if warned:
+                log.info("scheduler warned about %d expiring grant(s)", warned)
+        except Exception:
+            log.exception("scheduler grant-expiry sweep failed")
         stop_event.wait(interval_sec)

@@ -1548,6 +1548,22 @@ def admin_effective_access(slack_id: str,
         " WHERE slack_user_id = %s AND starts_at <= NOW() "
         "   AND (expires_at IS NULL OR expires_at > NOW())", (slack_id,))
 
+    # Standing as an APPROVER, which is a different question from what they can
+    # query and is invisible in the grant tables. Leaving it out made the view
+    # answer "what can they read" when the question asked is usually "what can
+    # this person do here".
+    adm = db.fetch_one(
+        "SELECT max_tier, scope_team_ids, scope_target_ids, can_grant, enabled "
+        "  FROM admins WHERE slack_user_id = %s", (slack_id,))
+
+    # A per-person result cap, if one is in force. Caps are keyed to the PERSON
+    # rather than to a grant, so this is the only place it shows up.
+    cap = db.fetch_one(
+        "SELECT max_rows, expires_at, reason FROM user_row_limit_overrides "
+        " WHERE slack_user_id = %s "
+        "   AND (expires_at IS NULL OR expires_at > NOW()) "
+        " ORDER BY max_rows DESC LIMIT 1", (slack_id,))
+
     with db.transaction() as cur:
         audit.log_in(cur, None, uid, claims.get("name"), "effective_access_viewed",
                      {"subject": slack_id, "targets": len(out)})
@@ -1561,12 +1577,33 @@ def admin_effective_access(slack_id: str,
         "teams": [{"id": str(r["id"]), "name": r["name"]} for r in teams_of],
         "access": out,
         "autoApprove": [{
-            "connectionId": _alias_of(r["target_server_id"]),
+            # A NULL target is an all-targets grant: it covers every connection
+            # they hold a grant on, now and later.
+            "connectionId": _alias_of(r["target_server_id"]) if r["target_server_id"] else None,
+            "allTargets": r["target_server_id"] is None,
             "tier": (r["max_tier"] or "ro").upper(),
             "databaseId": r["database_name"],
             "allDatabases": r["database_name"] is None,
             "expiresAt": mapping.iso(r["expires_at"]),
         } for r in auto],
+        "admin": None if adm is None else {
+            "enabled": adm["enabled"],
+            # All three NULL is what makes someone a super-admin — see
+            # admins.is_super_admin. Reported as a flag so the caller does not
+            # have to re-derive the rule.
+            "superAdmin": (adm["max_tier"] is None
+                           and adm["scope_team_ids"] is None
+                           and adm["scope_target_ids"] is None),
+            "maxTier": (adm["max_tier"] or "").upper() or None,
+            "scopeTeams": adm["scope_team_ids"],
+            "scopeTargets": adm["scope_target_ids"],
+            "canGrant": adm["can_grant"],
+        },
+        "rowLimitOverride": None if cap is None else {
+            "maxRows": cap["max_rows"],
+            "expiresAt": mapping.iso(cap["expires_at"]),
+            "reason": cap["reason"],
+        },
     }
 
 

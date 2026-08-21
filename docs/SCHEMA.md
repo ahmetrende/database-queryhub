@@ -113,6 +113,7 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
 | `095_target_tags.sql` | `target_servers.tags` (JSONB, object-shaped CHECK) — where a target actually runs. |
 | `096_grant_expiry.sql` | Standing grants can expire: `expires_at` on `user_target_grants` AND `team_target_grants`, plus the `revoked_at` the team table never had. Partial indexes for the active-grant reads. |
 | `097_super_admin_max_mb.sql` | Seed `super_admin_max_mb`: the CSV size-cap FLOOR for super-admins. Its sibling 092 could not deliver this alone — the size cap is DERIVED from the row cap, so bytes were not expressible on their own. |
+| `098_grant_expiry_warnings.sql` | `grant_expiry_notices` — one row per (grant, threshold, deadline) already warned about, so a warning fires once and a grant whose expiry MOVES warns again. Adds a surrogate `id` to both grant tables (their PKs are composite, so there was nothing to reference). New `bot_config`: `grant_expiry_warn_enabled` (on), `grant_expiry_warn_hours` (24,4). Auto-approve windows are deliberately excluded — they are short by design, so a four-hour warning about a one-hour window is noise. |
 
 ---
 

@@ -154,6 +154,8 @@ default rather than stopping the process.
 | `service_restart_dm` | `off` | DM admins "back online" after a service restart. |
 | `auth_event_dm_enabled` | `on` | DM users on any grant/revoke change affecting them. |
 | `auth_event_poll_seconds` | `20` | Poll cadence for the auth-event outbox (read when the poller thread starts). |
+| `grant_expiry_warn_enabled` | `on` | Warn a grant holder before a time-bounded grant lapses. Off leaves expiry silent, which is how it behaved before migration 098. |
+| `grant_expiry_warn_hours` | `24,4` | Comma-separated hours-before-expiry to warn at. Widest first wins, so a grant created with three hours left gets one message rather than two. Each fires once per grant per deadline; extending a grant re-arms them, because the recorded deadline stops matching. Empty disables warning without turning the feature off. |
 
 ## SQL Server (MSSQL) targets
 

@@ -274,10 +274,35 @@ def _team_info(team_id) -> tuple[str | None, list[str]]:
             [m["slack_user_id"] for m in members])
 
 
+def combine_notes(notes: list[str]) -> str:
+    """One message for several changes to the same person.
+
+    A single change keeps its message EXACTLY as it was — that is the common
+    case and the wording people already recognise. Only a burst gets wrapped.
+
+    Bursts are ordinary: granting one person read access across the servers
+    they can reach is one decision to the admin making it and one row per
+    server in the table, so thirteen rows meant thirteen separate DMs. The
+    trigger fires per row and there is nothing wrong with that; coalescing
+    belongs here, where the recipient is known.
+    """
+    if len(notes) == 1:
+        return notes[0]
+    return (f"*{len(notes)} access changes*\n"
+            + "\n".join(f"• {n}" for n in notes))
+
+
 def process_pending(client: WebClient, limit: int = 50) -> int:
     """Drain up to `limit` outbox rows; returns how many were handled.
     Rows are locked with SKIP LOCKED so a concurrent run can't double-send
-    (delivery stays at-least-once across process crashes)."""
+    (delivery stays at-least-once across process crashes).
+
+    Events are grouped by RECIPIENT before sending, so one admin action that
+    writes many rows arrives as one message. An event that fails to build is
+    charged to itself and cannot stop the rest; an event that fails to SEND
+    stays unprocessed and is retried, which is the same at-least-once
+    behaviour as before.
+    """
     handled = 0
     with db.transaction() as cur:
         cur.execute(
@@ -291,33 +316,71 @@ def process_pending(client: WebClient, limit: int = 50) -> int:
             (limit,),
         )
         events = cur.fetchall()
+
+        # 1. Build every message first. A row whose builder raises is failed
+        #    on its own here rather than taking its batch-mates with it.
+        by_user: dict[str, list[str]] = {}
+        contributors: dict[str, list[dict]] = {}
         for ev in events:
             try:
                 notes = build_notifications(
                     ev, alias_of=_alias_of, team_info=_team_info)
-                for uid, text in notes:
-                    if not uid:
-                        continue
-                    from .slack_app import notifications
-                    notifications.dm_requester(client, uid, text)
+            except Exception as e:  # noqa: BLE001 — one bad row must not wedge the queue
+                log.exception("auth_events: event %s failed to build", ev["id"])
+                _fail(cur, ev, e)
+                continue
+            if not notes:
+                # Nothing user-visible: still terminal, or it is re-read forever.
                 cur.execute(
                     "UPDATE auth_event_outbox "
                     "   SET processed_at = NOW(), attempts = attempts + 1 "
-                    " WHERE id = %s",
-                    (ev["id"],),
-                )
+                    " WHERE id = %s", (ev["id"],))
                 handled += 1
-            except Exception as e:  # noqa: BLE001 — one bad row must not wedge the queue
-                log.exception("auth_events: event %s failed", ev["id"])
-                give_up = ev["attempts"] + 1 >= _MAX_ATTEMPTS
+                continue
+            for uid, text in notes:
+                if not uid:
+                    continue
+                by_user.setdefault(uid, []).append(text)
+                contributors.setdefault(uid, []).append(ev)
+
+        # 2. One DM per recipient.
+        from .slack_app import notifications
+        sent_ok: set[int] = set()
+        failed: dict[int, Exception] = {}
+        for uid, notes in by_user.items():
+            try:
+                notifications.dm_requester(client, uid, combine_notes(notes))
+                for ev in contributors[uid]:
+                    sent_ok.add(ev["id"])
+            except Exception as e:  # noqa: BLE001
+                log.exception("auth_events: DM to %s failed", uid)
+                for ev in contributors[uid]:
+                    failed[ev["id"]] = e
+
+        # 3. An event delivered to every one of its recipients is done. One
+        #    that failed for ANY of them is retried whole — the same
+        #    at-least-once trade the previous loop made.
+        for ev in events:
+            if ev["id"] in failed:
+                _fail(cur, ev, failed[ev["id"]])
+            elif ev["id"] in sent_ok:
                 cur.execute(
                     "UPDATE auth_event_outbox "
-                    "   SET attempts = attempts + 1, last_error = %s, "
-                    "       processed_at = CASE WHEN %s THEN NOW() END "
-                    " WHERE id = %s",
-                    (str(e)[:500], give_up, ev["id"]),
-                )
+                    "   SET processed_at = NOW(), attempts = attempts + 1 "
+                    " WHERE id = %s", (ev["id"],))
+                handled += 1
     return handled
+
+
+def _fail(cur, ev: dict, exc: Exception) -> None:
+    """Charge one failure to one event, giving up after _MAX_ATTEMPTS."""
+    give_up = ev["attempts"] + 1 >= _MAX_ATTEMPTS
+    cur.execute(
+        "UPDATE auth_event_outbox "
+        "   SET attempts = attempts + 1, last_error = %s, "
+        "       processed_at = CASE WHEN %s THEN NOW() END "
+        " WHERE id = %s",
+        (str(exc)[:500], give_up, ev["id"]))
 
 
 def poll_loop(client: WebClient, stop: threading.Event) -> None:
