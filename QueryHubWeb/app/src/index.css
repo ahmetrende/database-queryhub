@@ -1651,3 +1651,39 @@
   user-select: none;
 }
 .qh-wn-audtoggle input { cursor: pointer; margin: 0; }
+
+/* ---- Server names: the whole identifier, at full contrast ---------------
+   The design dims the fleet-wide head (`exc-`) and drops it entirely below
+   ~330px to buy characters back. Operator's call, 2026-08-21: a target name
+   is an identifier — people copy it into psql, paste it into a ticket and
+   read it out in a handover — and half a name in tertiary grey reads as a
+   different name than the one that is actually there. So: full weight, full
+   colour, and the head stays when the sidebar narrows. `.qh-tr-label`
+   already ellipsises, so a narrow pane now truncates the tail like every
+   other name in the UI instead of silently deleting the head.
+   Design should fold this into the prototype — see CODE_TO_DESIGN_BRIEF. */
+.qh-name-pre { color: inherit; font-weight: inherit; }
+.qh-tree.is-narrow .qh-name-pre { display: inline; }
+
+/* ---- Disabled targets look disabled ------------------------------------
+   A retired or parked target still ANSWERS — with stale data — so the one
+   thing its row must not look like is a live one. It carried an "off" badge
+   and nothing else: same full-colour brand mark, same bright name, same
+   weight. Grey the mark and dim the name wherever a row already says
+   disabled: the sidebar tree and the editor's autocomplete (both carry
+   `.qh-conn-off`), and the admin Connections table (whose status cell is the
+   marker there). Selected via :has() so no design-owned JSX has to grow a
+   class. Operator's call, 2026-08-21.
+   Design should fold this into the prototype — see CODE_TO_DESIGN_BRIEF. */
+.qh-tr:has(.qh-conn-off) .qh-engine-logo,
+.qh-ac-opt:has(.qh-conn-off) .qh-engine-logo,
+.qh-table tr:has(.qh-expiry.is-exp) .qh-engine-logo {
+  filter: grayscale(1);
+  opacity: 0.45;
+}
+.qh-tr:has(.qh-conn-off) .qh-tr-label,
+.qh-ac-opt:has(.qh-conn-off) .qh-ac-text,
+.qh-table tr:has(.qh-expiry.is-exp) .qh-conn-namecell b {
+  color: var(--fg-tertiary);
+  font-weight: 400;
+}

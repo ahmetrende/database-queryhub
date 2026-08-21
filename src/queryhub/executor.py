@@ -34,7 +34,7 @@ except ModuleNotFoundError:  # vanilla profile: the [slack] extra isn't installe
 if TYPE_CHECKING:  # only a type hint — no runtime dependency on slack_sdk
     from slack_sdk.web import WebClient
 
-from . import admins, audit, cancellation, cell_format, db, engines, errors, pii, pii_lineage, profile_sync, query_safety, ratings, requesters, row_limits, stmt_guard, targets, teams
+from . import admins, audit, cancellation, cell_format, db, engines, errors, pg_types, pii, pii_lineage, profile_sync, query_safety, ratings, requesters, row_limits, stmt_guard, targets, teams
 from . import config as cfg
 from .slack_app import notifications
 
@@ -715,6 +715,11 @@ def _run(request: dict, client: WebClient) -> None:
             autocommit=autocommit,
             options=options,
         ) as conn:
+            # `infinity` / `-infinity` timestamps come back as text instead of
+            # raising while the row is being read. pg_roles.rolvaliduntil is
+            # infinity for any role without VALID UNTIL, which made
+            # `SELECT * FROM pg_roles` fail with a message about the year 10000.
+            pg_types.register_infinity_safe_loaders(conn)
             with conn.cursor() as cur:
                 # Pin search_path with pg_catalog FIRST so a same-named object in
                 # a writable schema (e.g. a malicious public.now()) can't shadow a

@@ -11,6 +11,25 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Fixed
 
+- **`SELECT * FROM pg_roles` failed with a message about the year 10000.**
+  `rolvaliduntil` is `infinity` for any role created without `VALID UNTIL`, and
+  psycopg raises while reading such a row — so one unrepresentable cell took the
+  whole result with it. Infinite timestamps now arrive as the literal
+  `infinity` / `-infinity`, which is what Postgres calls them; a real timestamp
+  is unaffected. Applies to `date`, `timestamp` and `timestamptz`.
+
+### Changed
+
+- **A server's name is shown whole.** The sidebar dimmed the head every target
+  shares (`svc-prod-`) and dropped it entirely in a narrow pane. A target name
+  is an identifier people copy into psql and read out in a handover, so it now
+  renders at full contrast and truncates like every other name instead.
+
+- **A disabled target now looks disabled**, not merely labelled: its engine
+  logo is greyed and its name dimmed in the tree, the editor's autocomplete and
+  the admin Connections table. A retired target still answers — with stale data
+  — so the one thing it must not look like is a live one.
+
 - **An `EXPLAIN` submitted from the web UI showed nothing.** The plan was
   delivered as a Slack code block and never stored, so a web request — which
   reads the stored result and, by default, is not also DM'd — finished
