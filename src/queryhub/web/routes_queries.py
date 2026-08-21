@@ -15,6 +15,7 @@ import io
 import logging
 import os
 import re
+import shutil
 import tempfile
 import zipfile
 from contextlib import contextmanager
@@ -1189,14 +1190,43 @@ def query_rows(request_id: int, offset: int = 0, limit: int = 100,
 
 
 @router.get("/queries/{request_id}/result.csv")
-def query_result_csv(request_id: int, claims: dict = Depends(deps.current_user)):
+def query_result_csv(request_id: int, statement: int | None = None,
+                     claims: dict = Depends(deps.current_user)):
+    """The stored result. `statement` picks one table out of a multi-statement
+    archive, so Export beside a statement switcher downloads what is on screen.
+
+    Without it the whole artefact is served, which for a multi-statement result
+    is the zip of every table — the old behaviour, and still the right answer
+    for "give me everything".
+    """
     deps.require_whitelisted(claims)
     row = _own_request(request_id, claims["sub"])
     if row["status"] != "completed":
         raise deps._error(409, "conflict", "Result not ready.")
     p = _result_file(row)
-    media = "text/csv" if p.suffix.lower() == ".csv" else \
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    if statement is not None and p.suffix.lower() == ".zip":
+        # Stream the one member as CSV. Written to a temp file rather than held
+        # in memory: the cap is 100 MB and this path exists for the large ones.
+        fd, tmp_path = tempfile.mkstemp(prefix=f"qhs_{request_id}_", suffix=".csv")
+        os.close(fd)
+        with _open_statement(p, statement) as fh, \
+                open(tmp_path, "w", newline="", encoding="utf-8") as out:
+            shutil.copyfileobj(fh, out)
+        audit_mod.log(request_id, claims["sub"], claims.get("name"),
+                      "web_result_downloaded",
+                      {"file": p.name, "statement": statement})
+        return FileResponse(
+            tmp_path, media_type="text/csv",
+            filename=f"queryhub_result_{request_id}_q{statement}.csv",
+            background=BackgroundTask(os.remove, tmp_path))
+
+    # A zip is a zip. It used to be served as the XLSX media type, because the
+    # branch below only knew "csv or not" — the filename saved correctly, so
+    # nothing broke visibly, but the header was simply wrong.
+    media = {".csv": "text/csv", ".zip": "application/zip"}.get(
+        p.suffix.lower(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     audit_mod.log(request_id, claims["sub"], claims.get("name"),
                   "web_result_downloaded", {"file": p.name})
     return FileResponse(p, media_type=media,
@@ -1204,7 +1234,8 @@ def query_result_csv(request_id: int, claims: dict = Depends(deps.current_user))
 
 
 @router.get("/queries/{request_id}/result.xlsx")
-def query_result_xlsx(request_id: int, claims: dict = Depends(deps.current_user)):
+def query_result_xlsx(request_id: int, statement: int | None = None,
+                      claims: dict = Depends(deps.current_user)):
     """Full result as a real streamed XLSX. If the stored artifact is already
     xlsx, serve it; otherwise convert the stored (already PII-masked) CSV using
     openpyxl's write-only workbook so a large result doesn't balloon memory."""
@@ -1215,18 +1246,27 @@ def query_result_xlsx(request_id: int, claims: dict = Depends(deps.current_user)
     p = _result_file(row)
     xlsx_media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     audit_mod.log(request_id, claims["sub"], claims.get("name"),
-                  "web_result_downloaded", {"format": "xlsx", "file": p.name})
+                  "web_result_downloaded", {"format": "xlsx", "file": p.name,
+                                            **({"statement": statement} if statement else {})})
     if p.suffix.lower() == ".xlsx":
         return FileResponse(p, media_type=xlsx_media,
                             filename=f"queryhub_result_{request_id}.xlsx")
-    if p.suffix.lower() != ".csv":
+    # A multi-statement result is an archive of tables. Asked for one, convert
+    # that one; asked for none, there is no single workbook to build and saying
+    # so is better than picking a table on the caller's behalf.
+    if p.suffix.lower() == ".zip" and statement is None:
+        raise deps._error(
+            409, "conflict",
+            "This result has several tables — ask for one with ?statement=N, "
+            "or download the archive from result.csv.")
+    if p.suffix.lower() not in (".csv", ".zip"):
         raise deps._error(409, "conflict",
                           "Stored result can't be exported as Excel — download it directly.")
     from openpyxl import Workbook
     csv.field_size_limit(cfg.get_int("csv_size_mb_ceiling", 100) * 1024 * 1024)
     wb = Workbook(write_only=True)
     ws = wb.create_sheet("Result")
-    with p.open(newline="", encoding="utf-8") as fh:
+    with _open_statement(p, statement or 1) as fh:
         for rec in csv.reader(fh):
             ws.append(rec)
     fd, tmp_path = tempfile.mkstemp(prefix=f"qhx_{request_id}_", suffix=".xlsx")

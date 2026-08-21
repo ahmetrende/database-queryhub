@@ -91,7 +91,12 @@ const qhApi = {
   // Server rows are already PII-masked, so the grid never re-masks. Until
   // server-side paging lands we slice the (capped) in-memory rows; the
   // `truncated` flag still signals when the server capped the set.
-  result:      (id)    => qhFetch('/queries/' + id + '/result').then(r => {
+  // `statement` is 1-based and defaults server-side, so omitting it is the old
+  // behaviour exactly. Named in the design brief because it is an ADDED
+  // PARAMETER: dropping it still returns 200, and the switcher would page
+  // statement 1 forever with nothing to show that it had.
+  result:      (id, statement) => qhFetch('/queries/' + id + '/result'
+                 + (statement ? '?statement=' + statement : '')).then(r => {
     if (!r || r.kind === 'affected') return r || { kind: 'affected', affected: 0, message: '' };
     const rows = r.rows || [];
     return {
@@ -106,13 +111,17 @@ const qhApi = {
       total: (r.total != null ? r.total : rows.length), truncated: !!r.truncated,
       slice: (offset, count) => rows.slice(offset, offset + count),
       // Server-paged: fetch a window BEYOND the inline first page from /rows.
-      fetchPage: (offset, count) => qhApi.rows(id, offset, count).then(rr => rr.rows || []),
+      fetchPage: (offset, count) => qhApi.rows(id, offset, count, statement).then(rr => rr.rows || []),
+      // Which of the request's tables this is, and how many there are, so the
+      // caller can offer a switcher without a second round trip.
+      statement: r.statement || 1, statementCount: r.statementCount || 1,
     };
   }),
   // Stop a running query. The server signals the target backend and escalates
   // a cancel to closing the connection when the cancel does not land.
   cancelRun:   (id)    => qhFetch('/queries/' + id + '/cancel', { method: 'POST' }),
-  rows:        (id, o, l) => qhFetch('/queries/' + id + '/rows?offset=' + o + '&limit=' + l),
+  rows:        (id, o, l, statement) => qhFetch('/queries/' + id + '/rows?offset=' + o + '&limit=' + l
+                 + (statement ? '&statement=' + statement : '')),
   resultCsvUrl:(id)    => API_BASE + '/queries/' + id + '/result.csv',
   resultXlsxUrl:(id)   => API_BASE + '/queries/' + id + '/result.xlsx',
   saveSnippet: (body)  => qhFetch('/saved', { method: 'POST', body: JSON.stringify(body) }),
@@ -150,6 +159,10 @@ const qhApi = {
   adminAutoGrants: ()     => qhFetch('/admin/auto-grants'),
   adminAddAutoGrant:(b)   => qhFetch('/admin/auto-grants', { method: 'POST', body: JSON.stringify(b) }),
   adminDelAutoGrant:(id)  => qhFetch('/admin/auto-grants/' + encodeURIComponent(id), { method: 'DELETE' }),
+  // One person's resolved reach, and "give them what that person has".
+  adminEffectiveAccess:(id) => qhFetch('/admin/people/' + encodeURIComponent(id) + '/effective-access'),
+  adminCopyAccess:(id, body) => qhFetch('/admin/people/' + encodeURIComponent(id) + '/copy-access',
+                 { method: 'POST', body: JSON.stringify(body) }),
   adminScopes:     ()     => qhFetch('/admin/scopes'),
   adminSaveScope:  (b)    => qhFetch('/admin/scopes', { method: 'POST', body: JSON.stringify(b) }),
   adminDelScope:   (id)   => qhFetch('/admin/scopes/' + encodeURIComponent(id), { method: 'DELETE' }),
@@ -178,7 +191,11 @@ const qhApi = {
   // answer, not a failed request, so neither rejects.
   adminTestNewConnection:(b)    => qhFetch('/admin/connections/test', { method: 'POST', body: JSON.stringify(b) }),
   adminTestConnection:(conn)    => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/test', { method: 'POST' }),
-  adminSchemaRefresh:(conn)=> qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/schema-refresh', { method: 'POST' }),
+  // `database` narrows the refresh to one instead of re-reading every database
+  // on the connection. Also an added parameter, same hazard as `statement`.
+  adminSchemaRefresh:(conn, database) => qhFetch('/admin/connections/' + encodeURIComponent(conn)
+                 + '/schema-refresh' + (database ? '?database=' + encodeURIComponent(database) : ''),
+                 { method: 'POST' }),
   adminEndpointReqs:()    => qhFetch('/admin/endpoint-requests'),
   adminDecideEndpoint:(id, approve, note) => qhFetch('/admin/endpoint-requests/' + encodeURIComponent(String(id).replace(/^er_/, '')) + '/decision', { method: 'POST', body: JSON.stringify({ approve: !!approve, note: note || null }) }),
   // Teams + people directory (super-admin).

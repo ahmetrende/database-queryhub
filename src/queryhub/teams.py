@@ -15,7 +15,11 @@ Authorization rules:
 """
 from __future__ import annotations
 
+from datetime import timezone
+from zoneinfo import ZoneInfo
+
 from . import admins, db, requesters
+from . import config as cfg
 from .targets import TargetServer, _row_to_target
 
 
@@ -179,9 +183,32 @@ def _max_mode(modes) -> str:
     return best
 
 
+def _display_day(at):
+    """`at` moved into the fleet's display timezone.
+
+    Stored expiries are UTC and the picker writes a LOCAL end-of-day, so
+    "expires 2026-08-15 01:30 Istanbul" is 2026-08-14 22:30 UTC — and reporting
+    the UTC calendar date would name the day before the one the person
+    experienced. Every other timestamp the UI shows is converted with this same
+    `web_display_timezone`, so the refusal agreeing with them is the point.
+    """
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    name = (cfg.get_setting("web_display_timezone", "UTC") or "UTC").strip() or "UTC"
+    try:
+        return at.astimezone(ZoneInfo(name))
+    except Exception:
+        return at.astimezone(timezone.utc)
+
+
+def lapsed_iso(at) -> str:
+    """The calendar date the holder experienced, as `YYYY-MM-DD`."""
+    return _display_day(at).date().isoformat()
+
+
 def fmt_lapsed(at) -> str:
     """The human form of a lapsed date. `%-d` so the 4th is "4 Aug", not "04"."""
-    return at.strftime("%-d %b %Y")
+    return _display_day(at).strftime("%-d %b %Y")
 
 
 def expired_grant_at(principal_id: str, target_id: int):

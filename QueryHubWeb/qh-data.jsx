@@ -631,6 +631,27 @@ function qhSliceRows(cols, offset, limit, total) {
   }
   return rows;
 }
+// ---- a saved query or history row whose target is out of reach ------------
+// `connectionState` on GET /saved and /history (CODE brief 2026-08-21 (b)):
+// ok | no_access | retired | gone | none. Three of these used to be
+// indistinguishable — two produced the same confident-looking alias and the
+// third a bare row id that READ like one — so the tab resolved to nothing and
+// said '—'. One rule here, read by the list row AND the tab, so the two cannot
+// describe the same row differently.
+// `can` is what the person can actually DO about it: ask for the grant back, or
+// point the query somewhere else. In every case the SQL is kept — losing the
+// query because its target went away would be the worse half of this bug.
+const QH_CONN_STATE = {
+  no_access: { word: 'no access', why: 'Your grant on this target is gone.', can: 'request' },
+  retired: { word: 'retired', why: 'This target has been retired.', can: 'repoint' },
+  gone: { word: 'deleted', why: 'This target no longer exists.', can: 'repoint' },
+  none: { word: 'no target', why: 'This query was saved without a target.', can: 'repoint' },
+  // Not one of the server's values: the fallback for a tab whose alias is simply
+  // absent from the payload. It states the fact and does not invent the reason.
+  unknown: { word: 'unavailable', why: 'This target is not in your list of targets.', can: 'request' },
+};
+function qhConnState(state) { return (state && state !== 'ok' && QH_CONN_STATE[state]) || null; }
+
 function qhMockResult(sql, classify) {
   const clean = qhStripComments(sql).toLowerCase();
   if (classify.tier !== 'RO') {
@@ -882,7 +903,8 @@ Object.assign(window, {
   qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhConfirmReasons, qhSplitReasons,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,
-  qhClassify, qhDetectPII, qhMockResult, qhMaskValue, qhStripComments,
+  qhClassify, qhDetectPII, qhMockResult, qhMaskValue, qhStripComments, qhSplitStatements,
+  qhConnState, QH_CONN_STATE,
   qhColumnsFor, qhIndexesFor, qhViewsFor,
   qhRiskHints, qhExplainPlan, qhQuoteIdent, qhQuoteList, qhApproxRows, qhFmtRows,
   QH_SHOW_ENV_TAGS,

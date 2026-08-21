@@ -14,6 +14,13 @@ import './qh-panels.jsx';
 import './qh-home.jsx';
 import './qh-admin-data.jsx';
 import './qh-admin-access.jsx';
+// New in the 2026-08-21 (c) round. The prototype loads it from a <script>
+// tag in QueryHub.html; the bundle needs this import as well, or the file
+// is simply absent from the build — `PersonAccessView` is referenced by
+// qh-admin-access.jsx and would be undefined the moment Grants opens on
+// its new default tab. Same failure shape as a stale index.css: the raw
+// prototype is fine and only the built app is broken.
+import './qh-admin-person.jsx';
 import './qh-admin-insights.jsx';
 import './qh-admin-config.jsx';
 import './qh-admin.jsx';

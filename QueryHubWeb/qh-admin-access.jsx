@@ -239,9 +239,24 @@ function GrantForm({ init, actor, st, people, teams, onDone }) {
   );
 }
 
+// `grantedByName` resolves the granting principal against both people tables,
+// the same way `createdByName` does on the auto-approve table (CODE brief
+// 2026-08-21 (b)). Three honest gaps to render, not work around:
+//   · null on EVERY team grant — `team_target_grants` has no `granted_by` column
+//   · null on the 15 of 68 rows that recorded nothing
+//   · four rows hold a free-text NOTE instead of a principal id, because someone
+//     used the column as a comment field; for those it is the only record of why
+//     the grant exists, so it is shown rather than blanked — clamped to one line
+//     with the full text on hover, or a sentence would stretch the column.
+function grantByLabel(g) { return g.grantedByName || g.grantedBy || '—'; }
+
 function GrantsView({ st, user }) {
   const actor = 'dba.' + user.name.split(' ')[0].toLowerCase();
-  const [mode, setMode] = useAcc('subject');
+  // Person first, and it is the DEFAULT (CODE brief 2026-08-20 §6): the report
+  // was that granting is hard because picking a person shows nowhere they
+  // already stand. By-subject and by-grant stay for the bulk work they are good
+  // at — but the screen you land on is now the one that answers "who is this".
+  const [mode, setMode] = useAcc('person');
   const [q, setQ] = useAcc('');
   const [addingSubject, setAddingSubject] = useAcc(false);
   const [editKey, setEditKey] = useAcc(null);
@@ -267,16 +282,17 @@ function GrantsView({ st, user }) {
     <div className="qh-apad">
       <div className="qh-aview-head">
         <div><div className="qh-aview-title">Grants</div><div className="qh-aview-sub">Give a person or team standing access to one or many connections — each connection has a database scope and a single tier.</div></div>
-        <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={newBtn}><AIcon.plus />{mode === 'grant' ? 'New grant' : 'Grant access'}</button>
+        {mode !== 'person' && <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={newBtn}><AIcon.plus />{mode === 'grant' ? 'New grant' : 'Grant access'}</button>}
       </div>
 
       <div className="qh-conn-controls">
-        <AccSearch q={q} setQ={setQ} placeholder={mode === 'subject' ? 'Filter by subject or target…' : 'Filter by subject, server, database…'} />
-        <AccGroupBy label="View" group={mode} setGroup={setMode} options={[['subject', 'By subject'], ['grant', 'By grant']]} />
+        {/* Person mode carries its own search — it filters people, not grants. */}
+        {mode !== 'person' && <AccSearch q={q} setQ={setQ} placeholder={mode === 'subject' ? 'Filter by subject or target…' : 'Filter by subject, server, database…'} />}
+        <AccGroupBy label="View" group={mode} setGroup={setMode} options={[['person', 'Person'], ['subject', 'By subject'], ['grant', 'By grant']]} />
         {mode === 'grant' && <AccGroupBy group={group} setGroup={setGroup} options={[['none', 'None'], ['subject', 'Subject'], ['server', 'Server'], ['database', 'Database']]} />}
       </div>
 
-      {mode === 'subject' ? (
+      {mode === 'person' ? <PersonAccessView st={st} actor={actor} /> : mode === 'subject' ? (
         <>
           {addingSubject && <div className="qh-subjcard is-editing"><SubjectAccessEditor st={st} actor={actor} onDone={() => setAddingSubject(false)} /></div>}
           <div className="qh-subjlist">
@@ -314,7 +330,7 @@ function GrantsView({ st, user }) {
                   <td className="qh-mono">{qhGrantTarget(g)}</td>
                   <td><TierBadge tier={g.tier} sm /></td>
                   <td><span className={'qh-expiry ' + ex.cls}>{ex.text}</span></td>
-                  <td className="qh-muted">{g.grantedBy}</td>
+                  <td className="qh-muted"><span className="qh-grantby" title={grantByLabel(g)}>{grantByLabel(g)}</span>{g.grantedByName && g.grantedByName !== g.grantedBy && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{g.grantedBy}</div>}</td>
                   <td className="qh-tright"><div className="qh-rowacts"><button className="qh-rowbtn" onClick={() => { setEditId(g.id); setAdding(false); }}><AIcon.edit />Edit</button><button className="qh-revoke" onClick={() => st.revokeGrant(g.id, actor)}>Revoke</button></div></td>
                 </tr>
               );
@@ -1119,4 +1135,4 @@ function ConnectionsView({ st, user }) {
   );
 }
 
-Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView });
+Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, SubjectAccessEditor, subjLabel, grantName });

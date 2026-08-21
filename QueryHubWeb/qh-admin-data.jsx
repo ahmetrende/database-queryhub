@@ -209,6 +209,22 @@ function useAdminState(pushToast, active, isAdminViewer) {
       .then(() => { loadAuto(); loadAudit(); pushToast && pushToast('Auto-approve grant created.'); })
       .catch(e => fail(e, 'Create failed.'));
   };
+  // One person's resolved reach, and "give them what that person has"
+  // (CODE brief 2026-08-20 §6). effectiveAccess returns the promise rather than
+  // holding state: it is per-person and only its caller wants it, so a shared
+  // slot would go stale behind whoever looked last.
+  const effectiveAccess = (id) => qhApi.adminEffectiveAccess(id);
+  const copyAccess = (id, body) =>
+    qhApi.adminCopyAccess(id, { source: body.source, includeTeams: !!body.includeTeams, tier: body.tier || null })
+      .then(r => {
+        loadGrants(); loadAudit();
+        const n = r && r.written;
+        pushToast && pushToast('Access copied' + (n ? ' · ' + n + ' connection' + (n === 1 ? '' : 's') : '')
+          + (r && r.teams && r.teams.length ? ' · joined ' + r.teams.join(', ') : '') + '.');
+        return r;
+      })
+      .catch(e => fail(e, 'Copy failed.'));
+
   const revokeAutoGrant = (id) => {
     qhApi.adminDelAutoGrant(id).then(() => { loadAuto(); loadAudit(); pushToast && pushToast('Auto-approve grant revoked.'); })
       .catch(e => fail(e, 'Revoke failed.'));
@@ -358,6 +374,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
     loadError, loading, reload: reloadAll,
     decide, batchApprove, approveBundle, toggleKill,
     addGrant, updateGrant, revokeGrant, setSubjectGrants,
+    effectiveAccess, copyAccess,
     addAutoGrant, updateAutoGrant, revokeAutoGrant,
     saveScope, removeScope, decideEndpoint, saveConfig,
     addTeam, updateTeam, removeTeam, setPersonTeams,

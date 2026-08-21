@@ -397,12 +397,16 @@ function App() {
       qhApi.history().then(r => setHistory((r.history || []).map(h => ({
         id: h.id, sql: h.sql, conn: h.connectionId, db: h.databaseId, tier: h.tier,
         status: h.status, rows: h.rowCount, when: qhTimeAgo(h.createdAt), approver: h.approver,
+        state: h.connectionState || null,
       })))),
       // Merge the user's server-saved queries into the Saved library (server
       // rows are dest:'server'; on a name+conn+db clash the server row wins).
       qhApi.saved().then(r => {
         const server = (r.saved || []).map(s => ({
-          id: s.id, name: s.name, conn: s.connectionId, db: s.databaseId, sql: s.sql, dest: 'server' }));
+          id: s.id, name: s.name, conn: s.connectionId, db: s.databaseId, sql: s.sql, dest: 'server',
+          // ok | no_access | retired | gone | none. Absent on an older server,
+          // which is why nothing here derives a state from a missing key.
+          state: s.connectionState || null }));
         setSavedList(list => {
           const localOnly = list.filter(l => !server.some(
             s => s.name === l.name && s.conn === l.conn && s.db === l.db));
@@ -490,6 +494,15 @@ function App() {
   const pii = qhDetectPII(tab.sql);
   const conn = conns.find(c => c.id === tab.conn);
   const db = conn && conn.databases.find(d => d.id === tab.db);
+  // The tab points at something that is not in the payload at all. Prefer the
+  // server's reason (`connectionState`, carried in from the saved/history row);
+  // fall back to the bare fact when the alias is simply absent. Gated on the
+  // target NOT resolving: a disabled target an admin can still see is already
+  // said by the `disabled` marker on the strip, and telling them to pick another
+  // one would be false — they can run it.
+  const targetState = (conns.length > 0 && tab.conn && !conn)
+    ? (qhConnState(tab.connState) || QH_CONN_STATE.unknown)
+    : null;
   // Column name -> { type, notNull } from the schema snapshot, for the result
   // grid's header tooltip. This is now the FALLBACK: a completed result carries
   // its real per-column types from the driver (`result.colTypes`, migration
@@ -642,11 +655,11 @@ function App() {
   const pickDb = (c, d) => patch(activeId, { conn: c.id, db: d.id });
 
   const loadSaved = (s) => {
-    const f = freshTab({ name: s.name, sql: s.sql, conn: s.conn, db: s.db });
+    const f = freshTab({ name: s.name, sql: s.sql, conn: s.conn, db: s.db, connState: s.state });
     setTabs(ts => [...ts, f]); setActiveId(f.id); reserveFor(f.id);
     setSideMode('conns');  };
   const loadHistory = (h) => {
-    const f = freshTab({ name: h.sql.slice(0, 24), sql: h.sql, conn: h.conn, db: h.db });
+    const f = freshTab({ name: h.sql.slice(0, 24), sql: h.sql, conn: h.conn, db: h.db, connState: h.state });
     setTabs(ts => [...ts, f]); setActiveId(f.id); reserveFor(f.id);  };
 
   // Reserve the request id for a tab the moment it exists, then patch it in.
@@ -831,6 +844,7 @@ function App() {
   const refreshHistory = () => qhApi.history().then(r => setHistory((r.history || []).map(h => ({
     id: h.id, sql: h.sql, conn: h.connectionId, db: h.databaseId, tier: h.tier,
     status: h.status, rows: h.rowCount, when: qhTimeAgo(h.createdAt), approver: h.approver,
+    state: h.connectionState || null,
   })))).catch(() => {});
 
   const applyStatus = async (id, qid, sres) => {
@@ -885,6 +899,13 @@ function App() {
   const submitToServer = async (id, runAtISO, sqlOverride, opts) => {
     const cur = tabs.find(x => x.id === id);
     if (!cur) return;
+    // Refuse locally when the tab's target is not in the payload at all. The
+    // server would refuse too, but a round trip to be told what the strip above
+    // the editor already says is not information.
+    if (conns.length > 0 && cur.conn && !conns.find(c => c.id === cur.conn)) {
+      pushToast('That target is not available to you — pick another one to run this query.');
+      return;
+    }
     const o = opts || {};
     setResTab('messages');
     patch(id, { status: 'pending', result: null,
@@ -906,7 +927,7 @@ function App() {
         // instead, which is why qid below comes from the RESPONSE, not from here.
         draftId: cur.reqId || null,
       });
-      patch(id, { qid: r.id, reqId: r.id, status: r.status, ranUnmasked: !!cur.unmasked, ranConn: cur.conn });
+      patch(id, { qid: r.id, reqId: r.id, status: r.status, ranUnmasked: !!cur.unmasked, ranConn: cur.conn, expired: null });
       if (cur.justification) setReasons(rs => qhSaveReason(rs, cur.justification));
       track(id, r.id);
     } catch (e) {
@@ -925,10 +946,33 @@ function App() {
           env: c2 ? c2.env : null, tier: qhClassify(sqlOverride || cur.sql).tier, scheduled: !!runAtISO });
         return;
       }
+      // A lapsed grant is a STATE, not a failure toast: `403 access_expired`
+      // carries `expiredOn` as a field (CODE brief 2026-08-21 (b)), so the tab
+      // can name the date and offer the one thing the reader wants — the access
+      // back. It reads the CODE and never the sentence: the last time this file
+      // matched on wording, a duplicate was mistaken for the confirm prompt and
+      // re-sent with confirmed:true.
+      if (e && e.code === 'access_expired') {
+        patch(id, { status: null, expired: { on: e.expiredOn || null, message: e.message || null, conn: cur.conn, db: cur.db },
+          messages: [{ kind: 'err', text: e.message || 'Your access to this target has expired.', time: nowTime() }] });
+        return;
+      }
       patch(id, { status: null,
         messages: [{ kind: 'err', text: e.message || 'Submit failed.', time: nowTime() }] });
       setResTab('messages');
     }
+  };
+
+  // Reach statements 2..N of a multi-statement run. One request, one set of rows
+  // on the server — only WHICH stored table is fetched changes, so this is a
+  // fetch and not a re-run (re-running would ask a person to approve twice).
+  const pickStatement = async (n) => {
+    if (!tab.qid || n < 1) return;
+    try {
+      const res = await qhApi.result(tab.qid, n);
+      patch(activeId, { result: res });
+      setResTab('results');
+    } catch (e) { pushToast((e && e.message) || 'Could not load that result.'); }
   };
 
   // EXPLAIN preview (read-only, no execution). Server plans a single RO
@@ -1173,8 +1217,36 @@ function App() {
   };
   const toggleSide = () => setTweak('hideSidebar', !t.hideSidebar);
 
+  // §16: re-read the catalogue. The endpoint writes the snapshot synchronously
+  // before it returns, so there is nothing to poll — but the client kept showing
+  // the OLD one, which was the actual report ("the list doesn't update"). TWO
+  // caches have to go: the per-database schema (columns/indexes) and the
+  // connection payload, which is where the tree's table LIST comes from.
+  // `dbName` refreshes ONE database instead of re-reading the other eleven.
+  const [schemaBusy, setSchemaBusy] = useState(false);
+  const refreshSchema = async (connId, dbName) => {
+    if (!connId || schemaBusy) return;
+    setSchemaBusy(true);
+    pushToast(dbName ? 'Refreshing ' + connId + '/' + dbName + '…' : 'Refreshing ' + connId + '…');
+    try {
+      const r = await qhApi.adminSchemaRefresh(connId, dbName || undefined);
+      const c = conns.find(x => x.id === connId);
+      // force=true, because loadSchema returns early while an entry is inside
+      // its TTL — which after a refresh is exactly the stale entry we mean.
+      (c ? (c.databases || []) : []).filter(d => !dbName || d.name === dbName)
+        .forEach(d => loadSchema(connId, d.id, true));
+      const res = await qhApi.connections();
+      setConns(res.connections || []);
+      const n = r && r.tables != null ? r.tables : null;
+      pushToast('Schema refreshed · ' + (dbName ? connId + '/' + dbName : connId) + (n != null ? ' · ' + n + ' tables' : ''));
+    } catch (e) {
+      pushToast((e && e.message) || 'Schema refresh failed.');
+    } finally { setSchemaBusy(false); }
+  };
+
   const sideEl = !t.hideSidebar && (
     <Sidebar mode={sideMode} setMode={setSideMode} conns={conns} schemaCache={schemaCache} onLoadSchema={loadSchema} rolesCache={rolesCache} onLoadRoles={loadRoles}
+      canRefresh={!!(user && user.role !== 'developer')} onRefreshSchema={refreshSchema}
       onToast={pushToast}
       active={{ conn: tab.conn, db: tab.db }} onPick={pickDb}
       saved={savedList} onLoadSaved={loadSaved} onDeleteSaved={deleteSaved}
@@ -1261,7 +1333,7 @@ function App() {
           ) : (
             <>
               <ActionBar
-                conn={conn} db={db} dbTier={dbTier} classify={classify} pii={pii}
+                conn={conn} db={db} connAlias={tab.conn} dbAlias={tab.db} dbTier={dbTier} classify={classify} pii={pii}
                 autoApprove={autoApprove} tierExceedsGrant={tierExceedsGrant} busy={busy} status={tab.status}
                 hasSql={!!tab.sql.trim()} onPrimary={primary} onExplain={explain} killed={killed}
                 riskHints={riskHints} riskTop={riskTop} onCancelRun={cancelRun}
@@ -1275,6 +1347,9 @@ function App() {
                 inputRef={whyRef} recent={reasons} autoApprove={autoApprove} tier={classify.tier} isSuper={isSuper}
                 onEnter={primary} onEscape={() => setEdFocus(n => n + 1)} />
 
+              <AccessNotice state={targetState} expired={tab.expired} alias={tab.conn}
+                onRequest={() => setReqOpen(true)} onDismiss={() => patch(activeId, { expired: null })} />
+
               <div className="qh-ed-host">
                 <SqlEditor value={tab.sql} onChange={onCode} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} />
               </div>
@@ -1283,7 +1358,7 @@ function App() {
               <div style={{ height: resH, flexShrink: 0 }}>
                 <ResultsPanel colMeta={colMeta} tab={resTab} setTab={setResTab} result={tab.result} messages={tab.messages}
                   audit={tab.audit} status={tab.status} runMs={tab.runMs} onExport={exportResult} plan={tab.plan} onToast={pushToast} reqId={tab.reqId}
-                  unmasked={resUnmasked} conn={resConn} />
+                  unmasked={resUnmasked} conn={resConn} onStatement={pickStatement} />
               </div>
             </>
           )}
@@ -1550,6 +1625,41 @@ const ICN_WHY_OK = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" s
 // Drop the fallback when it goes.
 const qhNeedsWhyWhenReviewed = (v) => !!(v && (v.requiresJustificationWhenReviewed !== undefined
   ? v.requiresJustificationWhenReviewed : v.requiresJustificationWhenScheduled));
+// A target you cannot run against, said once, in the place you would press Run.
+// Two sources, one strip: a saved/history row whose `connectionState` is not ok,
+// and a submit refused with `access_expired`. To the reader they are the same
+// fact — "not from here" — with the same single useful action, and neither is a
+// toast: a toast for something that is still true after it fades is a lie.
+// The lapsed-grant case is dismissible because it describes a moment; the
+// unreachable-target case is not, because it is a standing fact about the tab.
+function AccessNotice({ state, expired, alias, onRequest, onDismiss }) {
+  if (!expired && !state) return null;
+  const day = expired && expired.on
+    ? new Date(expired.on + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+    : null;
+  // The server's own sentence when it sent one — it names the consequence better
+  // than a generic line can. `expiredOn` is what makes the fallback possible.
+  const text = expired
+    ? (expired.message || ('Your access to ' + (expired.conn || alias) + (expired.db ? '/' + expired.db : '')
+        + ' expired' + (day ? ' on ' + day : '') + '.'))
+    : (alias || 'This target') + ' — ' + state.why;
+  const ask = !!expired || state.can === 'request';
+  return (
+    <div className={'qh-accnote' + (expired ? ' is-expired' : '')}>
+      <span className="qh-accnote-ic">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0"/></svg>
+      </span>
+      <span className="qh-accnote-t">{text}</span>
+      {ask
+        ? <button className="qh-btn qh-btn-sm qh-accnote-cta" onClick={onRequest}>Request access</button>
+        : <span className="qh-accnote-hint">Pick another target above to run it.</span>}
+      {expired && <button className="qh-accnote-x" onClick={onDismiss} aria-label="Dismiss">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>}
+    </div>
+  );
+}
+
 function WhyBar({ show, need, value, onChange, err, inputRef, recent, autoApprove, tier, isSuper, onEnter, onEscape }) {
   if (!show) {
     // Only where a reason WOULD have been asked for: on read-only work this
@@ -1636,7 +1746,7 @@ function MaskToggle({ unmasked, pii, onUnmask }) {
 }
 
 // ---------- Action bar (target context + security + actions) ----------
-function ActionBar({ why, onWhy, whyNeedSched, whyErr, conn, db, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask }) {
+function ActionBar({ why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask }) {
   const tierLabel = { RO: 'Read-only', RW: 'Read/Write', DDL: 'Schema (DDL)' }[classify.tier];
   const highRisks = (riskHints || []).filter(h => h.level !== 'low');
   const schedBtnRef = useRef(null);
@@ -1703,9 +1813,11 @@ function ActionBar({ why, onWhy, whyNeedSched, whyErr, conn, db, dbTier, classif
             query goes to a retired instance that will answer anyway. */}
         {conn && conn.disabled && <span className="qh-conn-off" title="Disabled — retired or parked. It will still answer, with stale data.">disabled</span>}
         {conn && <span className={'qh-envtag-sm env-' + conn.env} title={conn.env}>{conn.env === 'production' ? 'PROD' : conn.env === 'staging' ? 'STG' : conn.env}</span>}
-        <span className="qh-target-conn">{conn ? conn.name : '—'}</span>
+        {/* The alias, not a dash: naming WHICH target is unreachable is the
+            difference between a broken tab and an answerable one. */}
+        <span className={'qh-target-conn' + (!conn && connAlias ? ' is-gone' : '')}>{conn ? conn.name : (connAlias || '—')}</span>
         <span className="qh-target-slash">/</span>
-        <span className="qh-target-db">{db ? db.name : '—'}</span>
+        <span className={'qh-target-db' + (!db && dbAlias ? ' is-gone' : '')}>{db ? db.name : (dbAlias || '—')}</span>
         {/* The badge is the tier YOU are granted here (the chip further right is
             what the query you wrote classifies as). The label used to be spelled
             out next to it and read as noise, so it moved to the hover. */}

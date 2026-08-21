@@ -96,7 +96,7 @@ function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, ri
   );
 }
 
-function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, open, setOpen, onPickDb, onOpenTable, onNewQuery, isSuper, reveal, narrow, tagFilters, onToast }) {
+function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, open, setOpen, onPickDb, onOpenTable, onNewQuery, isSuper, canRefresh, onRefreshSchema, reveal, narrow, tagFilters, onToast }) {
   // A `provider:aws` token in the search box narrows the TREE, not just the
   // dropdown: the list you then browse is the answer to what you typed.
   const conns = React.useMemo(() => (
@@ -126,8 +126,15 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
     clearTimeout(tipTimer.current);
     tipTimer.current = setTimeout(() => {
       const r = row.getBoundingClientRect();
-      setTip({ text, x: r.left + 10, y: r.bottom + 4 });
-    }, 260);
+      // OUTSIDE the pane, not under the row. Anchored below the row it covered
+      // the two or three rows you were reading next — the operator's complaint
+      // was not that the pill existed but that it sat on the list. It now hangs
+      // off the sidebar's right edge, level with its row, over the editor gutter.
+      const box = row.closest && row.closest('.qh-side-body');
+      const bx = box ? box.getBoundingClientRect() : null;
+      setTip({ text, x: (bx ? bx.right : r.right) + 8, y: Math.max(8, r.top - 2) });
+    }, 480);   // was 260: fast enough to feel like a label, slow enough that
+               // dragging the pointer down the tree does not fire a train of them
   };
   // A pill anchored to a row that has since scrolled away points at nothing.
   React.useEffect(() => {
@@ -386,6 +393,7 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
   const ICN_RENAME = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>;
   const ICN_FOLDER_DEL = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>;
   const ICN_FOLDER_NEW = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M12 11v6M9 14h6"/></svg>;
+  const ICN_REFRESH = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 11-3-6.7M21 4v5h-5"/></svg>;
   const ICN_COPY = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>;
   // host:port — plus /database when the gesture started on a database row, since
   // that is the whole connection string a driver wants. No host, no copy: the
@@ -522,6 +530,13 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
                 {menu.conn.host && <button onClick={() => { copyEndpoint(menu.conn); setMenu(null); }}>
                   {ICN_COPY}Copy endpoint
                 </button>}
+                {/* Re-read the catalogue. Admin-and-above — the endpoint already
+                    requires the `review` capability, so the item is hidden
+                    rather than shown-and-refused. From a server row it is every
+                    database on it; the database row below refreshes one. */}
+                {canRefresh && <button onClick={() => { onRefreshSchema && onRefreshSchema(menu.conn.id, null); setMenu(null); }}>
+                  {ICN_REFRESH}Refresh schema · all {(menu.conn.databases || []).length} databases
+                </button>}
                 <div className="qh-ctx-sep" />
                 <button onClick={() => { toggleFav(menu.conn.id); setMenu(null); }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill={isFav(menu.conn.id) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9 6.8 19.2l1-5.8L3.5 9.2l5.9-.9z"/></svg>{isFav(menu.conn.id) ? 'Remove from favorites' : 'Add to favorites'}
@@ -555,6 +570,9 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
                     server row exists to right-click. */}
                 {menu.c.host && <button onClick={() => { copyEndpoint(menu.c, menu.db); setMenu(null); }}>
                   {ICN_COPY}Copy endpoint
+                </button>}
+                {canRefresh && menu.db && <button onClick={() => { onRefreshSchema && onRefreshSchema(menu.c.id, menu.db.name); setMenu(null); }}>
+                  {ICN_REFRESH}Refresh schema · this database
                 </button>}
                 {treeView === 'dbs' && menu.db && (() => {
                   const k = dbKey(menu.c, menu.db);
@@ -613,7 +631,7 @@ function OriginBadge({ dest }) {
   );
 }
 
-function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
+function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
   const [open, setOpen] = React.useState(() => ({ 'prod-main': true, 'prod-replica': true }));
   const [q, setQ] = React.useState('');
   const sqlFileRef = React.useRef(null);
@@ -784,7 +802,7 @@ function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, rol
       )}
 
       <div className="qh-side-body">
-        {mode === 'conns' && <SchemaTree conns={conns} schemaCache={schemaCache} onLoadSchema={onLoadSchema} rolesCache={rolesCache} onLoadRoles={onLoadRoles} active={active} open={open} setOpen={setOpen} onPickDb={onPick} onOpenTable={onOpenTable} onNewQuery={onNewQuery} isSuper={isSuper} reveal={reveal} narrow={!width || width < 330} tagFilters={tagF} onToast={onToast} />}
+        {mode === 'conns' && <SchemaTree conns={conns} schemaCache={schemaCache} onLoadSchema={onLoadSchema} canRefresh={canRefresh} onRefreshSchema={onRefreshSchema} rolesCache={rolesCache} onLoadRoles={onLoadRoles} active={active} open={open} setOpen={setOpen} onPickDb={onPick} onOpenTable={onOpenTable} onNewQuery={onNewQuery} isSuper={isSuper} reveal={reveal} narrow={!width || width < 330} tagFilters={tagF} onToast={onToast} />}
 
         {mode === 'saved' && saved.length === 0 && (
           <div className="qh-side-empty">
@@ -793,13 +811,18 @@ function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, rol
             <div className="qh-side-empty-sub">Save one from a tab's right-click menu, or when closing a tab with unsaved edits.</div>
           </div>
         )}
-        {mode === 'saved' && saved.map(s => (
+        {mode === 'saved' && saved.map(s => {
+          // The row says it BEFORE it is clicked: opening a query only to find
+          // its target unreachable is the same information one click later.
+          const cs = qhConnState(s.state);
+          return (
           <div key={s.id} className="qh-saved" onClick={() => onLoadSaved(s)} title="Open in a new tab">
             <div className="qh-saved-name">{s.name}</div>
-            <div className="qh-saved-meta"><OriginBadge dest={s.dest} /><span>{s.conn} · {s.db}</span></div>
+            <div className="qh-saved-meta"><OriginBadge dest={s.dest} /><span>{s.conn} · {s.db}</span>{cs && <span className="qh-conn-state" title={cs.why + ' The query still opens.'}>{cs.word}</span>}</div>
             <button className="qh-row-del" onClick={(e) => { e.stopPropagation(); onDeleteSaved(s.id); }} title="Delete" aria-label="Delete saved query">{ICN_TRASH}</button>
           </div>
-        ))}
+          );
+        })}
 
         {mode === 'sessions' && (
           <div className="qh-side-top">
@@ -839,7 +862,9 @@ function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, rol
           </div>
         ))}
 
-        {mode === 'history' && history.map(h => (
+        {mode === 'history' && history.map(h => {
+          const cs = qhConnState(h.state);
+          return (
           <button key={h.id} className="qh-hist" onClick={() => onLoadHistory(h)}>
             <div className="qh-hist-top">
               <TierBadge tier={h.tier} sm />
@@ -847,9 +872,10 @@ function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, rol
               <span className="qh-hist-when">{h.when}</span>
             </div>
             <div className="qh-hist-sql">{h.sql}</div>
-            <div className="qh-hist-meta">{h.conn} · {h.db}{h.approver ? ' · ' + h.approver : ''}</div>
+            <div className="qh-hist-meta">{h.conn} · {h.db}{h.approver ? ' · ' + h.approver : ''}{cs && <span className="qh-conn-state" title={cs.why + ' The query still opens.'}>{cs.word}</span>}</div>
           </button>
-        ))}
+          );
+        })}
       </div>
 
       {mode === 'conns' && (
@@ -919,7 +945,7 @@ function RequestEndpointModal({ onClose, onSubmit }) {
 }
 
 // ---------- Bottom results panel ----------
-function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn }) {
+function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement }) {
   const [exp, setExp] = React.useState(false);
   // Click-away / Escape, not mouse-out: the 6px gap between the button and the
   // menu used to close it mid-reach. See qhUseDismiss.
@@ -927,6 +953,12 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onE
   const expRef = qhUseDismiss(exp, closeExp);
   const tabs = [['results', 'Results'], ['plan', 'Plan'], ['messages', 'Messages'], ['audit', 'Audit log']];
   const total = result && result.kind === 'table' ? result.total : null;
+  // Which of several statements is on screen. A multi-statement run stores one
+  // table per statement; `?statement=N` fetches them and the payload says where
+  // it sits (`statement` / `statementCount`, 2026-08-20). Before this the
+  // second table existed on the server and was unreachable from the UI.
+  const stN = (result && result.statement) || 1;
+  const stCount = (result && result.statementCount) || 1;
 
   return (
     <div className="qh-results">
@@ -941,6 +973,17 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onE
           ))}
         </div>
         <div className="qh-res-actions">
+          {stCount > 1 && (
+            <div className="qh-res-stmt">
+              <button className="qh-res-stmt-b" disabled={stN <= 1} onClick={() => onStatement && onStatement(stN - 1)} aria-label="Previous result">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+              </button>
+              <span className="qh-res-stmt-l">Result {stN} of {stCount}</span>
+              <button className="qh-res-stmt-b" disabled={stN >= stCount} onClick={() => onStatement && onStatement(stN + 1)} aria-label="Next result">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+              </button>
+            </div>
+          )}
           {/* Where these rows came from. The tab's target can be re-pointed after a
               run, so this reads the connection the query WAS sent to — same rule
               as the unmasked chip: the header describes the grid, not the
@@ -993,7 +1036,11 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onE
       </div>
 
       <div className="qh-res-body">
-        {tab === 'results' && <ResultsView result={result} status={status} onToast={onToast} colMeta={colMeta} unmasked={unmasked} />}
+        {/* Remounted per statement: the grid's page, selection and column
+            widths all describe ONE table, and statement 2 is a different table
+            with different columns — carrying page 4 into it would ask the server
+            for rows past the end. */}
+        {tab === 'results' && <ResultsView key={'st' + stN} result={result} status={status} onToast={onToast} colMeta={colMeta} unmasked={unmasked} />}
         {tab === 'plan' && <PlanView plan={plan} />}
         {tab === 'messages' && <MessagesView messages={messages} />}
         {tab === 'audit' && <AuditView audit={audit} />}

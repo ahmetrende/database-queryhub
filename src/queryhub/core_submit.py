@@ -272,7 +272,10 @@ def validate_submission(
                 # ISO date, not the prose form: the client formats for its own
                 # locale, and "Request access" is a different button from a red
                 # toast — which is the whole reason this is a distinct code.
-                detail={"expiredOn": lapsed_at.date().isoformat()})
+                # The calendar date in the fleet's display timezone, not the
+                # UTC one: the picker writes a LOCAL end-of-day, so a UTC date
+                # can name the day before the one the person experienced.
+                detail={"expiredOn": teams.lapsed_iso(lapsed_at)})
         return Rejection("server", "You are not authorized to query this server.")
 
     database = database_name or target.default_database

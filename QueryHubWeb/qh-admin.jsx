@@ -137,6 +137,7 @@ function AdminPanel({ st, adminRole, setAdminRole, user }) {
 // concatenated submitter + tier + SQL body. Now the control announces who
 // submitted what, at which tier, against which target, and the SQL is read as
 // content instead of as part of the name.
+const QCHK = <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>;
 function QueueCard({ it, selected, onSelect, checked, onCheck }) {
   const who = it.submitter.name + ', ' + it.tier + ' on '
     + it.connectionId + '/' + it.databaseId + ', ' + qhAgo(it.submittedAt);
@@ -145,7 +146,7 @@ function QueueCard({ it, selected, onSelect, checked, onCheck }) {
       <label className="qh-qcheck">
         <input type="checkbox" checked={checked} onChange={() => onCheck(it.id)}
                aria-label={'Select request from ' + who} />
-        <span className="qh-qcheck-box"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>
+        <span className="qh-qcheck-box">{QCHK}</span>
       </label>
       <button type="button" className="qh-qcard-main" onClick={() => onSelect(it.id)}
               aria-label={'Review request from ' + who} aria-pressed={!!selected}>
@@ -154,7 +155,11 @@ function QueueCard({ it, selected, onSelect, checked, onCheck }) {
           <span className="qh-qname">{it.submitter.name}</span>
           <TierBadge tier={it.tier} sm />
           <span className={'qh-origin-chip o-' + (it.origin === 'web' ? 'web' : 'slack')} title={'Submitted via ' + (it.origin === 'web' ? 'the web app' : 'Slack')}>{it.origin === 'web' ? 'web' : 'slack'}</span>
-          {it.bundleId && <span className="qh-bundle-chip" title={'Bundle ' + it.bundleId}>bundle</span>}
+          {/* Inside a batch the chip says WHICH one — `bundlePosition` /
+              `bundleSize` (GET /admin/queue, 2026-08-20). "bundle" alone told
+              an approver a batch existed and nothing about where this row sat
+              in it, which for a migration is the only thing that matters. */}
+          {it.bundleId && <span className="qh-bundle-chip" title={'Bundle ' + it.bundleId}>{it.bundlePosition ? it.bundlePosition + ' of ' + (it.bundleSize || '?') : 'bundle'}</span>}
           {it.piiCols.length > 0 && <span className="qh-qpii" title={it.piiCols.join(', ')}>PII</span>}
         </div>
         <div className="qh-qcard-target">{it.connectionId}/{it.databaseId}</div>
@@ -184,10 +189,36 @@ function ApprovalsView({ st, user, role }) {
   // the first row, or deciding the last item re-selects the one just decided.
   const cur = sel == null ? null : (items.find(x => x.id === sel) || items[0]);
   const toggleCheck = (id) => setChecked(c => c.includes(id) ? c.filter(x => x !== id) : [...c, id]);
+  const actor = user ? ('dba.' + user.name.split(' ')[0].toLowerCase()) : 'dba';
+
+  // Select all / none. Tri-state, because "some selected" and "all selected"
+  // must not look identical when the next click empties the selection.
+  const allIds = items.map(x => x.id);
+  const allChecked = allIds.length > 0 && checked.length >= allIds.length;
+  const someChecked = checked.length > 0 && !allChecked;
+  const setMany = (ids, on) => setChecked(c => on ? [...new Set(c.concat(ids))] : c.filter(x => ids.indexOf(x) < 0));
+
+  // A batch arrives as N rows interleaved with everyone else's. `bundleId` +
+  // `bundlePosition` + `bundleSize` are enough to put it back together and
+  // order it AS WRITTEN — by position, not by arrival, because "item 3 of 5" of
+  // a migration means nothing out of sequence. The group takes the place of the
+  // first of its rows, so nothing jumps to the top of the queue.
+  const groups = React.useMemo(() => {
+    const out = [], seen = {};
+    items.forEach(it => {
+      if (!it.bundleId) { out.push({ solo: it }); return; }
+      if (seen[it.bundleId]) return;
+      seen[it.bundleId] = 1;
+      const rows = items.filter(x => x.bundleId === it.bundleId)
+        .slice().sort((a, b) => (a.bundlePosition || 0) - (b.bundlePosition || 0));
+      out.push({ bundleId: it.bundleId, rows, size: it.bundleSize || rows.length });
+    });
+    return out;
+  }, [items]);
 
   const act = (decision) => {
     if ((decision === 'reject' || decision === 'changes') && noteMode !== decision) { setNoteMode(decision); return; }
-    st.decide(cur.id, decision, user ? ('dba.' + (user.name.split(' ')[0].toLowerCase())) : 'dba', note.trim() || undefined);
+    st.decide(cur.id, decision, actor, note.trim() || undefined);
     setNote(''); setNoteMode(null);
     const rest = items.filter(x => x.id !== cur.id);
     setDecided(d => d.concat([cur.id]));   // hide it now, not when the reload lands
@@ -203,13 +234,21 @@ function ApprovalsView({ st, user, role }) {
             <div className="qh-aview-sub">{items.length} pending · you approve as {role === 'super' ? 'super-admin' : 'DBA'}</div>
           </div>
         </div>
-        {checked.length > 0 && (
-          <div className="qh-batchbar">
-            <span>{checked.length} selected</span>
-            <div className="qh-batchbar-actions">
-              <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => { st.batchApprove(checked, 'dba.admin'); setChecked([]); }}>Approve {checked.length}</button>
-              <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setChecked([])}>Clear</button>
-            </div>
+        {items.length > 0 && (
+          <div className={'qh-batchbar' + (checked.length ? ' is-armed' : '')}>
+            <label className="qh-qcheck qh-batchbar-all">
+              <input type="checkbox" checked={allChecked} onChange={() => setChecked(allChecked ? [] : allIds)}
+                     aria-label={allChecked ? 'Deselect all requests' : 'Select all ' + items.length + ' requests'} />
+              <span className={'qh-qcheck-box' + (someChecked ? ' is-some' : '')}>{QCHK}</span>
+            </label>
+            <span>{checked.length ? checked.length + ' selected' : 'Select all ' + items.length}</span>
+            <div className="qh-flex1" />
+            {checked.length > 0 && (
+              <div className="qh-batchbar-actions">
+                <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => { st.batchApprove(checked, actor); setChecked([]); }}>Approve {checked.length}</button>
+                <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setChecked([])}>Clear</button>
+              </div>
+            )}
           </div>
         )}
         <div className="qh-qcards">
@@ -218,7 +257,28 @@ function ApprovalsView({ st, user, role }) {
               where it went is also the way there. `#admin/audit` is picked up
               by the hashchange listener in AdminPanel — no prop drilling. */}
           {items.length === 0 && <div className="qh-aempty"><AdminIcons.approvals /><div>Queue is clear.</div><div className="qh-aempty-hint">Nothing waiting — approved &amp; rejected queries move to the <a className="qh-aempty-link" href="#admin/audit">audit log</a>.</div></div>}
-          {items.map(it => <QueueCard key={it.id} it={it} selected={cur && cur.id === it.id} onSelect={setSel} checked={checked.includes(it.id)} onCheck={toggleCheck} />)}
+          {groups.map(g => {
+            if (g.solo) return <QueueCard key={g.solo.id} it={g.solo} selected={cur && cur.id === g.solo.id} onSelect={setSel} checked={checked.includes(g.solo.id)} onCheck={toggleCheck} />;
+            const ids = g.rows.map(x => x.id);
+            const on = ids.every(id => checked.includes(id));
+            return (
+              <div key={g.bundleId} className="qh-qbundle">
+                <div className="qh-qbundle-head">
+                  <label className="qh-qcheck">
+                    <input type="checkbox" checked={on} onChange={() => setMany(ids, !on)} aria-label={(on ? 'Deselect' : 'Select') + ' the whole batch'} />
+                    <span className={'qh-qcheck-box' + (!on && ids.some(id => checked.includes(id)) ? ' is-some' : '')}>{QCHK}</span>
+                  </label>
+                  <span className="qh-qbundle-t">Batch · {g.size} {g.size === 1 ? 'query' : 'queries'}</span>
+                  {/* Only what is still waiting is here — say so rather than
+                      letting "5 queries" sit above three rows. */}
+                  {g.rows.length !== g.size && <span className="qh-qbundle-part">{g.rows.length} still waiting</span>}
+                  <div className="qh-flex1" />
+                  <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => st.approveBundle(g.bundleId, actor)}>Approve all</button>
+                </div>
+                {g.rows.map(it => <QueueCard key={it.id} it={it} selected={cur && cur.id === it.id} onSelect={setSel} checked={checked.includes(it.id)} onCheck={toggleCheck} />)}
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -275,8 +335,8 @@ function ApprovalsView({ st, user, role }) {
             {cur.bundleId && (
               <div className="qh-bundle-note">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
-                Part of bundle <b>{cur.bundleId}</b> ({items.filter(x => x.bundleId === cur.bundleId).length} queries) — one approval round.
-                <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => st.approveBundle(cur.bundleId, 'dba.admin')}>Approve whole bundle</button>
+                Part of bundle <b>{cur.bundleId}</b> ({cur.bundleSize || items.filter(x => x.bundleId === cur.bundleId).length} queries) — one approval round.
+                <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => st.approveBundle(cur.bundleId, actor)}>Approve whole bundle</button>
               </div>
             )}
 

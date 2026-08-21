@@ -1443,6 +1443,7 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
     # source happens to hold: that is the one target whose access would allow
     # editing the audit trail this endpoint writes to.
     forbidden = set(grants.control_plane_target_ids())
+    team_names: list[str] = []
 
     with db.transaction() as cur:
         cur.execute(
@@ -1470,6 +1471,12 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
                 "ON CONFLICT DO NOTHING RETURNING team_id",
                 (slack_id, body.source))
             teams_joined = [r["team_id"] for r in cur.fetchall()]
+            # Names, not just ids: the caller's confirmation says "joined
+            # petrels, platform", and it cannot build that from integers.
+            if teams_joined:
+                cur.execute("SELECT name FROM teams WHERE id = ANY(%s) ORDER BY name",
+                            (teams_joined,))
+                team_names = [r["name"] for r in cur.fetchall()]
             to_write = src_grants
         else:
             # Team-derived targets become explicit grants. A user row supersedes
@@ -1503,6 +1510,10 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
 
     return {"slackId": slack_id, "copiedFrom": body.source,
             "targetsGranted": len(written), "teamsJoined": len(teams_joined),
+            # `written` and `teams` are what the UI reads to say what happened.
+            # Kept alongside the counts rather than replacing them: the counts
+            # are what the audit row and any script would want.
+            "written": len(written), "teams": team_names,
             "tier": tier}
 
 
@@ -1540,20 +1551,51 @@ def admin_effective_access(slack_id: str,
         "SELECT t.id, t.name FROM team_members m JOIN teams t ON t.id = m.team_id "
         " WHERE m.slack_user_id = %s ORDER BY t.name", (slack_id,))
 
+    # Which team supplied a team-sourced grant, and when each one ends. The
+    # resolver deliberately answers neither — it runs on every submission and
+    # returns the decision, not its provenance. Both are looked up here, in two
+    # queries rather than two per target, because "via <team>" with no team name
+    # is a label that says nothing and an expiry the panel cannot see is the
+    # thing that will surprise someone.
+    own_exp = {r["target_server_id"]: r["expires_at"] for r in db.fetch_all(
+        "SELECT target_server_id, expires_at FROM user_target_grants "
+        " WHERE slack_user_id = %s AND revoked_at IS NULL", (slack_id,))}
+    via_team: dict[int, dict] = {}
+    for r in db.fetch_all(
+            "SELECT g.target_server_id, t.name, g.expires_at "
+            "  FROM team_target_grants g "
+            "  JOIN teams t ON t.id = g.team_id "
+            "  JOIN team_members m ON m.team_id = g.team_id "
+            " WHERE m.slack_user_id = %s AND g.revoked_at IS NULL "
+            "   AND (g.expires_at IS NULL OR g.expires_at > NOW()) "
+            " ORDER BY t.name", (slack_id,)):
+        # First team wins for the label. Several can grant the same target and
+        # the resolver has already merged them into one decision, so naming one
+        # is a simplification — but naming none is worse, and naming all of them
+        # turns a row into a list.
+        via_team.setdefault(r["target_server_id"], r)
+
     out = []
     for t in targets.list_all():
         g = teams.effective_grant_for_user(slack_id, t.id)
         if g is None:
             continue
+        src = g.get("source")
+        team = via_team.get(t.id) if src == "team" else None
         out.append({
             "connectionId": t.alias,
             "enabled": t.enabled,
             "tier": (g.get("mode") or "ro").upper(),
             # NULL means every database on the target, which is not the same
             # as an empty list and must not render as "no databases".
-            "databases": g.get("allowed_databases"),
+            "databases": sorted(g["allowed_databases"]) if g.get("allowed_databases") else None,
             "allDatabases": g.get("allowed_databases") is None,
-            "source": g.get("source"),
+            # 'user' | 'team' | 'admin_or_bypass' — the third is an admin, who
+            # reaches everything without a row anywhere.
+            "source": src,
+            "sourceTeam": (team or {}).get("name"),
+            "expiresAt": mapping.iso(
+                (team or {}).get("expires_at") if src == "team" else own_exp.get(t.id)),
         })
 
     auto = db.fetch_all(

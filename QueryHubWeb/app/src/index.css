@@ -855,7 +855,7 @@
   .qh-aqueue { flex: 1; display: flex; min-height: 0; }
   .qh-aqueue-list { width: 340px; flex-shrink: 0; border-right: 1px solid var(--stroke-medium); display: flex; flex-direction: column; min-height: 0; }
   .qh-aqueue-list .qh-aview-head { padding: 20px 18px 12px; margin: 0; }
-  .qh-batchbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 18px; background: var(--brand-adaptive-light); font-size: 12px; font-weight: 600; color: var(--fg-accent); }
+  .qh-batchbar { display: flex; align-items: center; gap: 10px; padding: 8px 18px; background: var(--brand-adaptive-light); font-size: 12px; font-weight: 600; color: var(--fg-accent); }
   .qh-batchbar-actions { display: flex; gap: 8px; }
   .qh-qcards { flex: 1; overflow-y: auto; padding: 4px 12px 12px; }
   .qh-qcard { width: 100%; display: flex; gap: 10px; padding: 12px; margin-bottom: 6px; background: transparent; border: 1px solid transparent; border-radius: var(--r-md); cursor: pointer; text-align: left; }
@@ -865,6 +865,18 @@
   .qh-qcheck input { position: absolute; opacity: 0; width: 0; height: 0; }
   .qh-qcheck-box { width: 17px; height: 17px; border: 1.5px solid var(--stroke-strong); border-radius: var(--r-2xs); display: inline-flex; align-items: center; justify-content: center; color: transparent; }
   .qh-qcheck input:checked + .qh-qcheck-box { background: var(--brand-green); border-color: var(--brand-green); color: #fff; }
+  /* "Some selected" must not read as "all selected": the next click on a full
+     box empties the selection, and on a partial one fills it. */
+  .qh-qcheck-box.is-some { background: var(--brand-green); border-color: var(--brand-green); color: #fff; position: relative; }
+  .qh-qcheck-box.is-some svg { display: none; }
+  .qh-qcheck-box.is-some::after { content: ''; width: 8px; height: 2px; border-radius: 1px; background: #fff; }
+  .qh-batchbar-all { padding-top: 0; }
+  /* A batch, put back together: one header, its rows under it, in written order. */
+  .qh-qbundle { margin-bottom: 8px; border: 1px solid var(--stroke-light); border-radius: var(--r-md); background: var(--adaptive-light); }
+  .qh-qbundle-head { display: flex; align-items: center; gap: 9px; padding: 8px 10px 8px 12px; border-bottom: 1px solid var(--stroke-light); }
+  .qh-qbundle-t { font-size: 12px; font-weight: 700; color: var(--fg-secondary); }
+  .qh-qbundle-part { font-size: 11px; color: var(--fg-tertiary); }
+  .qh-qbundle .qh-qcard { margin-bottom: 0; }
   /* The card body is a real <button> (the card itself is a div, because the
      select control and the batch checkbox cannot legally nest). These are the
      UA button styles it has to shed to keep looking like a card. */
@@ -934,6 +946,10 @@
   .qh-atable td { padding: 11px 12px; border-bottom: 1px solid var(--stroke-light); color: var(--fg-primary); vertical-align: middle; }
   .qh-atable tr:hover td { background: var(--adaptive-light); }
   .qh-mono { font-family: var(--qh-mono); font-size: 12px; }
+  /* Four rows in the live data hold a free-text note where a principal id should
+     be, so this cell can contain a sentence. One line, full text on hover — the
+     note is the only record of why those grants exist, so it is not dropped. */
+  .qh-grantby { display: block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .qh-muted { color: var(--fg-tertiary); }
   .qh-tright { text-align: right; }
   .qh-revoke { background: transparent; border: 1px solid var(--stroke-medium); color: var(--fg-danger); font-family: inherit; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: var(--r-full); cursor: pointer; }
@@ -953,6 +969,25 @@
   [data-theme='dark'] .qh-input-date { color-scheme: dark; }
   .qh-input.is-err { border-color: var(--stroke-danger); box-shadow: 0 0 0 2px var(--danger-adaptive-light); }
   .qh-exp-note { flex-basis: 100%; font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); }
+  /* A saved query or history row whose target is out of reach. Quiet: it is a
+     fact about the row, not an error — the query still opens. */
+  .qh-conn-state { margin-left: 6px; padding: 1px 6px; border-radius: var(--r-2xs); font-size: 9.5px; font-weight: 700;
+    letter-spacing: 0.03em; text-transform: uppercase; color: var(--fg-tertiary); background: var(--adaptive-strong); white-space: nowrap; }
+  /* The target strip names an unreachable alias instead of a dash. */
+  .qh-target-conn.is-gone, .qh-target-db.is-gone { color: var(--fg-tertiary); text-decoration: line-through; text-decoration-thickness: 1px; }
+  /* Cannot run here, said where Run is. Sits between the action bar and the
+     editor, like the reason strip — part of the request, not a modal over it. */
+  .qh-accnote { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 6px 14px; flex-shrink: 0;
+    background: var(--adaptive-light); border-bottom: 1px solid var(--stroke-light); }
+  .qh-accnote.is-expired { background: var(--danger-adaptive-light); border-bottom-color: var(--stroke-danger); }
+  .qh-accnote-ic { display: inline-flex; flex-shrink: 0; color: var(--fg-tertiary); }
+  .qh-accnote.is-expired .qh-accnote-ic { color: var(--fg-danger); }
+  .qh-accnote-t { flex: 1 1 auto; min-width: 0; font-size: 12.5px; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-accnote-hint { font-size: 12px; color: var(--fg-tertiary); flex-shrink: 0; }
+  .qh-accnote-cta { flex-shrink: 0; }
+  .qh-accnote-x { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+    background: transparent; border: 0; border-radius: var(--r-2xs); color: var(--fg-tertiary); cursor: pointer; }
+  .qh-accnote-x:hover { background: var(--adaptive-strong); color: var(--fg-primary); }
   .qh-tierchecks { display: flex; gap: 6px; }
   .qh-tierchk { display: inline-flex; align-items: center; gap: 4px; height: 34px; padding: 0 10px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); cursor: pointer; font-size: 12px; font-weight: 700; color: var(--fg-tertiary); }
   .qh-tierchk.is-on { border-color: var(--brand-green); background: var(--brand-adaptive-light); color: var(--fg-accent); }
@@ -1024,6 +1059,44 @@
   .qh-acctarget-t { font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-secondary); }
   .qh-accedit-subj { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
   .qh-accedit-subjname { font-size: 14px; }
+  /* ---------- Person access (§6): one person, resolved ---------- */
+  .qh-percards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+  .qh-percard { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-white); border: 1px solid var(--stroke-light); border-radius: var(--r-md); cursor: pointer; font: inherit; text-align: left; }
+  .qh-percard:hover { border-color: var(--stroke-accent); background: var(--bg-light); }
+  .qh-percard-main { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+  .qh-percard-name { font-size: 13.5px; font-weight: 600; color: var(--fg-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qh-percard-h { font-family: var(--qh-mono); font-size: 11px; color: var(--fg-tertiary); }
+  .qh-percard-n { font-size: 11px; color: var(--fg-tertiary); flex-shrink: 0; }
+  .qh-peravatar { width: 30px; height: 30px; border-radius: 999px; background: var(--brand-green); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; }
+  .qh-peravatar.lg { width: 38px; height: 38px; font-size: 13px; }
+  .qh-perhead { display: flex; align-items: center; gap: 12px; padding-bottom: 14px; margin-bottom: 4px; border-bottom: 1px solid var(--stroke-light); flex-wrap: wrap; }
+  .qh-perhead-main { display: flex; flex-direction: column; min-width: 0; }
+  .qh-perhead-name { font-size: 17px; font-weight: 700; color: var(--fg-primary); }
+  .qh-perhead-h { font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-tertiary); }
+  .qh-perteams { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+  .qh-persec { padding: 16px 0; border-bottom: 1px solid var(--stroke-light); }
+  .qh-persec:last-child { border-bottom: 0; }
+  .qh-persec-h { margin-bottom: 10px; }
+  .qh-perload { font-size: 12.5px; color: var(--fg-tertiary); padding: 10px 2px; }
+  .qh-perappr { display: flex; flex-wrap: wrap; gap: 18px; padding: 9px 12px; margin-bottom: 10px; background: var(--brand-adaptive-light); border-radius: var(--r-sm); font-size: 12.5px; color: var(--fg-secondary); }
+  .qh-perappr-k { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-tertiary); margin-right: 7px; }
+  /* A short fact does not break mid-value: "250,000" and "rows" are one thing.
+     The approver sentence beside it is free to wrap — its scope can be long. */
+  .qh-perappr-nw { white-space: nowrap; }
+  .qh-perlist { display: flex; flex-direction: column; gap: 6px; }
+  .qh-perrow { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); }
+  .qh-perrow.is-auto { background: transparent; border-style: dashed; }
+  .qh-perrow-t { font-family: var(--qh-mono); font-size: 12px; font-weight: 600; color: var(--fg-primary); flex: 0 0 auto; }
+  .qh-perrow-dbs { font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-tertiary); flex: 1 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qh-persrc { font-size: 10px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; padding: 2px 7px; border-radius: var(--r-2xs); color: var(--fg-secondary); background: var(--adaptive-strong); flex-shrink: 0; }
+  .qh-persrc.is-team { color: #15688C; background: var(--sup-blue-light); }
+  [data-theme='dark'] .qh-persrc.is-team { color: #7FD2F5; background: rgba(102,204,255,0.12); }
+  .qh-persrc.is-auto { color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  .qh-perown { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+  .qh-perown .qh-perlist { align-self: stretch; }
+  .qh-percopy { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .qh-percopy-tm { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--fg-secondary); cursor: pointer; }
+  .qh-percopy-say { margin-top: 10px; padding: 9px 12px; background: var(--bg-light); border-left: 2px solid var(--brand-green); border-radius: var(--r-xs); font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
   /* Save/Cancel sit in the subject header row as well as at the foot of the
      form: one control, two places (CODE brief 2026-08-20 §1). `margin-left:auto`
      right-aligns it, and the parent's flex-wrap gives it its own line when the
@@ -1271,6 +1344,13 @@
   .qh-res-req { font-family: var(--qh-mono); font-size: 11.5px;
     color: var(--fg-secondary); padding: 2px 6px; border-radius: var(--r-xs);
     background: var(--adaptive-light); }
+  /* Which of several statements is on screen. Arrows rather than numbered tabs:
+     a bundle of twelve statements would otherwise own the whole header. */
+  .qh-res-stmt { display: inline-flex; align-items: center; gap: 2px; padding: 1px; border: 1px solid var(--stroke-medium); border-radius: var(--r-xs); flex-shrink: 0; }
+  .qh-res-stmt-l { font-size: 11.5px; font-weight: 600; color: var(--fg-secondary); padding: 0 4px; white-space: nowrap; }
+  .qh-res-stmt-b { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 0; border-radius: var(--r-2xs); color: var(--fg-secondary); cursor: pointer; }
+  .qh-res-stmt-b:hover:not(:disabled) { background: var(--adaptive-strong); color: var(--fg-primary); }
+  .qh-res-stmt-b:disabled { opacity: 0.35; cursor: default; }
   /* Two acts behind one control: withdrawing a request that has not run stays
      quiet, killing a statement mid-flight carries danger colour. */
   .qh-cancel-run.is-terminate { color: var(--fg-danger); border-color: var(--danger-adaptive-strong); }

@@ -107,3 +107,49 @@ def test_a_rejection_without_detail_keeps_the_old_envelope(monkeypatch):
         pass
     assert captured["code"] == "forbidden"
     assert "expiredOn" not in captured["extra"]
+
+
+# --- the date is the one the person experienced -----------------------------
+#
+# Design's question: `expiredOn` has no timezone, and the standing-grant picker
+# writes a LOCAL end-of-day. For a UTC-stored expiry, the UTC calendar date and
+# the local one differ at the boundary — so a refusal could name yesterday.
+
+def _tz(monkeypatch, name):
+    monkeypatch.setattr(teams.cfg, "get_setting",
+                        lambda k, d=None: name if k == "web_display_timezone" else d)
+
+
+BOUNDARY = datetime(2026, 8, 14, 22, 30, tzinfo=timezone.utc)   # 01:30 on the 15th in Istanbul
+
+
+def test_utc_display_names_the_utc_day(monkeypatch):
+    _tz(monkeypatch, "UTC")
+    assert teams.lapsed_iso(BOUNDARY) == "2026-08-14"
+
+
+def test_a_local_display_zone_names_the_day_the_person_had(monkeypatch):
+    """The regression this closes: 22:30 UTC is already the 15th in Istanbul,
+    and telling someone their access ended on the 14th is telling them the
+    wrong day."""
+    _tz(monkeypatch, "Europe/Istanbul")
+    assert teams.lapsed_iso(BOUNDARY) == "2026-08-15"
+    assert teams.fmt_lapsed(BOUNDARY) == "15 Aug 2026"
+
+
+def test_the_sentence_and_the_field_never_disagree(monkeypatch):
+    """They are two renderings of one instant; a client showing both must not
+    see different days."""
+    _tz(monkeypatch, "Europe/Istanbul")
+    iso, human = teams.lapsed_iso(BOUNDARY), teams.fmt_lapsed(BOUNDARY)
+    assert iso.split("-")[2] == "15" and human.startswith("15 ")
+
+
+def test_an_unusable_zone_falls_back_to_utc_rather_than_raising(monkeypatch):
+    _tz(monkeypatch, "Not/AZone")
+    assert teams.lapsed_iso(BOUNDARY) == "2026-08-14"
+
+
+def test_a_naive_datetime_is_read_as_utc(monkeypatch):
+    _tz(monkeypatch, "UTC")
+    assert teams.lapsed_iso(datetime(2026, 8, 14, 22, 30)) == "2026-08-14"
