@@ -196,7 +196,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
       .catch(e => fail(e, 'Kill switch change failed.'));
   };
   const addGrant = (g) => {
-    qhApi.adminAddGrant({ subjectType: g.subjectType, subject: g.subject, connectionId: g.connectionId, databaseId: g.databaseId, tier: g.tier, reason: g.reason || null })
+    qhApi.adminAddGrant({ subjectType: g.subjectType, subject: g.subject, connectionId: g.connectionId, databaseId: g.databaseId, tier: g.tier, reason: g.reason || null, expiresAt: g.expiresAt || null })
       .then(() => { loadGrants(); loadAudit(); pushToast && pushToast('Grant added: ' + g.subject + ' → ' + g.connectionId + ' (' + g.tier + ').'); })
       .catch(e => fail(e, 'Add grant failed.'));
   };
@@ -253,16 +253,19 @@ function useAdminState(pushToast, active, isAdminViewer) {
     (targets || []).forEach(t => {
       const dbs = (t.databases && t.databases.length) ? t.databases : ['*'];
       const ex = byConn.get(t.connectionId);
-      if (!ex) byConn.set(t.connectionId, { connectionId: t.connectionId, databases: dbs.includes('*') ? ['*'] : [...dbs], tier: t.tier });
+      if (!ex) byConn.set(t.connectionId, { connectionId: t.connectionId, databases: dbs.includes('*') ? ['*'] : [...dbs], tier: t.tier, expiresAt: t.expiresAt || null });
       else {
         ex.tier = qhMaxTier(ex.tier, t.tier);
         ex.databases = (ex.databases.includes('*') || dbs.includes('*')) ? ['*'] : [...new Set([...ex.databases, ...dbs])];
+        // An expiry is a limit like the other two, so it collapses the same way:
+        // the more permissive of the pair wins, and no date outlives any date.
+        ex.expiresAt = (!ex.expiresAt || !t.expiresAt) ? null : (new Date(t.expiresAt) > new Date(ex.expiresAt) ? t.expiresAt : ex.expiresAt);
       }
     });
     const desired = [...byConn.values()];
     const keep = new Set(desired.map(d => d.connectionId));
     const mine = grants.filter(g => g.subjectType === subjectType && g.subject === subject);
-    const jobs = desired.map(d => qhApi.adminAddGrant({ subjectType, subject, connectionId: d.connectionId, databases: d.databases.includes('*') ? null : d.databases, tier: d.tier }))
+    const jobs = desired.map(d => qhApi.adminAddGrant({ subjectType, subject, connectionId: d.connectionId, databases: d.databases.includes('*') ? null : d.databases, tier: d.tier, expiresAt: d.expiresAt || null }))
       .concat(mine.filter(g => !keep.has(g.connectionId)).map(g => qhApi.adminDelGrant(g.id)));
     Promise.allSettled(jobs).then(rs => {
       loadGrants(); loadAudit();
@@ -275,7 +278,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
   // connection changed (add first, so a failure never leaves the subject with none).
   const updateGrant = (g) => {
     const dbs = (g.databases && g.databases.length && !g.databases.includes('*')) ? g.databases : null;
-    qhApi.adminAddGrant({ subjectType: g.subjectType, subject: g.subject, connectionId: g.connectionId, databases: dbs, tier: g.tier })
+    qhApi.adminAddGrant({ subjectType: g.subjectType, subject: g.subject, connectionId: g.connectionId, databases: dbs, tier: g.tier, expiresAt: g.expiresAt || null })
       .then(res => (res && res.id && res.id !== g.id) ? qhApi.adminDelGrant(g.id) : null)
       .then(() => { loadGrants(); loadAudit(); pushToast && pushToast('Grant updated.'); })
       .catch(e => fail(e, 'Update failed.'));

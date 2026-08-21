@@ -27,9 +27,47 @@ function expiryLabel(iso) {
   if (days <= 3) return { text: days + 'd left', cls: 'is-soon' };
   return { text: days + 'd left', cls: '' };
 }
+// Standing grants can expire as of migration 096 (CODE brief 2026-08-15 (c)) —
+// until then only auto-approve was time-bounded and this control was removed
+// from here on that word. NULL stays the common case (every live grant has it),
+// so "No expiry" is the default and the date field only appears when an end is
+// actually wanted. A picked day is read as THROUGH that day (23:59 local):
+// "until Friday" includes Friday, and expiring at 00:00 would cut a day short.
+const expDay = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const expToday = () => expDay(new Date());
+function expForm(iso) { return iso ? { ttl: 'date', expDate: expDay(new Date(iso)) } : { ttl: 'none', expDate: '' }; }
+function expIso(f) {
+  if (!f.ttl || f.ttl === 'none') return null;
+  if (f.ttl === 'date') return f.expDate ? new Date(f.expDate + 'T23:59:59').toISOString() : null;
+  return qhIso(new Date(Date.now() + 1000 * 86400 * parseInt(f.ttl)));
+}
+// The server refuses a past date with 400 rather than accepting it inert — a
+// grant that is dead on arrival still reads to the admin as "access given". The
+// input carries `min` and Save refuses, so that 400 is a backstop, not the UI.
+function expBad(f) { return f.ttl === 'date' && (!f.expDate || f.expDate < expToday()); }
+// Expiry only ever REMOVES: an expired user grant does not fall back to the
+// team's, because a user row is usually written to NARROW what a team allows
+// and falling through would widen access on the day it was meant to end.
+function ExpiryNote({ f, subjectType }) {
+  if (!f.ttl || f.ttl === 'none') return null;
+  return <div className="qh-exp-note">Access stops on this date{subjectType === 'user' ? ' — it does not fall back to a team grant' : ''}. Re-granting later replaces the date, or clears it.</div>;
+}
+function ExpiryPick({ f, onChange }) {
+  return (
+    <div className="qh-exppick">
+      <select className="qh-select" value={f.ttl || 'none'} onChange={e => onChange({ ttl: e.target.value, expDate: e.target.value === 'date' ? (f.expDate || expToday()) : f.expDate })}>
+        <option value="none">No expiry</option>
+        <option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option>
+        <option value="date">Until a date…</option>
+      </select>
+      {f.ttl === 'date' && <input type="date" className={'qh-input qh-input-sm qh-input-date' + (expBad(f) ? ' is-err' : '')} min={expToday()} value={f.expDate} onChange={e => onChange({ ttl: 'date', expDate: e.target.value })} />}
+    </div>
+  );
+}
+function ExpiryChip({ iso }) { if (!iso) return null; const ex = expiryLabel(iso); return <span className={'qh-expiry ' + ex.cls}>{ex.text}</span>; }
 function blankTarget(conns) {
   const c = (conns || [])[0];
-  return { connectionId: c ? c.id : '', databases: ['*'], tier: 'RO' };
+  return { connectionId: c ? c.id : '', databases: ['*'], tier: 'RO', ttl: 'none', expDate: '' };
 }
 // Database multi-pick for a per-connection grant: "All databases" (['*']) or a
 // specific set. Picking a specific db drops '*'; clearing all falls back to '*'.
@@ -93,7 +131,7 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, lockSubject, o
   const [subject, setSubject] = useAcc(subject0 || '');
   const rowsForSubject = (stype, subj) => {
     const ex = st.grants.filter(g => g.subjectType === stype && g.subject === subj);
-    return ex.length ? ex.map(g => ({ connectionId: g.connectionId, databases: (g.databases && g.databases.length) ? g.databases : ['*'], tier: g.tier })) : [blankTarget(conns)];
+    return ex.length ? ex.map(g => ({ connectionId: g.connectionId, databases: (g.databases && g.databases.length) ? g.databases : ['*'], tier: g.tier, ...expForm(g.expiresAt) })) : [blankTarget(conns)];
   };
   const [rows, setRows] = useAcc(() => subject0 ? rowsForSubject(subjectType0, subject0) : [blankTarget(conns)]);
 
@@ -103,8 +141,8 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, lockSubject, o
   const removeRow = (i) => setRows(rs => rs.filter((_, j) => j !== i));
   const addRow = () => setRows(rs => [...rs, blankTarget(conns)]);
   const save = () => {
-    if (!subject.trim()) return;
-    const targets = rows.map(r => ({ connectionId: r.connectionId, databases: r.databases, tier: r.tier }));
+    if (!subject.trim() || rows.some(expBad)) return;
+    const targets = rows.map(r => ({ connectionId: r.connectionId, databases: r.databases, tier: r.tier, expiresAt: expIso(r) }));
     st.setSubjectGrants(subjectType, subject.trim(), targets, actor);
     onDone();
   };
@@ -122,16 +160,18 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, lockSubject, o
             : <select className="qh-select" value={subject} onChange={e => pickSubject(e.target.value)}><option value="">Select team…</option>{teams.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}</select>}
       </div>
 
-      <div className="qh-accedit-label">Targets · {rows.length}<span className="qh-accedit-hint">one row per connection — pick databases (or all) and a single tier</span></div>
+      <div className="qh-accedit-label">Targets · {rows.length}<span className="qh-accedit-hint">one row per connection — databases (or all), a single tier, and an end date only if the access should stop</span></div>
       <div className="qh-acctargets">
         {rows.map((r, i) => (
           <div key={i} className="qh-accrow">
             <div className="qh-accrow-head">
               <select className="qh-select" value={r.connectionId} onChange={e => setRow(i, { connectionId: e.target.value, databases: ['*'] })}>{conns.map(c => <option key={c.id} value={c.id}>{connLabel(c)}</option>)}</select>
               <TierSelect value={r.tier} onChange={v => setRow(i, { tier: v })} />
+              <ExpiryPick f={r} onChange={p => setRow(i, p)} />
               <button className="qh-accrow-x" onClick={() => removeRow(i)} aria-label="Remove target"><AIcon.x /></button>
             </div>
             <DbMultiPick conns={conns} connectionId={r.connectionId} databases={r.databases} onChange={dbs => setRow(i, { databases: dbs })} />
+            <ExpiryNote f={r} subjectType={subjectType} />
           </div>
         ))}
         {rows.length === 0 && <div className="qh-acc-none">No targets — saving will remove all access for this subject.</div>}
@@ -148,12 +188,12 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, lockSubject, o
 
 // ---------- Grants (flat by-grant form, used in By-grant inline edit) ----------
 function GrantForm({ init, actor, st, people, teams, onDone }) {
-  const [f, setF] = useAcc(init);
+  const [f, setF] = useAcc(() => ({ ...init, ...expForm(init.expiresAt) }));
   const conns = st.connections || [];
   const editing = !!f.id;
   const save = () => {
-    if (!f.subject.trim()) return;
-    const payload = { subjectType: f.subjectType, subject: f.subject.trim(), connectionId: f.connectionId, databases: f.databases, tier: f.tier };
+    if (!f.subject.trim() || expBad(f)) return;
+    const payload = { subjectType: f.subjectType, subject: f.subject.trim(), connectionId: f.connectionId, databases: f.databases, tier: f.tier, expiresAt: expIso(f) };
     if (editing) st.updateGrant({ ...payload, id: f.id }, actor); else st.addGrant(payload, actor);
     onDone();
   };
@@ -170,8 +210,10 @@ function GrantForm({ init, actor, st, people, teams, onDone }) {
       </select>
       <TierSelect value={f.tier} onChange={v => setF({ ...f, tier: v })} />
       <DbMultiPick conns={conns} connectionId={f.connectionId} databases={f.databases} onChange={dbs => setF({ ...f, databases: dbs })} />
+      <ExpiryPick f={f} onChange={p => setF({ ...f, ...p })} />
       <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={save}>{editing ? 'Save' : 'Add'}</button>
       {editing && <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone}>Cancel</button>}
+      <ExpiryNote f={f} subjectType={f.subjectType} />
     </div>
   );
 }
@@ -225,7 +267,7 @@ function GrantsView({ st, user }) {
                   <div className="qh-subjcard-main">
                     <div className="qh-subjcard-head"><span className={'qh-subj-type ' + s.subjectType}>{s.subjectType}</span><span className="qh-subjcard-name">{subjLabel(st.people, s.subjectType, s.subject)}</span><span className="qh-subjcard-count">{s.targets.length} connection{s.targets.length === 1 ? '' : 's'}</span></div>
                     <div className="qh-subjcard-targets">
-                      {s.targets.map(g => <span key={g.id} className="qh-acctarget"><span className="qh-acctarget-t">{qhGrantTarget(g)}</span><TierBadge tier={g.tier} sm /></span>)}
+                      {s.targets.map(g => <span key={g.id} className="qh-acctarget"><span className="qh-acctarget-t">{qhGrantTarget(g)}</span><TierBadge tier={g.tier} sm /><ExpiryChip iso={g.expiresAt} /></span>)}
                     </div>
                   </div>
                   <div className="qh-subjcard-acts"><button className="qh-rowbtn" onClick={() => { setEditKey(key); setAddingSubject(false); }}><AIcon.edit />Edit access</button></div>
@@ -243,12 +285,14 @@ function GrantsView({ st, user }) {
             const keyFn = group === 'subject' ? (g => g.subjectType + ' · ' + g.subject) : group === 'server' ? (g => g.connectionId) : group === 'database' ? (g => qhGrantTarget(g)) : null;
             const grouped = keyFn ? accGroup(rows, keyFn) : [['', rows]];
             function renderRow(g) {
-              if (editId === g.id) return <tr key={g.id} className="qh-editrow"><td colSpan={5}><GrantForm init={{ ...g }} actor={actor} st={st} people={st.people} teams={st.teams} onDone={() => setEditId(null)} /></td></tr>;
+              if (editId === g.id) return <tr key={g.id} className="qh-editrow"><td colSpan={6}><GrantForm init={{ ...g }} actor={actor} st={st} people={st.people} teams={st.teams} onDone={() => setEditId(null)} /></td></tr>;
+              const ex = expiryLabel(g.expiresAt);
               return (
                 <tr key={g.id}>
                   <td><span className={'qh-subj-type ' + g.subjectType}>{g.subjectType}</span> <b>{subjLabel(st.people, g.subjectType, g.subject)}</b></td>
                   <td className="qh-mono">{qhGrantTarget(g)}</td>
                   <td><TierBadge tier={g.tier} sm /></td>
+                  <td><span className={'qh-expiry ' + ex.cls}>{ex.text}</span></td>
                   <td className="qh-muted">{g.grantedBy}</td>
                   <td className="qh-tright"><div className="qh-rowacts"><button className="qh-rowbtn" onClick={() => { setEditId(g.id); setAdding(false); }}><AIcon.edit />Edit</button><button className="qh-revoke" onClick={() => st.revokeGrant(g.id, actor)}>Revoke</button></div></td>
                 </tr>
@@ -256,10 +300,10 @@ function GrantsView({ st, user }) {
             }
             return (
               <table className="qh-atable">
-                <thead><tr><th>Subject</th><th>Target</th><th>Tier</th><th>Granted by</th><th></th></tr></thead>
+                <thead><tr><th>Subject</th><th>Target</th><th>Tier</th><th>Expires</th><th>Granted by</th><th></th></tr></thead>
                 <tbody>
-                  {grouped.map(([k, list]) => <React.Fragment key={k || 'all'}>{k && <tr className="qh-grouphead"><td colSpan={5}>{k}<span className="qh-grouphead-n">{list.length}</span></td></tr>}{list.map(renderRow)}</React.Fragment>)}
-                  {rows.length === 0 && <tr><td colSpan={5} className="qh-conn-empty">No grants match your filter.</td></tr>}
+                  {grouped.map(([k, list]) => <React.Fragment key={k || 'all'}>{k && <tr className="qh-grouphead"><td colSpan={6}>{k}<span className="qh-grouphead-n">{list.length}</span></td></tr>}{list.map(renderRow)}</React.Fragment>)}
+                  {rows.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No grants match your filter.</td></tr>}
                 </tbody>
               </table>
             );
@@ -278,10 +322,13 @@ function AutoForm({ init, actor, st, onDone }) {
   const save = () => {
     if (!f.user.trim()) return;
     const expiresAt = f.ttl === 'keep' ? f.expiresAt : qhIso(new Date(Date.now() + 1000 * 86400 * parseInt(f.ttl)));
-    // `maxRows` is nullable by contract — row caps live in the row-limit
-    // overrides, not on the grant — so an empty field sends null, not 0. Zero
-    // would read as “cap of zero rows”, which is a different instruction.
-    const payload = { user: f.user.trim(), tier: f.tier, connectionId: f.connectionId, databaseId: f.databaseId || '*', maxRows: f.maxRows === '' ? null : (parseInt(f.maxRows) || null), expiresAt };
+    // No per-grant row cap: caps live in the row-limit overrides, keyed to a
+    // PERSON, because how much someone can pull is a property of them and their
+    // machine rather than of one authorization row. `maxRows` came out of this
+    // form and table on 2026-08-16 (CODE brief 2026-08-15 (c)) — the API had
+    // returned a hardcoded null since it was written, so the field was a
+    // control that looked available and was not.
+    const payload = { user: f.user.trim(), tier: f.tier, connectionId: f.connectionId, databaseId: f.databaseId || '*', expiresAt };
     if (editing) st.updateAutoGrant({ ...payload, id: f.id }, actor); else st.addAutoGrant(payload, actor);
     onDone();
   };
@@ -290,7 +337,6 @@ function AutoForm({ init, actor, st, onDone }) {
       <input className="qh-input qh-input-sm" placeholder="user or team" value={f.user} onChange={e => setF({ ...f, user: e.target.value })} />
       <TierSelect value={f.tier} onChange={v => setF({ ...f, tier: v })} />
       <select className="qh-select" value={f.connectionId} onChange={e => setF({ ...f, connectionId: e.target.value })}>{conns.map(c => <option key={c.id} value={c.id}>{connLabel(c)}</option>)}</select>
-      <input className="qh-input qh-input-sm" style={{ width: 90 }} placeholder="max rows" value={f.maxRows} onChange={e => setF({ ...f, maxRows: e.target.value.replace(/\D/g, '') })} />
       <select className="qh-select" value={f.ttl} onChange={e => setF({ ...f, ttl: e.target.value })}>
         {editing && <option value="keep">Keep ({expiryLabel(f.expiresAt).text})</option>}
         <option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option>
@@ -307,7 +353,7 @@ function AutoView({ st, user }) {
   const [editId, setEditId] = useAcc(null);
   const [q, setQ] = useAcc('');
   const [group, setGroup] = useAcc('none');
-  const blank = { user: '', tier: 'RO', connectionId: ((st.connections || [])[0] || {}).id || '', databaseId: '*', maxRows: '1000', ttl: '30' };
+  const blank = { user: '', tier: 'RO', connectionId: ((st.connections || [])[0] || {}).id || '', databaseId: '*', ttl: '30' };
 
   const rows = st.autoGrants.filter(a => {
     const t = q.trim().toLowerCase(); if (!t) return true;
@@ -318,7 +364,7 @@ function AutoView({ st, user }) {
 
   const renderRow = (a) => {
     if (editId === a.id) return (
-      <tr key={a.id} className="qh-editrow"><td colSpan={6}><AutoForm init={{ ...a, maxRows: a.maxRows == null ? '' : String(a.maxRows), ttl: 'keep' }} actor={actor} st={st} onDone={() => setEditId(null)} /></td></tr>
+      <tr key={a.id} className="qh-editrow"><td colSpan={5}><AutoForm init={{ ...a, ttl: 'keep' }} actor={actor} st={st} onDone={() => setEditId(null)} /></td></tr>
     );
     const ex = expiryLabel(a.expiresAt);
     return (
@@ -326,7 +372,6 @@ function AutoView({ st, user }) {
         <td><b>{a.user}</b></td>
         <td className="qh-mono">{a.connectionId}/{a.databaseId}</td>
         <td><TierBadge tier={a.tier} sm /></td>
-        <td className="qh-mono">{a.maxRows == null ? <span className="qh-muted">—</span> : a.maxRows.toLocaleString()}</td>
         <td><span className={'qh-expiry ' + ex.cls}>{ex.text}</span></td>
         <td className="qh-tright"><div className="qh-rowacts"><button className="qh-rowbtn" onClick={() => { setEditId(a.id); setAdding(false); }}><AIcon.edit />Edit</button><button className="qh-revoke" onClick={() => st.revokeAutoGrant(a.id, actor)}>Revoke</button></div></td>
       </tr>
@@ -336,7 +381,7 @@ function AutoView({ st, user }) {
   return (
     <div className="qh-apad">
       <div className="qh-aview-head">
-        <div><div className="qh-aview-title">Auto-approve grants</div><div className="qh-aview-sub">Skip DBA review for trusted, bounded queries. Time-limited & row-capped.</div></div>
+        <div><div className="qh-aview-title">Auto-approve grants</div><div className="qh-aview-sub">Skip DBA review for trusted, bounded queries — one target, one tier, and an end date.</div></div>
         <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => { setAdding(a => !a); setEditId(null); }}><AIcon.plus />New</button>
       </div>
       {adding && <AutoForm init={blank} actor={actor} st={st} onDone={() => setAdding(false)} />}
@@ -345,15 +390,15 @@ function AutoView({ st, user }) {
         <AccGroupBy group={group} setGroup={setGroup} options={[['none', 'None'], ['subject', 'Subject'], ['server', 'Server']]} />
       </div>
       <table className="qh-atable">
-        <thead><tr><th>Subject</th><th>Scope</th><th>Tier</th><th>Max rows</th><th>Expiry</th><th></th></tr></thead>
+        <thead><tr><th>Subject</th><th>Scope</th><th>Tier</th><th>Expiry</th><th></th></tr></thead>
         <tbody>
           {grouped.map(([k, list]) => (
             <React.Fragment key={k || 'all'}>
-              {k && <tr className="qh-grouphead"><td colSpan={6}>{k}<span className="qh-grouphead-n">{list.length}</span></td></tr>}
+              {k && <tr className="qh-grouphead"><td colSpan={5}>{k}<span className="qh-grouphead-n">{list.length}</span></td></tr>}
               {list.map(renderRow)}
             </React.Fragment>
           ))}
-          {rows.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No auto-approve grants match your filter.</td></tr>}
+          {rows.length === 0 && <tr><td colSpan={5} className="qh-conn-empty">No auto-approve grants match your filter.</td></tr>}
         </tbody>
       </table>
     </div>

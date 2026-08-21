@@ -945,6 +945,16 @@
   .qh-expiry { font-size: 12px; color: var(--fg-secondary); }
   .qh-expiry.is-soon { color: var(--fg-warning); font-weight: 600; }
   .qh-expiry.is-exp { color: var(--fg-danger); font-weight: 600; }
+  /* Standing-grant expiry (migration 096). The picker is a mode select and a
+     date input that only exists when a date is wanted — no expiry is still the
+     common case. `color-scheme` is declared on the date input rather than the
+     root: it is the one native widget in the app, and setting it globally would
+     repaint every scrollbar and select the browser draws. */
+  .qh-exppick { display: inline-flex; align-items: center; gap: 6px; }
+  .qh-input-date { width: 150px; font-family: inherit; }
+  [data-theme='dark'] .qh-input-date { color-scheme: dark; }
+  .qh-input.is-err { border-color: var(--stroke-danger); box-shadow: 0 0 0 2px var(--danger-adaptive-light); }
+  .qh-exp-note { flex-basis: 100%; font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); }
   .qh-tierchecks { display: flex; gap: 6px; }
   .qh-tierchk { display: inline-flex; align-items: center; gap: 4px; height: 34px; padding: 0 10px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); cursor: pointer; font-size: 12px; font-weight: 700; color: var(--fg-tertiary); }
   .qh-tierchk.is-on { border-color: var(--brand-green); background: var(--brand-adaptive-light); color: var(--fg-accent); }
@@ -1020,7 +1030,8 @@
   .qh-accedit-hint { font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--fg-tertiary); }
   .qh-acctargets { display: flex; flex-direction: column; gap: 8px; }
   .qh-accrow { display: flex; flex-direction: column; gap: 8px; padding: 10px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); }
-  .qh-accrow-head { display: flex; align-items: center; gap: 8px; }
+  .qh-accrow-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .qh-accrow-head .qh-accrow-x { margin-left: auto; }
   .qh-accrow-x { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--stroke-medium); background: var(--bg-white); border-radius: var(--r-sm); color: var(--fg-tertiary); cursor: pointer; margin-left: auto; flex-shrink: 0; }
   .qh-accrow-x:hover { border-color: transparent; background: var(--danger-adaptive-light); color: var(--fg-danger); }
   .qh-dbpick { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
