@@ -252,6 +252,15 @@ def validate_submission(
     # admins / bypass requesters get a synthetic ddl-on-everything grant.
     grant = teams.effective_grant_for_user(user_id, target_server_id)
     if grant is None:
+        # "Not authorized" is true but unhelpful when the access existed until
+        # last Thursday: the person reads it as a mistake and asks why it broke.
+        # Naming the date turns a support question into a renewal request.
+        lapsed = teams.expired_grant_note(user_id, target_server_id)
+        if lapsed:
+            return Rejection(
+                "server",
+                f"Your access to this server expired on {lapsed}. "
+                "Ask an admin to extend it.")
         return Rejection("server", "You are not authorized to query this server.")
 
     database = database_name or target.default_database

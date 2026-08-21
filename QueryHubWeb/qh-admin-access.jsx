@@ -146,6 +146,20 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, lockSubject, o
     st.setSubjectGrants(subjectType, subject.trim(), targets, actor);
     onDone();
   };
+  // ONE save control, rendered in two places (CODE brief 2026-08-20 §1): a
+  // subject with a dozen connections pushes the only Save below the fold, so a
+  // change made at the top is committed by scrolling back down to find it. Same
+  // function, same disabled rule — two buttons that could disagree about
+  // whether the form is savable would be worse than one badly placed.
+  // The rule now matches `save`'s own guard: a bad date used to leave the
+  // button enabled and the click did nothing.
+  const blocked = !subject.trim() || rows.some(expBad);
+  const acts = (where) => (
+    <div className={'qh-teamform-acts qh-accedit-acts is-' + where}>
+      <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone}>Cancel</button>
+      <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={save} disabled={blocked}>Save access</button>
+    </div>
+  );
 
   return (
     <div className="qh-accedit">
@@ -158,6 +172,7 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, lockSubject, o
           : subjectType === 'user'
             ? <select className="qh-select" value={subject} onChange={e => pickSubject(e.target.value)}><option value="">Select user…</option>{people.map(p => <option key={p.handle} value={p.handle}>{p.name} · {p.handle}</option>)}</select>
             : <select className="qh-select" value={subject} onChange={e => pickSubject(e.target.value)}><option value="">Select team…</option>{teams.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}</select>}
+        {acts('top')}
       </div>
 
       <div className="qh-accedit-label">Targets · {rows.length}<span className="qh-accedit-hint">one row per connection — databases (or all), a single tier, and an end date only if the access should stop</span></div>
@@ -178,10 +193,7 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, lockSubject, o
       </div>
       <button className="qh-acc-addtarget" onClick={addRow}><AIcon.plus />Add connection</button>
 
-      <div className="qh-teamform-acts">
-        <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone}>Cancel</button>
-        <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={save} disabled={!subject.trim()}>Save access</button>
-      </div>
+      {acts('bottom')}
     </div>
   );
 }
@@ -315,20 +327,36 @@ function GrantsView({ st, user }) {
 }
 
 // ---------- Auto-approve ----------
+// `databaseId` NULL means every database on the connection; the server
+// normalises '*' / '' / 'all' / 'any' to NULL (CODE brief 2026-08-20 §3). One
+// rule, read by both the form and the table, so a row cannot describe a scope
+// the form would never produce.
+const autoAllDbs = (id) => !id || ['*', 'all', 'any'].indexOf(String(id).toLowerCase()) >= 0;
 function AutoForm({ init, actor, st, onDone }) {
   const [f, setF] = useAcc(init);
   const conns = st.connections || [];
   const editing = !!f.id;
+  const conn = conns.find(c => c.id === f.connectionId);
+  // '*' in a text field was never a wildcard to the matcher — it compares a
+  // non-NULL scope for equality, so the grant matched nothing and the request
+  // fell through to manual review with an active grant sitting in the table.
+  // "All databases" is an option here now, and NULL is what it sends.
+  const allDbs = autoAllDbs(f.databaseId);
   const save = () => {
     if (!f.user.trim()) return;
-    const expiresAt = f.ttl === 'keep' ? f.expiresAt : qhIso(new Date(Date.now() + 1000 * 86400 * parseInt(f.ttl)));
+    // "No expiry" is a choice beside the durations, not two fields left blank
+    // (§17): an open-ended auto-grant has always been accepted by the API, and
+    // the only way to ask for one was to leave the form empty and hope.
+    const expiresAt = f.ttl === 'keep' ? f.expiresAt
+      : f.ttl === 'none' ? null
+      : qhIso(new Date(Date.now() + 1000 * 86400 * parseInt(f.ttl)));
     // No per-grant row cap: caps live in the row-limit overrides, keyed to a
     // PERSON, because how much someone can pull is a property of them and their
     // machine rather than of one authorization row. `maxRows` came out of this
     // form and table on 2026-08-16 (CODE brief 2026-08-15 (c)) — the API had
     // returned a hardcoded null since it was written, so the field was a
     // control that looked available and was not.
-    const payload = { user: f.user.trim(), tier: f.tier, connectionId: f.connectionId, databaseId: f.databaseId || '*', expiresAt };
+    const payload = { user: f.user.trim(), tier: f.tier, connectionId: f.connectionId, databaseId: allDbs ? null : f.databaseId, expiresAt };
     if (editing) st.updateAutoGrant({ ...payload, id: f.id }, actor); else st.addAutoGrant(payload, actor);
     onDone();
   };
@@ -336,13 +364,19 @@ function AutoForm({ init, actor, st, onDone }) {
     <div className="qh-addrow">
       <input className="qh-input qh-input-sm" placeholder="user or team" value={f.user} onChange={e => setF({ ...f, user: e.target.value })} />
       <TierSelect value={f.tier} onChange={v => setF({ ...f, tier: v })} />
-      <select className="qh-select" value={f.connectionId} onChange={e => setF({ ...f, connectionId: e.target.value })}>{conns.map(c => <option key={c.id} value={c.id}>{connLabel(c)}</option>)}</select>
+      <select className="qh-select" value={f.connectionId} onChange={e => setF({ ...f, connectionId: e.target.value, databaseId: null })}>{conns.map(c => <option key={c.id} value={c.id}>{connLabel(c)}</option>)}</select>
+      <select className="qh-select" value={allDbs ? '' : f.databaseId} onChange={e => setF({ ...f, databaseId: e.target.value || null })}>
+        <option value="">All databases</option>
+        {(conn ? conn.databases : []).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+      </select>
       <select className="qh-select" value={f.ttl} onChange={e => setF({ ...f, ttl: e.target.value })}>
         {editing && <option value="keep">Keep ({expiryLabel(f.expiresAt).text})</option>}
+        <option value="none">No expiry</option>
         <option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option>
       </select>
       <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={save}>{editing ? 'Save' : 'Add'}</button>
       {editing && <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone}>Cancel</button>}
+      {(f.ttl === 'none' || (f.ttl === 'keep' && !f.expiresAt)) && <div className="qh-exp-note">No end date — this subject keeps skipping review on that target until someone revokes the grant.</div>}
     </div>
   );
 }
@@ -353,26 +387,35 @@ function AutoView({ st, user }) {
   const [editId, setEditId] = useAcc(null);
   const [q, setQ] = useAcc('');
   const [group, setGroup] = useAcc('none');
-  const blank = { user: '', tier: 'RO', connectionId: ((st.connections || [])[0] || {}).id || '', databaseId: '*', ttl: '30' };
+  // A bounded window stays the DEFAULT: auto-approve is the grant that skips a
+  // human, so "forever" is a thing to ask for, not a thing to land on.
+  const blank = { user: '', tier: 'RO', connectionId: ((st.connections || [])[0] || {}).id || '', databaseId: null, ttl: '30' };
 
   const rows = st.autoGrants.filter(a => {
     const t = q.trim().toLowerCase(); if (!t) return true;
-    return (a.user + ' ' + a.connectionId + ' ' + a.databaseId + ' ' + a.tier).toLowerCase().includes(t);
+    // The resolved name is searchable too — it is what the column shows, and a
+    // filter reading only the handle finds nothing for a typed first name.
+    return (a.user + ' ' + (a.userName || '') + ' ' + a.connectionId + ' ' + (a.databaseId || '') + ' ' + a.tier).toLowerCase().includes(t);
   });
   const keyFn = group === 'subject' ? (a => a.user) : group === 'server' ? (a => a.connectionId) : null;
   const grouped = keyFn ? accGroup(rows, keyFn) : [['', rows]];
 
   const renderRow = (a) => {
     if (editId === a.id) return (
-      <tr key={a.id} className="qh-editrow"><td colSpan={5}><AutoForm init={{ ...a, ttl: 'keep' }} actor={actor} st={st} onDone={() => setEditId(null)} /></td></tr>
+      <tr key={a.id} className="qh-editrow"><td colSpan={6}><AutoForm init={{ ...a, ttl: 'keep' }} actor={actor} st={st} onDone={() => setEditId(null)} /></td></tr>
     );
     const ex = expiryLabel(a.expiresAt);
     return (
       <tr key={a.id}>
-        <td><b>{a.user}</b></td>
-        <td className="qh-mono">{a.connectionId}/{a.databaseId}</td>
+        {/* The name the API resolved, with the id under it only when the two
+            differ — the handle is still how this row is correlated with Slack,
+            and a team is in neither people table, so `userName` is null there
+            and the id IS the name. */}
+        <td><b>{a.userName || a.user}</b>{a.userName && a.userName !== a.user && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{a.user}</div>}</td>
+        <td className="qh-mono">{a.connectionId}{autoAllDbs(a.databaseId) ? <span className="qh-muted"> · all databases</span> : '/' + a.databaseId}</td>
         <td><TierBadge tier={a.tier} sm /></td>
         <td><span className={'qh-expiry ' + ex.cls}>{ex.text}</span></td>
+        <td className="qh-muted">{a.createdByName || a.createdBy || '—'}</td>
         <td className="qh-tright"><div className="qh-rowacts"><button className="qh-rowbtn" onClick={() => { setEditId(a.id); setAdding(false); }}><AIcon.edit />Edit</button><button className="qh-revoke" onClick={() => st.revokeAutoGrant(a.id, actor)}>Revoke</button></div></td>
       </tr>
     );
@@ -381,24 +424,26 @@ function AutoView({ st, user }) {
   return (
     <div className="qh-apad">
       <div className="qh-aview-head">
-        <div><div className="qh-aview-title">Auto-approve grants</div><div className="qh-aview-sub">Skip DBA review for trusted, bounded queries — one target, one tier, and an end date.</div></div>
+        <div><div className="qh-aview-title">Auto-approve grants</div><div className="qh-aview-sub">Skip DBA review for trusted, bounded queries — one target, one tier, and an end date if it should stop.</div></div>
         <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => { setAdding(a => !a); setEditId(null); }}><AIcon.plus />New</button>
       </div>
       {adding && <AutoForm init={blank} actor={actor} st={st} onDone={() => setAdding(false)} />}
       <div className="qh-conn-controls">
-        <AccSearch q={q} setQ={setQ} placeholder="Filter by subject, server…" />
-        <AccGroupBy group={group} setGroup={setGroup} options={[['none', 'None'], ['subject', 'Subject'], ['server', 'Server']]} />
+        <AccSearch q={q} setQ={setQ} placeholder="Filter by person, team, server…" />
+        <AccGroupBy group={group} setGroup={setGroup} options={[['none', 'None'], ['subject', 'Person or team'], ['server', 'Server']]} />
       </div>
       <table className="qh-atable">
-        <thead><tr><th>Subject</th><th>Scope</th><th>Tier</th><th>Expiry</th><th></th></tr></thead>
+        {/* "Subject" was the data model's word for what is a person on screen
+            (CODE brief 2026-08-20 §2). */}
+        <thead><tr><th>Person or team</th><th>Scope</th><th>Tier</th><th>Expiry</th><th>Granted by</th><th></th></tr></thead>
         <tbody>
           {grouped.map(([k, list]) => (
             <React.Fragment key={k || 'all'}>
-              {k && <tr className="qh-grouphead"><td colSpan={5}>{k}<span className="qh-grouphead-n">{list.length}</span></td></tr>}
+              {k && <tr className="qh-grouphead"><td colSpan={6}>{k}<span className="qh-grouphead-n">{list.length}</span></td></tr>}
               {list.map(renderRow)}
             </React.Fragment>
           ))}
-          {rows.length === 0 && <tr><td colSpan={5} className="qh-conn-empty">No auto-approve grants match your filter.</td></tr>}
+          {rows.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No auto-approve grants match your filter.</td></tr>}
         </tbody>
       </table>
     </div>
@@ -913,7 +958,11 @@ function ConnectionsView({ st, user }) {
   const [q, setQ] = React.useState('');
   const [envF, setEnvF] = React.useState('all');
   const [provF, setProvF] = React.useState('all');
-  const [sort, setSort] = React.useState({ key: 'name', dir: 'asc' });
+  // No default client sort. The server orders by `enabled DESC, alias`, so
+  // disabled targets arrive LAST and an alphabetical re-sort here would
+  // silently undo that (CODE brief 2026-08-20 §5). A clicked header still
+  // sorts — that is the admin asking, not the client second-guessing.
+  const [sort, setSort] = React.useState({ key: null, dir: 'asc' });
   const [form, setForm] = React.useState(null);     // {mode, conn} while a modal is open
   const [testing, setTesting] = React.useState(null);
   const [tested, setTested] = React.useState({});   // alias -> last probe result
@@ -1002,14 +1051,14 @@ function ConnectionsView({ st, user }) {
           .filter(c => envF === 'all' || c.env === envF)
           .filter(c => provF === 'all' || (provF === 'none' ? !qhProvider(c) : qhTags(c).provider === provF))
           .filter(c => { const t = q.trim().toLowerCase(); if (!t) return true; return (c.name + ' ' + c.engine + ' ' + (c.host || '') + ' ' + qhHostingFull(c) + ' ' + (c.databases || []).map(d => d.name).join(' ')).toLowerCase().includes(t); })
-          .slice()
-          .sort((a, b) => {
-            let av, bv;
-            if (sort.key === 'dbs') { av = (a.databases || []).length; bv = (b.databases || []).length; }
-            else if (sort.key === 'hosting') { av = (qhHosting(a) || 'zzz').toLowerCase(); bv = (qhHosting(b) || 'zzz').toLowerCase(); }
-            else { av = String(a[sort.key]).toLowerCase(); bv = String(b[sort.key]).toLowerCase(); }
-            return av < bv ? -dir : av > bv ? dir : 0;
-          });
+          .slice();
+        if (sort.key) rows.sort((a, b) => {
+          let av, bv;
+          if (sort.key === 'dbs') { av = (a.databases || []).length; bv = (b.databases || []).length; }
+          else if (sort.key === 'hosting') { av = (qhHosting(a) || 'zzz').toLowerCase(); bv = (qhHosting(b) || 'zzz').toLowerCase(); }
+          else { av = String(a[sort.key]).toLowerCase(); bv = String(b[sort.key]).toLowerCase(); }
+          return av < bv ? -dir : av > bv ? dir : 0;
+        });
         const arrow = (k) => (sort.key === k ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : '');
         const th = (k, label, cls) => <th className={'qh-sort-th' + (sort.key === k ? ' is-sorted' : '') + (cls || '')} onClick={() => toggleSort(k)}>{label}<span className="qh-sort-arw">{arrow(k)}</span></th>;
         return (

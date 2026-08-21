@@ -179,6 +179,37 @@ def _max_mode(modes) -> str:
     return best
 
 
+def expired_grant_note(principal_id: str, target_id: int) -> str | None:
+    """If this principal HELD a grant here that has since lapsed, its date.
+
+    `effective_grant_for_user` returns None for two different situations that
+    read identically to the person refused: never had access, and had it until
+    Thursday. The second one is the whole point of letting grants expire, and
+    answering it costs one query on a path that only runs when the request is
+    already being turned down.
+
+    Returns the LATEST expiry across their own grant and any team grant, since
+    that is the one they would have been relying on. None when nothing here
+    ever applied to them.
+    """
+    row = db.fetch_one(
+        "SELECT max(expires_at) AS at FROM ("
+        "  SELECT g.expires_at FROM user_target_grants g "
+        "   WHERE g.slack_user_id = %s AND g.target_server_id = %s "
+        "     AND g.revoked_at IS NULL AND g.expires_at IS NOT NULL "
+        "     AND g.expires_at <= NOW() "
+        "  UNION ALL "
+        "  SELECT g.expires_at FROM team_target_grants g "
+        "    JOIN team_members m ON m.team_id = g.team_id "
+        "   WHERE m.slack_user_id = %s AND g.target_server_id = %s "
+        "     AND g.revoked_at IS NULL AND g.expires_at IS NOT NULL "
+        "     AND g.expires_at <= NOW()"
+        ") x",
+        (principal_id, target_id, principal_id, target_id))
+    at = (row or {}).get("at")
+    return at.strftime("%-d %b %Y") if at else None
+
+
 def effective_grant_for_user(
     principal_id: str, target_id: int
 ) -> dict | None:

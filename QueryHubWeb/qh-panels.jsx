@@ -357,7 +357,10 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
   const flatDbs = React.useMemo(() => {
     const rows = [];
     (conns || []).forEach(c => (c.databases || []).forEach(db => rows.push({ c, db })));
-    rows.sort((a, b) => a.db.name.localeCompare(b.db.name) || a.c.name.localeCompare(b.c.name));
+    // Alphabetical, but disabled targets LAST — GET /connections already sends
+    // them last (`enabled DESC, alias`) and a flat name sort would fold a
+    // retired server back in among the live ones (CODE brief 2026-08-20 §5).
+    rows.sort((a, b) => (a.c.disabled ? 1 : 0) - (b.c.disabled ? 1 : 0) || a.db.name.localeCompare(b.db.name) || a.c.name.localeCompare(b.c.name));
     return rows;
   }, [conns]);
   // Two servers can hold a database of the same name (users on prod-main and on

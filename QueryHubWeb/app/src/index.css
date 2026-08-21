@@ -51,6 +51,11 @@
     --qh-rail: #16181D;
   }
 
+  /* Links. The app has few and each sets its own colour, but a link added to
+     this file later must not land on browser-default blue. */
+  a { color: var(--fg-accent); text-decoration: none; }
+  a:hover { color: var(--fg-accent); text-decoration: underline; }
+
   /* ---------- root layout ---------- */
   .qh-root { display: flex; flex-direction: column; height: 100vh; background: var(--bg-regular); color: var(--fg-primary); }
 
@@ -908,6 +913,8 @@
   .qh-aempty.big { flex: 1; }
   .qh-aempty svg { color: var(--stroke-strong); width: 30px; height: 30px; margin-bottom: 4px; }
   .qh-aempty-hint { font-size: 11.5px; opacity: 0.8; }
+  .qh-aempty-link { color: var(--fg-accent); font-weight: 600; }
+  .qh-aempty-link:hover { text-decoration: underline; }
 
   /* DDL */
   .qh-ddl-list { display: flex; flex-direction: column; gap: 12px; }
@@ -1017,6 +1024,11 @@
   .qh-acctarget-t { font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-secondary); }
   .qh-accedit-subj { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
   .qh-accedit-subjname { font-size: 14px; }
+  /* Save/Cancel sit in the subject header row as well as at the foot of the
+     form: one control, two places (CODE brief 2026-08-20 §1). `margin-left:auto`
+     right-aligns it, and the parent's flex-wrap gives it its own line when the
+     subject picker needs the width. */
+  .qh-accedit-acts.is-top { margin: 0 0 0 auto; }
   .qh-accedit-label { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-tertiary); margin-bottom: 8px; display: flex; align-items: baseline; gap: 10px; }
   .qh-accedit-hint { font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--fg-tertiary); }
   .qh-acctargets { display: flex; flex-direction: column; gap: 8px; }

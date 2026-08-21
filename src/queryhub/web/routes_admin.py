@@ -308,11 +308,18 @@ def admin_grants(claims: dict = Depends(deps.current_user)):
     admin.require_admin(claims, "access")
     out = []
     for row in db.fetch_all(
-            "SELECT g.slack_user_id AS subject, r.name AS subject_name, "
+            "SELECT g.slack_user_id AS subject, "
+            # A principal is a requester or an admin, sometimes both. Resolving
+            # against `requesters` alone meant an admin-only subject rendered
+            # as a raw Slack handle beside rows that rendered as names. No
+            # grant is in that state today, which is exactly why it would have
+            # been found by someone reading a screen rather than by a test.
+            "       COALESCE(r.name, a.name) AS subject_name, "
             "  g.target_server_id, g.allowed_databases, g.mode, "
             "  g.granted_by, g.granted_at, g.expires_at "
             "FROM user_target_grants g "
             "LEFT JOIN requesters r ON r.slack_user_id = g.slack_user_id "
+            "LEFT JOIN admins     a ON a.slack_user_id = g.slack_user_id "
             "WHERE g.revoked_at IS NULL ORDER BY g.granted_at DESC"):
         row["_subject_type"] = "user"
         row["_gid"] = f"u:{row['subject']}:{row['target_server_id']}"

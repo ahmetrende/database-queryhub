@@ -213,7 +213,11 @@ function ApprovalsView({ st, user, role }) {
           </div>
         )}
         <div className="qh-qcards">
-          {items.length === 0 && <div className="qh-aempty"><AdminIcons.approvals /><div>Queue is clear.</div><div className="qh-aempty-hint">Approved & rejected queries move to the audit log.</div></div>}
+          {/* An empty queue is the most likely place to be looking for a
+              request that has already been decided, so the sentence naming
+              where it went is also the way there. `#admin/audit` is picked up
+              by the hashchange listener in AdminPanel — no prop drilling. */}
+          {items.length === 0 && <div className="qh-aempty"><AdminIcons.approvals /><div>Queue is clear.</div><div className="qh-aempty-hint">Nothing waiting — approved &amp; rejected queries move to the <a className="qh-aempty-link" href="#admin/audit">audit log</a>.</div></div>}
           {items.map(it => <QueueCard key={it.id} it={it} selected={cur && cur.id === it.id} onSelect={setSel} checked={checked.includes(it.id)} onCheck={toggleCheck} />)}
         </div>
       </div>
