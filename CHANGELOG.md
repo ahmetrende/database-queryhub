@@ -9,6 +9,16 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An `EXPLAIN` submitted from the web UI showed nothing.** The plan was
+  delivered as a Slack code block and never stored, so a web request — which
+  reads the stored result and, by default, is not also DM'd — finished
+  `completed`, reported a row count, and had nothing to show. The plan was not
+  saved anywhere either, so it could not be recovered. A lone `EXPLAIN` now
+  writes the plan as a one-column result alongside the code block, and
+  `explain_max_chars` clips only the code block instead of the only copy.
+
 ## [1.0.12] — 2026-08-21
 
 ### Added

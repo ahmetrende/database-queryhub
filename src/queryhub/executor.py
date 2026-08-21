@@ -52,6 +52,10 @@ _pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="sql-exec")
 # of materialised. DML is excluded on purpose: the server reports no rowcount
 # for a streamed statement and the DML paths need it.
 _STREAMABLE_LEADING = frozenset({"SELECT", "WITH", "VALUES", "TABLE", "EXPLAIN", "SHOW"})
+
+# Header for the plan file when the plan did not arrive as a single named
+# column (FORMAT JSON/YAML/XML, or a driver that names it something else).
+_PLAN_COLUMN = "QUERY PLAN"
 _NO_ROW = object()
 
 def _results_dir() -> Path:
@@ -918,27 +922,45 @@ def _run(request: dict, client: WebClient) -> None:
         _fail(client, request, user_msg)
 
 
-def _read_plan_text(cur, columns) -> tuple[str, int, bool]:
-    """Read an EXPLAIN result into plain text for a code block. The default
-    (text) format is a single 'QUERY PLAN' column, one plan line per row;
-    FORMAT JSON/YAML/XML is a single cell. Caps total length at
-    `explain_max_chars` so a huge plan can't blow past Slack's message
-    limits — the tail is dropped and the truncation flag returned."""
+def _read_plan_text(cur, columns, *,
+                    max_bytes: int | None = None) -> tuple[str, list[str], bool]:
+    """Read an EXPLAIN result into plain text. The default (text) format is a
+    single 'QUERY PLAN' column, one plan line per row; FORMAT JSON/YAML/XML is
+    a single cell.
+
+    Returns `(slack_text, lines, truncated)`. `lines` is EVERY plan line, for
+    the result file; `slack_text` is the prefix that fits `explain_max_chars`,
+    for the code block. They are separate because Slack's message limit is no
+    reason for the file to lose its tail — it used to be the same value, so a
+    long plan was clipped everywhere at once.
+
+    `max_bytes` bounds what is held in memory (the request's own size cap).
+    Reaching it also sets `truncated`: past that point neither channel has the
+    whole plan.
+    """
     budget = cfg.get_int("explain_max_chars", 11000)
     single_col = len(columns) == 1
     lines: list[str] = []
-    total = 0
+    kept: list[str] = []
+    kept_chars = 0
+    all_bytes = 0
     truncated = False
     for row in cur:
         cell = row[0] if single_col else " | ".join(
             "" if v is None else str(v) for v in row)
         cell = "" if cell is None else str(cell)
-        if total + len(cell) + 1 > budget:
-            truncated = True
-            break
+        if max_bytes is not None:
+            all_bytes += len(cell.encode("utf-8")) + 1
+            if all_bytes > max_bytes:
+                truncated = True
+                break
         lines.append(cell)
-        total += len(cell) + 1
-    return "\n".join(lines), len(lines), truncated
+        if kept_chars + len(cell) + 1 > budget:
+            truncated = True
+            continue
+        kept.append(cell)
+        kept_chars += len(cell) + 1
+    return "\n".join(kept), lines, truncated
 
 
 def _finalize(client: WebClient, request: dict, stmt_results: list,
@@ -986,7 +1008,7 @@ def _finalize(client: WebClient, request: dict, stmt_results: list,
             # EXPLAIN plan → inline code block, no file.
             _complete_with_plan(
                 client, request, r.plan_text, r.truncated_rows,
-                elapsed=elapsed)
+                elapsed=elapsed, csv_path=r.csv_path, line_count=r.rowcount)
         elif r.csv_path is None:
             # No CSV path: either DML w/o RETURNING (had_result_set=False)
             # or SELECT/RETURNING that produced 0 rows (had_result_set=True).
@@ -1261,8 +1283,24 @@ def _execute_main_statement(
     # the unresolved labels are dropped instead, so the grid falls back to the
     # schema catalog rather than rendering a bare OID.
     if capture_plan and stmt.leading == "EXPLAIN":
-        res.plan_text, res.rowcount, res.truncated_rows = _read_plan_text(
-            rows, columns)
+        res.plan_text, plan_lines, res.truncated_rows = _read_plan_text(
+            rows, columns, max_bytes=max_csv_bytes)
+        res.rowcount = len(plan_lines)
+        # The plan is delivered as a code block AND written as a one-column
+        # file. A code block is a Slack channel: a web-origin request has none,
+        # and it reads `requests.csv_file_path`, which this path never set — so
+        # ten measured web EXPLAINs finished `completed` with a row count and
+        # nothing to show, the plan discarded rather than stored. The file
+        # gives every transport something to read; Slack still gets the block.
+        if wants_result and plan_lines:
+            res.csv_path, written, _t_rows, res.truncated_size = _stream_to_csv(
+                request_id, [_PLAN_COLUMN if len(columns) != 1 else columns[0]],
+                ((line,) for line in plan_lines),
+                max_rows, max_csv_bytes, suffix=f"_q{index}")
+            if written < len(plan_lines):
+                # Only reachable for a plan past the row cap, which no real
+                # plan is; say so rather than reporting a complete file.
+                res.truncated_rows = True
         res.col_types = _apply_resolved_types(res.col_types, _unknown_oids, None)
         return res
 
@@ -1775,21 +1813,33 @@ def _complete_with_plan(
     plan_text: str,
     truncated: bool,
     elapsed: float | None = None,
+    csv_path: Path | None = None,
+    line_count: int | None = None,
 ) -> None:
-    """Deliver an EXPLAIN plan inline as fenced code block(s) instead of a
-    CSV/XLSX file. The plan is text; a code block preserves the tree
-    indentation and needs no download."""
-    line_count = (plan_text.count("\n") + 1) if plan_text else 0
+    """Deliver an EXPLAIN plan as fenced code block(s) in Slack — the plan is
+    text and a code block preserves the tree indentation — while `csv_path`
+    records the same plan as a stored result.
+
+    The file is what a non-Slack transport reads. This path used to record no
+    `csv_file_path` at all, so the web UI had nothing to fetch: the request
+    completed, the header showed a row count, and the plan was gone (measured:
+    ten requests, two people). `line_count` is the plan's real length; without
+    it the count is read back off the possibly-clipped code block.
+    """
+    if line_count is None:
+        line_count = (plan_text.count("\n") + 1) if plan_text else 0
     with db.transaction() as cur:
         cur.execute(
             "UPDATE requests SET status = 'completed', completed_at = NOW(), "
-            " row_count = %s, truncated = %s WHERE id = %s",
-            (line_count, truncated, request["id"]),
+            " row_count = %s, truncated = %s, csv_file_path = %s WHERE id = %s",
+            (line_count, truncated,
+             str(csv_path) if csv_path is not None else None, request["id"]),
         )
         audit.log_in(cur, request["id"], None, None, "completed", {
             "explain_plan_lines": line_count, "truncated": truncated,
             "elapsed_sec": round(elapsed, 3) if elapsed is not None else None,
-            "delivery": "code_block",
+            "delivery": "code_block+file" if csv_path else "code_block",
+            "csv": str(csv_path) if csv_path is not None else None,
         })
 
     dur = f", {_fmt_duration(elapsed)}" if elapsed is not None else ""

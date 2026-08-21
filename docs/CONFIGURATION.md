@@ -101,8 +101,8 @@ default rather than stopping the process.
 | Key | Default | What it does |
 |---|---|---|
 | `pre_flight_explain` | `on` | Run EXPLAIN at submit time for a cost/risk hint. |
-| `explain_inline_plan` | `on` | Show the plan inline in the submit UX. |
-| `explain_max_chars` | `11000` | Truncate very large plans to this many characters. |
+| `explain_inline_plan` | `on` | Deliver a lone `EXPLAIN` as an inline code block. The plan is also stored as a one-column result file either way, so a non-Slack client has something to read. |
+| `explain_max_chars` | `11000` | Truncate the inline code block to this many characters (a Slack message limit). The stored file keeps the whole plan. |
 | `allow_explain_analyze` | `off` | Permit `EXPLAIN (ANALYZE)` (actually executes the query). |
 
 ## PII masking

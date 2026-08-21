@@ -146,19 +146,21 @@ def test_fmt_duration_hours():
 
 def test_read_plan_text_single_column_joins_lines():
     rows = [("Aggregate  (cost=1.0..2.0)",), ("  ->  Seq Scan on t",)]
-    text, n, trunc = ex._read_plan_text(iter(rows), ["QUERY PLAN"])
+    text, lines, trunc = ex._read_plan_text(iter(rows), ["QUERY PLAN"])
     assert text == "Aggregate  (cost=1.0..2.0)\n  ->  Seq Scan on t"
-    assert n == 2
+    assert lines == ["Aggregate  (cost=1.0..2.0)", "  ->  Seq Scan on t"]
     assert trunc is False
 
 
-def test_read_plan_text_truncates_at_budget(monkeypatch):
-    # Tiny budget: the second line pushes past it and is dropped.
+def test_read_plan_text_truncates_the_code_block_only(monkeypatch):
+    # Tiny budget: the second line pushes past it and is dropped from the
+    # code block. `lines` keeps all three — the plan is also written to a
+    # result file, and a Slack message limit must not shorten that.
     monkeypatch.setattr(ex.cfg, "get_int", lambda key, default=0: 20)
     rows = [("x" * 10,), ("y" * 10,), ("z" * 10,)]
-    text, n, trunc = ex._read_plan_text(iter(rows), ["QUERY PLAN"])
-    assert n == 1
+    text, lines, trunc = ex._read_plan_text(iter(rows), ["QUERY PLAN"])
     assert text == "x" * 10
+    assert len(lines) == 3
     assert trunc is True
 
 
