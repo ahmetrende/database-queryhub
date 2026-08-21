@@ -1138,7 +1138,11 @@ function App() {
     // masked) — no 5,000-row cap. The client fallback below only runs if the
     // server request id is somehow absent.
     if ((format === 'csv' || format === 'xlsx') && tab.qid) {
-      const url = format === 'xlsx' ? qhApi.resultXlsxUrl(tab.qid) : qhApi.resultCsvUrl(tab.qid);
+      // Export follows the switcher: `?statement=N` when a multi-statement result
+      // is showing. Without it the endpoint sends the WHOLE artefact — which for
+      // xlsx was a zip going out under the Excel media type (CODE 2026-08-21 (d)).
+      const stN = tab.result && tab.result.statementCount > 1 ? tab.result.statement : undefined;
+      const url = format === 'xlsx' ? qhApi.resultXlsxUrl(tab.qid, stN) : qhApi.resultCsvUrl(tab.qid, stN);
       const a = document.createElement('a'); a.href = url; a.rel = 'noopener'; a.click();
       pushToast('Downloading full result as ' + (format === 'xlsx' ? 'Excel (.xlsx)' : 'CSV') + '…');
       return;

@@ -122,8 +122,16 @@ const qhApi = {
   cancelRun:   (id)    => qhFetch('/queries/' + id + '/cancel', { method: 'POST' }),
   rows:        (id, o, l, statement) => qhFetch('/queries/' + id + '/rows?offset=' + o + '&limit=' + l
                  + (statement ? '&statement=' + statement : '')),
-  resultCsvUrl:(id)    => API_BASE + '/queries/' + id + '/result.csv',
-  resultXlsxUrl:(id)   => API_BASE + '/queries/' + id + '/result.xlsx',
+  // `statement` makes Export follow the statement switcher. The design side
+  // already passes it (qh-app.jsx), and these two ignored it — so Export beside
+  // "Result 2 of 3" was still downloading the whole archive. Exactly the hazard
+  // the (c) brief named: an added parameter on an existing method fails by
+  // returning 200 with the wrong thing. Omitted for a single-statement result,
+  // which keeps the whole-artefact behaviour.
+  resultCsvUrl:(id, statement) => API_BASE + '/queries/' + id + '/result.csv'
+                 + (statement ? '?statement=' + statement : ''),
+  resultXlsxUrl:(id, statement) => API_BASE + '/queries/' + id + '/result.xlsx'
+                 + (statement ? '?statement=' + statement : ''),
   saveSnippet: (body)  => qhFetch('/saved', { method: 'POST', body: JSON.stringify(body) }),
   deleteSnippet:(id)   => qhFetch('/saved/' + id, { method: 'DELETE' }),
   requestEndpoint:(b)  => qhFetch('/endpoint-requests', { method: 'POST', body: JSON.stringify(b) }),

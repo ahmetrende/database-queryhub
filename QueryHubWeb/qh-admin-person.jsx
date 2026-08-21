@@ -28,6 +28,17 @@ function perScope(t) {
   return dbs.length ? dbs.join(', ') : 'all databases';
 }
 
+// WHY they have it. `source` has three values: their own row, a team's row, or
+// nothing at all — an admin reaches everything without a grant anywhere
+// (`admin_or_bypass`), and calling that "direct" would be true but not the truth.
+// `sourceTeam` names ONE team: several can grant the same target and the resolver
+// has already merged them into one decision, so the first by name is reported.
+function perSource(t) {
+  if (t.source === 'team') return { word: 'via ' + (t.sourceTeam || 'a team'), cls: ' is-team' };
+  if (t.source === 'admin_or_bypass') return { word: 'as admin', cls: ' is-admin' };
+  return { word: 'direct', cls: '' };
+}
+
 function PersonCard({ p, grants, onOpen }) {
   const own = (grants || []).filter(g => g.subjectType === 'user' && g.subject === p.handle).length;
   return (
@@ -71,7 +82,10 @@ function PersonPage({ st, actor, person, onBack }) {
       .finally(() => setCopying(false));
   };
 
-  const ap = eff && eff.approver;
+  const ap = eff && eff.admin;
+  const cap = eff && eff.rowLimitOverride && eff.rowLimitOverride.maxRows;
+  const access = (eff && eff.access) || [];
+  const autos = (eff && eff.autoApprove) || [];
   return (
     <div className="qh-perwrap">
       <div className="qh-perhead">
@@ -83,7 +97,7 @@ function PersonPage({ st, actor, person, onBack }) {
         </div>
         {eff && eff.teams.length > 0 && (
           <div className="qh-perteams">
-            {eff.teams.map(t => <span key={t} className="qh-team-badge">{t}</span>)}
+            {eff.teams.map(t => <span key={t.id || t.name} className="qh-team-badge">{t.name}</span>)}
           </div>
         )}
       </div>
@@ -92,35 +106,36 @@ function PersonPage({ st, actor, person, onBack }) {
       <div className="qh-persec">
         <div className="qh-persec-h">
           <div className="qh-aview-title">Where they stand today</div>
-          <div className="qh-aview-sub">Resolved the way a submission resolves it — their own grants and every grant of every team they are in, the more permissive winning per connection.</div>
+          <div className="qh-aview-sub">Resolved the way a submission resolves it — their own grants, every grant of every team they are in, and anything they reach as an admin. Their own row wins over a team's, because it is usually the narrower, deliberate one.</div>
         </div>
         {failed && <div className="qh-conn-empty">Could not load resolved access.</div>}
         {!eff && !failed && <div className="qh-perload">Resolving…</div>}
         {eff && (
           <>
-            {(ap || eff.rowCap != null) && (
+            {(ap || cap != null) && (
               <div className="qh-perappr">
-                {ap && <span><span className="qh-perappr-k">Approver</span>{ap.superAdmin ? 'Super-admin — every tier, every target' : 'Can approve up to ' + (ap.tier || '—') + (ap.scope ? ' on ' + ap.scope.join(', ') : ' on every target')}</span>}
-                {eff.rowCap != null && <span className="qh-perappr-nw"><span className="qh-perappr-k">Row cap</span>{eff.rowCap.toLocaleString()} rows</span>}
+                {ap && <span><span className="qh-perappr-k">Approver</span>{ap.superAdmin ? 'Super-admin — every tier, every target' : 'Can approve up to ' + (ap.maxTier || '—') + (ap.scopeTargets && ap.scopeTargets.length ? ' on ' + ap.scopeTargets.join(', ') : ' on every target')}</span>}
+                {cap != null && <span className="qh-perappr-nw"><span className="qh-perappr-k">Row cap</span>{cap.toLocaleString()} rows</span>}
               </div>
             )}
             <div className="qh-perlist">
-              {eff.targets.map(t => (
+              {access.map(t => {
+                const src = perSource(t);
+                return (
                 <div key={t.connectionId} className="qh-perrow">
                   <span className="qh-perrow-t">{t.connectionId}</span>
                   <span className="qh-perrow-dbs">{perScope(t)}</span>
                   <TierBadge tier={t.tier} sm />
-                  {/* WHY they have it. A grant they hold directly can be edited
-                      below; one that comes from a team cannot, and saying which
-                      is which is the difference between this panel and a list. */}
-                  <span className={'qh-persrc' + (t.source === 'team' ? ' is-team' : '')}>
-                    {t.source === 'team' ? 'via ' + t.sourceTeam : 'direct'}
-                  </span>
+                  {/* A grant they hold directly can be edited below; one that
+                      comes from a team cannot, and saying which is which is the
+                      difference between this panel and a list. */}
+                  <span className={'qh-persrc' + src.cls}>{src.word}</span>
                   {t.expiresAt && <span className="qh-expiry is-soon">ends {String(t.expiresAt).slice(0, 10)}</span>}
                 </div>
-              ))}
-              {eff.targets.length === 0 && <div className="qh-conn-empty">No access anywhere yet.</div>}
-              {eff.autoGrants.map((a, i) => (
+                );
+              })}
+              {access.length === 0 && <div className="qh-conn-empty">No access anywhere yet.</div>}
+              {autos.map((a, i) => (
                 <div key={'a' + i} className="qh-perrow is-auto">
                   <span className="qh-perrow-t">{a.allTargets ? 'every target' : a.connectionId}</span>
                   <span className="qh-perrow-dbs">{a.allTargets ? '' : (a.databaseId || 'all databases')}</span>
@@ -181,8 +196,8 @@ function PersonPage({ st, actor, person, onBack }) {
             <option value="">Keep each tier</option>
             {['RO', 'RW', 'DDL'].map(t => <option key={t} value={t}>Force {t}</option>)}
           </select>
-          {/* Off by default, and it says what it does: membership is a different
-              act from access, and it is the thing pods will replace. */}
+          {/* Off by default, and the label carries the part that outlives the
+              click: joining a team also inherits whatever it is granted LATER. */}
           <label className="qh-percopy-tm">
             <input type="checkbox" checked={withTeams} onChange={e => setWithTeams(e.target.checked)} />
             Also add them to the same teams
@@ -191,9 +206,10 @@ function PersonPage({ st, actor, person, onBack }) {
         </div>
         {srcPerson && (
           <div className="qh-percopy-say">
-            {person.name} will get every connection {srcPerson.name} can reach, as grants written against {person.handle}
-            {tierOver ? ', all at ' + tierOver : ', at the tier they have there'}
-            {withTeams ? ', and will join their teams' : ', without joining any team'}. Existing grants on the same connection are replaced.
+            {withTeams
+              ? <>{person.name} will join {srcPerson.name}'s teams and get {srcPerson.name}'s own grants, written against {person.handle}{tierOver ? ', all at ' + tierOver : ', at the tier they have there'}. Team access arrives through membership — <b>including anything those teams are granted later</b>.</>
+              : <>{person.name} will get every connection {srcPerson.name} can reach, including through a team, as grants written against {person.handle}{tierOver ? ', all at ' + tierOver : ', at the tier they have there'}, without joining any team. Where {srcPerson.name} holds both a team grant and their own, their own wins — it is usually the narrower, deliberate one.</>}
+            {' '}Existing grants on the same connection are replaced.
           </div>
         )}
       </div>
