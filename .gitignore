@@ -14,7 +14,13 @@ results/
 *.log
 
 # Personal / session-local artifacts not part of the repo.
-.claude/
+# Everything under .claude is local (settings.local.json, caches) EXCEPT
+# skills: those are working-style instructions meant to travel with the repo,
+# so the same rules apply on any clone. Written as `.claude/*` rather than
+# `.claude/`, because git cannot re-include a path whose parent DIRECTORY is
+# excluded — the negation below is silently dead with a trailing slash.
+.claude/*
+!.claude/skills/
 CLAUDE.local.md
 dba-slack-bot-handoff.md
 slack_token_rotation_audit.md

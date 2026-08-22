@@ -9,54 +9,54 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.13] — 2026-08-22
+
+### Added
+
+- **Ask for access by picking from a list.** `GET /requestable` returns the
+  enabled connections a person cannot reach, with only the databases they do
+  not hold. Excluded: the control plane, the maintenance databases, disabled
+  targets, already-granted pairs. `POST /endpoint-requests` takes a
+  `connectionId` from that list and treats it as authoritative — unknown or
+  disabled is a 404, a database not on it a 400. No fallback to free text; the
+  fallback is what produced requests nobody could resolve. Free text still
+  works for a database QueryHub does not have yet.
+
+- **Add a person from the Grants screen.** The subject field takes a principal
+  QueryHub has never seen. `GET /admin/people/resolve` names them first, so a
+  mistyped id is caught before the grant exists. No create-person endpoint:
+  granting access is what adds someone.
+
 ### Fixed
 
-- **`SELECT * FROM pg_roles` failed with a message about the year 10000.**
-  `rolvaliduntil` is `infinity` for any role created without `VALID UNTIL`, and
-  psycopg raises while reading such a row — so one unrepresentable cell took the
-  whole result with it. Infinite timestamps now arrive as the literal
-  `infinity` / `-infinity`, which is what Postgres calls them; a real timestamp
-  is unaffected. Applies to `date`, `timestamp` and `timestamptz`.
+- **`SELECT * FROM pg_roles` failed with "Timestamp too large (after year
+  10K)".** Cause: `rolvaliduntil` is `infinity` for any role created without
+  `VALID UNTIL`, and psycopg rejected the row rather than the cell. Fix:
+  infinite values load as the literal `infinity` / `-infinity`, for `date`,
+  `timestamp` and `timestamptz`. Real timestamps are unchanged.
 
-- **Copying access onto a person QueryHub had never seen half-onboarded them.**
-  `POST /admin/people/{id}/copy-access` wrote the team memberships and the
-  grants but no `requesters` row, so every query was still refused by the
-  whitelist gate and the person did not appear in the people list. It
-  whitelists first now, the way `grants.grant` always has.
+- **An `EXPLAIN` from the web UI showed nothing.** Cause: the plan went out as
+  a Slack code block and was never stored, and web results are not also DM'd —
+  so it was discarded, not merely unshown. Fix: a lone `EXPLAIN` writes the
+  plan as a one-column result too, and `explain_max_chars` clips the code block
+  instead of the only copy.
+
+- **Copy-access half-onboarded an unknown principal.**
+  `POST /admin/people/{id}/copy-access` wrote team memberships and grants but
+  no `requesters` row, so every query was refused by the whitelist gate and the
+  person was invisible in the people list. It whitelists first now, the way
+  `grants.grant` always has.
 
 ### Changed
 
-- **A person can be added from the Grants screen.** The subject field takes a
-  principal QueryHub has never seen, and `GET /admin/people/resolve` names them
-  before the grant is written. There is deliberately no create-person endpoint:
-  granting access is what brings someone in.
+- **A server's name is shown whole.** The head every target shares was dimmed,
+  and dropped entirely in a narrow pane. A target name is an identifier people
+  copy into psql; it renders at full contrast now and truncates like any other
+  name.
 
-- **Access can be requested from a list.** `GET /requestable` returns the
-  enabled connections a person cannot reach, with the databases they do not
-  hold — control plane, maintenance databases, disabled targets and
-  already-granted pairs excluded. `POST /endpoint-requests` accepts a
-  `connectionId` from that list and treats it as authoritative (unknown → 404,
-  a database not on it → 400) instead of falling back to free text, which is
-  what produced requests nobody could resolve. Free text still works for a
-  database QueryHub does not have yet.
-
-- **A server's name is shown whole.** The sidebar dimmed the head every target
-  shares (`svc-prod-`) and dropped it entirely in a narrow pane. A target name
-  is an identifier people copy into psql and read out in a handover, so it now
-  renders at full contrast and truncates like every other name instead.
-
-- **A disabled target now looks disabled**, not merely labelled: its engine
-  logo is greyed and its name dimmed in the tree, the editor's autocomplete and
-  the admin Connections table. A retired target still answers — with stale data
-  — so the one thing it must not look like is a live one.
-
-- **An `EXPLAIN` submitted from the web UI showed nothing.** The plan was
-  delivered as a Slack code block and never stored, so a web request — which
-  reads the stored result and, by default, is not also DM'd — finished
-  `completed`, reported a row count, and had nothing to show. The plan was not
-  saved anywhere either, so it could not be recovered. A lone `EXPLAIN` now
-  writes the plan as a one-column result alongside the code block, and
-  `explain_max_chars` clips only the code block instead of the only copy.
+- **A disabled target looks disabled** — greyed engine logo, dimmed name, in
+  the tree, the editor's autocomplete and the admin Connections table. It still
+  answers, with stale data, so it must not look live.
 
 ## [1.0.12] — 2026-08-21
 
