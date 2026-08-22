@@ -26,6 +26,11 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **A person can be added from the Grants screen.** The subject field takes a
+  principal QueryHub has never seen, and `GET /admin/people/resolve` names them
+  before the grant is written. There is deliberately no create-person endpoint:
+  granting access is what brings someone in.
+
 - **Access can be requested from a list.** `GET /requestable` returns the
   enabled connections a person cannot reach, with the databases they do not
   hold — control plane, maintenance databases, disabled targets and
