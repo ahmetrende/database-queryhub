@@ -214,6 +214,11 @@ function useAdminState(pushToast, active, isAdminViewer) {
   // holding state: it is per-person and only its caller wants it, so a shared
   // slot would go stale behind whoever looked last.
   const effectiveAccess = (id) => qhApi.adminEffectiveAccess(id);
+  // Is this id someone? (CODE brief 2026-08-22 §3.) Also a promise, and the
+  // errors are the CALLER's to render: the subject combo turns a failed lookup
+  // into a note, because the grant is still writable — the server resolves the
+  // principal again when it writes it.
+  const resolvePerson = (principal) => qhApi.adminResolvePerson(principal);
   const copyAccess = (id, body) =>
     qhApi.adminCopyAccess(id, { source: body.source, includeTeams: !!body.includeTeams, tier: body.tier || null })
       .then(r => {
@@ -374,7 +379,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
     loadError, loading, reload: reloadAll,
     decide, batchApprove, approveBundle, toggleKill,
     addGrant, updateGrant, revokeGrant, setSubjectGrants,
-    effectiveAccess, copyAccess,
+    effectiveAccess, copyAccess, resolvePerson,
     addAutoGrant, updateAutoGrant, revokeAutoGrant,
     saveScope, removeScope, decideEndpoint, saveConfig,
     addTeam, updateTeam, removeTeam, setPersonTeams,

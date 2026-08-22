@@ -1265,7 +1265,13 @@ function App() {
   const submitRequest = async (req) => {
     setReqOpen(false);
     try {
-      await qhApi.requestEndpoint({ server: req.server, database: req.database, tier: req.tier, reason: req.reason });
+      // `connectionId` is the picked row, and the server treats it as
+      // AUTHORITATIVE (CODE brief 2026-08-22 §2): unknown or disabled → 404, a
+      // database not on it → 400 `unknown_database`, and no fallback to the free
+      // text — falling back is what produced requests nobody could resolve.
+      // `server` is still sent on both routes: it stays required, so every
+      // client keeps one field to display.
+      await qhApi.requestEndpoint({ connectionId: req.connectionId || null, server: req.server, database: req.database, tier: req.tier, reason: req.reason });
       pushToast(req.tier + ' access to ' + req.server + '/' + (req.database || '(any db)') + ' requested — sent to DBA in Slack.');
     } catch (e) { pushToast(e.message || 'Request failed.'); }
   };
@@ -1372,7 +1378,9 @@ function App() {
       </div>
       )}
 
-      {reqOpen && <RequestEndpointModal onClose={() => setReqOpen(false)} onSubmit={submitRequest} />}
+      {/* `load` is passed in rather than called inside the modal: qh-panels.jsx
+          touches no qhApi, so every call site stays in this file. */}
+      {reqOpen && <RequestAccessModal onClose={() => setReqOpen(false)} onSubmit={submitRequest} load={() => qhApi.requestable()} />}
       {feedbackOpen && <FeedbackModal user={user} view={view} onClose={() => setFeedbackOpen(false)} onSubmit={submitFeedback} />}
       {dlModal && <DownloadSqlModal defaultName={dlModal.name} onConfirm={performDownloadSql} onCancel={() => setDlModal(null)} />}
       {confirmRun && <ConfirmRunModal reasons={confirmRun.reasons} target={confirmRun.target} env={confirmRun.env}

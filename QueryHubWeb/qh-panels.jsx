@@ -882,7 +882,7 @@ function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, can
         <div className="qh-side-foot">
           <button className="qh-req-btn" onClick={onRequestEndpoint}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
-            Request new endpoint
+            Request database access
           </button>
         </div>
       )}
@@ -890,52 +890,182 @@ function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, can
   );
 }
 
-// ---------- Request-endpoint modal ----------
-function RequestEndpointModal({ onClose, onSubmit }) {
-  const [server, setServer] = React.useState('');
+// ---------- Request database access (CODE brief 2026-08-22 §2) ----------
+// This was "Request a new endpoint" with two free-text boxes, and it was wrong
+// twice: it reads as "have a new server built", while the request is almost
+// always for a database QueryHub ALREADY has — and `GET /connections` carries
+// only targets the caller already holds, so the form asked them to type the name
+// of a server they have never been shown. What arrived was prose with a typo in
+// it for an admin to resolve by hand.
+// So the primary path is a picker over `GET /requestable` — what is MISSING,
+// computed server-side — and a picked row is authoritative: `connectionId` goes
+// with it, an unknown or disabled one is a 404 and a database that is not on it a
+// 400. `server` still rides along, so every existing client keeps one field to
+// display. The free-text path survives as the SECONDARY route, because a server
+// QueryHub does not have yet is a real ask — it is just not the common one.
+// The list is 30–41 rows for a real developer, so it is searchable, not short.
+function RequestAccessModal({ onClose, onSubmit, load }) {
+  const [rows, setRows] = React.useState(null);      // null = still loading
+  const [loadErr, setLoadErr] = React.useState(null);
+  const [q, setQ] = React.useState('');
+  const [pick, setPick] = React.useState(null);
   const [database, setDatabase] = React.useState('');
   const [tier, setTier] = React.useState('RO');
   const [reason, setReason] = React.useState('');
-  const valid = server.trim() && database.trim() && reason.trim();
+  const [free, setFree] = React.useState(false);
+  const [server, setServer] = React.useState('');
+
+  React.useEffect(() => {
+    let live = true;
+    Promise.resolve(load())
+      .then(r => { if (live) setRows((r && r.connections) || []); })
+      // A list that cannot load must not dead-end the request: it falls through
+      // to the free-text route, which says why it is the one on screen.
+      .catch(e => { if (!live) return; setRows([]); setFree(true); setLoadErr((e && e.message) || 'the list could not be loaded'); });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const term = q.trim().toLowerCase();
+  const matches = (rows || []).filter(c => !term ||
+    (c.name + ' ' + (c.env || '') + ' ' + (c.engine || '') + ' ' + (c.databases || []).join(' ')).toLowerCase().includes(term));
+  const dbs = (pick && pick.databases) || [];
+  // Behind QH_SHOW_ENV_TAGS like every other env tag in a list. The flag is a
+  // live product decision ("hidden, not deleted"), so a new list that shows
+  // PROD/STG would be the only place in the app that contradicts it. Carried
+  // in with the port and named in the brief so it lands at source.
+  const envTag = (c) => (QH_SHOW_ENV_TAGS
+    ? <span className={'qh-envtag-sm env-' + c.env}>{c.env === 'production' ? 'PROD' : c.env === 'staging' ? 'STG' : c.env}</span>
+    : null);
+  // A brand-new server has no catalogue snapshot yet and is still requestable,
+  // so the row says so rather than reading as a server with no databases.
+  const dbLine = (c) => {
+    const d = c.databases || [];
+    if (!d.length) return 'no catalogue snapshot yet — name the database yourself';
+    return d.slice(0, 3).join(' · ') + (d.length > 3 ? ' · +' + (d.length - 3) + ' more' : '');
+  };
+  // One database on the connection IS the answer; making it a one-option select
+  // asks a question that has already been answered.
+  const choose = (c) => { setPick(c); setDatabase((c.databases || []).length === 1 ? c.databases[0] : ''); };
+  const valid = free ? (server.trim() && database.trim() && reason.trim()) : (pick && database.trim() && reason.trim());
+  const send = () => {
+    if (!valid) return;
+    onSubmit({ connectionId: free ? null : pick.connectionId, server: free ? server.trim() : pick.name,
+      database: database.trim(), tier, reason });
+  };
 
   return (
     <QhModal onClose={onClose}>
       <div className="qh-modal-head">
         <div>
-          <div className="qh-modal-title">Request a new endpoint</div>
-          <div className="qh-modal-sub">Goes to the DBA team in Slack for review. You'll get a DM when it's provisioned.</div>
+          <div className="qh-modal-title">{free ? 'Ask for a new endpoint' : 'Request access to a database'}</div>
+          <div className="qh-modal-sub">{free
+            ? 'For a server QueryHub does not have yet. This one arrives as free text and an admin resolves it by hand, so name it exactly.'
+            : 'Goes to the DBA team in Slack for review. You’ll get a DM when it is granted.'}</div>
         </div>
         <button className="qh-icon-btn" onClick={onClose} aria-label="Close">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
         </button>
       </div>
       <div className="qh-modal-body">
-        <label className="qh-field">
-          <span className="qh-field-lbl">Server / host</span>
-          <input className="qh-input" placeholder="e.g. prod-reporting-01" value={server} onChange={(e) => setServer(e.target.value)} />
-        </label>
-        <label className="qh-field">
-          <span className="qh-field-lbl">Database name</span>
-          <input className="qh-input" placeholder="e.g. ledger" value={database} onChange={(e) => setDatabase(e.target.value)} />
-        </label>
-        <div className="qh-field">
-          <span className="qh-field-lbl">Access tier</span>
-          <div className="qh-seg">
-            {[['RO', 'Read-only'], ['RW', 'Read/Write'], ['DDL', 'Schema']].map(([v, l]) => (
-              <button key={v} className={'qh-seg-opt' + (tier === v ? ' is-active' : '')} onClick={() => setTier(v)}>
-                <TierBadge tier={v} sm />{l}
-              </button>
-            ))}
+        {loadErr && free && <div className="qh-req-warn">Asking as free text because {loadErr}.</div>}
+
+        {!free && !pick && (
+          <div className="qh-field">
+            <span className="qh-field-lbl">Which database?</span>
+            {rows === null
+              ? <div className="qh-req-load"><span className="qh-spin" />Working out what you are missing…</div>
+              : (
+                <>
+                  <input className="qh-input" autoFocus placeholder="Filter servers and databases…" value={q}
+                    onChange={(e) => setQ(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && matches.length) { e.preventDefault(); choose(matches[0]); } }} />
+                  <div className="qh-reqlist">
+                    {matches.map(c => (
+                      <button key={c.connectionId} className="qh-reqrow" onClick={() => choose(c)}>
+                        <img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} />
+                        <span className="qh-reqrow-main">
+                          <span className="qh-reqrow-name">{c.name}
+                            {/* Without a word on the row, a server they query
+                                daily reads as one they have no access to. */}
+                            {c.partial && <span className="qh-reqrow-partial" title="You already query this server — these are the databases on it you do not hold yet.">partial</span>}
+                          </span>
+                          <span className="qh-reqrow-dbs">{dbLine(c)}</span>
+                        </span>
+                        {envTag(c)}
+                      </button>
+                    ))}
+                    {!matches.length && <div className="qh-reqlist-none">{rows.length
+                      ? 'No target matches “' + q.trim() + '”.'
+                      : 'Nothing left to request — you already reach every database QueryHub has.'}</div>}
+                  </div>
+                  {/* The escape hatch belongs where the search failed rather
+                      than in the footer: under the list is where someone is
+                      looking at the moment their server is not in it. */}
+                  <button className="qh-reqalt is-row" onClick={() => { setFree(true); setPick(null); setQ(''); setDatabase(''); }}>Not listed? Ask for a new endpoint</button>
+                </>
+              )}
           </div>
-        </div>
-        <label className="qh-field">
-          <span className="qh-field-lbl">Reason for access</span>
-          <textarea className="qh-input qh-textarea" rows="3" placeholder="What do you need this for? Helps the DBA approve faster." value={reason} onChange={(e) => setReason(e.target.value)} />
-        </label>
+        )}
+
+        {!free && pick && (
+          <div className="qh-field">
+            <span className="qh-field-lbl">Server</span>
+            <div className="qh-reqpicked">
+              <img className="qh-engine-logo" src={qhEngineLogo(pick)} alt="" draggable={false} />
+              <b>{pick.name}</b>
+              {envTag(pick)}
+              {pick.partial && <span className="qh-reqrow-partial">partial</span>}
+              <button className="qh-reqalt" onClick={() => { setPick(null); setDatabase(''); }}>Change</button>
+            </div>
+          </div>
+        )}
+
+        {free && !loadErr && <button className="qh-reqalt is-row" onClick={() => { setFree(false); setServer(''); setDatabase(''); }}>Back to the list of databases</button>}
+
+        {free && (
+          <label className="qh-field">
+            <span className="qh-field-lbl">Server / host</span>
+            <input className="qh-input" autoFocus placeholder="e.g. prod-reporting-01" value={server} onChange={(e) => setServer(e.target.value)} />
+          </label>
+        )}
+
+        {(free || pick) && (
+          <label className="qh-field">
+            <span className="qh-field-lbl">Database</span>
+            {(!free && dbs.length)
+              ? <select className="qh-input" value={database} onChange={(e) => setDatabase(e.target.value)}>
+                  <option value="">Select a database…</option>
+                  {dbs.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+              : <input className="qh-input" placeholder="e.g. ledger" value={database} onChange={(e) => setDatabase(e.target.value)} />}
+            {!free && pick && !dbs.length && <span className="qh-req-note">No catalogue snapshot for this server yet — type the database name as it is on the server. The DBA sees it beside the alias.</span>}
+          </label>
+        )}
+
+        {(free || pick) && (
+          <div className="qh-field">
+            <span className="qh-field-lbl">Access tier</span>
+            <div className="qh-seg">
+              {[['RO', 'Read-only'], ['RW', 'Read/Write'], ['DDL', 'Schema']].map(([v, l]) => (
+                <button key={v} className={'qh-seg-opt' + (tier === v ? ' is-active' : '')} onClick={() => setTier(v)}>
+                  <TierBadge tier={v} sm />{l}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {(free || pick) && (
+          <label className="qh-field">
+            <span className="qh-field-lbl">Reason for access</span>
+            <textarea className="qh-input qh-textarea" rows="3" placeholder="What do you need this for? Helps the DBA approve faster." value={reason} onChange={(e) => setReason(e.target.value)} />
+          </label>
+        )}
       </div>
       <div className="qh-modal-foot">
         <button className="qh-btn qh-btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="qh-btn qh-btn-primary is-approval" disabled={!valid} onClick={() => onSubmit({ server, database, tier, reason })}>
+        <button className="qh-btn qh-btn-primary is-approval" disabled={!valid} onClick={send}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>
           Send request
         </button>
@@ -1626,4 +1756,4 @@ const DBIcons = {
   calendar: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>,
 };
 
-Object.assign(window, { Sidebar, ResultsPanel, ResultsView, TierBadge, StatusPill, DBIcons, RequestEndpointModal, OriginBadge, qhAgo });
+Object.assign(window, { Sidebar, ResultsPanel, ResultsView, TierBadge, StatusPill, DBIcons, RequestAccessModal, OriginBadge, qhAgo });

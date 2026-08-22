@@ -1174,8 +1174,11 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
                          {"team": team["name"], "team_id": team["id"],
                           "target_id": tid, "databases": dbs, "tier": tier,
                           "expires_at": expires_at.isoformat() if expires_at else None})
+        # A team's subjectName IS its name — same rule the grant list follows,
+        # so a client can read subjectName on every row without branching.
         return {"id": f"t:{team['id']}:{tid}", "subjectType": "team",
-                "subject": team["name"], "connectionId": body.connectionId,
+                "subject": team["name"], "subjectName": team["name"],
+                "connectionId": body.connectionId,
                 "databases": dbs or "*", "tier": tier.upper()}
 
     if not _valid_principal(body.subject):
@@ -1184,8 +1187,20 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
         granter_id=uid, granter_name=claims.get("name"), grantee_id=body.subject,
         grantee_profile=_slack_profile(body.subject), target_id=tid, mode=tier,
         databases=dbs, reason=body.reason, notify=True, expires_at=expires_at)
+    # `subjectName` so the caller can land on the person it just created.
+    # Granting is what brings someone into QueryHub, so this response is the
+    # first moment their name exists anywhere — without it the client has to
+    # refetch the whole people list and find them by handle.
+    row = db.fetch_one(
+        "SELECT COALESCE(r.name, a.name) AS name "
+        "  FROM (SELECT %s AS pid) p "
+        "  LEFT JOIN requesters r ON r.slack_user_id = p.pid "
+        "  LEFT JOIN admins a ON a.slack_user_id = p.pid",
+        (body.subject,))
     return {"id": f"u:{body.subject}:{tid}", "subjectType": "user",
-            "subject": body.subject, "connectionId": body.connectionId,
+            "subject": body.subject,
+            "subjectName": (row or {}).get("name"),
+            "connectionId": body.connectionId,
             "databases": summary["databases"] or "*",
             "tier": summary["mode"].upper()}
 

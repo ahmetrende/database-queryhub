@@ -87,5 +87,15 @@ def test_the_toolbar_still_shows_the_environment():
 
 def test_flipping_the_flag_is_all_it_takes_to_bring_them_back():
     """Guard the guard: if the flag were referenced nowhere, setting it true
-    would silently do nothing and the 'keep it for later' promise would be a lie."""
-    assert _read("qh-panels.jsx").count("QH_SHOW_ENV_TAGS") == 2
+    would silently do nothing and the 'keep it for later' promise would be a lie.
+
+    Counted in CODE, not in the file text, and asserted as a floor rather than
+    an exact number. This used to demand exactly two: the 2026-08-22 round added
+    a third list (the request-access picker), which is the flag working as
+    intended, and the test failed for being right. A comment that names the flag
+    was inflating the count too.
+    """
+    code = "\n".join(ln for ln in _read("qh-panels.jsx").splitlines()
+                     if not ln.lstrip().startswith("//"))
+    assert code.count("QH_SHOW_ENV_TAGS") >= 2, \
+        "the flag is referenced nowhere in code — flipping it would do nothing"

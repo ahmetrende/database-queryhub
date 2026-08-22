@@ -154,10 +154,15 @@ def endpoint_request(body: EndpointRequestIn,
             raise deps._error(400, "bad_request",
                               "That connection cannot be requested.")
         wanted = (body.database or "").strip()
-        if wanted and wanted not in _catalog_databases(t.id):
-            # Same rule the auto-approve form got: a database that is not on
-            # the connection is a typo worth catching here, not a grant that
-            # silently matches nothing later.
+        known = _catalog_databases(t.id)
+        if wanted and known and wanted not in known:
+            # Same rule the auto-approve form got, INCLUDING its exemption: a
+            # database that is not on the connection is a typo worth catching
+            # here — but a connection with no catalogue yet has no list to
+            # check against, and refusing every name on it would make a
+            # freshly onboarded server the one thing nobody can request. The
+            # snapshot arrives on the next hourly sync; until then the field is
+            # free text, exactly as it is for a server QueryHub does not have.
             raise deps._error(400, "unknown_database",
                               f"'{wanted}' is not a database on {t.alias}.")
         server = t.alias

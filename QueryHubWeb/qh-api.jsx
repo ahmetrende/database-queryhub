@@ -134,6 +134,15 @@ const qhApi = {
                  + (statement ? '?statement=' + statement : ''),
   saveSnippet: (body)  => qhFetch('/saved', { method: 'POST', body: JSON.stringify(body) }),
   deleteSnippet:(id)   => qhFetch('/saved/' + id, { method: 'DELETE' }),
+  // What this person could ask for: enabled connections they cannot reach, with
+  // only the databases they do not hold (the control plane, the maintenance
+  // databases and disabled targets are filtered server-side). Drives the picker
+  // in the request modal — before it, the form asked people to type the name of
+  // a server their own connection list never shows them.
+  requestable:()       => qhFetch('/requestable'),
+  // `connectionId` on the body is the picked row and the server treats it as
+  // authoritative. Nothing to add here for it: the body is posted through
+  // unfiltered, so a new field reaches the server the moment a caller sends it.
   requestEndpoint:(b)  => qhFetch('/endpoint-requests', { method: 'POST', body: JSON.stringify(b) }),
   feedback:    (b)     => qhFetch('/feedback', { method: 'POST', body: JSON.stringify(b) }),
   // Developer notifications (approval decisions, scheduled runs, endpoint
@@ -169,6 +178,10 @@ const qhApi = {
   adminDelAutoGrant:(id)  => qhFetch('/admin/auto-grants/' + encodeURIComponent(id), { method: 'DELETE' }),
   // One person's resolved reach, and "give them what that person has".
   adminEffectiveAccess:(id) => qhFetch('/admin/people/' + encodeURIComponent(id) + '/effective-access'),
+  // Who is this principal id, before anything is written. Granting access is
+  // what creates a person, so this is how the subject combo can show a name for
+  // an id QueryHub has never seen — and catch a typo while it is still a typo.
+  adminResolvePerson:(principal) => qhFetch('/admin/people/resolve?principal=' + encodeURIComponent(principal)),
   adminCopyAccess:(id, body) => qhFetch('/admin/people/' + encodeURIComponent(id) + '/copy-access',
                  { method: 'POST', body: JSON.stringify(body) }),
   adminScopes:     ()     => qhFetch('/admin/scopes'),

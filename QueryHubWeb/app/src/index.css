@@ -707,6 +707,32 @@
   .qh-seg-opt:hover { background: var(--adaptive-medium); }
   .qh-seg-opt.is-active { border-color: var(--brand-green); background: var(--brand-adaptive-light); color: var(--fg-accent); font-weight: 600; }
   .qh-modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 22px 22px; }
+  /* Request database access (CODE brief 2026-08-22 §2). A real developer sees
+     30–41 requestable targets, so the list scrolls inside the modal and the
+     filter above it is the primary control. Picking collapses it to one strip:
+     everything after the pick is about that target, not about the fleet. */
+  .qh-req-load { display: flex; align-items: center; gap: 9px; padding: 12px 2px; font-size: 12.5px; color: var(--fg-tertiary); }
+  .qh-reqlist { display: flex; flex-direction: column; gap: 2px; max-height: 236px; overflow-y: auto; margin-top: 2px; padding: 4px; background: var(--bg-light); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); }
+  .qh-reqrow { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 8px; background: transparent; border: 0; border-radius: var(--r-xs); cursor: pointer; font-family: inherit; text-align: left; }
+  .qh-reqrow:hover { background: var(--brand-adaptive-light); }
+  .qh-reqrow-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .qh-reqrow-name { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--fg-primary); }
+  .qh-reqrow-dbs { font-size: 11px; color: var(--fg-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* "You already query this server" — without it the row implies no access at
+     all to a target the person uses daily. */
+  .qh-reqrow-partial { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 5px; border-radius: var(--r-2xs); color: var(--fg-accent); background: var(--brand-adaptive-light); flex-shrink: 0; }
+  .qh-reqlist-none { padding: 14px 10px; font-size: 12.5px; color: var(--fg-tertiary); text-align: center; text-wrap: pretty; }
+  .qh-reqpicked { display: flex; align-items: center; gap: 9px; padding: 9px 11px; border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); font-size: 13px; }
+  .qh-reqpicked b { font-weight: 600; color: var(--fg-primary); }
+  .qh-reqpicked .qh-reqalt { margin-left: auto; }
+  .qh-req-note { font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); text-wrap: pretty; }
+  .qh-req-warn { padding: 9px 12px; border-radius: var(--r-sm); font-size: 12.5px; line-height: 1.45; color: var(--fg-warning); background: var(--warning-adaptive-light); }
+  /* The free-text route is kept and demoted to a text button, sitting under the
+     list it is the alternative to — that is where someone is looking when their
+     server is not in it. */
+  .qh-reqalt { background: transparent; border: 0; padding: 0; font-family: inherit; font-size: 12.5px; font-weight: 600; color: var(--fg-accent); cursor: pointer; }
+  .qh-reqalt:hover { text-decoration: underline; }
+  .qh-reqalt.is-row { align-self: flex-start; margin-top: 2px; }
   /* Destructive-statement confirmation (ConfirmRunModal). The reasons are the
      server's own sentences, so they get room to be read: one block each, full
      width, nothing clipped. */
@@ -774,19 +800,22 @@
   .qh-tr.is-two { height: 40px; }
   .qh-tr-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
   .qh-tr-main .qh-tr-label { flex: none; line-height: 1.3; }
-  /* The fleet's shared name head (`svc-prod-…`), dimmed: it is the same on
-     every row, so it reads as the prefix it is and is the first thing the row
-     gives up — below ~330px it is hidden outright and the row keeps the part
-     that actually identifies the target. Full name in the hover title. */
-  .qh-name-pre { color: var(--fg-tertiary); font-weight: 400; }
-  .qh-tree.is-narrow .qh-name-pre { display: none; }
+  /* The fleet's shared name head (`svc-prod-…`) keeps the row's own colour and
+     weight (CODE brief 2026-08-22 §1). A target name is an IDENTIFIER — copied
+     into psql, pasted into a ticket, read out in a handover — and half of it in
+     tertiary grey reads as a *different* name, while hiding it in a narrow pane
+     deleted the half that says which fleet it is. `qhSplitName` still wraps the
+     head, so the hook survives; `.qh-tr-label` ellipsises the tail like every
+     other name in the UI. Measured aside: the collision guard means the longest
+     safe head on this fleet is `exc-`, not `svc-prod-` — the saving was 4
+     characters, which is not worth a name that reads as two. */
+  .qh-name-pre { color: inherit; font-weight: inherit; }
   /* Double-clicking the resizer fits the sidebar to its widest row: for one
      frame the rows are laid out at their natural width so they can be measured. */
   .qh-side-body.qh-measuring { overflow-x: auto; }
   .qh-side-body.qh-measuring .qh-tr { width: max-content; min-width: 0; }
   .qh-side-body.qh-measuring .qh-tr-label,
   .qh-side-body.qh-measuring .qh-db-srv { overflow: visible; text-overflow: clip; }
-  .qh-side-body.qh-measuring .qh-name-pre { display: inline; }
   .qh-tr { display: flex; align-items: center; gap: 6px; height: 28px; padding-right: 8px; cursor: pointer; color: var(--fg-secondary); font-size: 13px; border-radius: var(--r-xs); user-select: none; }
   .qh-tr:hover { background: var(--adaptive-medium); }
   .qh-tr.is-strong { font-weight: 600; color: var(--fg-primary); height: 30px; }
@@ -1069,6 +1098,7 @@
   .qh-percard-n { font-size: 11px; color: var(--fg-tertiary); flex-shrink: 0; }
   .qh-peravatar { width: 30px; height: 30px; border-radius: 999px; background: var(--brand-green); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; }
   .qh-peravatar.lg { width: 38px; height: 38px; font-size: 13px; }
+  .qh-peravatar.sm { width: 22px; height: 22px; font-size: 9.5px; }
   .qh-perhead { display: flex; align-items: center; gap: 12px; padding-bottom: 14px; margin-bottom: 4px; border-bottom: 1px solid var(--stroke-light); flex-wrap: wrap; }
   .qh-perhead-main { display: flex; flex-direction: column; min-width: 0; }
   .qh-perhead-name { font-size: 17px; font-weight: 700; color: var(--fg-primary); }
@@ -1105,6 +1135,32 @@
      right-aligns it, and the parent's flex-wrap gives it its own line when the
      subject picker needs the width. */
   .qh-accedit-acts.is-top { margin: 0 0 0 auto; }
+  /* Subject combo (CODE brief 2026-08-22 §3): one control for the people list
+     AND a principal id QueryHub has never seen. Fixed width so the form row does
+     not reflow as it filters, and the popup is absolute — eight matches must not
+     push Save down the page. */
+  .qh-pcombo { position: relative; display: flex; flex-direction: column; gap: 5px; width: 300px; }
+  .qh-pcombo-in { height: 32px; font-size: 13px; }
+  /* Wider than the input: a name AND its handle on one row is the whole point of
+     the list, and both truncated at 300px is two half-answers. */
+  .qh-pcombo-pop { position: absolute; top: 36px; left: 0; z-index: 60; min-width: 348px; max-height: 260px; overflow-y: auto; padding: 4px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); box-shadow: var(--shadow-medium); }
+  .qh-pcombo-opt { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 7px; background: transparent; border: 0; border-radius: var(--r-xs); cursor: pointer; font-family: inherit; text-align: left; }
+  .qh-pcombo-opt.is-hi { background: var(--brand-adaptive-light); }
+  .qh-pcombo-name { flex: 0 1 auto; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--fg-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qh-pcombo-h { flex: 1 1 auto; min-width: 0; font-family: var(--qh-mono); font-size: 10.5px; color: var(--fg-tertiary); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qh-pcombo-opt.is-id { border-top: 1px solid var(--stroke-light); }
+  /* On the id row the id is the answer, so it takes the width and the hint gives
+     it up — an ellipsised principal id is not checkable. */
+  .qh-pcombo-opt.is-id .qh-pcombo-name { flex: 1 1 auto; }
+  .qh-pcombo-opt.is-id .qh-pcombo-h { flex: 0 1 auto; }
+  .qh-pcombo-idic { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; border-radius: 999px; color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  .qh-pcombo-none { padding: 10px 8px; font-size: 12px; color: var(--fg-tertiary); text-wrap: pretty; }
+  /* What the resolve answered, in three weights: a known person needs no line,
+     a directory hit is information, a miss is a warning worth the danger colour
+     — it is the one state where saving writes a grant nobody can use. */
+  .qh-pcombo-note { font-size: 11.5px; line-height: 1.4; color: var(--fg-tertiary); text-wrap: pretty; }
+  .qh-pcombo-note.is-new { color: var(--fg-secondary); }
+  .qh-pcombo-note.is-bad { color: var(--fg-danger); }
   .qh-accedit-label { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-tertiary); margin-bottom: 8px; display: flex; align-items: baseline; gap: 10px; }
   .qh-accedit-hint { font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--fg-tertiary); }
   .qh-acctargets { display: flex; flex-direction: column; gap: 8px; }
@@ -1234,6 +1290,18 @@
      warning colour, costs 15px, and the sentence stays in the row's hover title. */
   .qh-conn-off.is-icon { display: inline-flex; align-items: center; padding: 0;
     background: transparent; border-radius: 0; }
+  /* And the rest of the row follows the badge: a retired target still ANSWERS,
+     with stale data, so the one thing its row must not look like is a live one —
+     the badge alone was losing that argument to a full-colour brand mark (CODE
+     brief 2026-08-22 §1). `:has()` keeps it in CSS, so no design-owned JSX grows
+     a `muted` class for a state the DOM already states. */
+  .qh-tr:has(.qh-conn-off) .qh-engine-logo,
+  .qh-ac-opt:has(.qh-conn-off) .qh-engine-logo,
+  .qh-conntable tr:has(.qh-expiry.is-exp) .qh-engine-logo { filter: grayscale(1); opacity: 0.45; }
+  .qh-tr:has(.qh-conn-off) .qh-tr-label,
+  .qh-ac-opt:has(.qh-conn-off) .qh-ac-text,
+  .qh-ac-opt:has(.qh-conn-off) .qh-ac-text b,
+  .qh-conntable tr:has(.qh-expiry.is-exp) .qh-conn-namecell b { color: var(--fg-tertiary); font-weight: 400; }
   /* Chips in a tree row yield width to the name too (see .qh-tr-label). Both are
      short, so in practice they collapse only where the name would otherwise die. */
   .qh-tr .qh-pgchip, .qh-tr .qh-envtag-sm { flex: 0 1000 auto; min-width: 0; overflow: hidden; }
@@ -1651,39 +1719,3 @@
   user-select: none;
 }
 .qh-wn-audtoggle input { cursor: pointer; margin: 0; }
-
-/* ---- Server names: the whole identifier, at full contrast ---------------
-   The design dims the fleet-wide head (`exc-`) and drops it entirely below
-   ~330px to buy characters back. Operator's call, 2026-08-21: a target name
-   is an identifier — people copy it into psql, paste it into a ticket and
-   read it out in a handover — and half a name in tertiary grey reads as a
-   different name than the one that is actually there. So: full weight, full
-   colour, and the head stays when the sidebar narrows. `.qh-tr-label`
-   already ellipsises, so a narrow pane now truncates the tail like every
-   other name in the UI instead of silently deleting the head.
-   Design should fold this into the prototype — see CODE_TO_DESIGN_BRIEF. */
-.qh-name-pre { color: inherit; font-weight: inherit; }
-.qh-tree.is-narrow .qh-name-pre { display: inline; }
-
-/* ---- Disabled targets look disabled ------------------------------------
-   A retired or parked target still ANSWERS — with stale data — so the one
-   thing its row must not look like is a live one. It carried an "off" badge
-   and nothing else: same full-colour brand mark, same bright name, same
-   weight. Grey the mark and dim the name wherever a row already says
-   disabled: the sidebar tree and the editor's autocomplete (both carry
-   `.qh-conn-off`), and the admin Connections table (whose status cell is the
-   marker there). Selected via :has() so no design-owned JSX has to grow a
-   class. Operator's call, 2026-08-21.
-   Design should fold this into the prototype — see CODE_TO_DESIGN_BRIEF. */
-.qh-tr:has(.qh-conn-off) .qh-engine-logo,
-.qh-ac-opt:has(.qh-conn-off) .qh-engine-logo,
-.qh-table tr:has(.qh-expiry.is-exp) .qh-engine-logo {
-  filter: grayscale(1);
-  opacity: 0.45;
-}
-.qh-tr:has(.qh-conn-off) .qh-tr-label,
-.qh-ac-opt:has(.qh-conn-off) .qh-ac-text,
-.qh-table tr:has(.qh-expiry.is-exp) .qh-conn-namecell b {
-  color: var(--fg-tertiary);
-  font-weight: 400;
-}

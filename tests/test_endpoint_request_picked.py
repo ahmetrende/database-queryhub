@@ -115,3 +115,18 @@ def test_free_text_still_works_for_something_qh_does_not_have(wired):
     # The discriminator keeps two different unknown servers from deduping into
     # one request.
     assert "brand-new-host" in state["created"]["attempted_query"]
+
+
+def test_a_connection_with_no_catalogue_accepts_any_database(wired):
+    """A freshly onboarded server has no schema snapshot yet.
+
+    Checking a typed name against an empty list would 400 every request for the
+    newest server in the fleet — making the one target most likely to be
+    requested the one target nobody can request. Same exemption the auto-approve
+    form has; the snapshot arrives on the next hourly sync.
+    """
+    state = wired(target=_T(), dbs=())
+    rr.endpoint_request(_body(connectionId="prod-main", database="ledger"),
+                        claims={"sub": "U1"})
+    assert state["created"]["database_name"] == "ledger"
+    assert state["created"]["target_server_id"] == 7

@@ -132,6 +132,87 @@ function accGroup(rows, keyFn) {
   return [...m.entries()].sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
 }
 
+// ---------- Subject combo: pick a person, or type a principal id ----------
+// A <select> over the existing people list was the ONLY thing blocking "add a
+// person" (CODE brief 2026-08-22 §3). `POST /admin/grants` has always accepted
+// any principal id, including a Slack id QueryHub has never seen: `grants.grant`
+// whitelists them, fills name / email / tz from Slack and writes the grant in one
+// transaction. **Granting access IS the create** — there is no POST
+// /admin/people and there should not be, since a person with no grants is a row
+// that does nothing. What was missing was a control that accepts an id.
+// `GET /admin/people/resolve` is what makes a mistyped id catchable BEFORE the
+// grant exists: `known: false` with a name filled in means "not in QueryHub yet,
+// but the directory says this is who it is"; a null name means nobody has that id.
+function PersonPick({ people, value, onChange, resolve, autoFocus }) {
+  const [q, setQ] = useAcc(null);      // null = not editing; the box shows `value`
+  const [hi, setHi] = useAcc(0);
+  const [res, setRes] = useAcc(null);
+  const open = q !== null;
+  const wrapRef = qhUseDismiss(open, () => setQ(null));
+  const known = (people || []).find(p => p.handle === value || p.id === value) || null;
+  const term = (q || '').trim().toLowerCase();
+  const list = (people || []).filter(p => !term || (p.name + ' ' + p.handle).toLowerCase().includes(term)).slice(0, 8);
+  const raw = (q || '').trim();
+  // The typed text is offered as an id only when it is not already someone in
+  // the list — "use Elena Silva" as a principal id is not a thing anyone wants.
+  const asId = raw && !(people || []).some(p => p.handle === raw) && /^[A-Za-z0-9._@-]{3,}$/.test(raw) ? raw : null;
+  const n = list.length + (asId ? 1 : 0);
+  const pickPerson = (h) => { onChange(h); setRes(null); setQ(null); };
+  const useId = (id) => {
+    onChange(id); setQ(null); setRes({ principal: id, pending: true });
+    Promise.resolve(resolve ? resolve(id) : null)
+      .then(r => setRes(r ? { ...r, principal: r.principal || id } : null))
+      // The server resolves the principal again when it writes the grant, so a
+      // failed lookup is a note, not a block.
+      .catch(() => setRes({ principal: id, failed: true }));
+  };
+  const commit = () => { if (hi < list.length) { if (list[hi]) pickPerson(list[hi].handle); } else if (asId) useId(asId); };
+  const note = () => {
+    if (!value || known || !res || res.principal !== value) return null;
+    if (res.pending) return <span className="qh-pcombo-note">Checking <b>{value}</b>…</span>;
+    if (res.failed) return <span className="qh-pcombo-note">Couldn’t check <b>{value}</b> just now — it is resolved again when the grant is written.</span>;
+    if (res.known) return <span className="qh-pcombo-note">{res.name || value} is already in QueryHub{res.admin ? ', as an admin' : ''}.</span>;
+    if (res.name) return <span className="qh-pcombo-note is-new">Not in QueryHub yet — the directory says this is <b>{res.name}</b>{res.email ? ' · ' + res.email : ''}. Saving access adds them.</span>;
+    return <span className="qh-pcombo-note is-bad">Nobody in the directory has the id <b>{value}</b>. Check it before saving — the grant would be written against a principal that cannot sign in.</span>;
+  };
+  return (
+    <div className={'qh-pcombo' + (open ? ' is-open' : '')} ref={wrapRef}>
+      <input className="qh-input qh-pcombo-in" autoFocus={autoFocus} placeholder="Search people, or paste a principal id…"
+        value={open ? q : (known ? known.name + ' · ' + known.handle : (value || ''))}
+        onFocus={() => { setQ(''); setHi(0); }}
+        onChange={e => { setQ(e.target.value); setHi(0); }}
+        onKeyDown={e => {
+          if (e.key === 'ArrowDown') { e.preventDefault(); setHi(h => (n ? (h + 1) % n : 0)); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => (n ? (h + n - 1) % n : 0)); }
+          else if (e.key === 'Enter') { e.preventDefault(); commit(); }
+          else if (e.key === 'Escape') { setQ(null); }
+        }} />
+      {open && (
+        <div className="qh-pcombo-pop">
+          {list.map((p, i) => (
+            <button key={p.handle} className={'qh-pcombo-opt' + (i === hi ? ' is-hi' : '')} onMouseEnter={() => setHi(i)}
+              onMouseDown={e => { e.preventDefault(); pickPerson(p.handle); }}>
+              <span className="qh-peravatar sm">{p.initials}</span>
+              <span className="qh-pcombo-name">{p.name}</span>
+              <span className="qh-pcombo-h">{p.handle}</span>
+            </button>
+          ))}
+          {asId && (
+            <button className={'qh-pcombo-opt is-id' + (hi === list.length ? ' is-hi' : '')} onMouseEnter={() => setHi(list.length)}
+              onMouseDown={e => { e.preventDefault(); useId(asId); }}>
+              <span className="qh-pcombo-idic"><AIcon.plus /></span>
+              <span className="qh-pcombo-name">Use “{asId}”</span>
+              <span className="qh-pcombo-h">principal id — granting adds them</span>
+            </button>
+          )}
+          {!n && <div className="qh-pcombo-none">Nobody matches. A Slack id (U…) or a handle can be typed here.</div>}
+        </div>
+      )}
+      {note()}
+    </div>
+  );
+}
+
 // ---------- Subject-centric access editor: one subject → many targets ----------
 function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSubject, onDone }) {
   const people = st.people, teams = st.teams;
@@ -179,7 +260,7 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
         {lockSubject
           ? <span className="qh-accedit-subjname"><span className={'qh-subj-type ' + subjectType}>{subjectType}</span> <b>{name0 || subjLabel(people, subjectType, subject)}</b></span>
           : subjectType === 'user'
-            ? <select className="qh-select" value={subject} onChange={e => pickSubject(e.target.value)}><option value="">Select user…</option>{people.map(p => <option key={p.handle} value={p.handle}>{p.name} · {p.handle}</option>)}</select>
+            ? <PersonPick people={people} value={subject} onChange={pickSubject} resolve={st.resolvePerson} autoFocus />
             : <select className="qh-select" value={subject} onChange={e => pickSubject(e.target.value)}><option value="">Select team…</option>{teams.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}</select>}
         {acts('top')}
       </div>
@@ -224,7 +305,7 @@ function GrantForm({ init, actor, st, people, teams, onDone }) {
         {['user', 'team'].map(v => <button key={v} className={'qh-seg-opt' + (f.subjectType === v ? ' is-active' : '')} onClick={() => setF({ ...f, subjectType: v, subject: '' })}>{v}</button>)}
       </div>
       {f.subjectType === 'user'
-        ? <select className="qh-select" value={f.subject} onChange={e => setF({ ...f, subject: e.target.value })}><option value="">Select user…</option>{people.map(p => <option key={p.handle} value={p.handle}>{p.name} · {p.handle}</option>)}</select>
+        ? <PersonPick people={people} value={f.subject} onChange={v => setF({ ...f, subject: v })} resolve={st.resolvePerson} />
         : <select className="qh-select" value={f.subject} onChange={e => setF({ ...f, subject: e.target.value })}><option value="">Select team…</option>{teams.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}</select>}
       <select className="qh-select" value={f.connectionId} onChange={e => setF({ ...f, connectionId: e.target.value, databases: ['*'] })}>
         {conns.map(c => <option key={c.id} value={c.id}>{connLabel(c)}</option>)}
@@ -282,7 +363,10 @@ function GrantsView({ st, user }) {
     <div className="qh-apad">
       <div className="qh-aview-head">
         <div><div className="qh-aview-title">Grants</div><div className="qh-aview-sub">Give a person or team standing access to one or many connections — each connection has a database scope and a single tier.</div></div>
-        {mode !== 'person' && <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={newBtn}><AIcon.plus />{mode === 'grant' ? 'New grant' : 'Grant access'}</button>}
+        {/* Person mode gets the button too, reading "Add person": the operator
+            asked why there was no such button, and the answer is that granting IS
+            the create — it opens the same editor with the subject combo unlocked. */}
+        <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={newBtn}><AIcon.plus />{mode === 'grant' ? 'New grant' : mode === 'person' ? 'Add person' : 'Grant access'}</button>
       </div>
 
       <div className="qh-conn-controls">
@@ -292,7 +376,12 @@ function GrantsView({ st, user }) {
         {mode === 'grant' && <AccGroupBy group={group} setGroup={setGroup} options={[['none', 'None'], ['subject', 'Subject'], ['server', 'Server'], ['database', 'Database']]} />}
       </div>
 
-      {mode === 'person' ? <PersonAccessView st={st} actor={actor} /> : mode === 'subject' ? (
+      {mode === 'person' ? (
+        <>
+          {addingSubject && <div className="qh-subjcard is-editing"><SubjectAccessEditor st={st} actor={actor} onDone={() => setAddingSubject(false)} /></div>}
+          <PersonAccessView st={st} actor={actor} />
+        </>
+      ) : mode === 'subject' ? (
         <>
           {addingSubject && <div className="qh-subjcard is-editing"><SubjectAccessEditor st={st} actor={actor} onDone={() => setAddingSubject(false)} /></div>}
           <div className="qh-subjlist">
