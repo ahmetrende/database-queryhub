@@ -15,7 +15,7 @@ frontend and the endpoints it calls are explicitly outside it.
   said.** A script that returns no rows finished as "Done — 0 row(s)" with an
   empty grid: nine statements had run and the only record was in the audit log,
   so the script was submitted twice. Runs now carry a summary
-  (`3 statements ran: 3 DO.`) and every `RAISE NOTICE` / `WARNING` the server
+  (`3 statements executed: 3 DO.`) and every `RAISE NOTICE` / `WARNING` the server
   emitted, attributed to the statement that raised it. For an idempotent role
   script those notices are the entire output. Postgres only; capped so a
   runaway loop cannot fill the row.

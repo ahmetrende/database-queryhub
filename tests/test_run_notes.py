@@ -105,12 +105,12 @@ def test_the_summary_counts_each_kind():
              + [{"i": i, "leading": "ALTER"} for i in range(7, 10)],
              "notices": []}
     text = _messages(notes)[0]["text"]
-    assert text == "9 statements ran: 5 GRANT, 3 ALTER, DO."
+    assert text == "9 statements executed: 5 GRANT, 3 ALTER, DO."
 
 
 def test_one_statement_reads_as_one():
     notes = {"statements": [{"i": 1, "leading": "SELECT"}], "notices": []}
-    assert _messages(notes)[0]["text"] == "1 statement ran: SELECT."
+    assert _messages(notes)[0]["text"] == "1 statement executed: SELECT."
 
 
 def test_a_notice_names_the_statement_that_raised_it():
@@ -135,7 +135,7 @@ def test_a_warning_reads_as_an_error_line():
 
 def test_json_text_from_the_driver_is_parsed():
     notes = json.dumps({"statements": [{"i": 1, "leading": "SELECT"}], "notices": []})
-    assert _messages(notes)[0]["text"] == "1 statement ran: SELECT."
+    assert _messages(notes)[0]["text"] == "1 statement executed: SELECT."
 
 
 def test_a_row_without_notes_adds_nothing():
@@ -152,5 +152,5 @@ def test_the_feed_carries_the_summary_before_the_row_count():
                       "notices": []},
     }
     texts = [m["text"] for m in mapping.status_messages(row)]
-    assert "2 statements ran: 2 GRANT." in texts
-    assert texts.index("2 statements ran: 2 GRANT.") < texts.index("Done — 0 row(s).")
+    assert "2 statements executed: 2 GRANT." in texts
+    assert texts.index("2 statements executed: 2 GRANT.") < texts.index("Done — 0 row(s).")

@@ -673,8 +673,10 @@ def _run_note_messages(row: dict, when: str) -> list[dict]:
         parts = ", ".join(f"{c} {k}" if c > 1 else k
                           for k, c in sorted(kinds.items(), key=lambda kv: -kv[1]))
         n = len(stmts)
+        # "executed", not "ran": the line above this one says "Execution
+        # started", and the row's own columns are executed_at / executed_tier.
         out.append({"time": when, "kind": "info",
-                    "text": f"{n} statement{'' if n == 1 else 's'} ran: {parts}."})
+                    "text": f"{n} statement{'' if n == 1 else 's'} executed: {parts}."})
 
     for note in notes.get("notices") or []:
         sev = (note.get("severity") or "NOTICE").upper()
