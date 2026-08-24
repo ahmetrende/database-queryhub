@@ -73,6 +73,20 @@ def test_a_string_literal_survives():
     assert ex._sql_snippet("SELECT 2 AS two, 'x' AS label") == "SELECT 2 AS two, 'x' AS label"
 
 
+def test_the_snippet_carries_no_whitespace_the_label_cannot_render():
+    """A contract the switcher's menu depends on (design brief 2026-08-24 (b)).
+
+    The row is nowrap and clipped, so an embedded newline would open a wide
+    gap in the middle of the label. Newlines, CRLF, tabs, blank lines and runs
+    of spaces all collapse to a single space here, which is why the client
+    does not have to do it again.
+    """
+    out = ex._sql_snippet("SELECT id,\r\n\tcreated_at\n\n  FROM orders")
+    assert out == "SELECT id, created_at FROM orders"
+    assert "\n" not in out and "\r" not in out and "\t" not in out
+    assert "  " not in out
+
+
 def test_a_long_statement_is_clamped():
     assert len(ex._sql_snippet("select " + "a, " * 200)) == ex._SNIPPET_CHARS
 

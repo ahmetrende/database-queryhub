@@ -480,13 +480,12 @@
 
   /* ---------- action bar ---------- */
   .qh-actionbar { display: flex; align-items: center; gap: 10px; height: 52px; flex-shrink: 0; padding: 0 14px; overflow: visible; min-width: 0; background: var(--bg-white); border-bottom: 1px solid var(--stroke-medium); }
-  /* The floor stays 0, deliberately. min-content keeps the whole identifier —
-     which is the rule everywhere else in this app — but at 1320px with a
-     multi-statement run's three chips it takes ~134px the row does not have, and
-     Batch and Schedule leave the strip entirely: a readable name traded for
-     unreachable actions. Fixing it properly is an overflow strategy for this bar
-     (a chip that yields, or a collapse), not a property. Reported 2026-08-24. */
-  .qh-target { display: flex; align-items: center; gap: 7px; font-size: 13px; white-space: nowrap; flex-shrink: 1; min-width: 0; overflow: hidden; }
+  /* min-content, not 0: the parts that must stay readable are flex-shrink: 0, so
+     a 0 floor did not ellipsise the database name as the rule below says — it
+     clipped the NAME, leaving only the env tag. What gives way instead is the
+     three secondary buttons' labels (`.is-tight`, measured): an icon with a
+     tooltip still says which action it is; half a server name does not. */
+  .qh-target { display: flex; align-items: center; gap: 7px; font-size: 13px; white-space: nowrap; flex-shrink: 1; min-width: min-content; overflow: hidden; }
   .qh-target-conn { font-weight: 600; color: var(--fg-primary); flex-shrink: 0; }
   .qh-target-slash { color: var(--fg-tertiary); }
   /* When the strip runs out of room the DATABASE name is what gives way, with an
@@ -495,6 +494,11 @@
   .qh-target-db { font-weight: 500; color: var(--fg-secondary); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .qh-target-tier { display: inline-flex; align-items: center; flex-shrink: 0; }
   .qh-ab-spacer { flex: 1 1 8px; min-width: 8px; }
+  /* Under 1120px of bar the secondary actions are icons. They keep their titles,
+     and the Run button never loses its word — it is the one whose label changes
+     with state (“Submit for approval”, “Awaiting DBA approval…”). */
+  .qh-actionbar.is-tight .qh-ab-blabel { display: none; }
+  .qh-actionbar.is-tight .qh-ab-actions .qh-btn { padding: 0 9px; }
 
   .qh-sec { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .qh-sec-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 8px; border-radius: var(--r-full); white-space: nowrap; flex-shrink: 0;
@@ -1448,13 +1452,19 @@
   .qh-res-tabg.is-active::after { content: ''; position: absolute; left: 4px; right: 4px; bottom: 0; height: 2px; background: var(--brand-green); }
   .qh-res-cv { color: var(--fg-tertiary); flex-shrink: 0; }
   /* Statement 9 is eight presses away, so the label is also the list. */
-  .qh-res-stlist { position: absolute; top: 100%; left: 0; z-index: 40; min-width: 208px; max-height: 264px; overflow-y: auto; padding: 4px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); box-shadow: var(--shadow-medium); }
+  .qh-res-stlist { position: absolute; top: 100%; left: 0; z-index: 40; min-width: 260px; max-width: 440px; max-height: 264px; overflow-y: auto; padding: 4px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); box-shadow: var(--shadow-medium); }
   .qh-res-stlist-h { padding: 6px 8px 7px; font-size: 11px; line-height: 1.35; color: var(--fg-tertiary); }
   .qh-res-stlist-i { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; background: transparent; border: 0; border-radius: var(--r-xs); cursor: pointer; font-family: inherit; font-size: 13px; color: var(--fg-secondary); text-align: left; }
   .qh-res-stlist-i:hover { background: var(--brand-adaptive-light); color: var(--fg-accent); }
   .qh-res-stlist-i.is-on { color: var(--fg-primary); font-weight: 600; }
-  .qh-res-stlist-i.is-on svg { margin-left: auto; color: var(--fg-accent); }
+  .qh-res-stlist-i.is-on svg { margin-left: auto; color: var(--fg-accent); flex-shrink: 0; }
   .qh-res-stlist-n { min-width: 16px; font-family: var(--qh-mono); font-size: 11px; font-weight: 500; color: var(--fg-tertiary); }
+  /* Kind + snippet on one line: the keyword is what tells nine rows of a
+     migration apart, the snippet is what tells nine SELECTs apart. Both truncate
+     rather than wrap — a row that becomes two lines stops being scannable. */
+  .qh-res-stlist-t { display: flex; align-items: baseline; gap: 7px; flex: 1; min-width: 0; }
+  .qh-res-stlist-k { flex-shrink: 0; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; color: var(--fg-secondary); }
+  .qh-res-stlist-s { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--qh-mono); font-size: 11px; font-weight: 400; color: var(--fg-tertiary); }
   .qh-res-stmt-b { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 0; border-radius: var(--r-2xs); color: var(--fg-secondary); cursor: pointer; }
   .qh-res-stmt-b:hover:not(:disabled) { background: var(--adaptive-strong); color: var(--fg-primary); }
   .qh-res-stmt-b:disabled { opacity: 0.35; cursor: default; }

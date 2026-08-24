@@ -1800,9 +1800,29 @@ function ActionBar({ why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAl
   let primaryLabel = autoApprove ? 'Run' : 'Submit for approval';
   if (killed) primaryLabel = 'Paused (kill switch)';
   else if (busy) primaryLabel = status === 'pending' ? 'Awaiting DBA approval…' : status === 'running' ? 'Running…' : 'Approved — running…';
+  // A tight bar drops the three secondary buttons to icons (each keeps its own
+  // title), which is what buys the target strip room to keep the whole
+  // identifier instead of clipping the name down to the env tag. Measured, like
+  // `.qh-tree.is-narrow` and for the same reason: `container-type` would make
+  // this bar a containing block and take the mask popover's position with it.
+  const barRef = useRef(null);
+  const [tight, setTight] = useState(false);
+  useEffect(() => {
+    const el = barRef.current;
+    if (!el) return;
+    const meas = () => setTight(el.clientWidth < 1120);
+    meas();   // explicit first measurement: do not rely on the observer's initial callback
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', meas);
+      return () => window.removeEventListener('resize', meas);
+    }
+    const ro = new ResizeObserver(meas);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   return (
-    <div className="qh-actionbar">
+    <div className={'qh-actionbar' + (tight ? ' is-tight' : '')} ref={barRef}>
       <button className={'qh-btn qh-btn-primary qh-run' + (autoApprove ? '' : ' is-approval') + (busy ? ' is-waiting' : '')}
         data-kbd={QH_KBD.run}
         onClick={() => onPrimary()} disabled={!hasSql || busy || tierExceedsGrant || killed}>
@@ -1905,17 +1925,17 @@ function ActionBar({ why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAl
       <div className="qh-ab-actions">
         <button className="qh-btn qh-btn-ghost" onClick={onExplain} disabled={!hasSql || busy || (classify && !['RO', 'RW'].includes(classify.tier))} title={classify && classify.tier === 'DDL' ? "EXPLAIN can't plan DDL (ALTER/CREATE/DROP) — only RO & RW queries" : "EXPLAIN + risk hints — plans the query, never executes"}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/></svg>
-          Explain
+          <span className="qh-ab-blabel">Explain</span>
         </button>
         {tabCount > 1 && (
           <button className="qh-btn qh-btn-ghost" onClick={onOpenBatch} disabled={busy || killed} title="Submit several queries in one approval round">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M17.5 14v7M14 17.5h7"/></svg>
-            Batch
+            <span className="qh-ab-blabel">Batch</span>
           </button>
         )}
-        <button ref={schedBtnRef} className="qh-btn qh-btn-ghost" onClick={toggleSched} disabled={!hasSql || busy}>
+        <button ref={schedBtnRef} className="qh-btn qh-btn-ghost" onClick={toggleSched} disabled={!hasSql || busy} title="Schedule this query to run later">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 1.5M9 2h6"/></svg>
-          Schedule
+          <span className="qh-ab-blabel">Schedule</span>
         </button>
       </div>
 

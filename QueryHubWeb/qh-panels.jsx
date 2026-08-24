@@ -1104,6 +1104,12 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onE
   const stRef = qhUseDismiss(stOpen, closeSt);
   React.useEffect(() => { if (!multi) setStOpen(false); }, [multi]);
   const go = (n) => { setStOpen(false); if (n >= 1 && n <= stCount && n !== stN && onStatement) onStatement(n); };
+  // The list's rows. A server that does not send `statements[]` yet (or sends a
+  // count that disagrees with it) still gets a complete list, reading `Result N`
+  // — the menu is how a statement is reached, so it cannot depend on the labels.
+  const stRows = (result && Array.isArray(result.statements) && result.statements.length === stCount)
+    ? result.statements
+    : Array.from({ length: stCount }, (_, i) => ({ n: i + 1 }));
   const stKbd = (window.QH_KBD || {}).stmt || 'Alt ← / →';
 
   return (
@@ -1138,18 +1144,33 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onE
                 {stOpen && (
                   <div className="qh-res-stlist" role="menu">
                     {/* One table per statement, so this list IS the run's shape.
-                        Rows stay `Result N` until the payload carries a kind and
-                        a snippet per statement — asked for in the brief, not
-                        guessed at, and never derived from the editor's current
-                        text: the header describes the grid, not the toolbar. */}
-                    <div className="qh-res-stlist-h">{stCount} statements ran — one table each</div>
-                    {Array.from({ length: stCount }, (_, i) => i + 1).map(n => (
-                      <button key={n} role="menuitem" className={'qh-res-stlist-i' + (n === stN ? ' is-on' : '')} onClick={() => go(n)}>
-                        <span className="qh-res-stlist-n">{n}</span>
-                        <span className="qh-res-stlist-t">Result {n}</span>
-                        {n === stN && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>}
+                        `statements[]` rides on every response and names all N
+                        (CODE 2026-08-24); `n` is read from the field, never from
+                        the array position — they agree until a statement is
+                        skipped after a failure, which is the case that matters.
+                        The label is the server's snippet, captured at execution,
+                        never the editor's current text: that would be wrong the
+                        moment the SQL is edited after running. */}
+                    <div className="qh-res-stlist-h">{stCount} statements executed — one table each</div>
+                    {stRows.map(s => {
+                      // The snippet already opens with the keyword, so the kind
+                      // chip only appears when it says something the snippet
+                      // does not — `SELECT SELECT count(*) …` is two words of ink
+                      // for one fact. Never rewrite the server's snippet to
+                      // avoid the repeat: a label that is edited on the client
+                      // can stop describing the statement that produced it.
+                      const kind = s.kind && !String(s.snippet || '').toUpperCase().startsWith(String(s.kind).toUpperCase()) ? s.kind : null;
+                      return (
+                      <button key={s.n} role="menuitem" className={'qh-res-stlist-i' + (s.n === stN ? ' is-on' : '')} onClick={() => go(s.n)}>
+                        <span className="qh-res-stlist-n">{s.n}</span>
+                        <span className="qh-res-stlist-t">
+                          {kind && <span className="qh-res-stlist-k">{kind}</span>}
+                          <span className="qh-res-stlist-s" title={s.snippet || undefined}>{s.snippet || ('Result ' + s.n)}</span>
+                        </span>
+                        {s.n === stN && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>}
                       </button>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
