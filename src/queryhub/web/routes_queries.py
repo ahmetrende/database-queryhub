@@ -1100,9 +1100,39 @@ def _statement_labels(row: dict, member_count: int) -> list[dict]:
             notes = None
     stmts = (notes or {}).get("statements") if isinstance(notes, dict) else None
     if stmts:
-        return [{"n": st.get("i"), "kind": st.get("leading"),
-                 "snippet": st.get("snippet") or ""} for st in stmts]
+        out = [{"n": st.get("i"), "kind": st.get("leading"),
+                "snippet": st.get("snippet") or ""} for st in stmts]
+        # Runs from the window where notes existed but snippets did not: the
+        # labels would all be empty and the menu would read `Result N` for a
+        # request that has everything else. Fill them from the stored SQL,
+        # matched by POSITION against the same split, and only where the row
+        # is actually missing one.
+        if any(not x["snippet"] for x in out):
+            for x, text in zip(out, _resplit_snippets(row.get("query") or "")):
+                if not x["snippet"]:
+                    x["snippet"] = text
+        return out
 
+    return _resplit_labels(row, member_count)
+
+
+def _resplit_snippets(sql: str) -> list[str]:
+    """One-line snippets for a stored query, in script order. Empty list on any
+    parse trouble: a missing label is a row that says `Result N`, which is the
+    state this is improving on, so it must never be the reason a result fails
+    to open."""
+    try:
+        import sqlparse
+        from .. import executor, query_safety
+        return [executor._sql_snippet(str(st))
+                for st in sqlparse.parse(sql)
+                if query_safety._has_real_tokens(st)]
+    except Exception:
+        log.debug("could not re-split a stored query for snippets", exc_info=True)
+        return []
+
+
+def _resplit_labels(row: dict, member_count: int) -> list[dict]:
     # Fallback for a run that predates the notes column. Split with sqlparse
     # rather than query_safety.analyze: analyze STOPS at the first blocker, so
     # for a mixed-tier or multi-statement write script — exactly the scripts

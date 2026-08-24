@@ -1104,12 +1104,16 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onE
   const stRef = qhUseDismiss(stOpen, closeSt);
   React.useEffect(() => { if (!multi) setStOpen(false); }, [multi]);
   const go = (n) => { setStOpen(false); if (n >= 1 && n <= stCount && n !== stN && onStatement) onStatement(n); };
-  // The list's rows. A server that does not send `statements[]` yet (or sends a
-  // count that disagrees with it) still gets a complete list, reading `Result N`
-  // — the menu is how a statement is reached, so it cannot depend on the labels.
-  const stRows = (result && Array.isArray(result.statements) && result.statements.length === stCount)
-    ? result.statements
-    : Array.from({ length: stCount }, (_, i) => ({ n: i + 1 }));
+  // The list's rows. Built 1..N and each one LOOKED UP by `n`, not taken as an
+  // array: `n` is authoritative (CODE 2026-08-24), and a partial or reordered
+  // array should cost the rows it is missing, not every label in the list — the
+  // earlier `length === stCount` guard failed all-or-nothing, which is how one
+  // unlabelled statement made three rows read `Result N`.
+  const stAll = (result && Array.isArray(result.statements)) ? result.statements : [];
+  const stRows = Array.from({ length: stCount }, (_, i) => {
+    const n = i + 1;
+    return stAll.find(s => s && s.n === n) || { n };
+  });
   const stKbd = (window.QH_KBD || {}).stmt || 'Alt ← / →';
 
   return (

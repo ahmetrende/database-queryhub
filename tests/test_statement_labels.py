@@ -24,6 +24,27 @@ def test_labels_come_from_what_was_executed():
     ]
 
 
+def test_a_run_recorded_before_snippets_gets_them_from_its_sql():
+    """The window between migration 099 and the snippet field.
+
+    Those runs have statements, so the length check passes and the menu uses
+    them — with every label empty, which renders as `Result N` for a request
+    that has everything else. Filled from the stored SQL, by position.
+    """
+    row = {"run_notes": {"statements": [{"i": 1, "leading": "SELECT"},
+                                        {"i": 2, "leading": "SELECT"}]},
+           "query": "select 1;\nselect 2;"}
+    out = rq._statement_labels(row, 2)
+    assert [x["snippet"] for x in out] == ["select 1;", "select 2;"]
+
+
+def test_a_snippet_that_exists_is_not_overwritten():
+    row = {"run_notes": {"statements": [{"i": 1, "leading": "SELECT",
+                                         "snippet": "select 1 as asd"}]},
+           "query": "select 99;"}
+    assert rq._statement_labels(row, 1)[0]["snippet"] == "select 1 as asd"
+
+
 def test_notes_stored_as_text_are_parsed():
     import json
     row = {"run_notes": json.dumps(

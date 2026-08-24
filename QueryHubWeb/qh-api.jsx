@@ -99,22 +99,33 @@ const qhApi = {
                  + (statement ? '?statement=' + statement : '')).then(r => {
     if (!r || r.kind === 'affected') return r || { kind: 'affected', affected: 0, message: '' };
     const rows = r.rows || [];
+    // THE PAYLOAD COMES FIRST, and every field named below is a DEFAULT applied
+    // on top of it — never the whole list of what survives.
+    //
+    // This object used to be assembled key by key, and the comment here said so:
+    // it named `colTypes` as the field that had already been lost that way once,
+    // sent by the API and never received by the grid. The comment described the
+    // trap; the code kept it. `statements[]` fell into the same hole the week it
+    // was added — `statementCount` arrived because it was listed one line below,
+    // and `statements` did not because it was not.
+    //
+    // A client that rebuilds a payload owns every field of that payload, which
+    // is a promise no list can keep. Spreading keeps it by construction: the
+    // next field the server adds reaches the caller with no change here.
     return {
+      ...r,
       kind: 'table', cols: r.cols || [], piiCols: r.piiCols || [], rows,
-      // Driver-reported column types for the header tooltip (migration 083).
-      // This object is assembled key by key, so any field not named here is
-      // dropped — which is exactly what happened to colTypes the first time:
-      // the API sent it, the grid never received it, and the tooltip kept
-      // falling back to the schema-name guess that cannot resolve `id` or
-      // `user_id`. Backend correctness proved nothing about the wire.
       colTypes: r.colTypes || null,
       total: (r.total != null ? r.total : rows.length), truncated: !!r.truncated,
-      slice: (offset, count) => rows.slice(offset, offset + count),
-      // Server-paged: fetch a window BEYOND the inline first page from /rows.
-      fetchPage: (offset, count) => qhApi.rows(id, offset, count, statement).then(rr => rr.rows || []),
       // Which of the request's tables this is, and how many there are, so the
       // caller can offer a switcher without a second round trip.
       statement: r.statement || 1, statementCount: r.statementCount || 1,
+      // Client-side helpers, last: they are the reason this function cannot
+      // return the payload untouched, and they must not be shadowed by a
+      // server field that happens to share a name.
+      slice: (offset, count) => rows.slice(offset, offset + count),
+      // Server-paged: fetch a window BEYOND the inline first page from /rows.
+      fetchPage: (offset, count) => qhApi.rows(id, offset, count, statement).then(rr => rr.rows || []),
     };
   }),
   // Stop a running query. The server signals the target backend and escalates
