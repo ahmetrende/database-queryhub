@@ -77,9 +77,9 @@ def test_run_notes_summarise_the_statements_and_keep_the_notices():
         _res(3, "GRANT"),
     ])
     assert notes["statements"] == [
-        {"i": 1, "leading": "DO", "rows": 0},
-        {"i": 2, "leading": "GRANT", "rows": 0},
-        {"i": 3, "leading": "GRANT", "rows": 0},
+        {"i": 1, "leading": "DO", "rows": 0, "snippet": ""},
+        {"i": 2, "leading": "GRANT", "rows": 0, "snippet": ""},
+        {"i": 3, "leading": "GRANT", "rows": 0, "snippet": ""},
     ]
     assert notes["notices"] == [
         {"i": 1, "severity": "NOTICE", "text": "Role created"}]
@@ -89,7 +89,8 @@ def test_run_notes_summarise_the_statements_and_keep_the_notices():
 def test_notes_are_written_even_with_no_notices_at_all():
     # The operator's ask: say how many statements ran, notice or not.
     notes = ex._run_notes([_res(1, "SELECT", rows=12)])
-    assert notes["statements"] == [{"i": 1, "leading": "SELECT", "rows": 12}]
+    assert notes["statements"] == [
+        {"i": 1, "leading": "SELECT", "rows": 12, "snippet": ""}]
     assert notes["notices"] == []
 
 

@@ -218,6 +218,10 @@ class _StmtResult:
     # What the server SAID while this statement ran (RAISE NOTICE and friends).
     # For a DDL script it is often the only output there is.
     notices: list = field(default_factory=list)
+    # One line of the statement's own SQL, for labelling result N in the UI.
+    # A migration is ALTER, ALTER, UPDATE, ALTER: the leading keyword alone
+    # names four rows the same way, which is no better than four numbers.
+    snippet: str = ""
     csv_path: Path | None = None
     plan_text: str | None = None    # set for a lone EXPLAIN → inline code block
     truncated_rows: bool = False
@@ -987,6 +991,28 @@ def _read_plan_text(cur, columns, *,
 # A server can raise a notice per row in a loop, so the buffer is capped. The
 # cap is generous enough that a real script keeps every line, and low enough
 # that a runaway one cannot fill the request row.
+_SNIPPET_CHARS = 80
+
+
+def _sql_snippet(sql: str) -> str:
+    """One line of SQL, clamped. Comments are dropped first: a statement that
+    opens with a banner comment would otherwise be labelled by the banner,
+    and every row of a generated script carries the same banner."""
+    try:
+        # Comments only. `query_safety.code_text` also blanks STRING LITERALS,
+        # which is right for a keyword scan and wrong for a label: it turned
+        # `SELECT 2 AS two, 'x' AS label` into `SELECT 2 AS two, AS label`,
+        # which is not the statement anyone wrote.
+        import sqlparse
+        body = sqlparse.format(sql or "", strip_comments=True)
+    except Exception:
+        body = sql or ""
+    one = " ".join(body.split())
+    if not one:
+        one = " ".join((sql or "").split())
+    return one[:_SNIPPET_CHARS]
+
+
 _MAX_NOTICES = 200
 _MAX_NOTICE_CHARS = 500
 
@@ -1019,7 +1045,8 @@ def _run_notes(stmt_results: list) -> dict:
     reader wants to know that nine ran and what kind they were, and the SQL is
     already on screen above the results.
     """
-    statements = [{"i": r.index, "leading": r.leading, "rows": r.rowcount}
+    statements = [{"i": r.index, "leading": r.leading, "rows": r.rowcount,
+                   "snippet": r.snippet}
                   for r in stmt_results]
     notices, dropped = [], False
     for r in stmt_results:
@@ -1318,7 +1345,8 @@ def _execute_main_statement(
         cur.execute(stmt.rewritten)
     if on_committed is not None:
         on_committed()
-    res = _StmtResult(index=index, leading=stmt.leading)
+    res = _StmtResult(index=index, leading=stmt.leading,
+                      snippet=_sql_snippet(getattr(stmt, "raw", "")))
 
     if cur.description is None:
         if streamed:

@@ -471,6 +471,12 @@
 
   /* ---------- action bar ---------- */
   .qh-actionbar { display: flex; align-items: center; gap: 10px; height: 52px; flex-shrink: 0; padding: 0 14px; overflow: visible; min-width: 0; background: var(--bg-white); border-bottom: 1px solid var(--stroke-medium); }
+  /* The floor stays 0, deliberately. min-content keeps the whole identifier —
+     which is the rule everywhere else in this app — but at 1320px with a
+     multi-statement run's three chips it takes ~134px the row does not have, and
+     Batch and Schedule leave the strip entirely: a readable name traded for
+     unreachable actions. Fixing it properly is an overflow strategy for this bar
+     (a chip that yields, or a collapse), not a property. Reported 2026-08-24. */
   .qh-target { display: flex; align-items: center; gap: 7px; font-size: 13px; white-space: nowrap; flex-shrink: 1; min-width: 0; overflow: hidden; }
   .qh-target-conn { font-weight: 600; color: var(--fg-primary); flex-shrink: 0; }
   .qh-target-slash { color: var(--fg-tertiary); }
@@ -610,8 +616,10 @@
   .qh-res-head { display: flex; align-items: center; gap: 12px; height: 40px; flex-shrink: 0; padding: 0 14px;
     border-bottom: 1px solid var(--stroke-medium); background: var(--bg-light); }
   .qh-res-tabs { display: flex; gap: 2px; height: 100%; }
+  /* nowrap: the statement group widened the strip, and a two-word label broke
+     across two lines inside a 40px row rather than the row giving width back. */
   .qh-res-tab { position: relative; padding: 0 12px; background: transparent; border: 0; cursor: pointer; font-family: inherit;
-    font-size: 13px; font-weight: 500; color: var(--fg-tertiary); display: inline-flex; align-items: center; gap: 6px; }
+    font-size: 13px; font-weight: 500; color: var(--fg-tertiary); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
   .qh-res-tab:hover { color: var(--fg-secondary); }
   .qh-res-tab.is-active { color: var(--fg-primary); font-weight: 600; }
   .qh-res-tab.is-active::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: 0; height: 2px; background: var(--brand-green); }
@@ -1415,10 +1423,29 @@
   .qh-res-req { font-family: var(--qh-mono); font-size: 11.5px;
     color: var(--fg-secondary); padding: 2px 6px; border-radius: var(--r-xs);
     background: var(--adaptive-light); }
-  /* Which of several statements is on screen. Arrows rather than numbered tabs:
-     a bundle of twelve statements would otherwise own the whole header. */
-  .qh-res-stmt { display: inline-flex; align-items: center; gap: 2px; padding: 1px; border: 1px solid var(--stroke-medium); border-radius: var(--r-xs); flex-shrink: 0; }
-  .qh-res-stmt-l { font-size: 11.5px; font-weight: 600; color: var(--fg-secondary); padding: 0 4px; white-space: nowrap; }
+  /* Which of several statements is on screen — ON the Results tab, not in the
+     action row at the far right, where a nine-statement run was missed outright
+     (CODE brief 2026-08-24). The group reads as ONE tab: the active underline
+     spans all three buttons, and the position is the same count pill the
+     Messages tab has always carried. Arrows rather than numbered tabs: twelve
+     statements would otherwise own the whole header. */
+  .qh-res-tabg { position: relative; display: inline-flex; align-items: center; height: 100%; }
+  /* align-self: the group is an inline-flex box, so without it the inner button
+     sizes to its text (16px) inside a 39px strip and the underlined area above
+     and below the label stops taking clicks — on the one tab that is also the
+     trigger for the statement list. */
+  .qh-res-tabg .qh-res-tab { padding: 0 6px; align-self: stretch; }
+  .qh-res-tabg .qh-res-tab.is-active::after { display: none; }
+  .qh-res-tabg.is-active::after { content: ''; position: absolute; left: 4px; right: 4px; bottom: 0; height: 2px; background: var(--brand-green); }
+  .qh-res-cv { color: var(--fg-tertiary); flex-shrink: 0; }
+  /* Statement 9 is eight presses away, so the label is also the list. */
+  .qh-res-stlist { position: absolute; top: 100%; left: 0; z-index: 40; min-width: 208px; max-height: 264px; overflow-y: auto; padding: 4px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); box-shadow: var(--shadow-medium); }
+  .qh-res-stlist-h { padding: 6px 8px 7px; font-size: 11px; line-height: 1.35; color: var(--fg-tertiary); }
+  .qh-res-stlist-i { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; background: transparent; border: 0; border-radius: var(--r-xs); cursor: pointer; font-family: inherit; font-size: 13px; color: var(--fg-secondary); text-align: left; }
+  .qh-res-stlist-i:hover { background: var(--brand-adaptive-light); color: var(--fg-accent); }
+  .qh-res-stlist-i.is-on { color: var(--fg-primary); font-weight: 600; }
+  .qh-res-stlist-i.is-on svg { margin-left: auto; color: var(--fg-accent); }
+  .qh-res-stlist-n { min-width: 16px; font-family: var(--qh-mono); font-size: 11px; font-weight: 500; color: var(--fg-tertiary); }
   .qh-res-stmt-b { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 0; border-radius: var(--r-2xs); color: var(--fg-secondary); cursor: pointer; }
   .qh-res-stmt-b:hover:not(:disabled) { background: var(--adaptive-strong); color: var(--fg-primary); }
   .qh-res-stmt-b:disabled { opacity: 0.35; cursor: default; }

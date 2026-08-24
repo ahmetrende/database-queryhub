@@ -584,7 +584,7 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
   const [editId, setEditId] = React.useState(null);
   const [draft, setDraft] = React.useState('');
   const cancelledRef = React.useRef(false);
-  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current line'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Tab', 'Indent'], ['⌥ / Alt + Z', 'Toggle word wrap'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
+  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current line'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Tab', 'Indent'], ['⌥ / Alt + Z', 'Toggle word wrap'], ['⌥ / Alt + ← →', 'Previous / next result'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
   const beginRename = (t) => { if (t.kind) return; setMenu(null); setEditId(t.id); setDraft(t.name); };
   const openMenu = (e, id) => { e.preventDefault(); e.stopPropagation(); setKb(false); setMenu({ x: Math.min(e.clientX, window.innerWidth - 200), y: e.clientY, id }); };
   React.useEffect(() => {

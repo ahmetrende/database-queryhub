@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 import logging
 import os
 import re
@@ -1082,6 +1083,50 @@ def _masked_pii_cols(row: dict, cols: list[str],
             if i not in pii_skip and i not in pii_ns and i < len(labels)]
 
 
+def _statement_labels(row: dict, member_count: int) -> list[dict]:
+    """`[{n, kind, snippet}]` for the whole run, in script order.
+
+    Read from `requests.run_notes`, which the executor writes from the same
+    split it EXECUTED, so a label can never describe a different statement
+    from the one that produced the table. Older requests (before migration
+    099) have no notes; those are re-split from the stored SQL, which is the
+    best available answer and is marked by nothing — the shape is identical.
+    """
+    notes = row.get("run_notes")
+    if isinstance(notes, str):
+        try:
+            notes = json.loads(notes)
+        except Exception:
+            notes = None
+    stmts = (notes or {}).get("statements") if isinstance(notes, dict) else None
+    if stmts:
+        return [{"n": st.get("i"), "kind": st.get("leading"),
+                 "snippet": st.get("snippet") or ""} for st in stmts]
+
+    # Fallback for a run that predates the notes column. Split with sqlparse
+    # rather than query_safety.analyze: analyze STOPS at the first blocker, so
+    # for a mixed-tier or multi-statement write script — exactly the scripts
+    # worth labelling — it returns one statement or none.
+    try:
+        import sqlparse
+        from .. import executor, query_safety
+        out = []
+        for i, st in enumerate(sqlparse.parse(row.get("query") or ""), start=1):
+            if not query_safety._has_real_tokens(st):
+                continue
+            tok = st.token_first(skip_cm=True)
+            out.append({"n": len(out) + 1,
+                        "kind": tok.value.upper() if tok else None,
+                        "snippet": executor._sql_snippet(str(st))})
+        if out:
+            return out
+    except Exception:
+        log.debug("could not re-split a pre-099 request for labels",
+                  exc_info=True)
+    return [{"n": i, "kind": None, "snippet": ""}
+            for i in range(1, member_count + 1)]
+
+
 @router.get("/queries/{request_id}/result")
 def query_result(request_id: int, statement: int = 1,
                  claims: dict = Depends(deps.current_user)):
@@ -1137,6 +1182,12 @@ def query_result(request_id: int, statement: int = 1,
         # without these the client cannot tell it is looking at one of several.
         "statement": statement,
         "statementCount": len(members),
+        # Every statement in the run, on EVERY statement's response. The
+        # switcher's menu is open while one table is on screen and has to name
+        # the other N-1; describing only the current one would cost a request
+        # per row. `n` is the statement's own position in the script, not its
+        # index in this array — trust the field, not the order.
+        "statements": _statement_labels(row, len(members)),
         # Only meaningful for a single-statement result — the executor records
         # types for one table, and with several there is no single right answer.
         "colTypes": (row.get("result_column_types") or None)

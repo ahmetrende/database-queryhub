@@ -930,10 +930,10 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
   const matches = (rows || []).filter(c => !term ||
     (c.name + ' ' + (c.env || '') + ' ' + (c.engine || '') + ' ' + (c.databases || []).join(' ')).toLowerCase().includes(term));
   const dbs = (pick && pick.databases) || [];
-  // Behind QH_SHOW_ENV_TAGS like every other env tag in a list. The flag is a
-  // live product decision ("hidden, not deleted"), so a new list that shows
-  // PROD/STG would be the only place in the app that contradicts it. Carried
-  // in with the port and named in the brief so it lands at source.
+  // Gated like its two siblings in this file: a repo test caught this list
+  // rendering PROD/STG while `QH_SHOW_ENV_TAGS` says hide them — the picker
+  // would have been the one place in the app disagreeing with the flag. Fixed
+  // at source so the next port cannot revert it (CODE port brief, PR #28).
   const envTag = (c) => (QH_SHOW_ENV_TAGS
     ? <span className={'qh-envtag-sm env-' + c.env}>{c.env === 'production' ? 'PROD' : c.env === 'staging' ? 'STG' : c.env}</span>
     : null);
@@ -1089,31 +1089,74 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onE
   // second table existed on the server and was unreachable from the UI.
   const stN = (result && result.statement) || 1;
   const stCount = (result && result.statementCount) || 1;
+  const multi = stCount > 1;
+  // The position lives ON the Results tab (CODE brief 2026-08-24). In the action
+  // row it sat at the opposite end from the tabs, at 11.5px, beside Export: a
+  // nine-statement run looked exactly like a one-statement run and the operator
+  // never found it. The Messages tab has carried its count on the tab since the
+  // beginning for the same reason — state belongs where the eye starts.
+  // Arrows step one; the label opens the list, because eight presses is not a
+  // way to reach statement 9. The chevron appears only while Results is the
+  // ACTIVE tab — the one state where clicking the label opens the list rather
+  // than switching tab, so no click is ambiguous.
+  const [stOpen, setStOpen] = React.useState(false);
+  const closeSt = React.useCallback(() => setStOpen(false), []);
+  const stRef = qhUseDismiss(stOpen, closeSt);
+  React.useEffect(() => { if (!multi) setStOpen(false); }, [multi]);
+  const go = (n) => { setStOpen(false); if (n >= 1 && n <= stCount && n !== stN && onStatement) onStatement(n); };
+  const stKbd = (window.QH_KBD || {}).stmt || 'Alt ← / →';
 
   return (
     <div className="qh-results">
       <div className="qh-res-head">
         <div className="qh-res-tabs">
-          {tabs.map(([id, label]) => (
-            <button key={id} className={'qh-res-tab' + (tab === id ? ' is-active' : '')} onClick={() => setTab(id)}>
-              {label}
-              {id === 'messages' && messages.length > 0 && <span className="qh-res-count">{messages.length}</span>}
-              {id === 'plan' && plan && plan.hints && plan.hints.some(h => h.level === 'high') && <span className="qh-res-dot" />}
-            </button>
-          ))}
+          {tabs.map(([id, label]) => {
+            const on = tab === id;
+            const pos = id === 'results' && multi;
+            const btn = (
+              <button key={id} className={'qh-res-tab' + (on ? ' is-active' : '')}
+                onClick={() => { if (pos && on) setStOpen(o => !o); else { setStOpen(false); setTab(id); } }}
+                aria-haspopup={pos ? 'menu' : undefined} aria-expanded={pos ? (stOpen ? 'true' : 'false') : undefined}
+                title={pos ? (on ? 'Pick which statement’s result to show' : 'Showing result ' + stN + ' of ' + stCount) : undefined}>
+                {label}
+                {pos && <span className="qh-res-count">{stN}/{stCount}</span>}
+                {pos && on && <svg className="qh-res-cv" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"/></svg>}
+                {id === 'messages' && messages.length > 0 && <span className="qh-res-count">{messages.length}</span>}
+                {id === 'plan' && plan && plan.hints && plan.hints.some(h => h.level === 'high') && <span className="qh-res-dot" />}
+              </button>
+            );
+            if (!pos) return btn;
+            return (
+              <div key={id} className={'qh-res-tabg' + (on ? ' is-active' : '')} ref={stRef}>
+                <button className="qh-res-stmt-b" disabled={stN <= 1} onClick={() => go(stN - 1)} aria-label="Previous result" title={'Previous result  ·  ' + stKbd}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+                </button>
+                {btn}
+                <button className="qh-res-stmt-b" disabled={stN >= stCount} onClick={() => go(stN + 1)} aria-label="Next result" title={'Next result  ·  ' + stKbd}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+                </button>
+                {stOpen && (
+                  <div className="qh-res-stlist" role="menu">
+                    {/* One table per statement, so this list IS the run's shape.
+                        Rows stay `Result N` until the payload carries a kind and
+                        a snippet per statement — asked for in the brief, not
+                        guessed at, and never derived from the editor's current
+                        text: the header describes the grid, not the toolbar. */}
+                    <div className="qh-res-stlist-h">{stCount} statements ran — one table each</div>
+                    {Array.from({ length: stCount }, (_, i) => i + 1).map(n => (
+                      <button key={n} role="menuitem" className={'qh-res-stlist-i' + (n === stN ? ' is-on' : '')} onClick={() => go(n)}>
+                        <span className="qh-res-stlist-n">{n}</span>
+                        <span className="qh-res-stlist-t">Result {n}</span>
+                        {n === stN && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
         <div className="qh-res-actions">
-          {stCount > 1 && (
-            <div className="qh-res-stmt">
-              <button className="qh-res-stmt-b" disabled={stN <= 1} onClick={() => onStatement && onStatement(stN - 1)} aria-label="Previous result">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
-              </button>
-              <span className="qh-res-stmt-l">Result {stN} of {stCount}</span>
-              <button className="qh-res-stmt-b" disabled={stN >= stCount} onClick={() => onStatement && onStatement(stN + 1)} aria-label="Next result">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>
-              </button>
-            </div>
-          )}
           {/* Where these rows came from. The tab's target can be re-pointed after a
               run, so this reads the connection the query WAS sent to — same rule
               as the unmasked chip: the header describes the grid, not the

@@ -4,7 +4,8 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // Keyboard-shortcut labels (mac-aware) surfaced as hover tooltips on action buttons.
 const QH_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
-const QH_KBD = { run: QH_MAC ? '⌘ ↵  ·  F5' : 'Ctrl ↵  ·  F5', newq: QH_MAC ? '⌘ ⌥ N' : 'Ctrl Alt N', wrap: QH_MAC ? '⌥ Z' : 'Alt Z' };
+const QH_KBD = { run: QH_MAC ? '⌘ ↵  ·  F5' : 'Ctrl ↵  ·  F5', newq: QH_MAC ? '⌘ ⌥ N' : 'Ctrl Alt N', wrap: QH_MAC ? '⌥ Z' : 'Alt Z',
+  stmt: QH_MAC ? '⌥ ← / →' : 'Alt ← / →' };
 window.QH_KBD = QH_KBD;
 
 // Said when a selection exists but holds no statement. Worth a constant: it
@@ -224,6 +225,7 @@ function App() {
   const [pwOpen, setPwOpen] = useState(false);   // voluntary change-password overlay (local accounts)
   const closedStack = useRef(qhLoadClosed());
   const newTabRef = useRef(null);   // ⌘⌥N handler lives in a []-dep effect; keep the latest newTab here
+  const stepStmtRef = useRef(null); // same for ⌥/Alt + ←→; null when there is no second statement to step to
   const [scheduled, setScheduled] = useState(qhLoadScheduled);
   const [lastSync, setLastSync] = useState(null);
   const mounted = useRef(false);
@@ -327,6 +329,22 @@ function App() {
       // typing, and a view switch is not worth swallowing it.
       if (e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'KeyZ'
         && !(e.target && e.target.tagName === 'INPUT')) { e.preventDefault(); setWrap(w => !w); return; }
+      // ⌥/Alt + ←→ steps a multi-statement result (CODE brief 2026-08-24). The
+      // ref is null unless the result on screen HAS a second statement, so the
+      // key is only swallowed when it does something — on Windows Alt+← is the
+      // browser's Back, and eating it silently to do nothing is worse than not
+      // having the shortcut.
+      // The platform split is deliberate: in a text field ⌥← moves the caret one
+      // word on mac, which belongs to whoever is writing SQL, so there the
+      // binding stands down. Windows and Linux have no editing meaning for it in
+      // a textarea, so it works in the editor too — and stops Alt+← navigating
+      // away from the app, which is what it did before.
+      if (e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey
+        && (e.code === 'ArrowLeft' || e.code === 'ArrowRight') && stepStmtRef.current) {
+        const t = e.target || {};
+        const inText = t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable;
+        if (!(QH_MAC && inText)) { e.preventDefault(); stepStmtRef.current(e.code === 'ArrowLeft' ? -1 : 1); return; }
+      }
       if ((e.metaKey || e.ctrlKey) && e.altKey && (e.code === 'KeyN' || e.key === 'n' || e.key === 'N')) { e.preventDefault(); if (newTabRef.current) newTabRef.current(); return; }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'T' || e.key === 't')) {
         e.preventDefault();
@@ -974,6 +992,14 @@ function App() {
       setResTab('results');
     } catch (e) { pushToast((e && e.message) || 'Could not load that result.'); }
   };
+  // Latest stepper for the keyboard handler above. Null unless there is a second
+  // statement, which is what keeps that keystroke from being taken for nothing.
+  stepStmtRef.current = (tab && !tab.kind && tab.result && tab.result.statementCount > 1)
+    ? (d) => {
+        const n = (tab.result.statement || 1) + d;
+        if (n >= 1 && n <= tab.result.statementCount) pickStatement(n);
+      }
+    : null;
 
   // EXPLAIN preview (read-only, no execution). Server plans a single RO
   // statement and returns the plan + risk hints; we show them in the Plan tab.
