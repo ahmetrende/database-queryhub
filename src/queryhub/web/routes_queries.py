@@ -350,7 +350,8 @@ def submit_feedback(body: FeedbackIn, request: Request,
 def _derive_notifications(uid: str) -> list[dict]:
     items: list[dict] = []
     rows = db.fetch_all(
-        "SELECT r.id, r.status, r.decided_by_name, r.decided_at, r.decision_reason, "
+        "SELECT r.id, r.status, r.decided_by_name, r.decided_by_slack_id, "
+        "       r.decided_at, r.decision_reason, "
         "       r.row_count, r.database_name, r.scheduled_for, r.completed_at, "
         "       s.alias "
         "FROM requests r LEFT JOIN target_servers s ON s.id = r.target_server_id "
@@ -365,7 +366,14 @@ def _derive_notifications(uid: str) -> list[dict]:
             items.append({"id": f"q{r['id']}-dec", "kind": "rejected", "title": title,
                           "body": f"{r['decided_by_name'] or 'An admin'} declined your query on {loc}{why}.",
                           "createdAt": mapping.iso(r["decided_at"])})
-        elif r["decided_by_name"] and r["decided_at"]:
+        elif (r["decided_by_name"] and r["decided_at"]
+              and r["decided_by_slack_id"] != uid):
+            # "Ahmet approved your query" is not news to Ahmet. A super-admin
+            # approves their own submissions by definition, so every self-test
+            # produced a notification about a decision the reader had just
+            # made, on a screen they were already looking at. The scheduled-run
+            # item below still fires: that one is about a result arriving while
+            # nobody is watching, which is the case the bell exists for.
             auto = str(r["decided_by_name"]).lower().startswith(("auto", "AUTO".lower()))
             if auto:
                 body = f"Your query on {loc} ran under an auto-approve grant"
