@@ -17,7 +17,7 @@ import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -215,6 +215,9 @@ class _StmtResult:
     index: int               # 1-based main-statement index
     leading: str             # e.g. SELECT, UPDATE
     rowcount: int = 0
+    # What the server SAID while this statement ran (RAISE NOTICE and friends).
+    # For a DDL script it is often the only output there is.
+    notices: list = field(default_factory=list)
     csv_path: Path | None = None
     plan_text: str | None = None    # set for a lone EXPLAIN → inline code block
     truncated_rows: bool = False
@@ -720,6 +723,12 @@ def _run(request: dict, client: WebClient) -> None:
             # infinity for any role without VALID UNTIL, which made
             # `SELECT * FROM pg_roles` fail with a message about the year 10000.
             pg_types.register_infinity_safe_loaders(conn)
+            # Everything the server says while this connection runs. A DDL
+            # script's RAISE NOTICE lines are its only output, and they were
+            # being dropped: nine statements finished as "0 rows" and read as
+            # if nothing had happened.
+            notice_buf: list[dict] = []
+            conn.add_notice_handler(_notice_collector(notice_buf))
             with conn.cursor() as cur:
                 # Pin search_path with pg_catalog FIRST so a same-named object in
                 # a writable schema (e.g. a malicious public.now()) can't shadow a
@@ -785,6 +794,7 @@ def _run(request: dict, client: WebClient) -> None:
 
                 # Run main statements, capture per-statement result.
                 stmt_results: list[_StmtResult] = []
+                notice_mark = 0
                 for i, s in enumerate(main_stmts, start=1):
                     res = _execute_main_statement(
                         cur, s, i, request_id,
@@ -809,6 +819,12 @@ def _run(request: dict, client: WebClient) -> None:
                     )
                     if res.csv_path is not None:
                         csv_paths_to_cleanup.append(res.csv_path)
+                    # Whatever arrived since the previous statement belongs to
+                    # this one. Sliced here rather than inside the executor
+                    # helper because the buffer is the CONNECTION's, and the
+                    # helper is engine-agnostic.
+                    res.notices = notice_buf[notice_mark:]
+                    notice_mark = len(notice_buf)
                     stmt_results.append(res)
 
                 if not autocommit:
@@ -968,6 +984,53 @@ def _read_plan_text(cur, columns, *,
     return "\n".join(kept), lines, truncated
 
 
+# A server can raise a notice per row in a loop, so the buffer is capped. The
+# cap is generous enough that a real script keeps every line, and low enough
+# that a runaway one cannot fill the request row.
+_MAX_NOTICES = 200
+_MAX_NOTICE_CHARS = 500
+
+
+def _notice_collector(buf: list):
+    """psycopg notice handler that appends to `buf`. Never raises: it runs on
+    the driver's thread while a result is streaming, and an exception there
+    would be raised into unrelated code."""
+    def handle(diag) -> None:
+        try:
+            if len(buf) >= _MAX_NOTICES:
+                return
+            text = (getattr(diag, "message_primary", "") or "").strip()
+            if not text:
+                return
+            buf.append({
+                "severity": (getattr(diag, "severity_nonlocalized", None)
+                             or getattr(diag, "severity", None) or "NOTICE"),
+                "text": text[:_MAX_NOTICE_CHARS],
+            })
+        except Exception:   # pragma: no cover - defensive
+            pass
+    return handle
+
+
+def _run_notes(stmt_results: list) -> dict:
+    """The record the Messages tab reads: what ran, and what the server said.
+
+    Statements are summarised rather than listed one by one for their SQL: the
+    reader wants to know that nine ran and what kind they were, and the SQL is
+    already on screen above the results.
+    """
+    statements = [{"i": r.index, "leading": r.leading, "rows": r.rowcount}
+                  for r in stmt_results]
+    notices, dropped = [], False
+    for r in stmt_results:
+        for n in r.notices:
+            if len(notices) >= _MAX_NOTICES:
+                dropped = True
+                break
+            notices.append({"i": r.index, **n})
+    return {"statements": statements, "notices": notices, "truncated": dropped}
+
+
 def _finalize(client: WebClient, request: dict, stmt_results: list,
               csv_paths_to_cleanup: list, *,
               max_csv_bytes: int, target, elapsed: float) -> None:
@@ -1005,6 +1068,22 @@ def _finalize(client: WebClient, request: dict, stmt_results: list,
                          "pii_masking_exempted",
                          {"target_id": target.id,
                           "database": request["database_name"]})
+
+    # What ran, and what the server said, recorded before the completion
+    # dispatch so every shape gets it: a DDL script with no result set is
+    # exactly the case that used to finish with nothing on screen. Written
+    # even when there are no notices, because the statement count alone
+    # answers "did all nine of them run".
+    try:
+        notes = _run_notes(stmt_results)
+        with db.transaction() as cur:
+            cur.execute("UPDATE requests SET run_notes = %s WHERE id = %s",
+                        (json.dumps(notes), request_id))
+    except Exception:
+        # A record of the run must never be the reason a finished query
+        # reports failure.
+        log.warning("request %s: could not store run notes", request_id,
+                    exc_info=True)
 
     # Dispatch to completion based on shape.
     if len(stmt_results) == 1:

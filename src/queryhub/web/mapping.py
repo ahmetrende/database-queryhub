@@ -5,6 +5,8 @@ strings, history rows, env labels) are unit-testable without a DB.
 """
 from __future__ import annotations
 
+import json
+
 import logging
 import re
 from datetime import datetime, timezone
@@ -643,6 +645,51 @@ def audit_entries(rows: list[dict], caller_id: str) -> list[dict]:
     return out
 
 
+def _run_note_messages(row: dict, when: str) -> list[dict]:
+    """The statement summary and the server's own output, for the Messages tab.
+
+    Both exist because a script that returns no rows used to finish with one
+    line saying "0 rows". Nine statements had run and the only evidence was in
+    the audit log. The summary answers "did they all run"; the notices are the
+    script's own voice, and for an idempotent role script they are the only
+    thing that distinguishes "created" from "already there".
+    """
+    notes = row.get("run_notes")
+    if isinstance(notes, str):
+        try:
+            notes = json.loads(notes)
+        except Exception:
+            return []
+    if not isinstance(notes, dict):
+        return []
+
+    out: list[dict] = []
+    stmts = notes.get("statements") or []
+    if stmts:
+        kinds: dict[str, int] = {}
+        for st in stmts:
+            k = (st.get("leading") or "?").upper()
+            kinds[k] = kinds.get(k, 0) + 1
+        parts = ", ".join(f"{c} {k}" if c > 1 else k
+                          for k, c in sorted(kinds.items(), key=lambda kv: -kv[1]))
+        n = len(stmts)
+        out.append({"time": when, "kind": "info",
+                    "text": f"{n} statement{'' if n == 1 else 's'} ran: {parts}."})
+
+    for note in notes.get("notices") or []:
+        sev = (note.get("severity") or "NOTICE").upper()
+        text = note.get("text") or ""
+        idx = note.get("i")
+        where = f" (statement {idx})" if idx and len(stmts) > 1 else ""
+        out.append({"time": when,
+                    "kind": "err" if sev in ("WARNING", "EXCEPTION") else "info",
+                    "text": f"{sev}{where}: {text}"})
+    if notes.get("truncated"):
+        out.append({"time": when, "kind": "info",
+                    "text": "More server messages followed than are shown here."})
+    return out
+
+
 def status_messages(row: dict) -> list[dict]:
     """Derived, human-readable message feed {time, kind, text} the UI
     shows under the editor. kind ∈ info | ok | err (exact strings)."""
@@ -683,6 +730,7 @@ def status_messages(row: dict) -> list[dict]:
         msgs.append({"time": t(row.get("executed_at")), "kind": "info",
                      "text": "Execution started."})
     if status == "completed":
+        msgs.extend(_run_note_messages(row, t(row.get("completed_at"))))
         n = row.get("row_count")
         msgs.append({"time": t(row.get("completed_at")), "kind": "ok",
                      "text": f"Done — {n if n is not None else '?'} row(s)."})
