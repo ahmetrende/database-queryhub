@@ -9,6 +9,41 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.14] — 2026-08-24
+
+### Added
+
+- **The result switcher moved onto the Results tab and names every result.**
+  `‹ Results 1/3 ›` reads as one tab, the label opens a list of all N, and
+  `Alt`/`⌥` + arrow steps between them. Each row is labelled with a one-line
+  snippet of the statement that produced it, captured from the split the
+  executor ran, so a label cannot describe a different statement from the one
+  on screen. `GET /queries/{id}/result` carries `statements: [{n, kind,
+  snippet}]` for the whole run on every statement's response.
+
+### Fixed
+
+- **A field the API added never reached the grid.** `qhApi.result` assembled
+  its return object key by key, so anything the list did not name was dropped:
+  `colTypes` first, silently masked by the schema-name fallback, then
+  `statements[]` the week it was added. The payload is spread first now, with
+  the named fields as defaults on top and the client-side closures last. Six
+  tests hold the rule, since the comment that described the trap had already
+  failed to.
+
+- **The notification bell reported decisions the reader had just made.** A
+  super-admin approves their own submissions by definition, so every self-test
+  left an item about their own approval. An approval or rejection by someone
+  else, an auto-approve grant and a finished scheduled run all still report.
+
+### Changed
+
+- **A server's name no longer collapses in the action bar.** With three chips
+  in the row the target strip shrank to the environment tag; the name keeps
+  its width and the ellipsis falls on the database instead, with room coming
+  from the secondary buttons dropping their labels below 1120px.
+
+
 ### Added
 
 - **The Messages tab says how many statements ran, and repeats what the server
