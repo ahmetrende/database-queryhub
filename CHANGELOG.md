@@ -9,6 +9,21 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.16] — 2026-08-25
+
+### Added
+
+- **The break-glass lockout can run from a second machine.** The incident may
+  be that the bot host itself is the problem, but the fleet list lives in the
+  metadata DB — so a copy elsewhere would have needed `BOT_DB_*` and the master
+  key just to learn which servers exist, which means spreading the bot's
+  secrets around to prepare for the day they leak.
+  `--dump-plan fleet.json` exports hosts, ports and login *names* and nothing
+  else (mode 600, no credentials, no key material). `--plan fleet.json
+  --admin-user <you>` then locks the fleet with your own superuser credential,
+  opening no metadata DB at all — it now starts even where the bot's modules
+  cannot be imported, which is what a machine without the bot env looks like.
+
 ## [1.0.15] — 2026-08-25
 
 ### Security

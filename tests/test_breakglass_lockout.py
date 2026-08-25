@@ -9,6 +9,9 @@ the session count sees it drop and come back.
 So: shut the door, change the lock, then clear the building.
 """
 import importlib.util
+import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +26,7 @@ sys.modules["breakglass_lockout"] = _mod
 _spec.loader.exec_module(_mod)
 
 ROW = {"id": 3, "alias": "svc-prod-orders", "engine": "postgres", "enabled": True,
+       "host": "db.example.internal", "port": 5432, "database": "postgres",
        "super_ddl_role": "queryhub_superadmin", "username": "queryhub_ro",
        "username_rw": "queryhub_rw", "username_ddl": "queryhub_ddl"}
 
@@ -72,7 +76,8 @@ class _Conn:
 
 
 def _args(**kw):
-    base = dict(apply=True, terminate=True, admin_user=None,
+    base = dict(apply=True, terminate=True, admin_user=None, plan=None,
+                alias=None, include_disabled=False, dump_plan=None,
                 admin_password_env="PGPASSWORD", timeout=10)
     base.update(kw)
     return SimpleNamespace(**base)
@@ -211,3 +216,97 @@ def test_a_password_is_long_and_not_repeated():
 def test_logins_are_de_duplicated_in_tier_order():
     row = dict(ROW, username="one", username_rw="one", username_ddl="two")
     assert _mod.logins_of(row) == ["one", "two"]
+
+
+# --- the copy that runs somewhere else --------------------------------------
+#
+# The incident may be that THIS host is the problem, so a laptop copy is worth
+# having. But the fleet list lives in the metadata DB, and a second machine
+# that needs BOT_DB_* and the master key just to learn which servers exist
+# means spreading the bot's secrets around to prepare for the day they leak.
+# The plan file breaks that: hosts and login names travel, secrets do not.
+
+def test_the_exported_plan_carries_no_credentials(tmp_path):
+    out = tmp_path / "fleet.json"
+    _mod.dump_plan([ROW], str(out), {"sslmode": "verify-full"})
+    text = out.read_text()
+    assert "password" not in text.lower() and "secret" not in text.lower()
+    plan = json.loads(text)
+    assert plan["targets"][0]["host"] == "db.example.internal"
+    assert plan["targets"][0]["username"] == "queryhub_ro"
+    assert plan["ssl"] == {"sslmode": "verify-full"}
+
+
+def test_the_plan_file_is_not_world_readable(tmp_path):
+    # It names every production host in the fleet.
+    out = tmp_path / "fleet.json"
+    _mod.dump_plan([ROW], str(out), {})
+    assert oct(out.stat().st_mode)[-3:] == "600"
+
+
+def test_a_plan_run_reads_the_file_instead_of_the_database(tmp_path, monkeypatch):
+    out = tmp_path / "fleet.json"
+    _mod.dump_plan([ROW, dict(ROW, id=4, alias="svc-prod-billing")], str(out), {})
+    monkeypatch.setattr(_mod, "db", None)          # no metadata DB at all
+    _mod._load_plan.cache_clear()
+    rows = _mod.fleet(_args(plan=str(out)))
+    assert [r["alias"] for r in rows] == ["svc-prod-orders", "svc-prod-billing"]
+
+
+def test_a_plan_run_still_honours_the_alias_filter(tmp_path):
+    out = tmp_path / "fleet.json"
+    _mod.dump_plan([ROW, dict(ROW, id=4, alias="svc-prod-billing")], str(out), {})
+    _mod._load_plan.cache_clear()
+    rows = _mod.fleet(_args(plan=str(out), alias="*billing"))
+    assert [r["alias"] for r in rows] == ["svc-prod-billing"]
+
+
+def _cli(monkeypatch, *argv):
+    monkeypatch.setattr(sys, "argv", ["breakglass_lockout.py", *argv])
+    with pytest.raises(SystemExit) as e:
+        _mod.main()
+    return e.value.code
+
+
+def test_a_plan_without_a_superuser_is_refused(monkeypatch, tmp_path, capsys):
+    # The file has no credentials in it by design, so there is nothing to
+    # connect with unless the operator brings their own.
+    code = _cli(monkeypatch, "--plan", str(tmp_path / "f.json"), "--apply")
+    assert code == 2
+    assert "--admin-user is required" in capsys.readouterr().err
+
+
+def test_a_plan_run_cannot_flip_the_kill_switch(monkeypatch, tmp_path, capsys):
+    # It writes to the metadata DB, which is exactly what this mode does not open.
+    code = _cli(monkeypatch, "--plan", str(tmp_path / "f.json"),
+                "--admin-user", "root", "--kill-switch")
+    assert code == 2
+    assert "/sql kill on" in capsys.readouterr().err
+
+
+def test_without_a_plan_and_without_the_bot_modules_it_says_so(monkeypatch, capsys):
+    monkeypatch.setattr(_mod, "db", None)
+    code = _cli(monkeypatch, "--apply")
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "--plan" in err and "bot host" in err
+
+
+def test_it_starts_on_a_machine_with_no_bot_environment(tmp_path):
+    """The laptop case, end to end.
+
+    `config.py` resolves BOT_DB_* at import time and raises RuntimeError when
+    they are missing - so importing the bot's modules is itself the thing that
+    fails on a second machine, before any of the --plan handling runs. A
+    subprocess with the environment stripped is the only honest check.
+    """
+    plan = tmp_path / "fleet.json"
+    _mod.dump_plan([ROW], str(plan), {})
+    env = {k: v for k, v in os.environ.items() if not k.startswith("BOT_DB_")}
+    env["MASTER_KEY_PATH"] = str(tmp_path / "no-such-key")
+    out = subprocess.run(
+        [sys.executable, str(Path(_mod.__file__)), "--plan", str(plan),
+         "--admin-user", "someone", "--alias", "matches-nothing-*"],
+        capture_output=True, text=True, env=env, timeout=60)
+    assert "Traceback" not in out.stderr, out.stderr
+    assert out.returncode == 2 and "no targets matched" in out.stderr

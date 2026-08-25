@@ -53,30 +53,62 @@ master key:
     python3 scripts/breakglass_lockout.py --apply
 
 If the bot's own credentials are what you distrust, connect as yourself
-instead — then nothing the bot holds is used to perform the lockout:
+instead - then nothing the bot holds is used to perform the lockout:
 
     python3 scripts/breakglass_lockout.py --apply \
         --admin-user my_master_user --admin-password-env PGPASSWORD
 
-Only the host list and the login names come from the metadata DB in that mode.
+Running it from somewhere else
+------------------------------
+A copy on a laptop is worth having: the incident may be that this host is the
+problem. But the fleet list lives in the metadata DB, so a second machine would
+need `BOT_DB_*` and the master key just to learn which servers exist - which
+means copying the bot's secrets around to prepare for the day they leak.
+
+Instead, export the plan here and carry only that. It holds hosts, ports and
+login NAMES. No passwords, no key, nothing encrypted:
+
+    python3 scripts/breakglass_lockout.py --dump-plan fleet.json
+
+Then, anywhere with network access to the databases, using your own superuser
+credential from your password manager:
+
+    python3 scripts/breakglass_lockout.py --plan fleet.json --apply \
+        --admin-user my_master_user
+
+That path needs only Python, psycopg and the file. It does not open the
+metadata DB at all, so --kill-switch is not available with it - pause the bot
+from Slack (`/sql kill on`) or the admin UI instead.
+
+The plan names real hosts. Keep it where you keep credentials, and re-export it
+after onboarding a server, or the new one will not be in it.
 """
 from __future__ import annotations
 
 import argparse
 import concurrent.futures as futures
 import fnmatch
+import json
 import os
 import secrets
 import string
 import sys
 from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import psycopg  # noqa: E402
 from psycopg import sql as pgsql  # noqa: E402
 
-from queryhub import audit, config as cfg, db, targets  # noqa: E402
+try:  # the bot's own modules, for the metadata-DB path
+    from queryhub import audit, config as cfg, db, targets  # noqa: E402
+except Exception:  # noqa: BLE001 - a --plan run must not need any of it
+    # Not only ImportError: config.py resolves BOT_DB_* at import time and
+    # raises RuntimeError when they are absent, which is precisely the machine
+    # a --plan run is for.
+    audit = cfg = db = targets = None
 
 _ALPHABET = string.ascii_letters + string.digits + "!#%*+-=?_"
 
@@ -87,16 +119,50 @@ def new_password(n: int = 40) -> str:
     return "".join(secrets.choice(_ALPHABET) for _ in range(n))
 
 
-def fleet(alias_glob: str | None, include_disabled: bool) -> list[dict]:
-    rows = db.fetch_all(
-        "SELECT id, alias, engine, enabled, super_ddl_role, "
-        "       username, username_rw, username_ddl "
-        "  FROM target_servers "
-        f"{'' if include_disabled else 'WHERE enabled '}"
-        " ORDER BY alias")
-    if alias_glob:
-        rows = [r for r in rows if fnmatch.fnmatch(r["alias"], alias_glob)]
+@lru_cache(maxsize=4)
+def _load_plan(path: str) -> dict:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def fleet(args) -> list[dict]:
+    """The targets to lock, each row carrying everything a connection needs.
+
+    Read from the metadata DB, or from an exported plan file when this is
+    running somewhere that has no metadata DB."""
+    if args.plan:
+        rows = _load_plan(args.plan)["targets"]
+    else:
+        rows = [dict(r, database=r.pop("default_database")) for r in db.fetch_all(
+            "SELECT id, alias, engine, host, port, default_database, "
+            "       super_ddl_role, username, username_rw, username_ddl "
+            "  FROM target_servers "
+            f"{'' if args.include_disabled else 'WHERE enabled '}"
+            " ORDER BY alias")]
+    if args.alias:
+        rows = [r for r in rows if fnmatch.fnmatch(r["alias"], args.alias)]
     return rows
+
+
+def dump_plan(rows: list[dict], path: str, ssl: dict) -> int:
+    """Write the fleet list without a single secret in it.
+
+    Login names, not credentials: knowing that a server has a role called
+    `queryhub_ro` is not access to it, and the operator running the lockout
+    brings their own superuser password."""
+    plan = {"targets": [
+        {"id": r["id"], "alias": r["alias"], "engine": r.get("engine") or "postgres",
+         "host": r["host"], "port": r["port"], "database": r["database"],
+         "super_ddl_role": r.get("super_ddl_role"),
+         "username": r.get("username"), "username_rw": r.get("username_rw"),
+         "username_ddl": r.get("username_ddl")}
+        for r in rows], "ssl": ssl}
+    Path(path).write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+    print(f"wrote {len(plan['targets'])} target(s) to {path} (no credentials in it)")
+    print("Run it from anywhere with:")
+    print(f"  python3 {os.path.basename(__file__)} --plan {path} --apply "
+          f"--admin-user <your superuser>")
+    return 0
 
 
 def logins_of(row: dict) -> list[str]:
@@ -114,17 +180,16 @@ def logins_of(row: dict) -> list[str]:
 
 
 def _connect(row: dict, args) -> psycopg.Connection:
-    t = targets.get(row["id"])
     if args.admin_user:
-        pw = os.environ.get(args.admin_password_env or "PGPASSWORD", "")
-        user, password = args.admin_user, pw
+        user = args.admin_user
+        password = os.environ.get(args.admin_password_env or "PGPASSWORD", "")
     else:
         user, password = targets.get_credentials(row["id"], "ddl")
     conn = psycopg.connect(
-        host=t.host, port=t.port, dbname=t.default_database,
+        host=row["host"], port=row["port"], dbname=row["database"],
         user=user, password=password, connect_timeout=args.timeout,
         application_name="queryhub:breakglass",
-        **cfg.target_ssl_kwargs())
+        **getattr(args, "ssl", None) or {"sslmode": "require"})
     conn.autocommit = True
     return conn
 
@@ -189,11 +254,14 @@ def lock_mssql(row: dict, args) -> dict:
         return result
     names = logins_of(row)
     try:
-        user, password = targets.get_credentials(row["id"], "ddl")
-        t = targets.get(row["id"])
+        if args.admin_user:
+            user = args.admin_user
+            password = os.environ.get(args.admin_password_env or "PGPASSWORD", "")
+        else:
+            user, password = targets.get_credentials(row["id"], "ddl")
         cn = pyodbc.connect(
-            f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={t.host},{t.port};"
-            f"DATABASE={t.default_database};UID={user};PWD={password};"
+            f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={row['host']},{row['port']};"
+            f"DATABASE={row['database']};UID={user};PWD={password};"
             "Encrypt=yes;TrustServerCertificate=yes;"
             f"Connection Timeout={args.timeout}", autocommit=True)
         cur = cn.cursor()
@@ -270,18 +338,39 @@ def main() -> int:
                     help="connect as this superuser instead of the bot's DDL login")
     ap.add_argument("--admin-password-env", default="PGPASSWORD",
                     help="env var holding --admin-user's password (default PGPASSWORD)")
+    ap.add_argument("--dump-plan", metavar="FILE",
+                    help="write the fleet list (no credentials) and exit, so a "
+                         "copy elsewhere can run without the metadata DB")
+    ap.add_argument("--plan", metavar="FILE",
+                    help="use an exported plan instead of the metadata DB; "
+                         "requires --admin-user")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--timeout", type=int, default=10)
     args = ap.parse_args()
 
-    rows = fleet(args.alias, args.include_disabled)
+    if args.plan and not args.admin_user:
+        ap.error("--plan carries no credentials, so --admin-user is required")
+    if args.plan and args.kill_switch:
+        ap.error("--kill-switch writes to the metadata DB, which a --plan run "
+                 "does not open. Pause the bot with `/sql kill on` instead.")
+    if not args.plan and db is None:
+        ap.error("the bot's modules are not importable here. Run this on the "
+                 "bot host, or use --plan with an exported fleet file.")
+
+    args.ssl = (_load_plan(args.plan).get("ssl") or {"sslmode": "require"}
+                if args.plan else cfg.target_ssl_kwargs())
+    rows = fleet(args)
     if not rows:
         print("no targets matched", file=sys.stderr)
         return 2
 
+    if args.dump_plan:
+        return dump_plan(rows, args.dump_plan, args.ssl)
+
     head = "APPLYING" if args.apply else "DRY RUN (nothing will change)"
-    print(f"{head} — {len(rows)} target(s), "
-          f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S} UTC")
+    print(f"{head} - {len(rows)} target(s), "
+          f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S} UTC"
+          + (f", from {args.plan}" if args.plan else ""))
     print(f"  per login: NOLOGIN -> new random password -> "
           f"{'terminate sessions' if args.terminate else 'sessions left alone'}")
     print(f"  connecting as: "
