@@ -9,6 +9,27 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.15] — 2026-08-25
+
+### Security
+
+- **The elevated role is entered for DDL, and only for DDL.** A super-admin's
+  read or write ran under `SET ROLE` to the elevated role on every target that
+  configures one, which is more authority than either tier needs: reads inherit
+  `pg_read_all_data`, and writes hold their own grants. The role exists because
+  the bot's login owns nothing and DDL has to. Reads and writes now connect as
+  their own login and assume nothing, and the audit row says so.
+
+### Added
+
+- **A break-glass lockout for the whole fleet.** `scripts/breakglass_lockout.py`
+  shuts every QueryHub database login out of every target in one move: NOLOGIN,
+  then a new random password that is not stored, then the sessions already open.
+  Dry run by default. `--admin-user` performs the lockout as a named superuser,
+  for the case where the bot's own credentials are what is not trusted, and
+  `--kill-switch` pauses submissions at the same time so the pause has a reason
+  attached to it rather than looking like an outage.
+
 ## [1.0.14] — 2026-08-24
 
 ### Added

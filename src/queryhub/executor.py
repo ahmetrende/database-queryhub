@@ -122,8 +122,23 @@ def _build_application_name(request: dict) -> str:
     return name[:63]
 
 
-def _super_role_for(principal_id: str, target_id: int) -> str | None:
+def _super_role_for(principal_id: str, target_id: int,
+                    mode: str | None = None) -> str | None:
     """The role a super-admin's session enters on this target, or None.
+
+    ONLY for DDL. The role is a member of `rds_superuser`, and it was granted
+    to all three logins because two RO requests (#4223, #4224) failed with
+    "Permission denied to set role" — the SELECTs never ran, they died on the
+    SET ROLE this function had asked for regardless of tier. Granting the
+    membership fixed the symptom and made the shared read-only password a
+    fleet-wide superuser credential.
+
+    A read does not need it: the RO login inherits `pg_read_all_data`, and 42
+    of the 48 elevated executions on record were RO ones that would have run
+    unaided. A write does not need it either — the RW login holds explicit
+    grants, and no RW request has ever been executed elevated. DDL is the case
+    the role exists for: the bot's login owns nothing, so CREATE/ALTER fails
+    with 42501 without it.
 
     The bot's login owns nothing on a target, so DDL fails with 42501 — and
     giving that login standing privileges would put them in every session it
@@ -138,6 +153,8 @@ def _super_role_for(principal_id: str, target_id: int) -> str | None:
     Returns None when the requester is not a super-admin or the target names no
     role — both of which mean "run as the login, exactly as before".
     """
+    if mode is not None and mode != "ddl":
+        return None
     if not admins.is_super_admin(principal_id):
         return None
     row = db.fetch_one(
@@ -623,7 +640,8 @@ def _run(request: dict, client: WebClient) -> None:
         # else entirely. For a path whose entire justification is that the
         # powerful thing is the LOGGED thing, the one fact worth logging was
         # the one missing.
-        assume_role = (_super_role_for(request["requester_slack_id"], target.id)
+        assume_role = (_super_role_for(request["requester_slack_id"], target.id,
+                                       mode)
                        or _team_role_for(request["requester_slack_id"], target.id))
 
         # rowcount==0 means the claim was lost — the row was cancelled,
@@ -649,7 +667,8 @@ def _run(request: dict, client: WebClient) -> None:
                           # statement. Absent when nothing was assumed.
                           **({"assumed_role": assume_role,
                               "elevated": bool(_super_role_for(
-                                  request["requester_slack_id"], target.id))}
+                                  request["requester_slack_id"], target.id,
+                                  mode))}
                              if assume_role else {})})
 
         # SQL Server (MSSQL) uses a separate pyodbc flow — no search_path /
