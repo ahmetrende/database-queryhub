@@ -9,6 +9,21 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.17] — 2026-08-25
+
+### Added
+
+- **A PowerShell twin of the break-glass lockout.** The machine an operator
+  reaches for in an incident is usually their own, and asking it for Python and
+  psycopg first is one dependency too many.
+  `scripts/breakglass_lockout.ps1` does the same three moves — NOLOGIN, a new
+  random password, then the open sessions — through `psql`, reading the same
+  `--dump-plan` file and connecting with the operator's own superuser. The SQL
+  goes in on stdin rather than `-c`, so a generated password never lands in the
+  process list or the shell history, and each `ALTER ROLE` is guarded by
+  `IF EXISTS` so a server that does not have a given login is a no-op instead
+  of an error that stops the rest of the run.
+
 ## [1.0.16] — 2026-08-25
 
 ### Added

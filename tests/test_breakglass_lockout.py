@@ -11,6 +11,7 @@ So: shut the door, change the lock, then clear the building.
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -310,3 +311,57 @@ def test_it_starts_on_a_machine_with_no_bot_environment(tmp_path):
         capture_output=True, text=True, env=env, timeout=60)
     assert "Traceback" not in out.stderr, out.stderr
     assert out.returncode == 2 and "no targets matched" in out.stderr
+
+
+# --- the PowerShell twin ----------------------------------------------------
+#
+# The operator's laptop is Windows, and asking for Python plus psycopg there to
+# prepare for an incident is one dependency too many. breakglass_lockout.ps1
+# does the same three moves through psql. It cannot be imported, so what is
+# checked here is the handful of properties that would fail silently if they
+# ever changed.
+
+PS1 = (Path(__file__).resolve().parent.parent / "scripts" / "breakglass_lockout.ps1")
+
+
+def test_the_powershell_twin_ships_next_to_the_python_one():
+    assert PS1.exists()
+
+
+def test_it_shuts_the_door_before_changing_the_lock_before_clearing_the_room():
+    src = PS1.read_text(encoding="utf-8")
+    body = src[src.index("function Build-Sql"):]
+    nologin = body.index("NOLOGIN")
+    passwd = body.index("PASSWORD %L")
+    kill = body.index("pg_terminate_backend")
+    assert nologin < passwd < kill
+
+
+def test_the_password_alphabet_is_exactly_sixty_four_characters():
+    """The mapping is `byte % 64`, so 64 characters means no modulo bias.
+
+    Any other length quietly makes the first N characters more likely, which
+    is the kind of thing that is never noticed because the passwords are never
+    looked at.
+    """
+    src = PS1.read_text(encoding="utf-8")
+    alphabet = re.search(r"Alphabet = '([^']+)'", src).group(1)
+    assert len(alphabet) == 64
+    assert len(set(alphabet)) == 64
+    assert not (set(alphabet) & set("'\"\;"))     # nothing that needs escaping
+
+
+def test_the_generated_password_never_reaches_the_command_line():
+    """psql gets the SQL on stdin. With -c it would be in the process list and
+    in the shell's history, which is where a random password stops being one."""
+    src = PS1.read_text(encoding="utf-8")
+    args = src[src.index("function Invoke-Psql"):src.index("function Build-Sql")]
+    assert "'-c'" not in args and '"-c"' not in args
+    assert "$sql | & $psql" in args
+
+
+def test_it_never_asks_for_queryhubs_own_credentials():
+    # The whole point of the laptop copy: the operator's superuser, and no
+    # master key or BOT_DB_* anywhere near it.
+    src = PS1.read_text(encoding="utf-8")
+    assert "BOT_DB" not in src and "master.key" not in src

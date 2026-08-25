@@ -36,8 +36,8 @@
 #
 # To run a prebuilt image, pull it first so compose finds it locally and does
 # not rebuild:
-#     docker pull ghcr.io/ahmetrende/database-queryhub:1.0.16
-#     QH_IMAGE=ghcr.io/ahmetrende/database-queryhub:1.0.16 docker compose -f docker-compose.install.yml up -d
+#     docker pull ghcr.io/ahmetrende/database-queryhub:1.0.17
+#     QH_IMAGE=ghcr.io/ahmetrende/database-queryhub:1.0.17 docker compose -f docker-compose.install.yml up -d
 
 name: queryhub
 

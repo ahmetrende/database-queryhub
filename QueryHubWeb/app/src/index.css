@@ -21,7 +21,7 @@
    */
   /* syntax colors — light */
   :root, [data-theme='light'] {
-    --tk-kw: #B0512F; --tk-str: #B85C00; --tk-num: #6D4ACF; --tk-fn: #15688C;
+    --tk-kw: #5C6F24; --tk-str: #B85C00; --tk-num: #6D4ACF; --tk-fn: #15688C;
     /* was 0.45 = 2.76:1, a clear fail. 0.64 -> 4.86 white / 4.78 light /
        4.71 regular. A comment in a query under review is usually where the
        author wrote down their intent, so it has to be readable. */
@@ -34,7 +34,7 @@
     --qh-rail: var(--bg-light);
   }
   [data-theme='dark'] {
-    --tk-kw: #E0906E; --tk-str: #FFB366; --tk-num: #C2B0FF; --tk-fn: #7FD2F5;
+    --tk-kw: #C3D86A; --tk-str: #FFB366; --tk-num: #C2B0FF; --tk-fn: #7FD2F5;
     /* was 0.40 = 3.81 / 3.73 / 3.61. 0.55 -> 6.03 / 5.76 / 5.46. */
     --tk-com: rgba(255,255,255,0.55);
     /* Restores the vendor's dark value, which the light contrast fix above was
