@@ -138,15 +138,29 @@ def _recent_ro_burst(principal_id: str) -> dict | None:
     queries with query_safety.required_mode()."""
     window_min = cfg.get_int("ro_burst_window_min", 10)
     threshold = cfg.get_int("ro_burst_threshold", 3)
+    # `status <> 'draft'` is not optional and belongs in the SQL, not below: a
+    # draft is an id reserved when somebody OPENS the modal — no target, no
+    # database, no SQL - and three of them counted as three reads. An admin
+    # ran ONE query and was told they had run three: two drafts opened a
+    # minute earlier, plus the real request. Filtering in Python would not be
+    # enough either: LIMIT 50 would
+    # fill with abandoned tabs and push the real requests out of the window.
+    # Every other reader of this table already excludes drafts through
+    # `requests_reportable`; this one read the table directly.
     rows = db.fetch_all(
         "SELECT target_server_id, database_name, query FROM requests "
         " WHERE requester_slack_id = %s "
+        "   AND status <> 'draft' "
+        "   AND target_server_id IS NOT NULL "
         "   AND created_at >= NOW() - make_interval(mins => %s) "
         " ORDER BY created_at DESC LIMIT 50",
         (principal_id, window_min),
     )
+    # An empty query classifies as 'ro' (required_mode defaults that way,
+    # which is the right fail-safe there and the wrong count here).
     ro = [r for r in rows
-          if query_safety.required_mode(r["query"] or "") == "ro"]
+          if (r["query"] or "").strip()
+          and query_safety.required_mode(r["query"]) == "ro"]
     if len(ro) < threshold:
         return None
     from collections import Counter

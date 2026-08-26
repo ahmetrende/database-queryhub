@@ -9,6 +9,23 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.19] — 2026-08-26
+
+### Fixed
+
+- **The read-burst nudge counted opened tabs as queries.** Someone who ran one
+  read was told they had run three, and offered an auto-approve window for
+  `target #None (all dbs)`. Opening the `/sql` modal reserves a request id as a
+  `draft` — no target, no database, no SQL — and the burst counter read the
+  `requests` table directly instead of through the view every other caller uses,
+  so two abandoned tabs plus one real query made three. The `#None` came from
+  the same rows: the scope label picks the most common target in the window, and
+  the drafts had none. Drafts are now excluded in the query itself, because
+  `LIMIT 50` would otherwise fill with tabs and push the real requests out of
+  the window. A blank query no longer counts as a read either — `required_mode`
+  calls it RO, which is the right fail-safe when deciding what to run and the
+  wrong answer when counting what was run.
+
 ## [1.0.18] — 2026-08-25
 
 ### Security
