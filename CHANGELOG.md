@@ -9,6 +9,24 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.18] — 2026-08-25
+
+### Security
+
+- **A password in a query no longer survives in request history.** A
+  role-creation script carries the new password as a literal, and the whole
+  statement is stored so the request can be reviewed, audited and re-run — so
+  the credential stayed readable for as long as the row did, while the account
+  it created was live. Migration 100 masks those literals the moment a request
+  reaches a terminal state, replacing them with `PASSWORD '***REDACTED***'`.
+  Timing is the point: the executor still sends the real statement, an approver
+  still sees what they are approving, and a request parked in
+  `awaiting_dba_manual` — where a human has yet to run the statement by hand —
+  keeps its text until the admin closes it out. It is a trigger rather than
+  application code because nineteen places across five modules write a terminal
+  status, two processes run the executor, and an operator can update the row
+  from psql.
+
 ## [1.0.17] — 2026-08-25
 
 ### Added
