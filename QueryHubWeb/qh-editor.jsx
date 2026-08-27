@@ -181,7 +181,8 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
   const [rowH, setRowH] = React.useState(null);
   const [, bumpWidth] = React.useReducer(x => x + 1, 0);
   const [charW, setCharW] = React.useState(fontSize * 0.6);
-  const [ac, setAc] = React.useState(null); // {items, idx, top, left, start, end}
+  const [ac, setAc] = React.useState(null); // {items, idx, top, lineTop, left, start, end} — viewport coords
+  const acRef = React.useRef(null);
   const [dragOver, setDragOver] = React.useState(false);
   const lines = value.split('\n');
   const lh = Math.round(fontSize * 1.55);
@@ -327,14 +328,24 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     if (ac) setAc(null);
   };
 
+  // VIEWPORT coordinates, because the menu is portalled to document.body and
+  // positioned `fixed`: `.qh-editor` has `overflow: hidden`, and clipping by an
+  // ancestor ignores z-index, so the list was cut off exactly where the results
+  // panel starts. `lineTop` is the caret line's top edge — what the flip-up
+  // branch measures against.
   const posAt = (ta, idx) => {
     const rows = ta.value.slice(0, idx).split('\n');
     const row = rows.length - 1, col = rows[row].length;
+    const r = ta.getBoundingClientRect();
     if (wrap) {
       const p = wrapRect(row, col);
-      if (p) return { top: 14 + p.bottom - ta.scrollTop + 2, left: 16 + p.right - ta.scrollLeft };
+      if (p) {
+        const top = r.top + 14 + p.bottom - ta.scrollTop + 2;
+        return { top, lineTop: top - lh - 2, left: r.left + 16 + p.right - ta.scrollLeft };
+      }
     }
-    return { top: 14 + (row + 1) * lh - ta.scrollTop + 2, left: 16 + col * charW - ta.scrollLeft };
+    const top = r.top + 14 + (row + 1) * lh - ta.scrollTop + 2;
+    return { top, lineTop: top - lh - 2, left: r.left + 16 + col * charW - ta.scrollLeft };
   };
   const refreshAC = (ta) => {
     const caret = ta.selectionStart;
@@ -348,14 +359,14 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
       if (cols && cols.length) {
         const p = posAt(ta, caret - 1);
         const quote = (n) => (typeof qhQuoteIdentFor === 'function' ? qhQuoteIdentFor(n, engineId) : qhQuoteIdent(n));
-        setAc({ items: [{ text: cols.map(quote).join(', '), label: 'Expand * → ' + cols.length + ' columns', type: 'expand' }], idx: 0, top: p.top, left: p.left, start: caret - 1, end: caret });
+        setAc({ items: [{ text: cols.map(quote).join(', '), label: 'Expand * → ' + cols.length + ' columns', type: 'expand' }], idx: 0, top: p.top, lineTop: p.lineTop, left: p.left, start: caret - 1, end: caret });
         return;
       }
     }
     const s = qhBuildSuggest(ta.value, caret, sch, engineId);
     if (!s) { setAc(null); return; }
     const p = posAt(ta, s.start);
-    setAc({ items: s.items, idx: 0, top: p.top, left: p.left, start: s.start, end: s.end });
+    setAc({ items: s.items, idx: 0, top: p.top, lineTop: p.lineTop, left: p.left, start: s.start, end: s.end });
   };
 
   const accept = (item) => {
@@ -461,6 +472,45 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     }
   };
 
+  // Fit the portalled menu to the viewport, before paint. No dependency array:
+  // every render re-applies the JSX anchor (`top`/`left` from `ac`), so the
+  // correction has to run just as often — an idx change would otherwise repaint
+  // the list at the uncorrected anchor.
+  React.useLayoutEffect(() => {
+    const el = acRef.current;
+    if (!el || !ac || !ac.items.length) return;
+    const h = el.offsetHeight, w = el.offsetWidth;
+    let top = ac.top, left = ac.left;
+    // Open upwards when the list would run off the bottom — a short editor pane
+    // over a tall results panel never has room below the last line.
+    if (top + h > window.innerHeight - 8) {
+      const up = ac.lineTop - h - 4;
+      top = up >= 8 ? up : Math.max(8, window.innerHeight - 8 - h);
+    }
+    left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+    el.style.top = top + 'px';
+    el.style.left = left + 'px';
+  });
+
+  // `fixed` detaches from the caret as soon as anything scrolls, so close.
+  // Capture phase to catch scrolling ancestors too; the list's own wheel
+  // scrolling and the textarea's (already handled by sync) are exempt.
+  React.useEffect(() => {
+    if (!ac) return;
+    const close = (e) => {
+      // A resize event's target is `window`, which is not a Node — the guard has
+      // to be on the ARGUMENT, or `contains` throws and the handler never gets
+      // to the close it exists for.
+      const t = e && e.target;
+      if (t && t.nodeType === 1 && acRef.current && acRef.current.contains(t)) return;
+      if (t === taRef.current) return;
+      setAc(null);
+    };
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close); };
+  }, [!!ac]);
+
   return (
     <div className={'qh-editor' + (wrap ? ' is-wrap' : '')} style={{ '--ed-fs': fontSize + 'px', '--ed-lh': lh + 'px' }}>
       <span ref={measRef} className="qh-meas" aria-hidden="true">0000000000</span>
@@ -493,8 +543,8 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
           onDragLeave={() => setDragOver(false)}
           onDrop={onDrop}
         />
-        {ac && ac.items.length > 0 && (
-          <div className="qh-ac-ed" style={{ top: ac.top, left: ac.left }}>
+        {ac && ac.items.length > 0 && ReactDOM.createPortal(
+          <div className="qh-ac-ed" ref={acRef} style={{ top: ac.top, left: ac.left }}>
             {ac.items.map((it, i) => (
               <div key={it.type + it.text} className={'qh-ac-ed-opt' + (i === ac.idx ? ' is-hi' : '')}
                 onMouseEnter={() => setAc(a => ({ ...a, idx: i }))}
@@ -503,8 +553,7 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
                 <span className={'qh-ac-ed-type ac-t-' + it.type}>{QH_AC_TYPE_LABEL[it.type]}</span>
               </div>
             ))}
-          </div>
-        )}
+          </div>, document.body)}
       </div>
     </div>
   );

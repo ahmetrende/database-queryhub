@@ -7,6 +7,14 @@
 // component module runs.
 import React from 'react';
 import { createRoot } from 'react-dom/client';
+// `createPortal` lives in `react-dom`, not `react-dom/client`. The prototype
+// loads the full react-dom UMD from a CDN, so every ReactDOM.* the design uses
+// exists there and only the bundle can be missing one — the same asymmetry the
+// note above describes for a stale index.css. The editor's autocomplete portals
+// itself to document.body (2026-08-27 round); without this line the built app
+// throws "ReactDOM.createPortal is not a function" the moment a suggestion
+// list opens, while the prototype is fine.
+import { createPortal } from 'react-dom';
 
 window.React = React;
-window.ReactDOM = { createRoot };
+window.ReactDOM = { createRoot, createPortal };

@@ -9,6 +9,25 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.20] — 2026-08-27
+
+### Fixed
+
+- **The editor's autocomplete was clipped by the results panel.** Typing near the
+  bottom of the editor showed half a suggestion list, cut off exactly where the
+  Results panel starts. Not a stacking problem — the editor pane is
+  `overflow: hidden`, and an ancestor's clip ignores z-index, so raising it could
+  never have helped. The list is now portalled to the document body and
+  positioned in viewport coordinates: it floats above the panels, opens upwards
+  when there is no room below, is clamped horizontally, and closes when anything
+  scrolls out from under it. Keyboard selection and the accept-on-mousedown
+  behaviour are unchanged.
+- **The built app would have thrown where the prototype did not.** `window.ReactDOM`
+  in the Vite bundle is a hand-written shim over the prototype's CDN globals, and it
+  exposed only `createRoot` — `createPortal` lives in `react-dom`, not
+  `react-dom/client`. A test now scans every design-owned component for
+  `ReactDOM.<member>` and fails if the shim is missing one.
+
 ## [1.0.19] — 2026-08-26
 
 ### Fixed
