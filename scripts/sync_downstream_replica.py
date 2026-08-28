@@ -215,7 +215,12 @@ def main(argv: list[str] | None = None) -> int:
     # baseline. Appended rather than asked for, because a marker somebody has
     # to remember to type is a marker that will be missing on the sync that
     # needed it.
-    if TRAILER not in msg:
+    # A TRAILER, not the word: the first version tested `TRAILER not in msg`,
+    # and the very next sync message explained the mechanism in its own prose —
+    # so the substring was present, the append was skipped, and the commit went
+    # to the replica with no marker at all. A trailer is a line that STARTS
+    # with the key; anything else is text about it.
+    if not any(ln.startswith(TRAILER) for ln in msg.splitlines()):
         msg = msg.rstrip("\n") + f"\n\n{TRAILER} {base}\n"
     # commit-tree reads the message from stdin with `-F -`, so this one call does
     # not go through git() above. `-S` is explicit because commit-tree ignores

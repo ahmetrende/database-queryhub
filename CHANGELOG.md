@@ -9,6 +9,17 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.23] — 2026-08-28
+
+### Fixed
+
+- **The replica sync could skip its own marker.** The check for an existing
+  `Upstream-Commit:` trailer was a substring test, and the first sync message to
+  explain the mechanism in prose contained the words — so the append was
+  skipped and that commit reached the replica unmarked, leaving the next sync
+  unable to detect downstream work, which is the one thing the marker is for. A
+  trailer is now a line that starts with the key.
+
 ## [1.0.22] — 2026-08-28
 
 ### Added

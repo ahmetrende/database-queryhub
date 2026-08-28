@@ -59,8 +59,25 @@ def test_the_sync_plants_the_marker_without_being_asked():
     """A marker somebody has to remember to type is a marker that will be
     missing on the sync that needed it."""
     src = (SCRIPTS / "sync_downstream_replica.py").read_text(encoding="utf-8")
-    assert "if TRAILER not in msg:" in src
     assert 'msg.rstrip("\\n") + f"\\n\\n{TRAILER} {base}\\n"' in src
+
+
+def test_a_message_that_talks_about_the_trailer_still_gets_one():
+    """Measured, not imagined: the first cut asked `TRAILER not in msg`, and the
+    next sync's message explained the mechanism in its own prose. The substring
+    was there, the append was skipped, and that commit reached the replica with
+    no marker — leaving the next sync unable to see downstream work, which is
+    the one thing the marker exists for."""
+    src = (SCRIPTS / "sync_downstream_replica.py").read_text(encoding="utf-8")
+    assert "if TRAILER not in msg:" not in src
+    assert "any(ln.startswith(TRAILER) for ln in msg.splitlines())" in src
+
+    # And the rule itself, applied to the message that caused it.
+    prose = ("Every sync plants an `Upstream-Commit:` trailer naming the commit "
+             "it was built from.\n")
+    has_real_trailer = any(ln.startswith("Upstream-Commit:")
+                           for ln in prose.splitlines())
+    assert has_real_trailer is False
 
 
 def test_the_sync_refuses_by_default_and_names_the_way_out():
