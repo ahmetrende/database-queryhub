@@ -50,6 +50,9 @@ LOCAL_ONLY: tuple[tuple[str, str], ...] = (
 )
 
 
+TRAILER = "Upstream-Commit:"
+
+
 def git(*args: str, cwd: Path | None = None, check: bool = True) -> str:
     out = subprocess.run(("git", *args), cwd=str(cwd or ROOT),
                          capture_output=True, text=True)
@@ -98,6 +101,22 @@ def signature_present(commit_object: str) -> bool:
     return "gpgsig" in commit_object.split("\n\n", 1)[0]
 
 
+def _newest_marker(ref: str) -> str | None:
+    """The replica commit that last carried one of our syncs.
+
+    The link lives in the commit that states it rather than in a note here: a
+    record kept upstream is one more thing to hold in step, and the replica is
+    the side that gets rebuilt."""
+    log = git("log", "--format=%H%x00%B%x1e", ref)
+    for entry in log.split("\x1e"):
+        if not entry.strip():
+            continue
+        sha, _, body = entry.partition("\x00")
+        if any(ln.strip().startswith(TRAILER) for ln in body.splitlines()):
+            return sha.strip()
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -116,6 +135,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--message-file", help="commit message file")
     ap.add_argument("--push", action="store_true",
                     help="push the branch; otherwise print the command")
+    ap.add_argument("--discard-downstream", action="store_true",
+                    help="sync even though the replica has commits of its own, "
+                         "throwing them away (they are only in the replica)")
     ap.add_argument("--no-sign", action="store_true",
                     help="do not sign (the replica's ruleset wants a signature, "
                          "so this is for dry runs and tests only)")
@@ -130,6 +152,31 @@ def main(argv: list[str] | None = None) -> int:
     print(f"fetching {args.replica_branch} from the replica…")
     git("fetch", args.remote, args.replica_branch)
     head = git("rev-parse", "FETCH_HEAD").strip()
+
+    # A rebuild does not merge. If somebody has written commits IN the replica
+    # since our last sync — which is what the IdP integration does — this
+    # commit's tree simply would not contain them, and a tree missing files is
+    # a valid tree: git would report success and their work would be gone.
+    # So look for our own marker and refuse while anything sits after it.
+    if not args.discard_downstream:
+        marker = _newest_marker(head)
+        if marker is None:
+            print("  ! the replica carries no Upstream-Commit trailer yet, so "
+                  "downstream commits cannot be detected. Checking is skipped "
+                  "for this sync; the commit below plants the marker.")
+        else:
+            extra = [c for c in git("log", "--format=%h %an: %s",
+                                    f"{marker}..{head}").splitlines() if c.strip()]
+            if extra:
+                sys.exit(
+                    "REFUSED: the replica has commits of its own since "
+                    f"{marker[:8]}:\n  " + "\n  ".join(extra)
+                    + "\n\nRebuilding the tree from here would delete them without "
+                      "an error. Import them first:\n"
+                      "  python3 scripts/import_from_replica.py "
+                      f"--since {marker[:8]}\n"
+                      "…then merge that here and run this again. Pass "
+                      "--discard-downstream only if you mean to throw that work away.")
 
     # Read the local-only files back from the replica. Absent there means the
     # list is wrong or a previous sync already dropped the file; either way a
@@ -163,6 +210,13 @@ def main(argv: list[str] | None = None) -> int:
 
     msg = (Path(args.message_file).read_text(encoding="utf-8")
            if args.message_file else f"sync the replica with {base[:7]}\n")
+    # The trailer is what makes the NEXT sync able to tell our tree from work
+    # written downstream — and what makes the import script able to name a
+    # baseline. Appended rather than asked for, because a marker somebody has
+    # to remember to type is a marker that will be missing on the sync that
+    # needed it.
+    if TRAILER not in msg:
+        msg = msg.rstrip("\n") + f"\n\n{TRAILER} {base}\n"
     # commit-tree reads the message from stdin with `-F -`, so this one call does
     # not go through git() above. `-S` is explicit because commit-tree ignores
     # commit.gpgsign — a config-only setup would produce an unsigned commit and

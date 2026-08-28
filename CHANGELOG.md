@@ -9,6 +9,22 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.22] — 2026-08-28
+
+### Added
+
+- **Work written in a downstream replica can come back up, and a sync will not
+  overwrite it.** `sync_downstream_replica.py` rebuilds a replica's tree from
+  this repository — safe while the replica is only read, and no longer safe once
+  somebody develops there. A rebuilt tree that lacks their files is a valid
+  tree, so the sync would have deleted downstream work with no error and no
+  conflict. Every sync now plants an `Upstream-Commit:` trailer naming the
+  commit it was built from, and refuses while the replica carries commits after
+  it, printing them and the import command. `scripts/import_from_replica.py` is
+  the other direction: it takes the paths those commits touched, minus the
+  replica-local ones, onto a branch here, keeping every author as a
+  `Co-Authored-By` trailer. It never pushes and never merges.
+
 ## [1.0.21] — 2026-08-28
 
 ### Changed
