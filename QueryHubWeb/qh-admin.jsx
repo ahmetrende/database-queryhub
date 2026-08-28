@@ -18,6 +18,19 @@ const AdminIcons = {
 
 const QH_ADMIN_SECTIONS = ['approvals', 'ddl', 'kill', 'grants', 'auto', 'scopes', 'teams', 'conns', 'audit', 'metrics', 'feedback', 'config'];
 // Deep-link support: the admin section lives in the URL as #admin/<section>.
+// Which door a request came through. Two values existed when this was written
+// and the chip coerced everything to them — `web`, or else Slack — so a third
+// surface would have been labelled Slack on the one field whose whole job is to
+// say where the request came from. The value is rendered as itself now; an
+// unstyled chip for an unfamiliar origin is the honest answer, and the base
+// `.qh-origin-chip` rule already covers it.
+const QH_ORIGIN_WHERE = { web: 'the web app', slack: 'Slack', idp: 'the IdP portal' };
+function qhOriginKey(o) { return String(o || 'slack').toLowerCase(); }
+function qhOriginWhere(o) {
+  const k = qhOriginKey(o);
+  return QH_ORIGIN_WHERE[k] || k;
+}
+
 function navFromAdminHash() {
   const m = (typeof location !== 'undefined' ? (location.hash || '') : '').match(/^#admin\/([a-z]+)/i);
   return m && QH_ADMIN_SECTIONS.indexOf(m[1].toLowerCase()) !== -1 ? m[1].toLowerCase() : null;
@@ -154,7 +167,7 @@ function QueueCard({ it, selected, onSelect, checked, onCheck }) {
           <span className="qh-qavatar">{it.submitter.initials}</span>
           <span className="qh-qname">{it.submitter.name}</span>
           <TierBadge tier={it.tier} sm />
-          <span className={'qh-origin-chip o-' + (it.origin === 'web' ? 'web' : 'slack')} title={'Submitted via ' + (it.origin === 'web' ? 'the web app' : 'Slack')}>{it.origin === 'web' ? 'web' : 'slack'}</span>
+          <span className={'qh-origin-chip o-' + qhOriginKey(it.origin)} title={'Submitted via ' + qhOriginWhere(it.origin)}>{qhOriginKey(it.origin)}</span>
           {/* Inside a batch the chip says WHICH one — `bundlePosition` /
               `bundleSize` (GET /admin/queue, 2026-08-20). "bundle" alone told
               an approver a batch existed and nothing about where this row sat
@@ -386,7 +399,7 @@ function DdlView({ st, user }) {
                 <span className="qh-qavatar">{it.submitter.initials}</span>
                 <span className="qh-qname">{it.submitter.name}</span>
                 <TierBadge tier="DDL" />
-                <span className={'qh-origin-chip o-' + (it.origin === 'web' ? 'web' : 'slack')} title={'Submitted via ' + (it.origin === 'web' ? 'the web app' : 'Slack')}>{it.origin === 'web' ? 'web' : 'slack'}</span>
+                <span className={'qh-origin-chip o-' + qhOriginKey(it.origin)} title={'Submitted via ' + qhOriginWhere(it.origin)}>{qhOriginKey(it.origin)}</span>
                 <span className="qh-ddl-target">{it.connectionId}/{it.databaseId}</span>
                 <span className="qh-qcard-when">{qhAgo(it.submittedAt)}</span>
               </div>

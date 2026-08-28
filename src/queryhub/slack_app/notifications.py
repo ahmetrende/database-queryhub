@@ -13,7 +13,7 @@ except ModuleNotFoundError:  # vanilla profile: the [slack] extra isn't installe
 if TYPE_CHECKING:  # only a type hint — no runtime dependency on slack_sdk
     from slack_sdk.web import WebClient
 
-from .. import admins, db, query_safety, targets
+from .. import admins, db, origins, query_safety, targets
 from .. import config as cfg
 
 log = logging.getLogger(__name__)
@@ -289,8 +289,7 @@ def _request_blocks(
     result_label = _fmt_result_format(request)
     # Which surface the request came from — so the admin sees at a glance
     # whether it was submitted from Slack or the web app.
-    origin = (request.get("origin") or "slack").lower()
-    origin_label = "Web" if origin == "web" else "Slack"
+    origin_label = origins.label(request.get("origin"))
     second_row_bits = [f"via {origin_label}", f"result: {result_label}"]
     sched = request.get("scheduled_for")
     if sched is not None:

@@ -12,7 +12,7 @@ import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from .. import config as cfg
+from .. import config as cfg, origins
 from .. import query_safety
 from ..auto_approve import AUTO_DECIDED_BY
 
@@ -375,8 +375,8 @@ _EVENT_LABEL = {
 
 
 # How a sign-in identifies itself, in words that do not collide with the
-# "via web" / "via Slack" the request rows use for the SURFACE a query arrived
-# from. Two vocabularies, deliberately kept apart:
+# "via <surface>" the request rows use for the SURFACE a query arrived from
+# (see origins.py). Two vocabularies, deliberately kept apart:
 #
 #     provider  →  what proved who you are      Slack SSO / local account
 #     origin    →  where the request came from   via web / via Slack
@@ -504,7 +504,7 @@ def admin_audit_entry(row: dict, kind: str, alias_of: "callable",
     info = _audit_info(d)
     origin = row.get("req_origin")
     if (req_tid or req_db or req_who) and origin:
-        via = "via web" if str(origin).lower() == "web" else "via Slack"
+        via = "via " + origins.label(origin)
         info = via if not info else f"{via} · {info}"
     return {"id": str(row["id"]), "time": iso(row.get("created_at")),
             # The REQUEST id, not this audit row's own id. Every query decision

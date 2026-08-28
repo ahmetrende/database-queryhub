@@ -34,7 +34,7 @@ except ModuleNotFoundError:  # vanilla profile: the [slack] extra isn't installe
 if TYPE_CHECKING:  # only a type hint — no runtime dependency on slack_sdk
     from slack_sdk.web import WebClient
 
-from . import admins, audit, cancellation, cell_format, db, engines, errors, pg_types, pii, pii_lineage, profile_sync, query_safety, ratings, requesters, row_limits, stmt_guard, targets, teams
+from . import admins, audit, cancellation, cell_format, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, ratings, requesters, row_limits, stmt_guard, targets, teams
 from . import config as cfg
 from .slack_app import notifications
 
@@ -469,7 +469,10 @@ def _deliver_result_to_requester(request: dict) -> bool:
     updates) are unaffected by this gate."""
     if not cfg.ENV.slack_enabled:
         return False  # vanilla profile: results are read in the web UI
-    if (request.get("origin") or "slack") == "web":
+    if not origins.is_slack(request.get("origin")):
+        # Any non-Slack surface reads its result there. `web` keeps its own
+        # opt-in; anything newer defaults to the same answer rather than to a
+        # Slack DM nobody asked for.
         return cfg.get_bool("web_result_to_slack", False)
     return True
 

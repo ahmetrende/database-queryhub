@@ -9,6 +9,22 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.21] — 2026-08-28
+
+### Changed
+
+- **A request now says which surface it actually came from.** `requests.origin`
+  is plain text with no constraint, so a new surface can start writing its own
+  value the day it exists — but every place that displayed it asked the same
+  two-way question, `web` or else Slack, in four spots: the admin DM, the audit
+  feed, and the approval-queue chip twice. A request from any third surface
+  would have been shown to approvers as **Slack**, on the one field whose entire
+  job is to name the door it came through. Result delivery asked that question
+  too, so such a request would also have had its CSV DM'd into Slack. The
+  vocabulary now lives in one module; an unfamiliar origin renders as itself
+  rather than as one of the first two, and `idp` is named there ahead of the
+  integration that will write it.
+
 ## [1.0.20] — 2026-08-27
 
 ### Fixed
