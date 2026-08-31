@@ -476,7 +476,17 @@ function AutoForm({ init, actor, st, onDone }) {
   };
   return (
     <div className="qh-addrow">
-      <input className="qh-input qh-input-sm" placeholder="user or team" value={f.user} onChange={e => setF({ ...f, user: e.target.value })} />
+      {/* The same picker the Grants form uses, and for the same reason: the
+          field takes a PRINCIPAL, and typing one from memory is how a grant
+          ends up written against an id that cannot sign in. Search by name or
+          by Slack id; a pasted id still works and is checked against the
+          directory before it is saved.
+          It also stops the placeholder lying — auto-approve has no team
+          column (`auto_approve_grants.slack_user_id`), so "user or team" named
+          a subject the server would refuse. */}
+      <PersonPick people={st.people} value={f.user}
+                  onChange={v => setF({ ...f, user: v })}
+                  resolve={st.resolvePerson} autoFocus={!editing} />
       <TierSelect value={f.tier} onChange={v => setF({ ...f, tier: v })} />
       <select className="qh-select" value={f.connectionId} onChange={e => setF({ ...f, connectionId: e.target.value, databaseId: null })}>{conns.map(c => <option key={c.id} value={c.id}>{connLabel(c)}</option>)}</select>
       <select className="qh-select" value={allDbs ? '' : f.databaseId} onChange={e => setF({ ...f, databaseId: e.target.value || null })}>

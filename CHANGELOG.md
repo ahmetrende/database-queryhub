@@ -9,6 +9,19 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.24] — 2026-08-31
+
+### Changed
+
+- **Adding an auto-approve grant picks the person.** The subject field was a
+  bare text box labelled "user or team", so an admin typed a Slack id from
+  memory — and a typo is accepted: the server takes any well-formed principal,
+  the grant is written, it matches nothing, and it sits in the table looking
+  granted. It is the same picker the Grants form already used: search by name or
+  by id, arrow keys, and a pasted principal id is still allowed but checked
+  against the directory first. The placeholder also stops offering teams, which
+  `auto_approve_grants` has never had a column for.
+
 ## [1.0.23] — 2026-08-28
 
 ### Fixed
