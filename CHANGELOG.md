@@ -9,6 +9,23 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.25] — 2026-08-31
+
+### Changed
+
+- **`/sql grant` takes several people at once, and starts with whoever the DM
+  is with.** Access is handed to a group as often as to a person, and the picker
+  took one user — so that was one pass each with the target, tier, databases and
+  reason retyped every time. It is a multi-select now, and the loop is around
+  people rather than inside the notification: every grantee still gets exactly
+  one DM covering all the targets, and one person failing no longer costs the
+  others their grant (the admin's confirmation names who got it and who did
+  not). The command is also usually typed in the conversation where the access
+  was asked for, so the modal arrives with that person already selected — one
+  partner from a direct message, everyone from a group DM. A DM with the bot
+  preselects nobody, a channel costs no API call, and a Slack failure just
+  opens the modal empty.
+
 ## [1.0.24] — 2026-08-31
 
 ### Changed

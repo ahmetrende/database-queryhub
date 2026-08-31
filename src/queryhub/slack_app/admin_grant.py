@@ -36,7 +36,7 @@ ACTION_REVOKE_ONE = "act_revoke_one"    # per-grant button
 def grant_modal(
     *,
     allowed_tiers: list[str],
-    grantee: str | None = None,
+    grantees: list[str] | None = None,
     target_initial_options: list[dict] | None = None,
     tier: str | None = None,
     reason: str | None = None,
@@ -59,11 +59,15 @@ def grant_modal(
     tier_initial = next(
         (o for o in tier_options if o["value"] == tier), tier_options[0])
 
-    user_element: dict = {"type": "users_select", "action_id": A_USER,
+    # Several people at once, because access is handed out to a GROUP as often
+    # as to a person — a new joiner and their two teammates, an on-call rota —
+    # and the modal was making that N passes with everything else retyped.
+    # Same grant, same audit rows, one round trip.
+    user_element: dict = {"type": "multi_users_select", "action_id": A_USER,
                           "placeholder": {"type": "plain_text",
-                                          "text": "Pick a Slack user"}}
-    if grantee:
-        user_element["initial_user"] = grantee
+                                          "text": "Pick one or more Slack users"}}
+    if grantees:
+        user_element["initial_users"] = list(grantees)
 
     target_element: dict = {
         "type": "multi_external_select", "action_id": A_TARGET,

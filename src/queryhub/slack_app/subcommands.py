@@ -804,6 +804,36 @@ def _handle_findcol(user_id, rest, client, respond, body):
     _respond(respond, f"{head}\n{_code_block(lines)}")
 
 
+def _dm_partners(client, body: dict, actor_id: str) -> list[str]:
+    """Whoever you are talking to, when `/sql grant` is typed inside a DM.
+
+    An admin granting access is almost always doing it in the conversation
+    where it was asked for, and the modal made them find that person again in a
+    picker — with the id they were literally chatting with one line above.
+
+    A direct message names one partner; a group DM names several, which the
+    multi-select can take whole. Excludes the actor and the bot: a DM with the
+    bot has exactly one other member and it is not a person to grant anything.
+    Any failure here returns nothing — a prefill is a convenience and must not
+    stop the modal from opening."""
+    channel = body.get("channel_id") or ""
+    if not channel.startswith(("D", "G")):
+        return []
+    try:
+        info = (client.conversations_info(channel=channel) or {}).get("channel") or {}
+        if info.get("is_im"):
+            others = [info.get("user")]
+        elif info.get("is_mpim"):
+            others = (client.conversations_members(channel=channel) or {}).get("members") or []
+        else:
+            return []
+        me = (client.auth_test() or {}).get("user_id")
+        return [u for u in others if u and u != actor_id and u != me]
+    except Exception:
+        log.exception("could not read the DM's members for a grant prefill")
+        return []
+
+
 def _handle_grant(user_id, rest, client, respond, body):
     """Open the access-grant modal. Admin-gated by the registry; finer
     `can_grant` capability is re-checked here (a plain admin without
@@ -821,7 +851,9 @@ def _handle_grant(user_id, rest, client, respond, body):
     try:
         client.views_open(
             trigger_id=trigger_id,
-            view=admin_grant.grant_modal(allowed_tiers=grants.allowed_tiers(cap)),
+            view=admin_grant.grant_modal(
+                allowed_tiers=grants.allowed_tiers(cap),
+                grantees=_dm_partners(client, body, user_id)),
         )
     except Exception:
         log.exception("views_open failed for /sql grant")

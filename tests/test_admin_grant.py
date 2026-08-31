@@ -44,7 +44,10 @@ def _tier_values(modal):
 def test_grant_modal_tier_options_match_allowed():
     m = ag.grant_modal(allowed_tiers=["ro"])
     assert _tier_values(m) == ["ro"]
-    assert m["blocks"][0]["element"]["type"] == "users_select"   # grantee picker
+    # Several people at once: access is handed out to a group as often as to a
+    # person, and the modal used to make that N passes with everything else
+    # retyped.
+    assert m["blocks"][0]["element"]["type"] == "multi_users_select"
     assert m["submit"]["text"] == "Grant access"
 
 
@@ -61,14 +64,14 @@ def test_grant_modal_target_is_multi_select_with_dispatch():
 def test_grant_modal_preserves_inputs_on_rebuild():
     # A re-render (after a target change) must carry the user's entries.
     m = ag.grant_modal(
-        allowed_tiers=["ro", "rw", "ddl"], grantee="U123",
+        allowed_tiers=["ro", "rw", "ddl"], grantees=["U123", "U456"],
         target_initial_options=[{"text": {"type": "plain_text", "text": "t"},
                                  "value": "15"}],
         tier="rw", reason="why", target_ids=[15])
     import json as _json
     assert _json.loads(m["private_metadata"])["targets"] == [15]
     user_b = next(b for b in m["blocks"] if b.get("block_id") == ag.B_USER)
-    assert user_b["element"]["initial_user"] == "U123"
+    assert user_b["element"]["initial_users"] == ["U123", "U456"]
     tier_b = next(b for b in m["blocks"] if b.get("block_id") == ag.B_TIER)
     assert tier_b["element"]["initial_option"]["value"] == "rw"
     reason_b = next(b for b in m["blocks"] if b.get("block_id") == ag.B_REASON)
@@ -137,3 +140,80 @@ def test_revoke_modal_user_with_no_grants():
     text = " ".join(b.get("text", {}).get("text", "") for b in m["blocks"]
                      if b["type"] == "section")
     assert "no active per-user grants" in text
+
+
+# --- several people at once, and the person you are already talking to -------
+
+def test_the_grant_modal_takes_more_than_one_person():
+    """Access is handed to a GROUP as often as to a person — a new joiner and
+    their two teammates, an on-call rota. The modal used to be one pass each,
+    with the target, tier, databases and reason retyped every time."""
+    import queryhub.slack_app.admin_grant as ag
+    m = ag.grant_modal(allowed_tiers=["ro"])
+    el = next(b for b in m["blocks"] if b.get("block_id") == ag.B_USER)["element"]
+    assert el["type"] == "multi_users_select"
+    assert "initial_users" not in el          # nothing preselected by default
+
+
+def test_a_dm_prefills_the_person_you_are_talking_to():
+    """`/sql grant` is typed in the conversation where the access was asked
+    for. Making the admin find that person again in a picker — with the id they
+    are literally chatting with — is the step this removes."""
+    from queryhub.slack_app import subcommands as sc
+
+    class Client:
+        def conversations_info(self, channel):
+            return {"channel": {"is_im": True, "user": "U_THEM"}}
+        def auth_test(self):
+            return {"user_id": "U_BOT"}
+
+    assert sc._dm_partners(Client(), {"channel_id": "D123"}, "U_ME") == ["U_THEM"]
+
+
+def test_a_group_dm_prefills_everyone_but_you_and_the_bot():
+    from queryhub.slack_app import subcommands as sc
+
+    class Client:
+        def conversations_info(self, channel):
+            return {"channel": {"is_mpim": True}}
+        def conversations_members(self, channel):
+            return {"members": ["U_ME", "U_A", "U_BOT", "U_B"]}
+        def auth_test(self):
+            return {"user_id": "U_BOT"}
+
+    assert sc._dm_partners(Client(), {"channel_id": "G9"}, "U_ME") == ["U_A", "U_B"]
+
+
+def test_a_dm_with_the_bot_prefills_nobody():
+    # It has exactly one other member and it is not a person to grant anything.
+    from queryhub.slack_app import subcommands as sc
+
+    class Client:
+        def conversations_info(self, channel):
+            return {"channel": {"is_im": True, "user": "U_BOT"}}
+        def auth_test(self):
+            return {"user_id": "U_BOT"}
+
+    assert sc._dm_partners(Client(), {"channel_id": "D1"}, "U_ME") == []
+
+
+def test_a_channel_is_not_a_dm_and_costs_no_api_call():
+    from queryhub.slack_app import subcommands as sc
+
+    class Client:
+        def conversations_info(self, channel):
+            raise AssertionError("must not ask Slack about a public channel")
+
+    assert sc._dm_partners(Client(), {"channel_id": "C123"}, "U_ME") == []
+
+
+def test_a_slack_failure_never_stops_the_modal_opening():
+    """A prefill is a convenience. If the lookup fails the modal still opens,
+    empty — the old behaviour, which is the correct fallback."""
+    from queryhub.slack_app import subcommands as sc
+
+    class Client:
+        def conversations_info(self, channel):
+            raise RuntimeError("channel_not_found")
+
+    assert sc._dm_partners(Client(), {"channel_id": "D1"}, "U_ME") == []

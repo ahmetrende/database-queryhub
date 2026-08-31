@@ -3614,8 +3614,8 @@ def handle_grant_target_changed(ack: Ack, body: dict, client: WebClient) -> None
         except (KeyError, ValueError, TypeError):
             continue
     st = body.get("view", {}).get("state", {}).get("values", {})
-    grantee = (st.get(admin_grant.B_USER, {}).get(admin_grant.A_USER, {})
-               .get("selected_user"))
+    grantees = (st.get(admin_grant.B_USER, {}).get(admin_grant.A_USER, {})
+                .get("selected_users")) or []
     tier = (st.get(admin_grant.B_TIER, {}).get(admin_grant.A_TIER, {})
             .get("selected_option") or {}).get("value")
     reason = (st.get(admin_grant.B_REASON, {}).get(admin_grant.A_REASON, {})
@@ -3625,7 +3625,7 @@ def handle_grant_target_changed(ack: Ack, body: dict, client: WebClient) -> None
             view_id=body["view"]["id"], hash=body["view"]["hash"],
             view=admin_grant.grant_modal(
                 allowed_tiers=grants.allowed_tiers(cap),
-                grantee=grantee, target_initial_options=target_opts,
+                grantees=grantees, target_initial_options=target_opts,
                 tier=tier, reason=reason, target_ids=target_ids))
     except Exception:
         log.exception("grant: views_update after target change failed")
@@ -3644,8 +3644,8 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
                         "You're no longer allowed to grant access."}})
         return
     state = body["view"]["state"]["values"]
-    grantee = (state.get(admin_grant.B_USER, {}).get(admin_grant.A_USER, {})
-               .get("selected_user"))
+    grantees = (state.get(admin_grant.B_USER, {}).get(admin_grant.A_USER, {})
+                .get("selected_users")) or []
     tsels = (state.get(admin_grant.B_TARGET, {}).get(admin_grant.A_TARGET, {})
              .get("selected_options")) or []
     tier = (state.get(admin_grant.B_TIER, {}).get(admin_grant.A_TIER, {})
@@ -3663,8 +3663,8 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
             continue
 
     errors: dict = {}
-    if not grantee:
-        errors[admin_grant.B_USER] = "Pick a user."
+    if not grantees:
+        errors[admin_grant.B_USER] = "Pick at least one user."
     if not target_ids:
         errors[admin_grant.B_TARGET] = "Pick at least one target."
     elif set(target_ids) & grants.control_plane_target_ids():
@@ -3680,31 +3680,45 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
         return
 
     ack()  # close the modal; the rest is async work
-    profile = _slack_profile(client, grantee)
     dbs = [o["value"] for o in dbs_sel] or None
-    whitelisted = False
     aliases: list[str] = []
     for tid in target_ids:
-        res = grants.grant(
-            granter_id=user["id"], granter_name=user.get("name"),
-            grantee_id=grantee, grantee_profile=profile,
-            target_id=tid, mode=tier, databases=dbs, reason=reason,
-            notify=False)  # handler sends one combined grantee DM below
-        whitelisted = whitelisted or res["whitelisted_now"]
         t = targets.get(tid)
         aliases.append(t.alias if t else str(tid))
 
+    # The loop is around PEOPLE, not inside the notification: each grantee
+    # still gets exactly one DM covering every target, which is what the
+    # single-user path did. One person failing must not cost the others their
+    # grant, so it is caught here and named in the admin's summary instead.
+    granted: list[str] = []
+    failed: list[str] = []
+    for grantee in grantees:
+        try:
+            profile = _slack_profile(client, grantee)
+            whitelisted = False
+            for tid in target_ids:
+                res = grants.grant(
+                    granter_id=user["id"], granter_name=user.get("name"),
+                    grantee_id=grantee, grantee_profile=profile,
+                    target_id=tid, mode=tier, databases=dbs, reason=reason,
+                    notify=False)  # one combined DM per grantee, below
+                whitelisted = whitelisted or res["whitelisted_now"]
+            grants.notify_grantee(grantee, user["id"], aliases, tier, dbs,
+                                  whitelisted)
+            granted.append(f"<@{grantee}>"
+                           + (" (whitelisted)" if whitelisted else ""))
+        except Exception:
+            log.exception("grant: failed for %s", grantee)
+            failed.append(f"<@{grantee}>")
+
     scope = ", ".join(dbs) if dbs else "all databases"
     tlist = ", ".join(f"`{a}`" for a in aliases)
-    # Grantee gets the ONE standard notification (combined: all picked
-    # targets in a single DM). Same helper every grant path uses.
-    grants.notify_grantee(grantee, user["id"], aliases, tier, dbs, whitelisted)
-    # Granter (the admin) gets their own confirmation.
-    notifications.dm_requester(
-        client, user["id"],
-        f":white_check_mark: Granted *{tier.upper()}* on {tlist} ({scope}) "
-        f"to <@{grantee}>"
-        + (" — whitelisted" if whitelisted else "") + ".")
+    msg = (f":white_check_mark: Granted *{tier.upper()}* on {tlist} ({scope}) "
+           f"to {', '.join(granted)}." if granted
+           else ":x: No grant was written.")
+    if failed:
+        msg += f"\n:warning: Failed for {', '.join(failed)} — see the bot logs."
+    notifications.dm_requester(client, user["id"], msg)
 
 
 def handle_revoke_user_options(ack: Ack, payload: dict, body: dict) -> None:
