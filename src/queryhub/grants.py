@@ -140,58 +140,15 @@ def grant(
             "access to it would allow tampering with the audit log and the "
             "admin list.")
 
-    name = grantee_profile.get("name")
-    email = grantee_profile.get("email")
-    tz = grantee_profile.get("tz")
-    dbs = databases or None
-
     with db.transaction() as cur:
         # This path notifies on its own (notify_grantee / the modal's
         # combined DM) — keep the auth-event outbox from double-DMing.
         cur.execute("SET LOCAL app.auth_dm_suppress = 'on'")
-        cur.execute(
-            "INSERT INTO requesters "
-            "  (slack_user_id, email, name, enabled, added_at, added_by, tz, "
-            "   bypass_team_grants) "
-            "VALUES (%s, %s, %s, TRUE, NOW(), %s, %s, FALSE) "
-            "ON CONFLICT (slack_user_id) DO UPDATE "
-            "  SET enabled = TRUE, "
-            "      email = COALESCE(requesters.email, EXCLUDED.email), "
-            "      name  = COALESCE(requesters.name,  EXCLUDED.name), "
-            "      tz    = COALESCE(requesters.tz,    EXCLUDED.tz) "
-            "RETURNING (xmax = 0) AS inserted",
-            (grantee_id, email, name, granter_id, tz),
-        )
-        whitelisted_now = bool(cur.fetchone()["inserted"])
-
-        cur.execute(
-            "INSERT INTO user_target_grants "
-            "  (slack_user_id, target_server_id, allowed_databases, mode, "
-            "   granted_at, granted_by, revoked_at, expires_at) "
-            "VALUES (%s, %s, %s, %s, NOW(), %s, NULL, %s) "
-            "ON CONFLICT (slack_user_id, target_server_id) DO UPDATE "
-            "  SET allowed_databases = EXCLUDED.allowed_databases, "
-            "      mode = EXCLUDED.mode, granted_at = NOW(), "
-            "      granted_by = EXCLUDED.granted_by, revoked_at = NULL, "
-            # Re-granting REPLACES the expiry, including clearing it: an admin
-            # re-issuing a grant with no date means "no date", not "keep the
-            # old one". The alternative silently preserves a lapse the admin
-            # thought they had just removed.
-            "      expires_at = EXCLUDED.expires_at "
-            "RETURNING mode, allowed_databases, expires_at",
-            (grantee_id, target_id, dbs, mode, granter_id, expires_at),
-        )
-        row = cur.fetchone()
-
-        cur.execute(
-            "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
-            "VALUES (%s, %s, 'access_granted', %s::jsonb)",
-            (granter_id, granter_name, json.dumps({
-                "grantee": grantee_id, "target_id": target_id, "mode": mode,
-                "databases": dbs, "whitelisted": whitelisted_now,
-                "reason": reason,
-            })),
-        )
+        row, whitelisted_now = _write_grant(
+            cur, granter_id=granter_id, granter_name=granter_name,
+            grantee_id=grantee_id, grantee_profile=grantee_profile,
+            target_id=target_id, mode=mode, databases=databases,
+            reason=reason, expires_at=expires_at)
     log.info("access_granted: %s -> %s target=%s mode=%s by=%s",
              granter_id, grantee_id, target_id, mode, granter_id)
     if notify:
@@ -202,6 +159,124 @@ def grant(
                        row["mode"], row["allowed_databases"], whitelisted_now)
     return {"mode": row["mode"], "databases": row["allowed_databases"],
             "whitelisted_now": whitelisted_now}
+
+
+def _write_grant(cur, *, granter_id, granter_name, grantee_id, grantee_profile,
+             target_id, mode, databases, reason, expires_at):
+    """The three statements one grant is made of, on a caller's cursor.
+
+    Split out so several grants can share ONE transaction: granting the same
+    access to five people is one act, and five transactions can leave three
+    written and two not — a half-applied authorization is not something anyone
+    can repair from the grants table, because nothing there records what was
+    intended. `grant()` keeps its own transaction for the single case."""
+    name = grantee_profile.get("name")
+    email = grantee_profile.get("email")
+    tz = grantee_profile.get("tz")
+    dbs = databases or None
+
+    cur.execute(
+        "INSERT INTO requesters "
+        "  (slack_user_id, email, name, enabled, added_at, added_by, tz, "
+        "   bypass_team_grants) "
+        "VALUES (%s, %s, %s, TRUE, NOW(), %s, %s, FALSE) "
+        "ON CONFLICT (slack_user_id) DO UPDATE "
+        "  SET enabled = TRUE, "
+        "      email = COALESCE(requesters.email, EXCLUDED.email), "
+        "      name  = COALESCE(requesters.name,  EXCLUDED.name), "
+        "      tz    = COALESCE(requesters.tz,    EXCLUDED.tz) "
+        "RETURNING (xmax = 0) AS inserted",
+        (grantee_id, email, name, granter_id, tz),
+    )
+    whitelisted_now = bool(cur.fetchone()["inserted"])
+
+    cur.execute(
+        "INSERT INTO user_target_grants "
+        "  (slack_user_id, target_server_id, allowed_databases, mode, "
+        "   granted_at, granted_by, revoked_at, expires_at) "
+        "VALUES (%s, %s, %s, %s, NOW(), %s, NULL, %s) "
+        "ON CONFLICT (slack_user_id, target_server_id) DO UPDATE "
+        "  SET allowed_databases = EXCLUDED.allowed_databases, "
+        "      mode = EXCLUDED.mode, granted_at = NOW(), "
+        "      granted_by = EXCLUDED.granted_by, revoked_at = NULL, "
+            # Re-granting REPLACES the expiry, including clearing it: an admin
+            # re-issuing a grant with no date means "no date", not "keep the
+            # old one". The alternative silently preserves a lapse the admin
+            # thought they had just removed.
+        "      expires_at = EXCLUDED.expires_at "
+        "RETURNING mode, allowed_databases, expires_at",
+        (grantee_id, target_id, dbs, mode, granter_id, expires_at),
+    )
+    row = cur.fetchone()
+
+    cur.execute(
+        "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
+        "VALUES (%s, %s, 'access_granted', %s::jsonb)",
+        (granter_id, granter_name, json.dumps({
+            "grantee": grantee_id, "target_id": target_id, "mode": mode,
+            "databases": dbs, "whitelisted": whitelisted_now,
+            "reason": reason,
+        })),
+    )
+    return row, whitelisted_now
+
+
+def grant_many(
+    *,
+    granter_id: str,
+    granter_name: str | None,
+    grantees: list[tuple[str, dict]],
+    target_id: int,
+    mode: str,
+    databases: list[str] | None,
+    reason: str | None,
+    notify: bool = True,
+    expires_at=None,
+) -> list[dict]:
+    """The same grant for several people, in ONE transaction.
+
+    All or nothing, deliberately: the admin screen asks for "these five, this
+    tier, this server", and an answer of "three of the five were written" is
+    not a state anyone can act on — the table records what exists, never what
+    was meant, so the operator cannot tell a partial write from a deliberate
+    one. Anything that can refuse a row (a bad principal, a control-plane
+    target) refuses the whole call before a single statement runs.
+
+    `grantees` is (principal_id, profile) pairs. Notifications are sent AFTER
+    the commit, one DM per grantee, and a failure to notify never rolls a
+    written grant back — the access exists whether or not Slack was reachable.
+    """
+    if target_id in control_plane_target_ids():
+        raise PermissionError(
+            "This target is the bot's own control-plane database; granting "
+            "access to it would allow tampering with the audit log and the "
+            "admin list.")
+    if not grantees:
+        return []
+
+    results: list[dict] = []
+    with db.transaction() as cur:
+        cur.execute("SET LOCAL app.auth_dm_suppress = 'on'")
+        for gid, profile in grantees:
+            row, whitelisted_now = _write_grant(
+                cur, granter_id=granter_id, granter_name=granter_name,
+                grantee_id=gid, grantee_profile=profile, target_id=target_id,
+                mode=mode, databases=databases, reason=reason,
+                expires_at=expires_at)
+            results.append({"grantee_id": gid, "mode": row["mode"],
+                            "databases": row["allowed_databases"],
+                            "whitelisted_now": whitelisted_now})
+    for r in results:
+        log.info("access_granted: %s -> %s target=%s mode=%s by=%s",
+                 granter_id, r["grantee_id"], target_id, mode, granter_id)
+    if notify:
+        from . import targets as _targets
+        t = _targets.get(target_id)
+        alias = [t.alias if t else str(target_id)]
+        for r in results:
+            notify_grantee(r["grantee_id"], granter_id, alias, r["mode"],
+                           r["databases"], r["whitelisted_now"])
+    return results
 
 
 def notify_grantee(grantee_id: str, granter_id: str | None,

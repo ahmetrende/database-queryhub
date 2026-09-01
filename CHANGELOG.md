@@ -9,6 +9,40 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.26] — 2026-09-01
+
+### Added
+
+- **`POST /admin/grants` takes `subjects[]` — several people, one call, all or
+  nothing.** N calls could leave three of five written, which the grants table
+  cannot describe because it records what exists and never what was meant. Every
+  id is validated before a statement runs and the writes share one transaction.
+  `subject` still works unchanged.
+- **`copy-access` can replace, preview, and carry auto-approve.** It only ever
+  added, so "make this person match that one" was a sentence the API could not
+  say. `mode: 'replace'` revokes what the source lacks; `merge` stays the default
+  because it cannot take anything away. `includeAutoApprove` is off unless asked
+  — that grant skips human review. `dryRun` names both sides by server alias and
+  writes nothing, rollback verified against a live database.
+- **`scopeTargetsAll` / `scopeTeamsAll`** on `effective-access`, so "every
+  target" and "no target" stop being NULL and `[]` told apart by shape.
+
+### Changed
+
+- **`GET /admin/people` lists every principal an admin can name**, with `enabled`
+  and `kind`: a disabled requester, an admin with no requesters row, and anyone
+  who exists only as a grant subject. A name missing from a picker is not a name
+  anyone gives up on — they type the id, and a typo grants access to a principal
+  that cannot sign in.
+
+### Fixed
+
+- **`effective-access` cost 449 round trips and 780ms at p95**, because it asked
+  the single-target resolver once per target. `teams.effective_grants_for_user`
+  answers for every target in two queries with the same precedence; the endpoint
+  is 36–55ms. A test compares the two resolvers for every principal on every
+  target — 3190 comparisons — so they cannot drift apart later.
+
 ## [1.0.25] — 2026-08-31
 
 ### Changed

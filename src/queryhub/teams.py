@@ -331,6 +331,95 @@ def effective_grant_for_user(
     }
 
 
+def effective_grants_for_user(
+    principal_id: str, target_ids: list[int]
+) -> dict[int, dict | None]:
+    """`effective_grant_for_user` for many targets, in a fixed number of
+    queries instead of four per target.
+
+    Same answer, same precedence, same expiry rule — a second implementation of
+    an authorization rule is a second place for it to be wrong, so the two are
+    compared against each other by
+    `tests/test_effective_grants_batch.py::test_the_batch_agrees_with_the_single`,
+    over every shape the single one distinguishes.
+
+    Written for the admin's "what can this person reach" screen, which asked the
+    single-target resolver once per target: 43 targets came to 449 round trips
+    and 780ms at p95, which is a form that cannot be refreshed as someone types.
+    Nothing on the SUBMISSION path uses this — that path resolves one target and
+    should keep doing the cheapest possible thing.
+    """
+    ids = list(dict.fromkeys(int(t) for t in target_ids))
+    if not ids:
+        return {}
+    if _is_unrestricted(principal_id):
+        return {tid: {"mode": "ddl", "allowed_databases": None,
+                      "source": "admin_or_bypass"} for tid in ids}
+
+    # The user overrides, expiry INCLUDED as a flag rather than filtered: an
+    # expired override must return None rather than falling through to the team
+    # grants, so the two cases have to stay distinguishable here exactly as they
+    # are in the single-target version.
+    user_rows = {
+        r["target_server_id"]: r
+        for r in db.fetch_all(
+            "SELECT target_server_id, mode, allowed_databases, "
+            "       (expires_at IS NOT NULL AND expires_at <= NOW()) AS expired "
+            "  FROM user_target_grants "
+            " WHERE slack_user_id = %s AND revoked_at IS NULL "
+            "   AND target_server_id = ANY(%s)",
+            (principal_id, ids))
+    }
+
+    team_rows: dict[int, list[dict]] = {}
+    for r in db.fetch_all(
+            "SELECT g.target_server_id, g.mode, g.allowed_databases "
+            "  FROM team_target_grants g "
+            "  JOIN team_members tm ON tm.team_id = g.team_id "
+            " WHERE tm.slack_user_id = %s AND g.revoked_at IS NULL "
+            "   AND (g.expires_at IS NULL OR g.expires_at > NOW()) "
+            "   AND g.target_server_id = ANY(%s)",
+            (principal_id, ids)):
+        team_rows.setdefault(r["target_server_id"], []).append(r)
+
+    out: dict[int, dict | None] = {}
+    for tid in ids:
+        u = user_rows.get(tid)
+        if u is not None:
+            if u["expired"]:
+                out[tid] = None            # never falls through — see above
+                continue
+            out[tid] = {
+                "mode": u["mode"],
+                "allowed_databases": (
+                    set(u["allowed_databases"])
+                    if u["allowed_databases"] is not None
+                    and len(u["allowed_databases"]) > 0
+                    else None
+                ),
+                "source": "user",
+            }
+            continue
+        rows = team_rows.get(tid) or []
+        if not rows:
+            out[tid] = None
+            continue
+        allowed: set[str] = set()
+        unrestricted = False
+        for r in rows:
+            dbs = r["allowed_databases"]
+            if dbs is None or len(dbs) == 0:
+                unrestricted = True
+                break
+            allowed.update(dbs)
+        out[tid] = {
+            "mode": _max_mode(r["mode"] for r in rows),
+            "allowed_databases": None if unrestricted else allowed,
+            "source": "team",
+        }
+    return out
+
+
 def effective_mode_for_database(
     principal_id: str, target_id: int, database_name: str
 ) -> str | None:

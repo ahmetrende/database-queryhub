@@ -155,65 +155,16 @@ def test_the_grant_modal_takes_more_than_one_person():
     assert "initial_users" not in el          # nothing preselected by default
 
 
-def test_a_dm_prefills_the_person_you_are_talking_to():
-    """`/sql grant` is typed in the conversation where the access was asked
-    for. Making the admin find that person again in a picker — with the id they
-    are literally chatting with — is the step this removes."""
+def test_the_modal_does_not_try_to_read_a_dm_it_cannot_see():
+    """A DM between two PEOPLE is a conversation the bot is not in, and a bot
+    token may only read conversations it belongs to — `conversations.info`
+    answers `channel_not_found`, measured against the live workspace. Opening
+    the modal must not spend an API call discovering that on every /sql grant.
+
+    The shape that CAN carry the person is a message shortcut, whose payload
+    has `message.user`. Until that exists, the field opens empty."""
     from queryhub.slack_app import subcommands as sc
-
-    class Client:
-        def conversations_info(self, channel):
-            return {"channel": {"is_im": True, "user": "U_THEM"}}
-        def auth_test(self):
-            return {"user_id": "U_BOT"}
-
-    assert sc._dm_partners(Client(), {"channel_id": "D123"}, "U_ME") == ["U_THEM"]
-
-
-def test_a_group_dm_prefills_everyone_but_you_and_the_bot():
-    from queryhub.slack_app import subcommands as sc
-
-    class Client:
-        def conversations_info(self, channel):
-            return {"channel": {"is_mpim": True}}
-        def conversations_members(self, channel):
-            return {"members": ["U_ME", "U_A", "U_BOT", "U_B"]}
-        def auth_test(self):
-            return {"user_id": "U_BOT"}
-
-    assert sc._dm_partners(Client(), {"channel_id": "G9"}, "U_ME") == ["U_A", "U_B"]
-
-
-def test_a_dm_with_the_bot_prefills_nobody():
-    # It has exactly one other member and it is not a person to grant anything.
-    from queryhub.slack_app import subcommands as sc
-
-    class Client:
-        def conversations_info(self, channel):
-            return {"channel": {"is_im": True, "user": "U_BOT"}}
-        def auth_test(self):
-            return {"user_id": "U_BOT"}
-
-    assert sc._dm_partners(Client(), {"channel_id": "D1"}, "U_ME") == []
-
-
-def test_a_channel_is_not_a_dm_and_costs_no_api_call():
-    from queryhub.slack_app import subcommands as sc
-
-    class Client:
-        def conversations_info(self, channel):
-            raise AssertionError("must not ask Slack about a public channel")
-
-    assert sc._dm_partners(Client(), {"channel_id": "C123"}, "U_ME") == []
-
-
-def test_a_slack_failure_never_stops_the_modal_opening():
-    """A prefill is a convenience. If the lookup fails the modal still opens,
-    empty — the old behaviour, which is the correct fallback."""
-    from queryhub.slack_app import subcommands as sc
-
-    class Client:
-        def conversations_info(self, channel):
-            raise RuntimeError("channel_not_found")
-
-    assert sc._dm_partners(Client(), {"channel_id": "D1"}, "U_ME") == []
+    import inspect
+    src = inspect.getsource(sc._handle_grant)
+    assert "conversations_info" not in src
+    assert "grantees=" not in src

@@ -804,34 +804,22 @@ def _handle_findcol(user_id, rest, client, respond, body):
     _respond(respond, f"{head}\n{_code_block(lines)}")
 
 
-def _dm_partners(client, body: dict, actor_id: str) -> list[str]:
-    """Whoever you are talking to, when `/sql grant` is typed inside a DM.
-
-    An admin granting access is almost always doing it in the conversation
-    where it was asked for, and the modal made them find that person again in a
-    picker — with the id they were literally chatting with one line above.
-
-    A direct message names one partner; a group DM names several, which the
-    multi-select can take whole. Excludes the actor and the bot: a DM with the
-    bot has exactly one other member and it is not a person to grant anything.
-    Any failure here returns nothing — a prefill is a convenience and must not
-    stop the modal from opening."""
-    channel = body.get("channel_id") or ""
-    if not channel.startswith(("D", "G")):
-        return []
-    try:
-        info = (client.conversations_info(channel=channel) or {}).get("channel") or {}
-        if info.get("is_im"):
-            others = [info.get("user")]
-        elif info.get("is_mpim"):
-            others = (client.conversations_members(channel=channel) or {}).get("members") or []
-        else:
-            return []
-        me = (client.auth_test() or {}).get("user_id")
-        return [u for u in others if u and u != actor_id and u != me]
-    except Exception:
-        log.exception("could not read the DM's members for a grant prefill")
-        return []
+# NO DM PREFILL, and this is a platform rule rather than a missing feature.
+#
+# `/sql grant` is usually typed in the conversation where the access was asked
+# for, so opening the modal with that person already picked is the obvious
+# thing to want. It cannot be done: a DM between two PEOPLE is a conversation
+# the bot is not a member of, and a bot token may only read conversations it
+# belongs to. `conversations.info` on that channel answers `channel_not_found`
+# — measured 2026-08-31 — and no scope changes that; `im:read` covers the
+# bot's own DMs only. The slash-command payload carries `channel_id` and
+# `channel_name: "directmessage"`, and nothing that names the other person.
+#
+# The way to get this is a MESSAGE SHORTCUT ("Grant QueryHub access" on the
+# message that asked for it): that payload does carry `message.user`, works in
+# a DM the app is not in, and hands over the request text as the reason. It
+# needs the shortcut registered on the Slack app before any code here is worth
+# writing.
 
 
 def _handle_grant(user_id, rest, client, respond, body):
@@ -852,8 +840,7 @@ def _handle_grant(user_id, rest, client, respond, body):
         client.views_open(
             trigger_id=trigger_id,
             view=admin_grant.grant_modal(
-                allowed_tiers=grants.allowed_tiers(cap),
-                grantees=_dm_partners(client, body, user_id)),
+                allowed_tiers=grants.allowed_tiers(cap)),
         )
     except Exception:
         log.exception("views_open failed for /sql grant")

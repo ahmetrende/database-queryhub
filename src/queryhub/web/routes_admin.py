@@ -1096,7 +1096,12 @@ def _slack_profile(uid: str) -> dict:
 
 class GrantIn(BaseModel):
     subjectType: str = "user"
-    subject: str
+    # One person or several, in the same call. `subject` stays for the single
+    # case rather than being replaced: every existing caller sends it, and a
+    # required rename is a breaking change bought for nothing. Exactly one of
+    # the two is used — `subjects` when it is non-empty, otherwise `subject`.
+    subject: str | None = None
+    subjects: list[str] | None = None
     connectionId: str
     databaseId: str | None = None
     databases: list[str] | None = None
@@ -1152,10 +1157,18 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
                               "never apply.")
 
     if stype == "team":
-        team = _resolve_team(body.subject)
+        # A team is already a set of people, so `subjects` has no meaning here
+        # and a list of them would silently grant to only the first.
+        named = [x for x in (body.subjects or []) if x] or (
+            [body.subject] if body.subject else [])
+        if len(named) != 1:
+            raise deps._error(400, "bad_request",
+                              "Name exactly one team. A team grant already "
+                              "covers everyone in it.")
+        team = _resolve_team(named[0])
         if team is None:
             raise deps._error(404, "not_found",
-                              f"No team named '{body.subject}'. Create the team "
+                              f"No team named '{named[0]}'. Create the team "
                               "in Slack / SQL first — teams aren't created here.")
         # Upsert the team→target grant; the auth_event trigger on
         # team_target_grants DMs every affected team member automatically.
@@ -1181,12 +1194,34 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
                 "connectionId": body.connectionId,
                 "databases": dbs or "*", "tier": tier.upper()}
 
-    if not _valid_principal(body.subject):
-        raise deps._error(400, "bad_request", "subject must be a principal id: a Slack user id or local:<username>.")
-    summary = grants.grant(
-        granter_id=uid, granter_name=claims.get("name"), grantee_id=body.subject,
-        grantee_profile=_slack_profile(body.subject), target_id=tid, mode=tier,
-        databases=dbs, reason=body.reason, notify=True, expires_at=expires_at)
+    subjects = [x for x in (body.subjects or []) if x] or (
+        [body.subject] if body.subject else [])
+    if not subjects:
+        raise deps._error(400, "bad_request",
+                          "Name at least one subject.")
+    # Every id is checked BEFORE anything is written, and the message names the
+    # one that failed. Granting to five people is one act: "three of the five
+    # were written" is not a state an operator can act on, because the grants
+    # table records what exists and never what was meant.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for sid in subjects:
+        if not _valid_principal(sid):
+            raise deps._error(
+                400, "bad_request",
+                f"{sid} is not a principal id (expected a Slack user id or "
+                f"local:<username>). Nothing was written.")
+        if sid not in seen:
+            seen.add(sid)
+            ordered.append(sid)
+
+    written = grants.grant_many(
+        granter_id=uid, granter_name=claims.get("name"),
+        grantees=[(sid, _slack_profile(sid)) for sid in ordered],
+        target_id=tid, mode=tier, databases=dbs, reason=body.reason,
+        notify=True, expires_at=expires_at)
+    summary = written[0]
+    body_subject = ordered[0]
     # `subjectName` so the caller can land on the person it just created.
     # Granting is what brings someone into QueryHub, so this response is the
     # first moment their name exists anywhere — without it the client has to
@@ -1196,9 +1231,13 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
         "  FROM (SELECT %s AS pid) p "
         "  LEFT JOIN requesters r ON r.slack_user_id = p.pid "
         "  LEFT JOIN admins a ON a.slack_user_id = p.pid",
-        (body.subject,))
-    return {"id": f"u:{body.subject}:{tid}", "subjectType": "user",
-            "subject": body.subject,
+        (body_subject,))
+    return {"id": f"u:{body_subject}:{tid}", "subjectType": "user",
+            "subject": body_subject,
+            # Everyone the call wrote, in the order asked. The single-subject
+            # fields above stay exactly as they were so an existing client
+            # keeps working unchanged.
+            "subjects": ordered,
             "subjectName": (row or {}).get("name"),
             "connectionId": body.connectionId,
             "databases": summary["databases"] or "*",
@@ -1245,17 +1284,59 @@ def _initials(name: str | None, fallback: str) -> str:
 
 @router.get("/people")
 def admin_people(claims: dict = Depends(deps.current_user)):
-    """Developer directory (enabled requesters) — the pool the Teams screen
-    assigns from and the Grants subject picker lists. `handle` == slack_user_id
-    so it lines up 1:1 with grant subjects."""
+    """Every principal an admin can name — the pool the Teams screen assigns
+    from and the subject pickers list. `handle` == slack_user_id so it lines up
+    1:1 with grant subjects.
+
+    Four sources, not one. It used to be `requesters WHERE enabled`, which left
+    a picker that could not offer:
+
+      * a DISABLED requester — the offboarded person whose grants an admin has
+        come to the screen to clean up;
+      * an ADMIN with no requesters row — a DBA who only ever approves;
+      * an identity that exists only as the subject of a grant or an
+        auto-approve row.
+
+    A name missing from the list is not a name an admin gives up on: they type
+    the id by hand, and a typo there writes a grant against a principal that
+    cannot sign in. So everyone is listed, and `enabled` says which are live —
+    a flag the client can sort and mark by, rather than an absence it has to
+    interpret. Not paginated: this is a directory of tens, and a page boundary
+    in a picker is a person you cannot find.
+    """
     admin.require_admin(claims, "access")
+    # The UNION is wrapped rather than ordered in place: a set operation can
+    # only ORDER BY output column NAMES, so the sort key has to sit outside it.
     rows = db.fetch_all(
-        "SELECT slack_user_id, name FROM requesters WHERE enabled = TRUE "
-        "ORDER BY lower(coalesce(name, slack_user_id))")
+        "SELECT * FROM ("
+        "  SELECT slack_user_id, name, enabled, 'requester' AS kind"
+        "    FROM requesters"
+        "   UNION ALL"
+        "  SELECT slack_user_id, name, enabled, 'admin'"
+        "    FROM admins a"
+        "   WHERE NOT EXISTS (SELECT 1 FROM requesters r"
+        "                      WHERE r.slack_user_id = a.slack_user_id)"
+        "   UNION ALL"
+        # Subjects of a grant with no row of their own: they hold access, so an
+        # access screen that cannot name them is the one place they must appear.
+        "  SELECT g.slack_user_id, NULL, FALSE, 'grant_only'"
+        "    FROM (SELECT DISTINCT slack_user_id FROM user_target_grants"
+        "           WHERE revoked_at IS NULL"
+        "           UNION"
+        "          SELECT DISTINCT slack_user_id FROM auto_approve_grants) g"
+        "   WHERE NOT EXISTS (SELECT 1 FROM requesters r"
+        "                      WHERE r.slack_user_id = g.slack_user_id)"
+        "     AND NOT EXISTS (SELECT 1 FROM admins a"
+        "                      WHERE a.slack_user_id = g.slack_user_id)"
+        ") p ORDER BY p.enabled DESC, lower(coalesce(p.name, p.slack_user_id))")
     return {"people": [{
         "id": r["slack_user_id"], "handle": r["slack_user_id"],
         "slackId": r["slack_user_id"], "name": r["name"] or r["slack_user_id"],
         "initials": _initials(r["name"], r["slack_user_id"]),
+        # Live or not, and why they are in the list at all. The client sorts
+        # and marks by these; nothing is inferred from the row being present.
+        "enabled": bool(r["enabled"]),
+        "kind": r["kind"],
     } for r in rows]}
 
 
@@ -1416,6 +1497,41 @@ class CopyAccessIn(BaseModel):
     source: str                       # principal to copy FROM
     includeTeams: bool = True         # copy team membership as well as grants
     tier: str | None = None           # override every copied tier, e.g. "rw"
+    # 'merge' adds to what the person already has; 'replace' makes their access
+    # match the source exactly, which means REVOKING what the source lacks.
+    # Merge is the default because it is the one that cannot take anything away.
+    mode: str = "merge"
+    # Auto-approve skips human review, so it never rides along with a copy by
+    # accident: off unless the caller says otherwise.
+    includeAutoApprove: bool = False
+    # Report what a replace WOULD revoke, and write nothing. The screen shows
+    # those rows by name before anyone confirms a destructive copy.
+    dryRun: bool = False
+
+
+def _alias_map(cur, ids) -> dict[int, str]:
+    """id -> alias for a set of targets, in one query on the caller's cursor.
+
+    The response names servers rather than ids: an admin confirming a
+    destructive copy reads a server name, not "target 12". Resolved through
+    the cursor already in hand instead of `targets.get` per id — same answer,
+    one round trip, and a caller that has faked the cursor has faked this."""
+    ids = [int(i) for i in ids if i is not None]
+    if not ids:
+        return {}
+    cur.execute("SELECT id, alias FROM target_servers WHERE id = ANY(%s)", (ids,))
+    return {r["id"]: r["alias"] for r in (cur.fetchall() or [])}
+
+
+class _CopyPreview(Exception):
+    """A dry run's answer, raised so the transaction it was computed in rolls
+    back. The preview has to see the same rows the write would — including the
+    requesters upsert that happens first — and the only way to look at them
+    without keeping them is to leave by an exception."""
+
+    def __init__(self, payload: dict):
+        super().__init__("copy-access dry run")
+        self.payload = payload
 
 
 @router.get("/people/resolve")
@@ -1486,6 +1602,11 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
     by the person who notices.
     """
     uid = admin.require_admin(claims, "access")
+    mode_in = (body.mode or "merge").strip().lower()
+    if mode_in not in ("merge", "replace"):
+        raise deps._error(400, "bad_request",
+                          "mode must be 'merge' or 'replace'.")
+    replace = mode_in == "replace"
     for pid in (slack_id, body.source):
         if not _valid_principal(pid):
             raise deps._error(400, "bad_request",
@@ -1502,96 +1623,191 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
     forbidden = set(grants.control_plane_target_ids())
     team_names: list[str] = []
 
-    with db.transaction() as cur:
-        # Whitelist the destination FIRST. This endpoint writes team_members and
-        # user_target_grants directly, so pointing it at a Slack id QueryHub has
-        # never seen produced grant rows for someone with no `requesters` row:
-        # every submission still refused (the whitelist gate), and the person
-        # invisible in the people list — grants that look right and do nothing.
-        # `grants.grant` has always done this; the copy path had to as well.
-        # A profile lookup fills the name so the row is not just an id, and the
-        # upsert never downgrades an existing person.
-        prof = _slack_profile(slack_id)
-        cur.execute("SET LOCAL app.auth_dm_suppress = 'on'")
-        cur.execute(
-            "INSERT INTO requesters (slack_user_id, name, email, tz, enabled, "
-            "                        added_at, added_by) "
-            "VALUES (%s, %s, %s, %s, TRUE, NOW(), %s) "
-            "ON CONFLICT (slack_user_id) DO UPDATE "
-            "  SET enabled = TRUE, "
-            "      name  = COALESCE(requesters.name,  EXCLUDED.name), "
-            "      email = COALESCE(requesters.email, EXCLUDED.email), "
-            "      tz    = COALESCE(requesters.tz,    EXCLUDED.tz)",
-            (slack_id, prof.get("name"), prof.get("email"), prof.get("tz"),
-             uid))
-        cur.execute(
-            "SELECT target_server_id, allowed_databases, mode "
-            "  FROM user_target_grants "
-            " WHERE slack_user_id = %s AND revoked_at IS NULL "
-            "   AND (expires_at IS NULL OR expires_at > NOW())",
-            (body.source,))
-        src_grants = {r["target_server_id"]: r for r in cur.fetchall()}
+    try:
+      with db.transaction() as cur:
+          # Whitelist the destination FIRST. This endpoint writes team_members and
+          # user_target_grants directly, so pointing it at a Slack id QueryHub has
+          # never seen produced grant rows for someone with no `requesters` row:
+          # every submission still refused (the whitelist gate), and the person
+          # invisible in the people list — grants that look right and do nothing.
+          # `grants.grant` has always done this; the copy path had to as well.
+          # A profile lookup fills the name so the row is not just an id, and the
+          # upsert never downgrades an existing person.
+          prof = _slack_profile(slack_id)
+          cur.execute("SET LOCAL app.auth_dm_suppress = 'on'")
+          cur.execute(
+              "INSERT INTO requesters (slack_user_id, name, email, tz, enabled, "
+              "                        added_at, added_by) "
+              "VALUES (%s, %s, %s, %s, TRUE, NOW(), %s) "
+              "ON CONFLICT (slack_user_id) DO UPDATE "
+              "  SET enabled = TRUE, "
+              "      name  = COALESCE(requesters.name,  EXCLUDED.name), "
+              "      email = COALESCE(requesters.email, EXCLUDED.email), "
+              "      tz    = COALESCE(requesters.tz,    EXCLUDED.tz)",
+              (slack_id, prof.get("name"), prof.get("email"), prof.get("tz"),
+               uid))
+          cur.execute(
+              "SELECT target_server_id, allowed_databases, mode "
+              "  FROM user_target_grants "
+              " WHERE slack_user_id = %s AND revoked_at IS NULL "
+              "   AND (expires_at IS NULL OR expires_at > NOW())",
+              (body.source,))
+          src_grants = {r["target_server_id"]: r for r in cur.fetchall()}
 
-        cur.execute(
-            "SELECT g.target_server_id, g.allowed_databases, g.mode "
-            "  FROM team_target_grants g "
-            "  JOIN team_members m ON m.team_id = g.team_id "
-            " WHERE m.slack_user_id = %s AND g.revoked_at IS NULL "
-            "   AND (g.expires_at IS NULL OR g.expires_at > NOW())",
-            (body.source,))
-        team_grants = list(cur.fetchall())
+          cur.execute(
+              "SELECT g.target_server_id, g.allowed_databases, g.mode "
+              "  FROM team_target_grants g "
+              "  JOIN team_members m ON m.team_id = g.team_id "
+              " WHERE m.slack_user_id = %s AND g.revoked_at IS NULL "
+              "   AND (g.expires_at IS NULL OR g.expires_at > NOW())",
+              (body.source,))
+          team_grants = list(cur.fetchall())
 
-        teams_joined: list[int] = []
-        if body.includeTeams:
-            cur.execute(
-                "INSERT INTO team_members (team_id, slack_user_id) "
-                "SELECT team_id, %s FROM team_members WHERE slack_user_id = %s "
-                "ON CONFLICT DO NOTHING RETURNING team_id",
-                (slack_id, body.source))
-            teams_joined = [r["team_id"] for r in cur.fetchall()]
-            # Names, not just ids: the caller's confirmation says "joined
-            # petrels, platform", and it cannot build that from integers.
-            if teams_joined:
-                cur.execute("SELECT name FROM teams WHERE id = ANY(%s) ORDER BY name",
-                            (teams_joined,))
-                team_names = [r["name"] for r in cur.fetchall()]
-            to_write = src_grants
-        else:
-            # Team-derived targets become explicit grants. A user row supersedes
-            # the team's for that target, so where both exist the source's own
-            # grant wins — it is the narrower, deliberate one.
-            merged = {r["target_server_id"]: r for r in team_grants}
-            merged.update(src_grants)
-            to_write = merged
+          teams_joined: list[int] = []
+          if body.includeTeams:
+              cur.execute(
+                  "INSERT INTO team_members (team_id, slack_user_id) "
+                  "SELECT team_id, %s FROM team_members WHERE slack_user_id = %s "
+                  "ON CONFLICT DO NOTHING RETURNING team_id",
+                  (slack_id, body.source))
+              teams_joined = [r["team_id"] for r in cur.fetchall()]
+              # Names, not just ids: the caller's confirmation says "joined
+              # petrels, platform", and it cannot build that from integers.
+              if teams_joined:
+                  cur.execute("SELECT name FROM teams WHERE id = ANY(%s) ORDER BY name",
+                              (teams_joined,))
+                  team_names = [r["name"] for r in cur.fetchall()]
+              to_write = src_grants
+          else:
+              # Team-derived targets become explicit grants. A user row supersedes
+              # the team's for that target, so where both exist the source's own
+              # grant wins — it is the narrower, deliberate one.
+              merged = {r["target_server_id"]: r for r in team_grants}
+              merged.update(src_grants)
+              to_write = merged
 
-        written: list[int] = []
-        for tid, g in sorted(to_write.items()):
-            if tid in forbidden:
-                continue
-            cur.execute(
-                "INSERT INTO user_target_grants "
-                "  (slack_user_id, target_server_id, allowed_databases, mode, granted_by) "
-                "VALUES (%s, %s, %s, %s, %s) "
-                "ON CONFLICT (slack_user_id, target_server_id) DO NOTHING",
-                (slack_id, tid, g["allowed_databases"], tier or g["mode"], uid))
-            if cur.rowcount:
-                written.append(tid)
+          # REPLACE means the person ends up with the source's access and
+          # nothing else — so it has to REVOKE what the source does not have.
+          # Worked out before anything is written, and reported by target ALIAS
+          # rather than id: an admin confirming a destructive copy is reading
+          # server names, and "revokes 3 grants" is not a sentence anyone can
+          # check.
+          revoked: list[dict] = []
+          if replace:
+              cur.execute(
+                  "SELECT target_server_id, mode FROM user_target_grants "
+                  " WHERE slack_user_id = %s AND revoked_at IS NULL", (slack_id,))
+              for r in cur.fetchall():
+                  tid = r["target_server_id"]
+                  if tid in to_write or tid in forbidden:
+                      continue
+                  revoked.append({"targetId": tid,
+                                  "tier": (r["mode"] or "ro").upper()})
 
-        audit.log_in(cur, None, uid, claims.get("name"), "access_copied",
-                     {"to": slack_id, "from": body.source,
-                      "targets_granted": written,
-                      "teams_joined": teams_joined,
-                      "include_teams": body.includeTeams,
-                      "tier_override": tier,
-                      "skipped_control_plane": sorted(
-                          set(to_write) & forbidden)})
+          # A dry run answers the same question and writes nothing — the screen
+          # asks it to name the rows before the admin confirms. Raising here
+          # rolls the transaction back, including the requesters upsert above.
+          if body.dryRun:
+              raise _CopyPreview({
+                  "dryRun": True, "slackId": slack_id, "copiedFrom": body.source,
+                  "mode": "replace" if replace else "merge",
+                  "wouldWrite": [
+                      _alias_map(cur, sorted(set(to_write) - forbidden)).get(t, str(t))
+                      for t in sorted(set(to_write) - forbidden)],
+                  "wouldRevoke": [
+                      dict(r, connectionId=_alias_map(cur, [r["targetId"]])
+                           .get(r["targetId"], str(r["targetId"])))
+                      for r in revoked],
+                  "wouldJoinTeams": team_names,
+                  "tier": tier})
+
+          written: list[int] = []
+          for tid, g in sorted(to_write.items()):
+              if tid in forbidden:
+                  continue
+              cur.execute(
+                  "INSERT INTO user_target_grants "
+                  "  (slack_user_id, target_server_id, allowed_databases, mode, granted_by) "
+                  "VALUES (%s, %s, %s, %s, %s) "
+                  # On replace the row must END UP matching the source, so an
+                  # existing grant is overwritten rather than left alone. Merge
+                  # keeps the old DO NOTHING: it adds, it does not rewrite what
+                  # somebody already decided.
+                  + ("ON CONFLICT (slack_user_id, target_server_id) DO UPDATE "
+                     "  SET allowed_databases = EXCLUDED.allowed_databases, "
+                     "      mode = EXCLUDED.mode, granted_by = EXCLUDED.granted_by, "
+                     "      granted_at = NOW(), revoked_at = NULL"
+                     if replace else
+                     "ON CONFLICT (slack_user_id, target_server_id) DO NOTHING"),
+                  (slack_id, tid, g["allowed_databases"], tier or g["mode"], uid))
+              if cur.rowcount:
+                  written.append(tid)
+
+          for r in revoked:
+              cur.execute(
+                  "UPDATE user_target_grants SET revoked_at = NOW() "
+                  " WHERE slack_user_id = %s AND target_server_id = %s "
+                  "   AND revoked_at IS NULL", (slack_id, r["targetId"]))
+
+          # Auto-approve is a separate table and a separate decision: it skips
+          # human review, so it is copied only when asked for.
+          auto_copied: list[str] = []
+          if body.includeAutoApprove:
+              cur.execute(
+                  "SELECT target_server_id, database_name, max_tier, expires_at "
+                  "  FROM auto_approve_grants "
+                  " WHERE slack_user_id = %s "
+                  "   AND (expires_at IS NULL OR expires_at > NOW())",
+                  (body.source,))
+              for r in cur.fetchall():
+                  if r["target_server_id"] in forbidden:
+                      continue
+                  cur.execute(
+                      "INSERT INTO auto_approve_grants "
+                      "  (slack_user_id, target_server_id, database_name, "
+                      "   max_tier, granted_by, expires_at) "
+                      "VALUES (%s, %s, %s, %s, %s, %s)",
+                      (slack_id, r["target_server_id"], r["database_name"],
+                       r["max_tier"], uid, r["expires_at"]))
+                  auto_copied.append((r["target_server_id"], r["database_name"]))
+
+          # Every id the response will name, resolved in one query.
+          names = _alias_map(cur, set(written)
+                             | {r["targetId"] for r in revoked}
+                             | {t for t, _ in auto_copied})
+          written_names = [names.get(t, str(t)) for t in written]
+          for r in revoked:
+              r["connectionId"] = names.get(r["targetId"], str(r["targetId"]))
+          auto_names = [(names.get(t) or "all targets")
+                        + (f"/{d}" if d else "") for t, d in auto_copied]
+
+          audit.log_in(cur, None, uid, claims.get("name"), "access_copied",
+                       {"to": slack_id, "from": body.source,
+                        "mode": "replace" if replace else "merge",
+                        "targets_granted": written,
+                        "targets_revoked": [r["targetId"] for r in revoked],
+                        "auto_approve_copied": auto_names,
+                        "teams_joined": teams_joined,
+                        "include_teams": body.includeTeams,
+                        "tier_override": tier,
+                        "skipped_control_plane": sorted(
+                            set(to_write) & forbidden)})
+
+    except _CopyPreview as preview:
+        return preview.payload
 
     return {"slackId": slack_id, "copiedFrom": body.source,
+            "mode": "replace" if replace else "merge",
             "targetsGranted": len(written), "teamsJoined": len(teams_joined),
             # `written` and `teams` are what the UI reads to say what happened.
             # Kept alongside the counts rather than replacing them: the counts
             # are what the audit row and any script would want.
-            "written": len(written), "teams": team_names,
+            "written": len(written), "writtenTargets": written_names,
+            "teams": team_names,
+            # Named, not counted: a revoke the admin cannot see is a revoke
+            # they cannot check.
+            "revoked": revoked,
+            "autoApproveCopied": auto_names,
             "tier": tier}
 
 
@@ -1653,9 +1869,19 @@ def admin_effective_access(slack_id: str,
         # turns a row into a list.
         via_team.setdefault(r["target_server_id"], r)
 
+    # One resolution pass for every target rather than one call per target.
+    # The per-target version asked four queries each, so this screen cost 449
+    # round trips and 780ms at p95 — and it is refreshed every time the admin
+    # picks a different person. `effective_grants_for_user` answers the same
+    # question with the same precedence; a test compares the two.
+    all_targets = targets.list_all()
+    grants_by_target = teams.effective_grants_for_user(
+        slack_id, [t.id for t in all_targets])
+    alias_by_id = {t.id: t.alias for t in all_targets}
+
     out = []
-    for t in targets.list_all():
-        g = teams.effective_grant_for_user(slack_id, t.id)
+    for t in all_targets:
+        g = grants_by_target.get(t.id)
         if g is None:
             continue
         src = g.get("source")
@@ -1713,7 +1939,8 @@ def admin_effective_access(slack_id: str,
         "autoApprove": [{
             # A NULL target is an all-targets grant: it covers every connection
             # they hold a grant on, now and later.
-            "connectionId": _alias_of(r["target_server_id"]) if r["target_server_id"] else None,
+            "connectionId": (alias_by_id.get(r["target_server_id"])
+                             or _alias_of(r["target_server_id"])),
             "allTargets": r["target_server_id"] is None,
             "tier": (r["max_tier"] or "ro").upper(),
             "databaseId": r["database_name"],
@@ -1731,6 +1958,14 @@ def admin_effective_access(slack_id: str,
             "maxTier": (adm["max_tier"] or "").upper() or None,
             "scopeTeams": adm["scope_team_ids"],
             "scopeTargets": adm["scope_target_ids"],
+            # NULL is the wildcard and an EMPTY array is "none", which is the
+            # difference between an admin who can approve anything and one who
+            # can approve nothing. Reading that from the shape of a value is how
+            # the same distinction was got wrong once already (a scope written
+            # as `{}` was treated as the wildcard), so each half gets a field of
+            # its own and the client never has to tell null from [].
+            "scopeTeamsAll": adm["scope_team_ids"] is None,
+            "scopeTargetsAll": adm["scope_target_ids"] is None,
             "canGrant": adm["can_grant"],
         },
         "rowLimitOverride": None if cap is None else {
