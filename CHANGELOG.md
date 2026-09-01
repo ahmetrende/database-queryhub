@@ -9,6 +9,30 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.27] — 2026-09-01
+
+### Added
+
+- **The person-first access screen.** Open a person and see everywhere they stand
+  — their own grants, what their teams give them, what they reach as an admin,
+  and any auto-approve window — resolved by the same resolver a submission uses,
+  so the screen cannot disagree with what runs. Granting the same access to
+  several people is one panel and one call, and a refusal keeps the list on
+  screen because nothing was written. Copying someone's access shows exactly what
+  would be written and revoked, by server name, before anything happens.
+
+### Fixed
+
+- **A modal taller than the viewport trapped its own buttons.** The overlay is
+  fixed so the page cannot scroll, the modal clipped, and the body had no
+  overflow of its own — so editing a connection put Save and Cancel off-screen
+  with nothing to reach them. One rule on `.qh-modal`, shared by all eight.
+- **Two fields the new screen reads were missing or the wrong shape**: the
+  copy-access dry run did not return `wouldCopyAutoApprove` (an absent field
+  draws silence, which reads as "none" for the one option that skips human
+  review), and `autoApproveCopied` returned names where the client counted. It is
+  a count now, with `autoApproveCopiedTargets` beside it.
+
 ## [1.0.26] — 2026-09-01
 
 ### Added

@@ -696,13 +696,23 @@
   .qh-modal-overlay { position: fixed; inset: 0; z-index: 100; background: var(--overlay-medium); display: flex;
     align-items: center; justify-content: center; padding: 24px; animation: qhfade var(--d-mod-01) var(--ease-entrance); }
   @keyframes qhfade { from { opacity: 0; } to { opacity: 1; } }
-  .qh-modal { width: 460px; max-width: 100%; background: var(--bg-white); border-radius: var(--r-2xl);
+  /* A long form (Connections → edit) was taller than the viewport with no way out:
+     the overlay is fixed so the page cannot scroll, the modal clipped, and the body
+     had no overflow either. Solved once here — all 8 modals use .qh-modal — with the
+     head and foot pinned and only the body scrolling, so Save/Cancel are never the
+     part that goes off-screen. `overflow: hidden` stays: it is what keeps the corners
+     round. `100dvh` rather than `vh` because a mobile address bar opening would
+     otherwise resize the box mid-interaction. max-height only, so a short modal
+     (a confirm dialog) is still exactly as tall as its content. */
+  .qh-modal { width: 460px; max-width: 100%; max-height: calc(100dvh - 48px); display: flex; flex-direction: column; background: var(--bg-white); border-radius: var(--r-2xl);
     box-shadow: var(--shadow-xlarge); overflow: hidden; animation: qhrise var(--d-mod-02) var(--ease-entrance); }
   @keyframes qhrise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-  .qh-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 22px 22px 14px; }
+  .qh-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 22px 22px 14px; flex-shrink: 0; }
   .qh-modal-title { font-size: 18px; font-weight: 600; color: var(--fg-primary); }
   .qh-modal-sub { font-size: 13px; color: var(--fg-tertiary); margin-top: 4px; line-height: 1.45; }
-  .qh-modal-body { padding: 4px 22px 8px; display: flex; flex-direction: column; gap: 16px; }
+  /* min-height: 0 is load-bearing: without it a flex child refuses to shrink below
+     its content and the overflow rule reads as written while nothing scrolls. */
+  .qh-modal-body { padding: 4px 22px 8px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; min-height: 0; }
   .qh-field { display: flex; flex-direction: column; gap: 7px; }
   .qh-field-lbl { font-size: 12px; font-weight: 600; color: var(--fg-secondary); }
   .qh-input { width: 100%; box-sizing: border-box; height: 40px; padding: 0 12px; background: var(--bg-light);
@@ -718,7 +728,7 @@
     font-family: inherit; font-size: 12.5px; font-weight: 500; color: var(--fg-secondary); transition: all var(--d-fast-02) var(--ease-standard); }
   .qh-seg-opt:hover { background: var(--adaptive-medium); }
   .qh-seg-opt.is-active { border-color: var(--brand-green); background: var(--brand-adaptive-light); color: var(--fg-accent); font-weight: 600; }
-  .qh-modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 22px 22px; }
+  .qh-modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 22px 22px; flex-shrink: 0; }
   /* Request database access (CODE brief 2026-08-22 §2). A real developer sees
      30–41 requestable targets, so the list scrolls inside the modal and the
      filter above it is the primary control. Picking collapses it to one strip:
@@ -1142,6 +1152,31 @@
   .qh-percopy { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .qh-percopy-tm { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--fg-secondary); cursor: pointer; }
   .qh-percopy-say { margin-top: 10px; padding: 9px 12px; background: var(--bg-light); border-left: 2px solid var(--brand-green); border-radius: var(--r-xs); font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
+  /* Person-first round (CODE brief 2026-09-01): roster markers, the multi-person
+     grant form, and the copy preview. */
+  .qh-perkind { display: inline-block; margin-left: 7px; padding: 1px 6px; border-radius: var(--r-2xs); background: var(--adaptive-medium); color: var(--fg-tertiary); font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; vertical-align: 1px; }
+  .qh-perkind.is-off { background: var(--danger-adaptive-light); color: var(--fg-danger); }
+  .qh-percard.is-off .qh-peravatar { background: var(--disabled-fg); }
+  .qh-percard.is-off .qh-percard-name { font-weight: 500; color: var(--fg-secondary); }
+  .qh-bulk { margin: 0 0 14px; padding: 14px 16px; border: 1px solid var(--stroke-medium); border-radius: var(--r-lg); background: var(--bg-white); display: flex; flex-direction: column; gap: 12px; }
+  .qh-bulk-who { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .qh-bulk-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; border-radius: 999px; background: var(--brand-adaptive-light); color: var(--fg-accent); font-size: 12px; font-weight: 600; }
+  .qh-bulk-chipx { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border: 0; border-radius: 999px; background: transparent; color: inherit; cursor: pointer; opacity: 0.65; }
+  .qh-bulk-chipx:hover { opacity: 1; background: var(--brand-adaptive-medium); }
+  .qh-bulk-pick { flex: 1 1 220px; min-width: 200px; }
+  .qh-bulk-what { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .qh-bulk-err { padding: 8px 12px; border-radius: var(--r-xs); background: var(--danger-adaptive-light); color: var(--fg-danger); font-size: 12.5px; line-height: 1.5; }
+  .qh-bulk-foot { display: flex; align-items: center; gap: 10px; }
+  .qh-bulk-say { flex: 1 1 auto; min-width: 0; font-size: 12.5px; color: var(--fg-tertiary); text-wrap: pretty; }
+  .qh-percopy-opts { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
+  .qh-percopy-warn { margin-left: 6px; padding: 1px 6px; border-radius: var(--r-2xs); background: var(--warning-adaptive-light); color: var(--fg-warning); font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+  .qh-perprev { margin-top: 10px; padding: 12px 14px; border: 1px solid var(--stroke-medium); border-radius: var(--r-md); background: var(--bg-light); display: flex; flex-direction: column; gap: 7px; }
+  .qh-perprev.is-destructive { border-color: var(--stroke-danger); background: var(--danger-adaptive-light); }
+  .qh-perprev-h { font-size: 12.5px; font-weight: 600; color: var(--fg-primary); }
+  .qh-perprev-l { font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-perprev-l.is-rev { color: var(--fg-danger); }
+  .qh-perprev-k { display: inline-block; min-width: 132px; margin-right: 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: var(--fg-tertiary); }
+  .qh-perprev-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
   /* Save/Cancel sit in the subject header row as well as at the foot of the
      form: one control, two places (CODE brief 2026-08-20 §1). `margin-left:auto`
      right-aligns it, and the parent's flex-wrap gives it its own line when the

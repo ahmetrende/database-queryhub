@@ -1708,7 +1708,20 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
           # asks it to name the rows before the admin confirms. Raising here
           # rolls the transaction back, including the requesters upsert above.
           if body.dryRun:
+              # The preview says how many auto-approve windows would come
+              # across. Counted here rather than left out: the panel draws a
+              # line from it, and an absent field draws silence — which reads
+              # as "none" for the one option that skips human review.
+              would_auto = 0
+              if body.includeAutoApprove:
+                  cur.execute(
+                      "SELECT count(*) AS n FROM auto_approve_grants "
+                      " WHERE slack_user_id = %s "
+                      "   AND (expires_at IS NULL OR expires_at > NOW())",
+                      (body.source,))
+                  would_auto = int((cur.fetchone() or {}).get("n") or 0)
               raise _CopyPreview({
+                  "wouldCopyAutoApprove": would_auto,
                   "dryRun": True, "slackId": slack_id, "copiedFrom": body.source,
                   "mode": "replace" if replace else "merge",
                   "wouldWrite": [
@@ -1807,7 +1820,8 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
             # Named, not counted: a revoke the admin cannot see is a revoke
             # they cannot check.
             "revoked": revoked,
-            "autoApproveCopied": auto_names,
+            "autoApproveCopied": len(auto_names),
+            "autoApproveCopiedTargets": auto_names,
             "tier": tier}
 
 

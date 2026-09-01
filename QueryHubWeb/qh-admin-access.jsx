@@ -296,7 +296,7 @@ function GrantForm({ init, actor, st, people, teams, onDone }) {
   const save = () => {
     if (!f.subject.trim() || expBad(f)) return;
     const payload = { subjectType: f.subjectType, subject: f.subject.trim(), connectionId: f.connectionId, databases: f.databases, tier: f.tier, expiresAt: expIso(f) };
-    if (editing) st.updateGrant({ ...payload, id: f.id }, actor); else st.addGrant(payload, actor);
+    if (editing) st.updateGrant({ ...payload, id: f.id }, actor); else Promise.resolve(st.addGrant(payload, actor)).catch(() => {});
     onDone();
   };
   return (
@@ -1234,4 +1234,8 @@ function ConnectionsView({ st, user }) {
   );
 }
 
-Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, SubjectAccessEditor, subjLabel, grantName });
+// `PersonPick` / `ExpiryPick` / the expiry helpers are shared with the
+// person-first screen (`qh-admin-person.jsx`), which is a separate Babel scope:
+// one picker for every field that names a person, one expiry control everywhere
+// a grant can end — a second copy of either is a second set of rules.
+Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel });

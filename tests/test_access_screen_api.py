@@ -236,7 +236,7 @@ def test_auto_approve_is_copied_only_when_asked(monkeypatch):
     out = ra.admin_copy_access("U0AAAAAAAAA",
                                ra.CopyAccessIn(source="U0BBBBBBBBB"),
                                claims={"sub": "UADMIN"})
-    assert cur.auto_inserted == [] and out["autoApproveCopied"] == []
+    assert cur.auto_inserted == [] and out["autoApproveCopied"] == 0
 
     cur2 = _Cur(src_auto=auto)
     _wire(monkeypatch, cur2)
@@ -245,7 +245,10 @@ def test_auto_approve_is_copied_only_when_asked(monkeypatch):
                                                 includeAutoApprove=True),
                                 claims={"sub": "UADMIN"})
     assert len(cur2.auto_inserted) == 1
-    assert out2["autoApproveCopied"] == ["svc-5/nova"]
+    # A count for the toast, the names beside it — the same pair as
+    # written / writtenTargets, because the panel reads one of each.
+    assert out2["autoApproveCopied"] == 1
+    assert out2["autoApproveCopiedTargets"] == ["svc-5/nova"]
 
 
 def test_the_control_plane_is_never_copied_or_revoked(monkeypatch):
@@ -301,3 +304,34 @@ def test_the_query_reaches_all_four_sources(monkeypatch):
     assert "WHERE enabled = TRUE" not in sql
     # Ordered so the live people come first and the rest are visibly last.
     assert "ORDER BY p.enabled DESC" in sql
+
+
+def test_the_preview_counts_the_auto_approve_windows(monkeypatch):
+    """The panel draws a line from `wouldCopyAutoApprove`. An absent field draws
+    silence, which reads as "none" for the one option that skips human review."""
+    cur = _Cur(src_auto=[{"target_server_id": 5, "database_name": None,
+                          "max_tier": "ro", "expires_at": None}])
+    # the count comes from its own query, so answer that one
+    real_execute = cur.execute
+
+    def execute(sql, params=()):
+        if "count(*)" in sql and "auto_approve_grants" in sql:
+            cur._rows = [{"n": 2}]
+            return
+        real_execute(sql, params)
+    monkeypatch.setattr(cur, "execute", execute)
+    _wire(monkeypatch, cur)
+
+    out = ra.admin_copy_access("U0AAAAAAAAA",
+                               ra.CopyAccessIn(source="U0BBBBBBBBB", dryRun=True,
+                                               includeAutoApprove=True),
+                               claims={"sub": "UADMIN"})
+    assert out["wouldCopyAutoApprove"] == 2
+
+    cur2 = _Cur()
+    _wire(monkeypatch, cur2)
+    out2 = ra.admin_copy_access("U0AAAAAAAAA",
+                                ra.CopyAccessIn(source="U0BBBBBBBBB", dryRun=True),
+                                claims={"sub": "UADMIN"})
+    # Not asked for, so not counted — and still present rather than missing.
+    assert out2["wouldCopyAutoApprove"] == 0

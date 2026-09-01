@@ -18,6 +18,8 @@ const PerIcon = {
   search: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /></svg>,
   copy: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15V5a2 2 0 012-2h8" /></svg>,
   edit: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" /></svg>,
+  people: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M16 20v-1.5a4 4 0 00-4-4H6a4 4 0 00-4 4V20" /><circle cx="9" cy="7" r="3.2" /><path d="M22 20v-1.5a4 4 0 00-3-3.87" /><path d="M16 3.6a4 4 0 010 6.8" /></svg>,
+  x: () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>,
 };
 
 // What a resolved target reads as. `allDatabases` is the server's word for it;
@@ -41,11 +43,19 @@ function perSource(t) {
 
 function PersonCard({ p, grants, onOpen }) {
   const own = (grants || []).filter(g => g.subjectType === 'user' && g.subject === p.handle).length;
+  // `enabled` and `kind` come from the server (CODE brief 2026-09-01 §4). A
+  // disabled person is SHOWN, marked, and sorted last rather than hidden: absent
+  // is what makes an admin retype an id from memory and create a second
+  // principal for one human — and a leaver's standing grants are usually why the
+  // screen was opened.
+  const off = p.enabled === false;
   return (
-    <button className="qh-percard" onClick={() => onOpen(p)}>
+    <button className={'qh-percard' + (off ? ' is-off' : '')} onClick={() => onOpen(p)}>
       <span className="qh-peravatar">{p.initials}</span>
       <span className="qh-percard-main">
-        <span className="qh-percard-name">{p.name}</span>
+        <span className="qh-percard-name">{p.name}{off && <span className="qh-perkind is-off">disabled</span>}
+          {p.kind === 'admin' && <span className="qh-perkind">admin only</span>}
+          {p.kind === 'grant_only' && <span className="qh-perkind">grant only</span>}</span>
         <span className="qh-percard-h">{p.handle}</span>
       </span>
       {/* Direct grants only — what a team adds needs the resolver, and one
@@ -55,14 +65,76 @@ function PersonCard({ p, grants, onOpen }) {
   );
 }
 
+// ---------- One target, several people, one call ----------
+// `POST /admin/grants` takes `subjects: []` and is all-or-nothing: every id is
+// validated before a row is written (CODE brief 2026-09-01 §1). That is what
+// makes this a form and not a loop — with N calls the screen would have to
+// explain "three of five were written", which is a state nobody can act on.
+function BulkGrantPanel({ st, actor, onDone }) {
+  const conns = st.connections || [];
+  const [subs, setSubs] = usePer([]);
+  const [f, setF] = usePer(() => ({ connectionId: (conns[0] || {}).id || '', databases: ['*'], tier: 'RO', ttl: 'none', expDate: '' }));
+  const [busy, setBusy] = usePer(false);
+  const [err, setErr] = usePer(null);
+  const people = st.people || [];
+  const label = (h) => { const p = people.find(x => x.handle === h || x.id === h); return p ? p.name : h; };
+  const add = (h) => { if (h && subs.indexOf(h) < 0) setSubs(subs.concat([h])); };
+  const conn = conns.find(c => c.id === f.connectionId);
+  const save = () => {
+    if (!subs.length || expBad(f) || busy) return;
+    setBusy(true); setErr(null);
+    Promise.resolve(st.addGrant({ subjectType: 'user', subject: subs[0], subjects: subs, connectionId: f.connectionId, databases: f.databases, tier: f.tier, expiresAt: expIso(f) }, actor))
+      .then(() => onDone())
+      // The refusal names the id it choked on and nothing was written, so the
+      // picker stays open with the list intact — one thing to fix, in place.
+      .catch(e => { setErr((e && e.message) || 'Nothing was written.'); setBusy(false); });
+  };
+  return (
+    <div className="qh-bulk">
+      <div className="qh-persec-h">
+        <div className="qh-aview-title">Grant one target to several people</div>
+        <div className="qh-aview-sub">One call, all or nothing: if any id is refused, nothing at all is written and the list stays as you left it. Each person gets their own grant row — the same row the person page edits.</div>
+      </div>
+      <div className="qh-bulk-who">
+        {subs.map(h => (
+          <span key={h} className="qh-bulk-chip">{label(h)}
+            <button className="qh-bulk-chipx" onClick={() => setSubs(subs.filter(x => x !== h))} aria-label={'Remove ' + label(h)}><PerIcon.x /></button>
+          </span>
+        ))}
+        <div className="qh-bulk-pick"><PersonPick people={people} value="" onChange={add} resolve={st.resolvePerson} /></div>
+      </div>
+      <div className="qh-bulk-what">
+        <select className="qh-select" value={f.connectionId} onChange={e => setF({ ...f, connectionId: e.target.value, databases: ['*'] })}>
+          {conns.map(c => <option key={c.id} value={c.id}>{connLabel(c)}</option>)}
+        </select>
+        <TierSelect value={f.tier} onChange={v => setF({ ...f, tier: v })} />
+        <DbMultiPick conns={conns} connectionId={f.connectionId} databases={f.databases} onChange={dbs => setF({ ...f, databases: dbs })} />
+        <ExpiryPick f={f} onChange={p => setF({ ...f, ...p })} />
+      </div>
+      <ExpiryNote f={f} subjectType="user" />
+      {err && <div className="qh-bulk-err">{err}</div>}
+      <div className="qh-bulk-foot">
+        <span className="qh-bulk-say">{subs.length
+          ? <>{subs.length} {subs.length === 1 ? 'person' : 'people'} → <b>{(conn && conn.name) || f.connectionId}</b> · {f.databases.includes('*') ? 'all databases' : f.databases.join(', ')} · {f.tier}</>
+          : 'Pick the people first — the target and tier are the same for all of them.'}</span>
+        <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone} disabled={busy}>Cancel</button>
+        <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={!subs.length || expBad(f) || busy} onClick={save}>{busy ? 'Writing…' : (subs.length ? 'Grant to ' + subs.length + (subs.length === 1 ? ' person' : ' people') : 'Grant access')}</button>
+      </div>
+    </div>
+  );
+}
+
 function PersonPage({ st, actor, person, onBack }) {
   const [eff, setEff] = usePer(null);
   const [failed, setFailed] = usePer(false);
   const [editing, setEditing] = usePer(false);
   const [src, setSrc] = usePer('');
   const [withTeams, setWithTeams] = usePer(false);
+  const [withAuto, setWithAuto] = usePer(false);
+  const [mode, setMode] = usePer('merge');
   const [tierOver, setTierOver] = usePer('');
   const [copying, setCopying] = usePer(false);
+  const [prev, setPrev] = usePer(null);
 
   const load = React.useCallback(() => {
     setFailed(false); setEff(null);
@@ -74,13 +146,29 @@ function PersonPage({ st, actor, person, onBack }) {
 
   const people = st.people || [];
   const srcPerson = people.find(p => p.id === src || p.handle === src) || null;
+  const copyBody = (dryRun) => ({ source: srcPerson && srcPerson.id, includeTeams: withTeams,
+    includeAutoApprove: withAuto, tier: tierOver || null, mode, dryRun });
+  // Nothing is written until the preview has been read. `dryRun` resolves the
+  // whole copy inside a transaction and rolls it back, so this is the write's own
+  // answer rather than a second calculation that could disagree with it — which
+  // matters most for `replace`, where the interesting half is what DISAPPEARS.
+  const preview = () => {
+    if (!srcPerson || copying) return;
+    setCopying(true); setPrev(null);
+    Promise.resolve(st.copyAccess(person.id, copyBody(true)))
+      .then(r => setPrev(r || null))
+      .catch(() => {})
+      .finally(() => setCopying(false));
+  };
   const copy = () => {
     if (!srcPerson || copying) return;
     setCopying(true);
-    Promise.resolve(st.copyAccess(person.id, { source: srcPerson.id, includeTeams: withTeams, tier: tierOver || null }))
-      .then(() => { setSrc(''); setWithTeams(false); setTierOver(''); load(); })
+    Promise.resolve(st.copyAccess(person.id, copyBody(false)))
+      .then(() => { setSrc(''); setWithTeams(false); setWithAuto(false); setTierOver(''); setMode('merge'); setPrev(null); load(); })
+      .catch(() => {})
       .finally(() => setCopying(false));
   };
+  const resetPrev = () => setPrev(null);
 
   const ap = eff && eff.admin;
   const cap = eff && eff.rowLimitOverride && eff.rowLimitOverride.maxRows;
@@ -92,7 +180,11 @@ function PersonPage({ st, actor, person, onBack }) {
         <button className="qh-rowbtn" onClick={onBack}><PerIcon.back />Everyone</button>
         <span className="qh-peravatar lg">{person.initials}</span>
         <div className="qh-perhead-main">
-          <div className="qh-perhead-name">{person.name}</div>
+          <div className="qh-perhead-name">{person.name}
+            {/* A disabled account still holds every grant it was given; saying so
+                here is the difference between reading this page as history and
+                reading it as live access. */}
+            {person.enabled === false && <span className="qh-perkind is-off">disabled account — grants below are still standing</span>}</div>
           <div className="qh-perhead-h">{person.handle}</div>
         </div>
         {eff && eff.teams.length > 0 && (
@@ -114,7 +206,16 @@ function PersonPage({ st, actor, person, onBack }) {
           <>
             {(ap || cap != null) && (
               <div className="qh-perappr">
-                {ap && <span><span className="qh-perappr-k">Approver</span>{ap.superAdmin ? 'Super-admin — every tier, every target' : 'Can approve up to ' + (ap.maxTier || '—') + (ap.scopeTargets && ap.scopeTargets.length ? ' on ' + ap.scopeTargets.join(', ') : ' on every target')}</span>}
+                {ap && <span><span className="qh-perappr-k">Approver</span>{ap.superAdmin
+                  ? 'Super-admin — every tier, every target'
+                  : 'Can approve up to ' + (ap.maxTier || '—') + ' on ' + (
+                    // "Every target" and "no targets" arrive as their own booleans
+                    // (CODE brief 2026-09-01 §5) and are two different sentences.
+                    // Read from the flag, never from the array's length: an empty
+                    // list used to mean both, and the wrong one of the two reads as
+                    // unlimited approval rights.
+                    ap.scopeTargetsAll ? 'every target'
+                      : (ap.scopeTargets && ap.scopeTargets.length ? ap.scopeTargets.join(', ') : 'no targets — this scope approves nothing'))}</span>}
                 {cap != null && <span className="qh-perappr-nw"><span className="qh-perappr-k">Row cap</span>{cap.toLocaleString()} rows</span>}
               </div>
             )}
@@ -188,28 +289,70 @@ function PersonPage({ st, actor, person, onBack }) {
           <div className="qh-aview-sub">Writes explicit per-user grants covering everything that person can reach — including what a team gives them, which is the part hand-copying loses.</div>
         </div>
         <div className="qh-percopy">
-          <select className="qh-select" value={src} onChange={e => setSrc(e.target.value)}>
+          <select className="qh-select" value={src} onChange={e => { setSrc(e.target.value); resetPrev(); }}>
             <option value="">Copy from…</option>
             {people.filter(p => p.handle !== person.handle).map(p => <option key={p.id} value={p.id}>{p.name} · {p.handle}</option>)}
           </select>
-          <select className="qh-select" value={tierOver} onChange={e => setTierOver(e.target.value)}>
+          <select className="qh-select" value={tierOver} onChange={e => { setTierOver(e.target.value); resetPrev(); }}>
             <option value="">Keep each tier</option>
             {['RO', 'RW', 'DDL'].map(t => <option key={t} value={t}>Force {t}</option>)}
           </select>
+          {/* Merge and replace differ in what they REMOVE, so they are labelled by
+              the outcome rather than by the verb — "replace" alone does not say
+              whose rows go. */}
+          <div className="qh-seg qh-seg-sm">
+            {[['merge', 'Add to what they have'], ['replace', 'Make them match exactly']].map(([v, lbl]) =>
+              <button key={v} className={'qh-seg-opt' + (mode === v ? ' is-active' : '')} onClick={() => { setMode(v); resetPrev(); }}>{lbl}</button>)}
+          </div>
+        </div>
+        <div className="qh-percopy-opts">
           {/* Off by default, and the label carries the part that outlives the
               click: joining a team also inherits whatever it is granted LATER. */}
           <label className="qh-percopy-tm">
-            <input type="checkbox" checked={withTeams} onChange={e => setWithTeams(e.target.checked)} />
+            <input type="checkbox" checked={withTeams} onChange={e => { setWithTeams(e.target.checked); resetPrev(); }} />
             Also add them to the same teams
           </label>
-          <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={!srcPerson || copying} onClick={copy}><PerIcon.copy />{copying ? 'Copying…' : 'Copy access'}</button>
+          {/* Auto-approve is the grant that skips a human, so it is opted into
+              deliberately and never carried along by a copy. */}
+          <label className="qh-percopy-tm">
+            <input type="checkbox" checked={withAuto} onChange={e => { setWithAuto(e.target.checked); resetPrev(); }} />
+            Also copy their auto-approve windows <span className="qh-percopy-warn">skips DBA review</span>
+          </label>
+          <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={!srcPerson || copying} onClick={preview}>{copying && !prev ? 'Checking…' : 'Preview'}</button>
         </div>
-        {srcPerson && (
+        {srcPerson && !prev && (
           <div className="qh-percopy-say">
             {withTeams
               ? <>{person.name} will join {srcPerson.name}'s teams and get {srcPerson.name}'s own grants, written against {person.handle}{tierOver ? ', all at ' + tierOver : ', at the tier they have there'}. Team access arrives through membership — <b>including anything those teams are granted later</b>.</>
               : <>{person.name} will get every connection {srcPerson.name} can reach, including through a team, as grants written against {person.handle}{tierOver ? ', all at ' + tierOver : ', at the tier they have there'}, without joining any team. Where {srcPerson.name} holds both a team grant and their own, their own wins — it is usually the narrower, deliberate one.</>}
-            {' '}Existing grants on the same connection are replaced.
+            {' '}{mode === 'replace'
+              ? <b>Anything {srcPerson.name} does not have is revoked from {person.name}.</b>
+              : <>Existing grants on the same connection are replaced; everything else they hold stays.</>}
+            {' '}Preview it to see the exact rows before anything is written.
+          </div>
+        )}
+        {prev && (
+          <div className={'qh-perprev' + (prev.wouldRevoke && prev.wouldRevoke.length ? ' is-destructive' : '')}>
+            <div className="qh-perprev-h">Nothing has been written yet — this is what {mode === 'replace' ? 'making them match' : 'the copy'} would do.</div>
+            <div className="qh-perprev-l"><span className="qh-perprev-k">Grants written</span>
+              {(prev.wouldWrite || []).length ? (prev.wouldWrite || []).join(', ') : 'nothing — they already match'}</div>
+            {/* Named, not counted: "3 revoked" is not something anyone can approve. */}
+            {(prev.wouldRevoke || []).length > 0 && (
+              <div className="qh-perprev-l is-rev"><span className="qh-perprev-k">Revoked from {person.name}</span>
+                {(prev.wouldRevoke || []).map(r => r.connectionId + ' (' + r.tier + ')').join(', ')}</div>
+            )}
+            {(prev.wouldJoinTeams || []).length > 0 && (
+              <div className="qh-perprev-l"><span className="qh-perprev-k">Teams joined</span>{(prev.wouldJoinTeams || []).join(', ')}</div>
+            )}
+            {prev.wouldCopyAutoApprove > 0 && (
+              <div className="qh-perprev-l"><span className="qh-perprev-k">Auto-approve</span>{prev.wouldCopyAutoApprove} window{prev.wouldCopyAutoApprove === 1 ? '' : 's'} copied — queries matching them run without a DBA</div>
+            )}
+            <div className="qh-perprev-foot">
+              <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={resetPrev} disabled={copying}>Back</button>
+              <button className={'qh-btn qh-btn-sm ' + ((prev.wouldRevoke || []).length ? 'qh-btn-danger' : 'qh-btn-primary')} disabled={copying} onClick={copy}>
+                <PerIcon.copy />{copying ? 'Copying…' : ((prev.wouldRevoke || []).length ? 'Write and revoke ' + prev.wouldRevoke.length : 'Copy access')}
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -220,6 +363,7 @@ function PersonPage({ st, actor, person, onBack }) {
 function PersonAccessView({ st, actor }) {
   const [pick, setPick] = usePer(null);
   const [q, setQ] = usePer('');
+  const [bulk, setBulk] = usePer(false);
   const people = st.people || [];
   const person = pick ? (people.find(p => p.handle === pick) || null) : null;
 
@@ -234,7 +378,11 @@ function PersonAccessView({ st, actor }) {
           <span className="qh-search-ic"><PerIcon.search /></span>
           <input className="qh-search-in" placeholder="Find a person…" value={q} onChange={e => setQ(e.target.value)} />
         </div>
+        {/* The same grant, to a set of people — the one job the person page cannot
+            do, since it is one person by definition. */}
+        {!bulk && <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setBulk(true)}><PerIcon.people />Grant to several people</button>}
       </div>
+      {bulk && <BulkGrantPanel st={st} actor={actor} onDone={() => setBulk(false)} />}
       <div className="qh-percards">
         {list.map(p => <PersonCard key={p.id} p={p} grants={st.grants} onOpen={(x) => setPick(x.handle)} />)}
         {list.length === 0 && <div className="qh-conn-empty">Nobody matches that.</div>}

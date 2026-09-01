@@ -4,6 +4,11 @@
 // real endpoints and refetch. Actions with no web backend yet (scope
 // add/edit/remove, endpoint-request decision) surface an honest "managed in
 // Slack" toast instead of faking a local mutation.
+//
+// DESIGN NOTE (this project only): the file is the product's real hook, byte for
+// byte — in this prototype the qhApi it calls is the MOCK client in
+// qh-api-mock.jsx, so the same code drives mock data. Do not fork it to add mock
+// behaviour; change the mock API instead.
 
 const { useState: useAdminStateHook, useEffect: useAdminEffect, useCallback: useAdminCb } = React;
 
@@ -195,10 +200,17 @@ function useAdminState(pushToast, active, isAdminViewer) {
       pushToast && pushToast(on ? 'Kill switch ON — new query traffic paused fleet-wide.' : 'Kill switch released — traffic resumed.'); })
       .catch(e => fail(e, 'Kill switch change failed.'));
   };
+  // `subjects` (a list) and `subject` (one) are both accepted and exactly one is
+  // used, server-side: with a list the ids are all validated before a row is
+  // written and the writes share one transaction, so a refusal leaves nothing
+  // behind (CODE brief 2026-09-01 §1). The promise is RETURNED here — the
+  // multi-person form keeps the picker open on a refusal and needs to know.
   const addGrant = (g) => {
-    qhApi.adminAddGrant({ subjectType: g.subjectType, subject: g.subject, connectionId: g.connectionId, databaseId: g.databaseId, tier: g.tier, reason: g.reason || null, expiresAt: g.expiresAt || null })
-      .then(() => { loadGrants(); loadAudit(); pushToast && pushToast('Grant added: ' + g.subject + ' → ' + g.connectionId + ' (' + g.tier + ').'); })
-      .catch(e => fail(e, 'Add grant failed.'));
+    const many = (g.subjects || []).filter(Boolean);
+    const who = many.length ? many.length + ' people' : g.subject;
+    return qhApi.adminAddGrant({ subjectType: g.subjectType, subject: g.subject, subjects: many.length ? many : null, connectionId: g.connectionId, databaseId: g.databaseId, databases: g.databases || null, tier: g.tier, reason: g.reason || null, expiresAt: g.expiresAt || null })
+      .then(r => { loadGrants(); loadAudit(); pushToast && pushToast('Grant added: ' + who + ' → ' + g.connectionId + ' (' + g.tier + ').'); return r; })
+      .catch(e => { fail(e, 'Add grant failed.'); throw e; });
   };
   const revokeGrant = (id) => {
     qhApi.adminDelGrant(id).then(() => { loadGrants(); loadAudit(); pushToast && pushToast('Grant revoked.'); })
@@ -219,16 +231,25 @@ function useAdminState(pushToast, active, isAdminViewer) {
   // into a note, because the grant is still writable — the server resolves the
   // principal again when it writes it.
   const resolvePerson = (principal) => qhApi.adminResolvePerson(principal);
+  // `mode` ('merge' | 'replace'), `includeAutoApprove` and `dryRun` (CODE brief
+  // 2026-09-01 §2). A dry run writes nothing, so it must not reload or toast — it
+  // is the preview the confirm step is drawn from, and a toast saying "copied"
+  // for a preview would be a lie the admin acts on.
   const copyAccess = (id, body) =>
-    qhApi.adminCopyAccess(id, { source: body.source, includeTeams: !!body.includeTeams, tier: body.tier || null })
+    qhApi.adminCopyAccess(id, { source: body.source, includeTeams: !!body.includeTeams,
+      includeAutoApprove: !!body.includeAutoApprove, tier: body.tier || null,
+      mode: body.mode === 'replace' ? 'replace' : 'merge', dryRun: !!body.dryRun })
       .then(r => {
-        loadGrants(); loadAudit();
-        const n = r && r.written;
+        if (body.dryRun) return r;
+        loadGrants(); loadAuto(); loadAudit();
+        const n = r && r.written, rev = (r && r.revoked && r.revoked.length) || 0;
         pushToast && pushToast('Access copied' + (n ? ' · ' + n + ' connection' + (n === 1 ? '' : 's') : '')
+          + (rev ? ' · ' + rev + ' revoked' : '')
+          + (r && r.autoApproveCopied ? ' · ' + r.autoApproveCopied + ' auto-approve' : '')
           + (r && r.teams && r.teams.length ? ' · joined ' + r.teams.join(', ') : '') + '.');
         return r;
       })
-      .catch(e => fail(e, 'Copy failed.'));
+      .catch(e => { fail(e, 'Copy failed.'); throw e; });
 
   const revokeAutoGrant = (id) => {
     qhApi.adminDelAutoGrant(id).then(() => { loadAuto(); loadAudit(); pushToast && pushToast('Auto-approve grant revoked.'); })
