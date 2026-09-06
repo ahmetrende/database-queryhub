@@ -25,12 +25,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import hashlib
+import hmac
 import os
 import ssl
 import sys
 import time
 
 import httpx
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from queryhub import db
 from queryhub.web import sessions
@@ -46,10 +50,18 @@ FAKE_UNWHITELISTED = "U0SECSMOKE01"
 FAKE_VICTIM = "U0SECSMOKEVIC"
 
 _results: list[tuple[bool, str, str]] = []
+# Checks that could not be performed. Kept apart from _results on purpose: a
+# check that did not run is not a check that passed, and collapsing the two is
+# how a suite reports itself green while proving nothing.
+_skipped: list[tuple[str, str]] = []
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
     _results.append((bool(ok), name, str(detail)))
+
+
+def skip(name: str, reason: str) -> None:
+    _skipped.append((name, reason))
 
 
 def _valid_user() -> str:
@@ -199,6 +211,131 @@ def run_http(c: httpx.Client, valid_uid: str) -> None:
           r.status_code)
 
 
+def run_idp_assertion(c: httpx.Client) -> None:
+    """The panel seam: an assertion must prove identity and nothing else.
+
+    Four of these need no key material and are what an outsider could attempt.
+    The rest need a validly signed token to reach the checks that come after
+    the signature, so they run only when the operator points
+    QH_IDP_SIGNING_KEY at the panel's private key — the "the panel was owned"
+    scenario, and local/test only.
+    """
+    from queryhub import config as cfg
+    from queryhub.web.idp_assertion import body_hash
+
+    if (cfg.get_setting("idp_assertion_enabled", "off") or "").lower() \
+            not in {"on", "1", "true", "yes"}:
+        # Every assertion is refused when the seam is off, so each check below
+        # would pass without exercising anything. Say so instead of banking it.
+        skip("IDP assertion checks", "idp_assertion_enabled is off on this instance")
+        return
+
+    path = "/api/queue"
+    url = BASE + path
+
+    def _send(tok: str, *, method="GET", body: bytes = b"", target=path):
+        return c.request(method, BASE + target, content=body or None,
+                         headers={"X-IDP-Assertion": tok,
+                                  "Content-Type": "application/json"})
+
+    # --- no key material needed ---
+    r = c.get(url, headers={"X-IDP-Assertion": ""})
+    check("empty assertion header -> 401", r.status_code == 401, r.status_code)
+
+    claims = {"iss": "idp", "aud": "queryhub", "sub": f"{FAKE_UNWHITELISTED}@x",
+              "jti": f"smoke-{time.time()}", "iat": int(time.time()),
+              "exp": int(time.time()) + 60, "bh": body_hash("GET", path, b"")}
+
+    header = base64.urlsafe_b64encode(
+        json.dumps({"alg": "none", "typ": "JWT", "kid": "k1"}).encode()).rstrip(b"=")
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=")
+    r = _send((header + b"." + payload + b".").decode())
+    check("assertion alg=none -> 401", r.status_code == 401, r.status_code)
+
+    priv = ed25519.Ed25519PrivateKey.generate().private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()).decode()
+    import jwt as _jwt
+    r = _send(_jwt.encode(claims, priv, algorithm="EdDSA", headers={"kid": "k1"}))
+    check("assertion signed with a foreign key -> 401", r.status_code == 401,
+          r.status_code)
+
+    # Algorithm confusion: with an HMAC alg the published verification key
+    # doubles as the signing secret. Assembled by hand because pyjwt refuses to
+    # sign with a PEM key — a protection on the signing side that an attacker
+    # would simply not use.
+    keys = json.loads(cfg.get_setting("idp_public_keys", "{}") or "{}")
+    kid = next(iter(keys), None)
+    if kid:
+        hdr = base64.urlsafe_b64encode(
+            json.dumps({"alg": "HS256", "typ": "JWT", "kid": kid}).encode()).rstrip(b"=")
+        signing_input = hdr + b"." + payload
+        sig = base64.urlsafe_b64encode(
+            hmac.new(keys[kid].encode(), signing_input, hashlib.sha256).digest()
+        ).rstrip(b"=")
+        r = _send((signing_input + b"." + sig).decode())
+        check("assertion HS256-signed with the public key -> 401",
+              r.status_code == 401, r.status_code)
+    else:
+        skip("assertion HS256 confusion", "no public key configured in idp_public_keys")
+
+    # --- everything below needs a validly signed token ---
+    key_path = os.environ.get("QH_IDP_SIGNING_KEY")
+    if not key_path:
+        skip("assertion expiry / replay / binding / resolution",
+             "set QH_IDP_SIGNING_KEY to the panel private key to run these")
+        return
+    with open(key_path, "r", encoding="utf-8") as fh:
+        signing_key = fh.read()
+    signing_kid = os.environ.get("QH_IDP_KID", kid or "k1")
+
+    def _mint_assertion(*, sub, method="GET", target=path, body=b"",
+                        exp_delta=60, jti=None, aud="queryhub", iss="idp",
+                        bh_target=None, bh_body=None):
+        return _jwt.encode(
+            {"iss": iss, "aud": aud, "sub": sub,
+             "jti": jti or f"smoke-{time.time()}-{os.urandom(4).hex()}",
+             "iat": int(time.time()), "exp": int(time.time()) + exp_delta,
+             "bh": body_hash(method, bh_target or target,
+                             bh_body if bh_body is not None else body)},
+            signing_key, algorithm="EdDSA", headers={"kid": signing_kid})
+
+    row = db.fetch_one(
+        "SELECT email FROM admins WHERE enabled = TRUE AND email IS NOT NULL "
+        "AND btrim(email) <> '' ORDER BY added_at LIMIT 1")
+    known = row["email"] if row else None
+    if not known:
+        skip("assertion resolution checks", "no enabled admin row carries an email")
+
+    r = _send(_mint_assertion(sub=known or "nobody@invalid", exp_delta=-30))
+    check("expired assertion -> 401", r.status_code == 401, r.status_code)
+
+    r = _send(_mint_assertion(sub=known or "nobody@invalid", aud="somewhere-else"))
+    check("assertion for another audience -> 401", r.status_code == 401, r.status_code)
+
+    r = _send(_mint_assertion(sub=known or "nobody@invalid", bh_target="/api/history"))
+    check("assertion bound to another path -> 401", r.status_code == 401, r.status_code)
+
+    r = _send(_mint_assertion(sub=known or "nobody@invalid", method="POST",
+                              target="/api/queries", body=b'{"sql":"SELECT 2"}',
+                              bh_body=b'{"sql":"SELECT 1"}'),
+              method="POST", target="/api/queries", body=b'{"sql":"SELECT 2"}')
+    check("assertion bound to another body -> 401", r.status_code == 401, r.status_code)
+
+    r = _send(_mint_assertion(sub=f"{FAKE_UNWHITELISTED}@invalid.example"))
+    check("assertion for an address with no row -> 401", r.status_code == 401,
+          r.status_code)
+
+    if known:
+        tok = _mint_assertion(sub=known, jti=f"smoke-replay-{time.time()}")
+        first = _send(tok)
+        second = _send(tok)
+        check("replayed assertion -> first accepted, second 401",
+              first.status_code != 401 and second.status_code == 401,
+              f"{first.status_code} then {second.status_code}")
+
+
 async def run_ws(valid_uid: str) -> None:
     import websockets
 
@@ -246,6 +383,7 @@ def main() -> int:
     try:
         with httpx.Client(verify=False, timeout=20) as c:
             run_http(c, valid_uid)
+            run_idp_assertion(c)
         asyncio.run(run_ws(valid_uid))
     finally:
         # Clean up every artifact this run created.
@@ -261,7 +399,10 @@ def main() -> int:
     print("\n===== QueryHub Web — security smoke =====")
     for ok, name, detail in _results:
         print(("  PASS " if ok else "  FAIL ") + name + ("" if ok else f"   [{detail}]"))
-    print(f"\n{npass} PASS / {nfail} FAIL  (PASS = secure behavior)")
+    for name, reason in _skipped:
+        print(f"  SKIP {name}   [{reason}]")
+    print(f"\n{npass} PASS / {nfail} FAIL / {len(_skipped)} SKIP"
+          "  (PASS = secure behavior)")
     return 1 if nfail else 0
 
 

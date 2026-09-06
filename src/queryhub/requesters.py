@@ -106,3 +106,29 @@ def by_email(email: str) -> dict | None:
     if len(rows) != 1:
         return None
     return rows[0]
+
+
+def list_enabled_ids() -> set[str]:
+    """Every principal with an enabled row — what the Layer-A reconcile
+    compares the panel's desired state against."""
+    rows = db.fetch_all("SELECT slack_user_id FROM requesters WHERE enabled = TRUE")
+    return {r["slack_user_id"] for r in rows}
+
+
+def enable(principal_id: str) -> None:
+    """Re-enable an existing row.
+
+    Deliberately an UPDATE and not an upsert: creating a requester needs a
+    Slack id (approvals and results are DMs), and the reconcile's caller does
+    not have one to offer. An address with no row is reported back for a human
+    to onboard rather than turned into a half-formed row here.
+    """
+    db.execute("UPDATE requesters SET enabled = TRUE WHERE slack_user_id = %s",
+               (principal_id,))
+
+
+def disable(principal_id: str) -> None:
+    """Revoke the entry gate for a principal. The row stays, so the person
+    still reads as themselves rather than as an unknown address."""
+    db.execute("UPDATE requesters SET enabled = FALSE WHERE slack_user_id = %s",
+               (principal_id,))

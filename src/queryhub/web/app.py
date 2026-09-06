@@ -60,6 +60,27 @@ def create_app() -> FastAPI:
                   openapi_url=None, lifespan=_lifespan)
 
     @app.middleware("http")
+    async def _cache_body_for_assertion(request: Request, call_next):
+        # current_user verifies that a panel assertion is bound to THIS request
+        # (method + path + body), and it is a sync dependency, so it cannot
+        # await the body itself. Read it here and stash it on the scope.
+        #
+        # Reading a body in middleware is normally how you steal it from the
+        # route. It is safe here because Starlette wraps the request in
+        # _CachedRequest, whose wrapped_receive replays a body that body()
+        # already consumed (starlette/middleware/base.py). That is a real
+        # dependency on Starlette's behaviour, so it is pinned by
+        # tests/test_deps_assertion_path.py — if a future version stops
+        # replaying, that test fails instead of every proxied POST silently
+        # arriving empty.
+        #
+        # Only for requests that carry the header, so the cookie path reads
+        # exactly as it did before.
+        if request.headers.get(deps.ASSERTION_HEADER):
+            request.scope["_body"] = await request.body()
+        return await call_next(request)
+
+    @app.middleware("http")
     async def _security(request: Request, call_next):
         # CSRF defense-in-depth. Session cookies are already
         # SameSite=Lax + HttpOnly, which blocks cross-site cookie-bearing

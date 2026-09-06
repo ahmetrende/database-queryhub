@@ -9,6 +9,28 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.28] — 2026-09-06
+
+### Added
+
+- **Identity assertions from an internal developer portal.** The `/api` routes
+  accept an Ed25519-signed `X-IDP-Assertion` header bound to the exact request
+  (method, path and query, body) and act as the asserted principal, so a portal
+  can proxy QueryHub for its users without a browser session. Off by default
+  (`idp_assertion_enabled`), keys in `idp_public_keys`, replayed assertions
+  refused through a short-lived `jti` ledger (migration 101).
+- **A principal reconcile endpoint** that the portal's sync account, and only
+  that account, may call to enable and disable requesters from its directory.
+  It never writes to the `admins` table, refuses a list that would disable
+  everyone, reports addresses it cannot resolve, and writes an audit row
+  (`idp_principal_sync`) on every run.
+- **A notification outbox** (migration 102) recording each pending request and
+  the admins told about it, with two admin-gated routes for the portal to poll
+  and acknowledge, so a portal can show an approvals queue without owning an
+  admins table of its own. Slack notifications are unchanged.
+- Requests that arrive this way carry `origin = idp` in the request record and
+  the audit trail, next to `slack` and `web`.
+
 ## [1.0.27] — 2026-09-01
 
 ### Added

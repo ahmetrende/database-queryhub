@@ -9,6 +9,7 @@ is an alternative surface, never a parallel or bypass path.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 import re
@@ -27,6 +28,7 @@ from .. import (
     engines,
     errors,
     grants,
+    requesters,
     schema_catalog,
     targets,
     teams,
@@ -2302,3 +2304,245 @@ def admin_feedback(claims: dict = Depends(deps.current_user)):
         "LEFT JOIN requesters req ON req.slack_user_id = r.slack_user_id "
         "ORDER BY r.rated_at DESC LIMIT 100")
     return {"feedback": [mapping.feedback_entry(r) for r in rows]}
+
+
+# ---------------------------------------------------------------------------
+# Layer-A reconcile, driven by the IDP panel (PLA-479)
+# ---------------------------------------------------------------------------
+
+class PrincipalSyncIn(BaseModel):
+    """The FULL desired state, as verified corporate addresses.
+
+    Not a delta: a delta protocol drifts silently the first time a message is
+    lost, and nothing ever notices. A reconcile compares the whole set every
+    run, so a missed push self-heals on the next one.
+    """
+    emails: list[str] = Field(default_factory=list)
+    admin_emails: list[str] = Field(default_factory=list)
+
+
+@router.post("/principals/sync")
+def principals_sync(body: PrincipalSyncIn,
+                    claims: dict = Depends(deps.current_user)):
+    """Apply the panel's view of who may use QueryHub.
+
+    Gated twice. `require_admin` is the structural gate every /api/admin route
+    carries; on top of it the caller must be the exact principal named in
+    `bot_config.idp_sync_principal`. 'review' rather than 'access' is
+    deliberate: the sync account needs to be *an* admin, and making a machine
+    account a super-admin — able to approve anything if its key leaked — would
+    be a real downgrade paid to satisfy a gate. Scope its admin row to nothing
+    (`scope_team_ids='{}'`, `scope_target_ids='{}'`) and it can approve no
+    request at all while still passing here.
+
+    Enable and disable requesters only. Onboarding needs a Slack id the panel
+    does not own, so an address with no row comes back in `unresolved` for a
+    human to act on.
+
+    It does not write to the `admins` table at all, in either direction.
+    Promotion was never implemented; disabling was, and the empty-state guard
+    covered only requesters, so a caller sending a populated `emails` with an
+    empty `admin_emails` disabled EVERY admin and stopped approvals dead. Admin
+    membership is now a human decision made in QueryHub, which puts it outside
+    a compromised panel's reach entirely. What the panel believes is reported
+    as `admin_drift` for an operator to act on, and every reconcile writes an
+    audit row: a permission change nobody can reconstruct afterwards is a
+    permission change nobody can review.
+    """
+    uid = admin.require_admin(claims, "review")
+    expected = (cfg.get_setting("idp_sync_principal", "") or "").strip()
+    if not expected or uid != expected:
+        raise deps._error(403, "forbidden", "Not the sync principal.")
+
+    live = requesters.list_enabled_ids()
+    if live and not body.emails:
+        raise deps._error(
+            400, "empty_sync_refused",
+            "Refusing a sync that would disable every requester.")
+
+    unresolved: list[str] = []
+    want: set[str] = set()
+    for email in body.emails:
+        row = requesters.by_email(email) or admins.by_email(email)
+        if row is None:
+            unresolved.append(email)
+            continue
+        want.add(row["slack_user_id"])
+
+    enabled_ids = sorted(want - live)
+    for pid in enabled_ids:
+        requesters.enable(pid)
+    disabled_ids = sorted(live - want)
+    for pid in disabled_ids:
+        requesters.disable(pid)
+
+    # Report-only. Resolving the panel's admin list costs one lookup each and
+    # tells an operator exactly what to reconcile by hand.
+    want_admins: set[str] = set()
+    for email in body.admin_emails:
+        row = admins.by_email(email) or requesters.by_email(email)
+        if row is None:
+            if email not in unresolved:
+                unresolved.append(email)
+            continue
+        want_admins.add(row["slack_user_id"])
+    live_admins = {a["slack_user_id"] for a in admins.list_active()
+                   if a.get("source") == "permanent"}
+    drift = {"not_admin_here": sorted(want_admins - live_admins),
+             "not_listed_by_panel": sorted(live_admins - want_admins)}
+
+    audit.log(None, uid, "idp-sync", "idp_principal_sync",
+              {"enabled": enabled_ids, "disabled": disabled_ids,
+               "unresolved": unresolved, "admin_drift": drift})
+
+    log.info("layer-A reconcile: +%d/-%d requesters, %d unresolved, drift %s",
+             len(enabled_ids), len(disabled_ids), len(unresolved), drift)
+    return {"requesters": {"enabled": len(enabled_ids),
+                           "disabled": len(disabled_ids)},
+            "admin_drift": drift,
+            "unresolved": unresolved}
+
+
+# ---------------------------------------------------------------------------
+# Notification outbox (PLA-479 task A2) — the panel's poll target
+# ---------------------------------------------------------------------------
+#
+# The IDP panel has no admins table of its own and must not grow one, so
+# QueryHub decides who should be told a request is waiting (see
+# migrations/102_notification_outbox.sql, written by
+# core_submit.dispatch_and_notify) and the panel polls this pair of routes:
+# GET lists what's pending, POST stamps one row done.
+#
+# GET does NOT claim rows — no FOR UPDATE SKIP LOCKED, unlike
+# auth_events.py's own poller. A claim here would need a lease this endpoint
+# has no way to release: the panel stamps processed_at in a SEPARATE request
+# that may simply never arrive (the poller crashes, delivery is dropped), and
+# a plain repeatable list is the only shape under which polling again after a
+# lost stamp re-lists the same row instead of leaving it stuck behind a
+# claim nobody will release.
+#
+# POST .../processed is a single UPDATE guarded by `processed_at IS NULL`,
+# with no preceding existence check. That is what makes it idempotent by
+# construction rather than by a special case: the panel's poller is
+# at-least-once (it can crash between delivering and stamping), so a second
+# POST for an already-stamped row — or even a never-existing id — updates
+# zero rows and still answers 204, never an error.
+
+_OUTBOX_DEFAULT_LIMIT = 50
+_OUTBOX_MAX_LIMIT = 500
+
+
+def _resolve_recipient_emails(slack_ids: list[str]) -> dict[str, str]:
+    """slack_user_id -> work email, resolved at READ time (Ruling P-1).
+
+    `notification_outbox.recipients` stores whatever `admins.list_active()`
+    yielded at write time — mostly permanent `admins` rows, but a temp-admin
+    grantee's own row lives in `requesters` instead (see `list_active`'s
+    COALESCE across the two tables). Checking admins first, then requesters
+    for whatever is still missing, covers both without assuming a person
+    exists in only one. Resolving here rather than caching at write time
+    means an admin whose email changes while a row sits unprocessed is
+    notified at the CURRENT address. A slack_user_id resolving in neither
+    table is simply absent from the result — the caller counts what it
+    could not resolve.
+    """
+    ids = sorted({s for s in slack_ids if s})
+    if not ids:
+        return {}
+    resolved: dict[str, str] = {}
+    for row in db.fetch_all(
+            "SELECT slack_user_id, email FROM admins "
+            "WHERE slack_user_id = ANY(%s) AND email IS NOT NULL "
+            "AND btrim(email) <> ''", (ids,)):
+        resolved[row["slack_user_id"]] = row["email"]
+    missing = [s for s in ids if s not in resolved]
+    if missing:
+        for row in db.fetch_all(
+                "SELECT slack_user_id, email FROM requesters "
+                "WHERE slack_user_id = ANY(%s) AND email IS NOT NULL "
+                "AND btrim(email) <> ''", (missing,)):
+            resolved[row["slack_user_id"]] = row["email"]
+    return resolved
+
+
+def _stringify_payload(payload) -> dict[str, str]:
+    """Every payload value served as a string — Ruling P-10.
+
+    The panel decodes this into `map[string]string` (its templated-message
+    Vars are all strings downstream), and Go's `json.Unmarshal` refuses a
+    JSON NUMBER into a string field for the WHOLE response, not just the
+    one offending key — one non-string value anywhere in a batch silently
+    stops every pending notification in it from being delivered. A1's own
+    writer stores `"requestId": row["id"]`, a Python int, which is exactly
+    this shape (core_submit.py). A future writer in this repo cannot see
+    the panel's Go-side contract to know not to repeat it, so this coerces
+    at the one place that serves the wire shape, rather than trusting every
+    writer, present and future, to remember.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in payload.items():
+        if isinstance(v, str):
+            out[k] = v
+        elif isinstance(v, bool):
+            out[k] = "true" if v else "false"
+        elif v is None:
+            out[k] = ""
+        elif isinstance(v, (int, float)):
+            out[k] = str(v)
+        else:
+            out[k] = json.dumps(v)
+    return out
+
+
+@router.get("/notifications/outbox")
+def notifications_outbox(limit: int = _OUTBOX_DEFAULT_LIMIT,
+                         claims: dict = Depends(deps.current_user)):
+    """Unprocessed notification_outbox rows, oldest first — see the section
+    comment above for why this lists rather than claims. `recipients` are
+    served as work emails (Ruling P-1); `unresolvedRecipients` counts
+    recipients this call could not resolve to an email, so the panel can
+    attribute a drop to this side of the seam instead of guessing."""
+    admin.require_admin(claims, "review")
+    lim = limit if 1 <= limit <= _OUTBOX_MAX_LIMIT else _OUTBOX_DEFAULT_LIMIT
+    rows = db.fetch_all(
+        "SELECT id, event_type, request_id, recipients, payload, created_at "
+        "  FROM notification_outbox "
+        " WHERE processed_at IS NULL "
+        " ORDER BY created_at, id "
+        " LIMIT %s", (lim,))
+    all_ids = {sid for r in rows for sid in (r["recipients"] or [])}
+    emails = _resolve_recipient_emails(list(all_ids))
+    events = []
+    unresolved = 0
+    for r in rows:
+        recipient_emails = []
+        for sid in (r["recipients"] or []):
+            email = emails.get(sid)
+            if email:
+                recipient_emails.append(email)
+            else:
+                unresolved += 1
+        events.append({
+            "id": r["id"],
+            "eventType": r["event_type"],
+            "requestId": r["request_id"],
+            "recipients": recipient_emails,
+            "payload": _stringify_payload(r["payload"]),
+            "createdAt": r["created_at"].isoformat() if r["created_at"] else None,
+        })
+    return {"events": events, "unresolvedRecipients": unresolved}
+
+
+@router.post("/notifications/outbox/{outbox_id}/processed", status_code=204)
+def notifications_outbox_processed(outbox_id: int,
+                                   claims: dict = Depends(deps.current_user)):
+    """Stamp one outbox row processed. Idempotent by construction — see the
+    section comment above: the UPDATE's own guard means a second call for an
+    already-stamped (or never-existing) id touches zero rows and still
+    answers 204."""
+    admin.require_admin(claims, "review")
+    db.execute(
+        "UPDATE notification_outbox SET processed_at = NOW() "
+        " WHERE id = %s AND processed_at IS NULL", (outbox_id,))

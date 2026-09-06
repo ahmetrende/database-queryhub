@@ -929,7 +929,13 @@ def dispatch_and_notify(
             notifications.dm_user_scheduled(client, row)
         return "scheduled"
 
-    if not admins.list_active():
+    # Captured ONCE: `notify_admins`'s DM fan-out and the notification_outbox
+    # row below must name the same admins, and the only way to make that true
+    # by construction (rather than by two call sites happening to agree) is
+    # to decide it here and hand the same list to both. See migrations/
+    # 102_notification_outbox.sql and its ruling in the PLA-479 SDD ledger.
+    active_admins = admins.list_active()
+    if not active_admins:
         if dm_requester:
             notifications.dm_requester(
                 client, prep.user_id,
@@ -942,7 +948,51 @@ def dispatch_and_notify(
             log.warning("request %s saved but no admins are configured", row["id"])
         return "no_admins"
 
-    notifications.notify_admins(client, row)
+    notifications.notify_admins(client, row, active_admins)
+    # The request already exists and admins are already DMed by this point —
+    # this insert is a best-effort extra channel (the IDP panel), not the
+    # thing that makes the submission real. A failure here must not turn a
+    # successful submission into a client-visible 500 (web/routes_queries.py
+    # calls dispatch_and_notify with no guard of its own, after create_request
+    # has already committed) or an unhandled exception in the Slack ack path.
+    # Same swallow-and-log shape notify_admins already uses per-admin above:
+    # a lost outbox row is recoverable (the request still surfaces in the
+    # approvals queue); a false 500 sends the requester into a duplicate-
+    # detection 409 on retry for a request that already succeeded.
+    try:
+        db.execute(
+            "INSERT INTO notification_outbox "
+            "(event_type, request_id, recipients, payload) "
+            "VALUES (%s, %s, %s, %s)",
+            (
+                "queryhub.request_pending",
+                row["id"],
+                [admin["slack_user_id"] for admin in active_admins],
+                json.dumps({
+                    # Ruling P-10: the panel decodes this into Go's
+                    # map[string]string, so EVERY value must already be a
+                    # string -- a bare int (requestId) or a None (tier /
+                    # justification, when unset) fails the whole outbox
+                    # fetch on the panel side, not just that one field, and
+                    # silently stops every notification from being
+                    # delivered. An absent value serialises as "" rather
+                    # than null.
+                    "requesterName": str(
+                        row.get("requester_name") or row.get("requester_slack_id") or ""),
+                    "tier": str(row.get("required_tier") or ""),
+                    "target": str(prep.target.alias),
+                    "justification": str(row.get("justification") or ""),
+                    "requestId": str(row["id"]),
+                }),
+            ),
+        )
+    except Exception:
+        log.exception(
+            "failed to write notification_outbox row for request %s; the "
+            "request was submitted and admins were DMed, but the IDP panel "
+            "will not learn about it until an admin acts from Slack or the "
+            "approvals queue", row["id"],
+        )
     if dm_requester:
         blocks = notifications.requester_card_blocks(
             row,

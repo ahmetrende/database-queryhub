@@ -10,12 +10,13 @@ from starlette.requests import HTTPConnection
 
 from .. import admins, requesters
 from .. import config as cfg
-from . import sessions
+from . import idp_assertion, sessions
 
 log = logging.getLogger(__name__)
 
 SESSION_COOKIE = "qh_session"
 REFRESH_COOKIE = "qh_refresh"
+ASSERTION_HEADER = "x-idp-assertion"
 
 
 def _error(status: int, code: str, message: str,
@@ -49,6 +50,34 @@ def current_user(conn: HTTPConnection) -> dict:
 
     Cookies and headers are on HTTPConnection, so nothing else changes.
     """
+    # A request carrying an assertion comes from the IDP panel, and is judged
+    # ONLY by that assertion. Checked first and exclusively: falling through to
+    # the cookie after refusing one would let a stale browser session stand in
+    # for a proxy call this service just rejected.
+    raw = conn.headers.get(ASSERTION_HEADER)
+    if raw:
+        try:
+            principal = idp_assertion.verify(
+                raw,
+                conn.scope.get("method", "GET"),
+                _request_target(conn),
+                conn.scope.get("_body", b""),
+            )
+        except idp_assertion.AssertionError_ as e:
+            log.warning("idp assertion refused: %s", e.code)
+            raise _error(401, "unauthenticated",
+                         "Invalid identity assertion.") from e
+        # No `sid`: a proxied request has no server-side session to revoke.
+        # Its bound is the 60-second lifetime plus the panel's own revocation,
+        # so the liveness lookup below must not run for it — which the early
+        # return here is what guarantees.
+        # `name` is carried so the 41 `claims.get("name") or uid` call sites
+        # render a person rather than a raw principal id. It comes from the
+        # requesters/admins row, not from the token's `name` claim: the panel
+        # says who is acting, this service says what it knows about them.
+        return {"sub": principal.id, "name": principal.name,
+                "provider": "idp", "sid": None}
+
     token = conn.cookies.get(SESSION_COOKIE)
     if not token:
         auth = conn.headers.get("authorization", "")
@@ -74,6 +103,14 @@ def current_user(conn: HTTPConnection) -> dict:
         if row is None or not row.get("enabled", False):
             raise _error(401, "unauthenticated", "Account disabled.")
     return claims
+
+
+def _request_target(conn: HTTPConnection) -> str:
+    """Path plus query string — exactly the target the panel signed. Verifying
+    a bare path would accept an assertion minted for a different query."""
+    path = conn.scope.get("path", "")
+    qs = conn.scope.get("query_string", b"").decode()
+    return f"{path}?{qs}" if qs else path
 
 
 def require_whitelisted(claims: dict) -> None:

@@ -30,7 +30,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 from .. import admins, audit as audit_mod
-from .. import cancellation, core_submit, db, pii, pre_flight, profile_sync, query_safety, requesters
+from .. import cancellation, core_submit, db, origins, pii, pre_flight, profile_sync, query_safety, requesters
 from .. import config as cfg
 from . import deps, mapping, sessions
 from .routes_data import _alias_of, _target_by_alias
@@ -98,6 +98,20 @@ class BatchIn(BaseModel):
     # taken once. The reasons come back naming the item, so the operator still
     # sees which statement asked.
     confirmed: bool = False
+
+
+def _origin_for(claims: dict) -> str:
+    """Which door this request came through, decided here rather than taken
+    from the caller.
+
+    Every surface below reaches the same `/api/*` endpoints, so an IdP-proxied
+    request inherits `origin='web'` unless something says otherwise — exactly
+    what `origins`' own docstring warns about. It is derived from the
+    authenticated provider and never from the request body: the panel cannot
+    assert its own origin, for the same reason it cannot assert its own
+    authority.
+    """
+    return origins.IDP if claims.get("provider") == origins.IDP else origins.WEB
 
 
 def _schedule_parts(claims: dict, runat_iso: str) -> tuple[str, str]:
@@ -238,7 +252,7 @@ def submit_query(body: QueryIn, request: Request,
         result_format="csv",
         schedule_date=sched_date,
         schedule_time=sched_time,
-        origin="web",
+        origin=_origin_for(claims),
         client_ip=client_ip,
         user_agent=user_agent,
         confirmed=body.confirmed,
@@ -500,7 +514,7 @@ def submit_batch(body: BatchIn, request: Request,
             uid, name, target_server_id=t.id, database_name=it.databaseId,
             query=it.sql, justification=body.justification, wants_result=True,
             result_format="csv", schedule_date=sched_date, schedule_time=sched_time,
-            origin="web", client_ip=client_ip, user_agent=user_agent,
+            origin=_origin_for(claims), client_ip=client_ip, user_agent=user_agent,
             confirmed=body.confirmed)
         if isinstance(prep, core_submit.Rejection):
             status, code = _REJECTION_HTTP.get(prep.reason or prep.field, (422, "validation"))
@@ -544,14 +558,14 @@ def submit_batch(body: BatchIn, request: Request,
         risk_summary=p.risk_summary) for p in preps]
 
     with db.transaction() as cur:
-        # origin="web" so the bundle items carry it — the executor's
+        # The origin is stamped on the bundle so its items carry it — the executor's
         # result-routing gate then honors "answer on the channel it came
         # from" for batch results too, instead of leaking the CSV
         # to Slack under the slack-origin default.
         result = bundles.insert_bundle_with_items(
             cur, requester_slack_id=uid, requester_name=name,
             justification=body.justification, scheduled_for=sched_for,
-            items=items, origin="web")
+            items=items, origin=_origin_for(claims))
         for p, row, grant in zip(preps, result["item_rows"], aa_grants):
             auto = grant is not None or super_auto
             details = {

@@ -1415,10 +1415,19 @@ def maybe_update_bundle_for_request(client: WebClient, request_id: int) -> None:
     update_bundle_admin_dms(client, row["bundle_id"])
 
 
-def notify_admins(client: WebClient, request: dict) -> None:
+def notify_admins(
+    client: WebClient, request: dict, admin_list: list[dict] | None = None,
+) -> None:
     """DM every active admin with action buttons + a thread reply containing
     the full SQL as a `.sql` snippet. Records each (channel, ts) for later
-    chat.update lockstep on decision."""
+    chat.update lockstep on decision.
+
+    `admin_list`, when given, is used instead of a fresh `admins.list_active()`
+    call. `dispatch_and_notify` passes the SAME list it used to decide the
+    notification_outbox row's recipients, so the Slack fan-out and the panel's
+    outbox row can never name a different set of admins — one `list_active()`
+    call, two consumers, rather than two calls that are merely expected to
+    agree."""
     if not cfg.ENV.slack_enabled:  # vanilla profile: Slack is off — no-op
         return None
     target = targets.get(request["target_server_id"])
@@ -1426,7 +1435,7 @@ def notify_admins(client: WebClient, request: dict) -> None:
         raise LookupError("target server vanished between submit and notify")
     overrides = _display_overrides()
 
-    for admin in admins.list_active():
+    for admin in (admin_list if admin_list is not None else admins.list_active()):
         admin_id = admin["slack_user_id"]
         # Scope check: in-scope admins see action buttons; out-of-scope
         # admins still receive the DM (audit / transparency) but in
