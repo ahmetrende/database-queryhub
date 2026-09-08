@@ -21,6 +21,11 @@ import './qh-admin-access.jsx';
 // its new default tab. Same failure shape as a stale index.css: the raw
 // prototype is fine and only the built app is broken.
 import './qh-admin-person.jsx';
+// New in the 2026-09-07 round. After qh-admin-access.jsx, which is where
+// PersonPick, ExpiryPick, expIso, expBad, connLabel and AccGroupBy come
+// from — RolesView reads all six off window and a build that loaded this
+// first would find them undefined.
+import './qh-admin-roles.jsx';
 import './qh-admin-insights.jsx';
 import './qh-admin-config.jsx';
 import './qh-admin.jsx';

@@ -1182,6 +1182,74 @@
      right-aligns it, and the parent's flex-wrap gives it its own line when the
      subject picker needs the width. */
   .qh-accedit-acts.is-top { margin: 0 0 0 auto; }
+  /* ---------- Roles (CODE brief 2026-09-07): a role reads as a sentence ---------- */
+  .qh-rolelist { display: flex; flex-direction: column; gap: 8px; }
+  .qh-rolerow { display: flex; align-items: flex-start; gap: 11px; padding: 11px 13px; background: var(--bg-white); border: 1px solid var(--stroke-light); border-radius: var(--r-md); }
+  /* A mirrored row is what the system enforces and cannot be changed here, so it
+     is quieter than a row created here without being hidden: flat tonal
+     background, unbolded name, no action. */
+  .qh-rolerow.is-mirrored { background: var(--bg-light); border-color: var(--stroke-medium); }
+  .qh-rolerow.is-mirrored .qh-rolerow-name { font-weight: 500; color: var(--fg-secondary); }
+  .qh-rolerow.is-preview { background: var(--bg-light); border-color: var(--stroke-medium); }
+  .qh-rolerow-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .qh-rolerow-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .qh-rolerow-name { font-size: 14px; font-weight: 600; color: var(--fg-primary); }
+  .qh-rolerow-h { font-family: var(--qh-mono); font-size: 11px; color: var(--fg-tertiary); }
+  .qh-rolerow-acts { flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+  .qh-rolechip { padding: 2px 8px; border-radius: var(--r-2xs); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-secondary); background: var(--adaptive-strong); }
+  .qh-rolechip.is-approver { color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  .qh-rolechip.is-granter { color: #15688C; background: var(--sup-blue-light); }
+  [data-theme='dark'] .qh-rolechip.is-granter { color: #7FD2F5; background: rgba(102,204,255,0.12); }
+  /* Admin is the fleet-wide one — the row you want to notice in a list of scoped ones. */
+  .qh-rolechip.is-admin { color: var(--fg-warning); background: var(--warning-adaptive-light); }
+  .qh-rolechip.is-src { color: var(--fg-tertiary); background: var(--adaptive-medium); }
+  .qh-role-sent { font-size: 13px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-role-sent b { font-weight: 600; color: var(--fg-primary); }
+  /* The end date is part of the sentence, coloured so a temporary role is
+     scannable without a column of its own. */
+  .qh-role-until { color: var(--fg-warning); font-weight: 600; }
+  .qh-role-until.is-soon { color: var(--fg-danger); }
+  .qh-role-why { font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); text-wrap: pretty; }
+  .qh-rolelock { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--fg-tertiary); }
+  .qh-rolenote { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; padding: 9px 12px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); font-size: 12.5px; color: var(--fg-secondary); }
+  .qh-roleempty { max-width: 660px; padding: 20px 22px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-lg); display: flex; flex-direction: column; gap: 14px; }
+  .qh-roleempty-h { font-size: 16px; font-weight: 700; color: var(--fg-primary); }
+  .qh-roleempty-p { margin: 0; font-size: 13px; line-height: 1.6; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-roleempty-eg { display: flex; flex-direction: column; gap: 7px; }
+  .qh-roledefs { margin: 0; display: flex; flex-direction: column; gap: 7px; }
+  .qh-roledefs > div { display: flex; gap: 10px; }
+  .qh-roledefs dt { flex: 0 0 104px; padding-top: 2px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-tertiary); }
+  .qh-roledefs dd { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-roleempty > .qh-btn { align-self: flex-start; }
+  .qh-roleform { margin: 0 0 16px; padding: 16px 18px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-lg); }
+  .qh-rolepick { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+  .qh-roleopt { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); font: inherit; text-align: left; cursor: pointer; }
+  .qh-roleopt:hover { border-color: var(--stroke-accent); }
+  .qh-roleopt.is-on { background: var(--brand-adaptive-light); border-color: var(--brand-green); }
+  .qh-roleopt-l { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--fg-primary); }
+  .qh-roleopt.is-on .qh-roleopt-l { color: var(--fg-accent); }
+  .qh-roleopt-w { font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); text-wrap: pretty; }
+  .qh-rolescope { display: flex; gap: 12px; flex-wrap: wrap; }
+  /* Admin is fleet-wide, so the scope controls RETIRE instead of staying enabled
+     for the API to refuse with a 400. Dimmed and inert, still readable: the
+     fields are the explanation of what admin skips. */
+  .qh-rolescope.is-off { opacity: 0.45; pointer-events: none; }
+  .qh-rolefield { display: flex; flex-direction: column; gap: 5px; }
+  .qh-rolefield-l { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-tertiary); }
+  .qh-roleform-err { margin-top: 8px; padding: 8px 12px; background: var(--danger-adaptive-light); color: var(--fg-danger); border-radius: var(--r-xs); font-size: 12.5px; line-height: 1.5; }
+  .qh-roleprev { margin-top: 16px; display: flex; flex-direction: column; gap: 7px; }
+  .qh-roleprev-h { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-tertiary); }
+  /* 2026-09-07 (b): the staging banner, a disabled subject, the 409's one button. */
+  .qh-rolenote.is-warn { background: var(--warning-adaptive-light); border-color: var(--stroke-medium); color: var(--fg-primary); align-items: flex-start; }
+  .qh-rolenote b { font-weight: 600; }
+  .qh-rolechip.is-staged { color: var(--fg-warning); background: var(--warning-adaptive-light); }
+  .qh-rolechip.is-danger { color: var(--fg-danger); background: var(--danger-adaptive-light); }
+  /* A disabled account revokes nothing, so the ROW stays fully legible — only
+     the identity is dimmed, never the sentence saying what they can still do. */
+  .qh-rolerow.is-off .qh-peravatar { background: var(--disabled-fg); }
+  .qh-rolerow.is-off .qh-rolerow-name { font-weight: 500; color: var(--fg-secondary); }
+  .qh-role-why.is-danger { color: var(--fg-danger); }
+  .qh-roleform-act { margin-top: 9px; }
   /* Subject combo (CODE brief 2026-08-22 §3): one control for the people list
      AND a principal id QueryHub has never seen. Fixed width so the form row does
      not reflow as it filters, and the popup is absolute — eight matches must not
@@ -1425,6 +1493,29 @@
   .qh-csv-st.is-completed { color: var(--fg-accent); font-weight: 600; }
   .qh-csv-st.is-failed { color: var(--fg-danger); font-weight: 600; }
   .qh-tablewrap { overflow-x: auto; }
+  /* Five admin tables returned a bare <table>, so a wide row scrolled the PAGE
+     (CODE report 2026-09-08 (c): Connections, 7 columns, up to 5 row actions,
+     114 rows). The wrap stops that — but a horizontally scrolling table still
+     puts Actions off screen, and Actions is why somebody opened the page. So
+     the last column is STICKY to the right edge of its own scroller: reachable
+     at any width, with no scrolling at all in the common case.
+     `td.qh-tright:not([colspan])` keeps group headers and inline edit rows out
+     of it — those span the table and have no action cell to pin. The sticky
+     cell needs an opaque background of its own (rows would otherwise slide
+     under it); hover is the same translucent layer painted over that, so the
+     pinned cell cannot disagree with the row it belongs to. */
+  .qh-acttable th:last-child,
+  .qh-acttable td.qh-tright:not([colspan]) { position: sticky; right: 0; background: var(--bg-white); box-shadow: -1px 0 0 var(--stroke-light); }
+  .qh-acttable th:last-child { z-index: 2; }
+  .qh-acttable tr:hover td.qh-tright:not([colspan]) { background-image: linear-gradient(var(--adaptive-light), var(--adaptive-light)); }
+  /* The widest cell in the fleet is a 36-char name over an 88-char
+     host:port/database line. The NAME stays whole and wraps — it is an
+     identifier (2026-08-22), and half of one reads as a different server. The
+     host line is not: it ellipsises with the full string on hover, which is
+     what keeps the table near its container width instead of ~500px past it. */
+  .qh-conntable td:first-child { max-width: 340px; }
+  .qh-conn-namecell b { overflow-wrap: anywhere; }
+  .qh-conn-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .qh-load-error { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 10px 14px; border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); background: var(--danger-adaptive-light); color: var(--fg-danger); font-size: 13px; }
   .qh-load-error > span { flex: 1; }
   .qh-load-error > svg { flex-shrink: 0; }

@@ -934,7 +934,14 @@ def dispatch_and_notify(
     # by construction (rather than by two call sites happening to agree) is
     # to decide it here and hand the same list to both. See migrations/
     # 102_notification_outbox.sql and its ruling in the PLA-479 SDD ledger.
-    active_admins = admins.list_active()
+    #
+    # `notify_list` rather than `list_active`: under the new model a role can
+    # say "approves for this team", and that person is not in the admins list
+    # — so the one feature scoped approval exists for would never have told
+    # them a request they could approve was waiting. It takes the request
+    # because an approver is listed only when the request is in their scope;
+    # an admin is listed either way. See admins.notify_list.
+    active_admins = admins.notify_list(row)
     if not active_admins:
         if dm_requester:
             notifications.dm_requester(

@@ -34,6 +34,7 @@ from .. import (
     teams,
 )
 from .. import config as cfg
+from .. import teams as teams_mod
 from . import admin, config_admin, deps, mapping, metrics
 
 _SLACK_ID_RE = re.compile(r"^[UW][A-Z0-9]{8,}$")
@@ -696,8 +697,28 @@ def admin_connections(claims: dict = Depends(deps.current_user)):
     only enabled rows would hide the row the admin had just added.
     """
     admin.require_admin(claims, "access")
-    return {"connections": [_connection_payload(r)
-                            for r in targets.list_admin_rows()]}
+    # Who is responsible for each one (migration 115). A target used to be an
+    # independent object and the only link to a team was a hostname string
+    # joined at query time — which meant this screen could not answer "whose
+    # database is this", the question an admin brings to it before deciding
+    # anything else. Many-to-many, because six of these are shared between two
+    # teams, and `syncedFrom` because a synced link is not the reader's to
+    # correct here while a hand-made one is.
+    owners: dict[int, list[dict]] = {}
+    for row in db.fetch_all(
+            "SELECT tt.target_id, t.id, t.name, t.display_name, tt.source "
+            "  FROM target_team tt "
+            "  JOIN team t ON t.id = tt.team_id AND NOT t.is_deleted "
+            " ORDER BY t.display_name"):
+        owners.setdefault(row["target_id"], []).append(
+            {"id": row["id"], "name": row["name"],
+             "displayName": row["display_name"], "syncedFrom": row["source"]})
+    out = []
+    for r in targets.list_admin_rows():
+        payload = _connection_payload(r)
+        payload["owners"] = owners.get(r["id"], [])
+        out.append(payload)
+    return {"connections": out}
 
 
 @router.get("/tag-keys")
@@ -1053,12 +1074,25 @@ def _target_id_of(alias: str | None) -> int | None:
 
 
 def _resolve_team(name: str | None) -> dict | None:
-    """Existing team by (case-insensitive) name. Teams are created deliberately
-    (SQL / Slack), never from the web — this only looks one up."""
-    if not (name or "").strip():
+    """Existing team by (case-insensitive) name, from whichever model is
+    authoritative. Teams are created deliberately (SQL / Slack / an org
+    import), never from the web — this only looks one up.
+
+    Matches `display_name` as well as `name` under the new model: a pod's code
+    is `team-a` and what everyone calls it is `Team A`, and an admin
+    typing what the screen shows should not get "no such team".
+    """
+    n = (name or "").strip()
+    if not n:
         return None
+    if teams_mod.use_v2():
+        return db.fetch_one(
+            "SELECT id, COALESCE(display_name, name) AS name FROM team "
+            " WHERE NOT is_deleted "
+            "   AND (lower(name) = lower(%s) OR lower(display_name) = lower(%s)) "
+            " LIMIT 1", (n, n))
     return db.fetch_one(
-        "SELECT id, name FROM teams WHERE lower(name) = lower(%s)", (name.strip(),))
+        "SELECT id, name FROM teams WHERE lower(name) = lower(%s)", (n,))
 
 
 def _count_super_admins() -> int:
@@ -1172,19 +1206,46 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
             raise deps._error(404, "not_found",
                               f"No team named '{named[0]}'. Create the team "
                               "in Slack / SQL first — teams aren't created here.")
-        # Upsert the team→target grant; the auth_event trigger on
-        # team_target_grants DMs every affected team member automatically.
+        # Where the row goes depends on which model is authoritative, and
+        # under the new one it CANNOT go to the legacy table: a pod team has
+        # no `teams` row for `team_target_grants.team_id` to reference. After
+        # the pod cutover that table is empty, so this branch had no way to
+        # grant a team anything at all — the 27 grants the cutover wrote went
+        # straight to `access_grant` and there was no supported path to the
+        # 28th.
+        #
+        # Either way the auth-event trigger on the table written DMs every
+        # affected member (migration 060 for the legacy one, 108 for the new).
         with db.transaction() as cur:
-            cur.execute(
-                "INSERT INTO team_target_grants "
-                "  (team_id, target_server_id, allowed_databases, mode, expires_at) "
-                "VALUES (%s, %s, %s, %s, %s) "
-                "ON CONFLICT (team_id, target_server_id) DO UPDATE "
-                "  SET allowed_databases = EXCLUDED.allowed_databases, "
-                "      mode = EXCLUDED.mode, "
-                "      expires_at = EXCLUDED.expires_at, "
-                "      revoked_at = NULL",
-                (team["id"], tid, dbs, tier, expires_at))
+            if teams_mod.use_v2():
+                # One row per database, and a row is immutable: changing the
+                # tier is a revoke plus an insert, or `access_grant_live_uq`
+                # would hold both the old and the new at once and the
+                # resolver would take the more permissive of the two.
+                cur.execute(
+                    "UPDATE access_grant SET revoked_at = NOW() "
+                    " WHERE team_id = %s AND target_id = %s "
+                    "   AND NOT auto_approve AND revoked_at IS NULL "
+                    "   AND NOT is_deleted", (team["id"], tid))
+                for dbn in (dbs or [None]):
+                    cur.execute(
+                        "INSERT INTO access_grant "
+                        "  (team_id, target_id, all_targets, database_name, "
+                        "   all_databases, tier, valid_from, valid_until, reason) "
+                        "VALUES (%s,%s,FALSE,%s,%s,%s,now(),%s,%s)",
+                        (team["id"], tid, dbn, dbn is None, tier, expires_at,
+                         "granted from the admin panel"))
+            else:
+                cur.execute(
+                    "INSERT INTO team_target_grants "
+                    "  (team_id, target_server_id, allowed_databases, mode, expires_at) "
+                    "VALUES (%s, %s, %s, %s, %s) "
+                    "ON CONFLICT (team_id, target_server_id) DO UPDATE "
+                    "  SET allowed_databases = EXCLUDED.allowed_databases, "
+                    "      mode = EXCLUDED.mode, "
+                    "      expires_at = EXCLUDED.expires_at, "
+                    "      revoked_at = NULL",
+                    (team["id"], tid, dbs, tier, expires_at))
             audit.log_in(cur, None, uid, claims.get("name"), "team_grant_added",
                          {"team": team["name"], "team_id": team["id"],
                           "target_id": tid, "databases": dbs, "tier": tier,
@@ -1343,10 +1404,44 @@ def admin_people(claims: dict = Depends(deps.current_user)):
 
 
 def _teams_payload() -> list[dict]:
-    teams = db.fetch_all(
+    """Every team with its members, from whichever model is authoritative.
+
+    This read the legacy `teams` table directly, on the reasoning that the
+    team CRUD beside it writes there too — read what you write. That held
+    until the company moved to the pod structure: the legacy rows were
+    removed, the teams now live only in the nine-table model, and the screen
+    went from six teams to none while `/sql teams` showed thirteen. Two
+    surfaces, one question, opposite answers.
+
+    So it follows `access_model_v2` like the resolver and the Slack views do.
+    `source` rides along because a synced team is not the reader's to rename
+    here — the next sync would put the name back.
+    """
+    if teams_mod.use_v2():
+        rows = db.fetch_all(
+            "SELECT t.id, t.name, t.display_name, t.description, t.source "
+            "  FROM team t WHERE NOT t.is_deleted ORDER BY lower(t.name)")
+        members = db.fetch_all(
+            "SELECT m.team_id, i.external_id AS slack_user_id "
+            "  FROM team_member m "
+            "  JOIN principal_identity i ON i.principal_id = m.principal_id "
+            "   AND i.provider = 'slack' AND NOT i.is_deleted "
+            " WHERE NOT m.is_deleted")
+        by_team: dict[int, list[str]] = {}
+        for m in members:
+            by_team.setdefault(m["team_id"], []).append(m["slack_user_id"])
+        return [{
+            "id": str(t["id"]),
+            "name": t["display_name"] or t["name"],
+            "desc": t["description"] or "",
+            "members": by_team.get(t["id"], []), "subteams": [],
+            "syncedFrom": t["source"] if t["source"] != "manual" else None,
+        } for t in rows]
+
+    legacy = db.fetch_all(
         "SELECT id, name, description FROM teams ORDER BY lower(name)")
     members = db.fetch_all("SELECT team_id, slack_user_id FROM team_members")
-    by_team: dict[int, list[str]] = {}
+    by_team = {}
     for m in members:
         by_team.setdefault(m["team_id"], []).append(m["slack_user_id"])
     # subteams is always [] — the grant model has no team nesting (see teams.py
@@ -1354,7 +1449,8 @@ def _teams_payload() -> list[dict]:
     return [{
         "id": str(t["id"]), "name": t["name"], "desc": t["description"] or "",
         "members": by_team.get(t["id"], []), "subteams": [],
-    } for t in teams]
+        "syncedFrom": None,
+    } for t in legacy]
 
 
 @router.get("/teams")
@@ -2193,6 +2289,248 @@ def admin_delete_scope(admin_id: str, claims: dict = Depends(deps.current_user))
                               "(temp admin grants are managed in Slack).")
         audit.log_in(cur, None, uid, claims.get("name"), "admin_scope_removed",
                      {"admin": admin_id})
+
+
+# ---- Roles (access): who approves, who grants, who imports ------------------
+#
+# The nine-table model separates two things the `admins` table ran together:
+# being an administrator, and being allowed to approve a particular request. A
+# row here can say "approves for this team, up to RW, and nothing else" — the
+# team lead who should see their own team's requests and no others, which the
+# old scope arrays could describe but no screen could set.
+#
+# These write `role_assignment` DIRECTLY, unlike grants, which keep going to the
+# legacy tables and reach the new model through the migration 109 mirror. That
+# is safe because the mirror owns only rows it marked `mirrored_from`, and it is
+# necessary because a scoped approver has no legacy row to be projected from.
+#
+# They take effect when `bot_config.access_model_v2` is on; until then
+# `admins.can_approve` reads the old table and a row written here is inert. That
+# is deliberate — the rows can be prepared and reviewed before the switch.
+
+_ROLES = ("approver", "granter", "importer", "admin")
+
+
+class RoleIn(BaseModel):
+    subject: str                       # the person's Slack id
+    role: str
+    scopeTeamId: int | None = None     # None = every team
+    scopeTargetId: int | None = None   # None = every target
+    maxTier: str | None = None         # None = no ceiling
+    validUntil: datetime | None = None
+    reason: str | None = None
+
+
+def _role_row(r: dict) -> dict:
+    """One role as the admin API speaks it.
+
+    Two things are said twice on purpose. The tier goes out UPPERCASE, like
+    every other tier this API serves (mapping.py), because a screen that has
+    to remember which endpoint shouts and which whispers gets it wrong once
+    and then shows a blank ceiling.
+
+    And the wildcards are sent as their own booleans rather than left for the
+    reader to infer from a null id. "No team" and "every team" are opposite
+    answers that a missing field cannot tell apart, and this is an
+    authorization screen — the difference is the whole scope.
+    """
+    return {"id": r["id"], "subject": r["external_id"], "name": r["display_name"],
+            "role": r["role"], "enabled": bool(r["enabled"]),
+            "scopeTeamId": r["scope_team_id"], "scopeTeamName": r.get("team_name"),
+            "allTeams": bool(r["all_teams"]),
+            "scopeTargetId": r["scope_target_id"], "scopeTargetName": r.get("alias"),
+            "allTargets": bool(r["all_targets"]),
+            "maxTier": (r["max_tier"] or "").upper() or None,
+            "anyTier": bool(r["any_tier"]),
+            "validUntil": r["valid_until"],
+            "reason": r["reason"],
+            # Three origins, and the screen has to tell them apart because two
+            # of them cannot be revoked here: a mirrored row returns on the
+            # next write to `admins`, a synced one on the next run of the sync
+            # that owns it. Revoking either is a change that undoes itself.
+            "source": ("mirrored" if r["mirrored_from"]
+                       else "synced" if r.get("source") else "direct"),
+            "syncedFrom": r.get("source")}
+
+
+# `can_approve` reads the ceiling off admin and approver rows and no others, so
+# storing one anywhere else puts a limit on the screen that limits nothing.
+_ROLES_WITH_CEILING = ("admin", "approver")
+
+
+@router.get("/roles")
+def admin_roles(claims: dict = Depends(deps.current_user)):
+    """Every role in force, with its scope resolved to names.
+
+    Mirrored rows are included and marked: they are what the `admins` table
+    projects into this model, and hiding them would make the screen disagree
+    with what the resolver sees.
+
+    A disabled person keeps their roles — disabling stops them submitting, it
+    does not revoke anything — so `enabled` is served and the disabled are
+    ordered last. A leaver still holding approval authority is the thing this
+    screen exists to make visible.
+
+    `enforced` says whether the rows are actually consulted yet. Until
+    `access_model_v2` is on, `admins.can_approve` reads the old table and a
+    scoped approver here decides nothing. That staging is deliberate — the
+    rows are meant to be prepared and reviewed before the switch — but it was
+    recorded only in a source comment, and an authorization screen that shows
+    a scoped role without saying it is dormant is telling the reader something
+    untrue about who can approve their requests.
+    """
+    admin.require_admin(claims, "review")
+    rows = db.fetch_all(
+        "SELECT ra.id, ra.role, ra.scope_team_id, ra.all_teams, "
+        "       ra.scope_target_id, ra.all_targets, "
+        "       ra.max_tier, ra.any_tier, ra.valid_until, ra.reason, "
+        "       ra.mirrored_from, ra.source, i.external_id, p.display_name, "
+        "       p.enabled, t.display_name AS team_name, ts.alias "
+        "  FROM role_assignment ra "
+        "  JOIN principal p ON p.id = ra.principal_id "
+        "  JOIN principal_identity i ON i.principal_id = p.id "
+        "   AND i.provider = 'slack' AND NOT i.is_deleted "
+        "  LEFT JOIN team t ON t.id = ra.scope_team_id "
+        "  LEFT JOIN target_servers ts ON ts.id = ra.scope_target_id "
+        " WHERE NOT ra.is_deleted AND ra.revoked_at IS NULL "
+        "   AND (ra.valid_until IS NULL OR ra.valid_until > NOW()) "
+        " ORDER BY p.enabled DESC, p.display_name, ra.role")
+    return {"roles": [_role_row(r) for r in rows],
+            "enforced": teams.use_v2()}
+
+
+@router.post("/roles", status_code=201)
+def admin_create_role(body: RoleIn, claims: dict = Depends(deps.current_user)):
+    uid = admin.require_admin(claims, "access")
+    if body.role not in _ROLES:
+        raise deps._error(400, "bad_request",
+                          f"Unknown role. One of: {', '.join(_ROLES)}.")
+    if body.role == "admin" and (body.scopeTeamId is not None
+                                 or body.scopeTargetId is not None):
+        # The schema refuses it too; saying so here gives a usable message
+        # instead of a constraint violation.
+        raise deps._error(400, "admin_scope",
+                          "An admin is fleet-wide. Use approver for a scoped "
+                          "role.")
+    # The client speaks uppercase and the tier table is lowercase. Accept
+    # either rather than making the caller know which side of the seam it is
+    # on, and store the one the FK will match.
+    tier = (body.maxTier or "").strip().lower() or None
+    if tier is not None and tier not in ("ro", "rw", "ddl"):
+        raise deps._error(400, "tier_scope", "maxTier must be RO, RW or DDL.")
+    if tier is not None and body.role not in _ROLES_WITH_CEILING:
+        raise deps._error(
+            400, "tier_scope",
+            f"A tier ceiling only applies to {' and '.join(_ROLES_WITH_CEILING)}"
+            f" — nothing reads it on a {body.role}. Leave it empty.")
+
+    with db.transaction() as cur:
+        cur.execute(
+            "SELECT p.id FROM principal p "
+            "  JOIN principal_identity i ON i.principal_id = p.id "
+            " WHERE i.provider = 'slack' AND i.external_id = %s "
+            "   AND NOT i.is_deleted AND NOT p.is_deleted", (body.subject,))
+        row = cur.fetchone()
+        if row is None:
+            raise deps._error(404, "no_account",
+                              "No such person in the new access model. They "
+                              "need a QueryHub account first.")
+        pid = row["id"]
+        if body.scopeTeamId is not None:
+            cur.execute("SELECT 1 FROM team WHERE id = %s AND NOT is_deleted",
+                        (body.scopeTeamId,))
+            if cur.fetchone() is None:
+                raise deps._error(404, "no_team", "No such team.")
+        # A role is immutable here: changing one means revoking it and
+        # creating the replacement, so the same statement must not be
+        # writable twice. `role_assignment_live_uq` (migration 110) is the
+        # real guarantee and covers the race between two of these; this
+        # lookup exists to answer with a sentence naming the row rather than
+        # a unique-violation traceback.
+        cur.execute(
+            "SELECT id, max_tier, mirrored_from FROM role_assignment "
+            " WHERE principal_id = %s AND role = %s "
+            "   AND scope_team_id IS NOT DISTINCT FROM %s "
+            "   AND scope_target_id IS NOT DISTINCT FROM %s "
+            "   AND revoked_at IS NULL AND NOT is_deleted",
+            (pid, body.role, body.scopeTeamId, body.scopeTargetId))
+        dup = cur.fetchone()
+        if dup is not None:
+            where = ("mirrors the admins table and"
+                     if dup["mirrored_from"] else "already exists and")
+            # `roleId` rides the envelope the way `expiredOn` rides
+            # `access_expired`. The id is in the sentence too, but a client
+            # that had to parse it back out of prose is how a duplicate once
+            # got re-sent with `confirmed: true` — the screen's
+            # revoke-and-recreate button reads this field or does not appear.
+            raise deps._error(
+                409, "conflict",
+                f"This person already holds {body.role} over that scope "
+                f"(role {dup['id']}, {where} is unchanged). Revoke it first "
+                f"if you meant to change its ceiling or expiry.",
+                roleId=dup["id"])
+        cur.execute(
+            "INSERT INTO role_assignment "
+            "  (principal_id, role, scope_team_id, all_teams, scope_target_id, "
+            "   all_targets, max_tier, any_tier, valid_until, reason, created_by) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+            "        (SELECT p.id FROM principal p "
+            "           JOIN principal_identity i ON i.principal_id = p.id "
+            "          WHERE i.provider = 'slack' AND i.external_id = %s "
+            "            AND NOT i.is_deleted LIMIT 1)) "
+            "RETURNING id",
+            (pid, body.role, body.scopeTeamId, body.scopeTeamId is None,
+             body.scopeTargetId, body.scopeTargetId is None, tier,
+             tier is None, body.validUntil, body.reason, uid))
+        rid = cur.fetchone()["id"]
+        audit.log_in(cur, None, uid, claims.get("name"), "role_granted",
+                     {"subject": body.subject, "role": body.role,
+                      "scope_team_id": body.scopeTeamId,
+                      "scope_target_id": body.scopeTargetId,
+                      "max_tier": tier, "reason": body.reason})
+    return {"id": rid}
+
+
+@router.delete("/roles/{role_id}", status_code=204)
+def admin_revoke_role(role_id: int, claims: dict = Depends(deps.current_user)):
+    """Revoke, not delete: who could approve what, and until when, is a
+    question an audit asks after the fact."""
+    uid = admin.require_admin(claims, "access")
+    with db.transaction() as cur:
+        cur.execute(
+            "SELECT ra.role, ra.mirrored_from, ra.source, i.external_id "
+            "  FROM role_assignment ra "
+            "  JOIN principal_identity i ON i.principal_id = ra.principal_id "
+            "   AND i.provider = 'slack' AND NOT i.is_deleted "
+            " WHERE ra.id = %s AND ra.revoked_at IS NULL AND NOT ra.is_deleted",
+            (role_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise deps._error(404, "not_found", "No such active role.")
+        if row["mirrored_from"]:
+            # It would come straight back on the next write to that table.
+            raise deps._error(
+                409, "conflict",
+                "This role mirrors the admins table — remove it there instead.")
+        if row["source"]:
+            # Same shape, different owner: the sync rebuilds its rows from the
+            # team's own membership and the targets that team owns, so a
+            # revoke here is undone the next time it runs. Changing who
+            # approves means changing one of those two.
+            raise deps._error(
+                409, "conflict",
+                f"This role is maintained by the '{row['source']}' sync — it "
+                f"would come back on the next run. Change the team's lead or "
+                f"what the team owns instead.")
+        cur.execute("UPDATE role_assignment SET revoked_at = NOW(), "
+                    "       revoked_by = (SELECT p.id FROM principal p "
+                    "         JOIN principal_identity i ON i.principal_id = p.id "
+                    "        WHERE i.provider = 'slack' AND i.external_id = %s "
+                    "          AND NOT i.is_deleted LIMIT 1) "
+                    " WHERE id = %s", (uid, role_id))
+        audit.log_in(cur, None, uid, claims.get("name"), "role_revoked",
+                     {"subject": row["external_id"], "role": row["role"],
+                      "role_id": role_id})
 
 
 # ---- Insights (review): audit / metrics / feedback --------------------------

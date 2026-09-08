@@ -82,3 +82,81 @@ test('an affected-rows result is passed straight through', async () => {
   const res = await resultFor({ kind: 'affected', affected: 9, message: '9 row(s) affected.' });
   assert.equal(res.affected, 9);
 });
+
+// ---------------------------------------------------------------------------
+// The same rule on the ERROR path, where it had gone unnoticed for longer.
+//
+// `qhFetch` built its rejection by hand — `new Error(err.message)`, then `code`
+// and `status` — so every structured field the envelope carried beside them was
+// dropped in transit. Three were: `expiredOn` on `access_expired`, `reasons` on
+// `confirmation_required`, and `roleId` on the roles 409.
+//
+// None of them ever surfaced as a bug, and that is the part worth pinning.
+// Every reader had a fallback that looked like the feature working:
+// `qhConfirmReasons` re-splits the message text, and the lapsed-grant panel
+// renders the server's own sentence when it has no date. A field that vanishes
+// silently is only found by a feature with no fallback — the roles 409's
+// revoke-and-recreate button, which simply would not have appeared.
+
+/** Reject the way the server does: an `{error:{...}}` envelope at some status. */
+function errorFrom(status, error) {
+  const win = bareWindow();
+  win.fetch = async () => ({
+    ok: false, status,
+    json: async () => ({ error }),
+    text: async () => JSON.stringify({ error }),
+  });
+  return loadInto(win, 'qh-api.jsx').qhApi
+    .adminAddRole({ subject: 'u1', role: 'approver' })
+    .then(() => { throw new Error('should have rejected'); }, e => e);
+}
+
+test('a structured field on an error envelope reaches the caller', async () => {
+  const e = await errorFrom(409, {
+    code: 'conflict', message: 'This person already holds approver…', roleId: 14,
+  });
+  assert.equal(e.roleId, 14);
+});
+
+test('the fields that were already being dropped survive too', async () => {
+  const expired = await errorFrom(403, {
+    code: 'access_expired', message: 'Your access expired.', expiredOn: '2026-08-14',
+  });
+  assert.equal(expired.expiredOn, '2026-08-14');
+
+  const confirm = await errorFrom(409, {
+    code: 'confirmation_required', message: 'Are you sure?',
+    reasons: ['This drops a column.', 'It cannot be undone.'],
+  });
+  assert.deepEqual(confirm.reasons,
+    ['This drops a column.', 'It cannot be undone.']);
+});
+
+test('code, status and message are still what the readers expect', async () => {
+  const e = await errorFrom(404, { code: 'no_account', message: 'No such person.' });
+  assert.equal(e.code, 'no_account');
+  assert.equal(e.status, 404);
+  assert.equal(e.message, 'No such person.');
+  assert.ok(e instanceof Error);
+});
+
+test('a spread field cannot overwrite the status the transport saw', async () => {
+  // `status` is the HTTP status, and `qhConfirmReasons` gates on it being 409.
+  // A server field of the same name must not be able to move it.
+  const e = await errorFrom(409, { code: 'conflict', message: 'x', status: 200 });
+  assert.equal(e.status, 409);
+});
+
+test('an envelope-less failure is still a usable Error', async () => {
+  const win = bareWindow();
+  win.fetch = async () => ({
+    ok: false, status: 502,
+    json: async () => { throw new Error('not JSON'); },
+    text: async () => 'Bad Gateway',
+  });
+  const e = await loadInto(win, 'qh-api.jsx').qhApi.adminRoles()
+    .then(() => { throw new Error('should have rejected'); }, x => x);
+  assert.equal(e.code, 'server_error');
+  assert.equal(e.status, 502);
+  assert.match(e.message, /502/);
+});

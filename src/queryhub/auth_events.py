@@ -43,6 +43,20 @@ def is_enabled() -> bool:
 # Pure helpers — no DB access, unit-tested.
 # --------------------------------------------------------------------------
 
+_ROLE_LABEL = {
+    "admin": "an *admin*",
+    "approver": "an *approver*",
+    "granter": "able to *grant access*",
+    "importer": "able to *import CSV*",
+}
+
+
+def _fmt_until_suffix(valid_until) -> str:
+    """`_fmt_until` reads as a clause; this reads as a tail. A permanent role
+    should end the sentence, not trail off with "indefinitely"."""
+    return "" if valid_until is None else " " + _fmt_until(valid_until)
+
+
 def _mention(actor: str | None) -> str:
     """Render granted_by/added_by as a mention when it looks like a Slack
     id, verbatim otherwise, empty when unknown."""
@@ -81,14 +95,17 @@ def build_notifications(
     event: dict,
     *,
     alias_of: "callable" = lambda tid: None,
-    team_info: "callable" = lambda tid: (None, []),
+    team_info: "callable" = lambda tid, table=None: (None, []),
 ) -> list[tuple[str, str]]:
     """Map one outbox event to [(slack_user_id, message)].
 
     `alias_of(target_server_id) -> str | None` and
-    `team_info(team_id) -> (team_name | None, [member_slack_ids])` are
+    `team_info(team_id, table) -> (team_name | None, [member_slack_ids])` are
     injected so this stays pure/testable; the poller passes DB-backed
-    versions. Returns [] for events that carry no user-visible change.
+    versions. `table` is passed because the two models number teams in
+    separate id spaces — `team_target_grants.team_id` points at `teams`,
+    `access_grant.team_id` points at `team` — so the number alone cannot say
+    where to look. Returns [] for events that carry no user-visible change.
     """
     table = event["table_name"]
     op = event["op"]
@@ -214,7 +231,7 @@ def build_notifications(
         return [(user, ":1234: Your row limit changed: " + "; ".join(changes) + ".")]
 
     if table == "team_target_grants":
-        team_name, members = team_info(event.get("team_id"))
+        team_name, members = team_info(event.get("team_id"), table)
         team_lbl = f"`{team_name}`" if team_name else f"team #{event.get('team_id')}"
         alias = alias_of(row.get("target_server_id")) or f"target #{row.get('target_server_id')}"
         mode = (row.get("mode") or "ro").upper()
@@ -238,7 +255,7 @@ def build_notifications(
         return [(m, text) for m in members]
 
     if table == "team_members":
-        team_name, _members = team_info(event.get("team_id"))
+        team_name, _members = team_info(event.get("team_id"), table)
         team_lbl = f"`{team_name}`" if team_name else f"team #{event.get('team_id')}"
         if op == "INSERT":
             return [(user, f":busts_in_silhouette: You were added to team {team_lbl} — "
@@ -247,6 +264,144 @@ def build_notifications(
             return [(user, f":busts_in_silhouette: :no_entry: You were removed from team "
                            f"{team_lbl} — its grants no longer apply to you.")]
         return []
+
+    # ---- the nine-table model ------------------------------------------
+    #
+    # Same events, different columns. `tier` where the old rows said `mode`,
+    # one row per database rather than an array, and a subject that is either a
+    # principal or a team on the same row. A grant and an auto-approve window
+    # are also the same row here, told apart by `auto_approve` — and they read
+    # very differently to the person, so they are described separately.
+
+    if table == "access_grant":
+        def _target_lbl(r):
+            """`every target` is prose and must not be dressed as an alias —
+            a backticked "every target" reads as a server somebody could go
+            and look for."""
+            if r.get("all_targets"):
+                return "*every target*"
+            name = alias_of(r.get("target_id"))
+            return f"`{name}`" if name else f"target #{r.get('target_id')}"
+
+        alias = _target_lbl(row)
+        scope = "" if row.get("all_databases") else \
+            f" (database `{row.get('database_name')}`)"
+        tier = (row.get("tier") or "?").upper()
+        waiver = bool(row.get("auto_approve"))
+
+        recipients = [user]
+        team_lbl = None
+        if row.get("team_id") is not None:
+            team_name, members = team_info(event.get("team_id"), table)
+            team_lbl = f"`{team_name}`" if team_name else f"team #{row.get('team_id')}"
+            recipients = members
+        recipients = [r for r in recipients if r]
+        if not recipients:
+            return []
+
+        whose = f"Your team {team_lbl}'s" if team_lbl else "Your"
+        subject = f"team {team_lbl}" if team_lbl else "you"
+
+        def out(text):
+            return [(r, text) for r in recipients]
+
+        if op == "INSERT":
+            if new.get("revoked_at"):
+                return []          # born-revoked: a transcription, not a change
+            if waiver:
+                return out(f":stopwatch: Approval will be skipped for *{tier}* "
+                           f"queries on {_target_lbl(row)}{scope} for {subject}, "
+                           f"{_fmt_until(new.get('valid_until'))}.")
+            return out(f":key: Access granted: *{tier}* on {alias}{scope}"
+                       f" for {subject}.")
+        if op == "DELETE":
+            return out(f":no_entry: {whose} access to {alias}{scope} was removed.")
+        if not old.get("revoked_at") and new.get("revoked_at"):
+            what = "automatic approval" if waiver else "access"
+            return out(f":no_entry: {whose} {what} on {alias}{scope} was revoked.")
+        if new.get("revoked_at"):
+            return []              # edits on an already-revoked row: invisible
+        changes = []
+        if old.get("tier") != new.get("tier"):
+            changes.append(f"tier is now *{(new.get('tier') or '?').upper()}*")
+        if old.get("valid_until") != new.get("valid_until"):
+            changes.append(f"it now lasts {_fmt_until(new.get('valid_until'))}")
+        if old.get("merge_with_team") != new.get("merge_with_team"):
+            changes.append("it now adds to your team's access"
+                           if new.get("merge_with_team")
+                           else "it now replaces your team's access")
+        if not changes:
+            return []
+        return out(f":key: {whose} access on {alias}{scope} changed: "
+                   + "; ".join(changes) + ".")
+
+    if table == "role_assignment":
+        role = row.get("role") or "?"
+        cap = "" if row.get("any_tier") else \
+            f", up to *{(row.get('max_tier') or '?').upper()}*"
+        where = ""
+        if not row.get("all_teams"):
+            team_name, _ = team_info(row.get("scope_team_id"), table)
+            where = f" for team `{team_name}`" if team_name else \
+                f" for team #{row.get('scope_team_id')}"
+        elif not row.get("all_targets"):
+            where = f" on `{alias_of(row.get('scope_target_id'))}`"
+        label = _ROLE_LABEL.get(role, role)
+        if op == "INSERT":
+            if new.get("revoked_at"):
+                return []
+            return [(user, f":shield: You are now {label}{where}{cap}"
+                           f"{_fmt_until_suffix(new.get('valid_until'))}.")]
+        if op == "DELETE" or (not old.get("revoked_at") and new.get("revoked_at")):
+            return [(user, f":shield: :x: You are no longer {label}{where}.")]
+        if new.get("revoked_at"):
+            return []
+        changes = []
+        if old.get("max_tier") != new.get("max_tier"):
+            changes.append(f"you may now approve up to "
+                           f"*{(new.get('max_tier') or 'anything').upper()}*")
+        if old.get("scope_team_id") != new.get("scope_team_id") or \
+                old.get("scope_target_id") != new.get("scope_target_id"):
+            changes.append("your scope changed")
+        if not changes:
+            return []
+        return [(user, f":shield: Your {label} rights changed: "
+                       + "; ".join(changes) + ".")]
+
+    if table == "team_member":
+        team_name, _members = team_info(row.get("team_id"), table)
+        team_lbl = f"`{team_name}`" if team_name else f"team #{row.get('team_id')}"
+        if op == "INSERT":
+            return [(user, f":busts_in_silhouette: You were added to team {team_lbl} — "
+                           "its grants now apply to you.")]
+        if op == "DELETE":
+            return [(user, f":busts_in_silhouette: :no_entry: You were removed from "
+                           f"team {team_lbl} — its grants no longer apply to you.")]
+        if old.get("is_lead") != new.get("is_lead"):
+            return [(user, f":busts_in_silhouette: You are "
+                           f"{'now' if new.get('is_lead') else 'no longer'} "
+                           f"the lead of team {team_lbl}.")]
+        return []
+
+    if table == "principal":
+        # The whitelist. Everything else about a person is cosmetic here.
+        if op == "UPDATE" and old.get("enabled") != new.get("enabled"):
+            return [(user, ":white_check_mark: Your QueryHub access was enabled."
+                     if new.get("enabled") else
+                     ":no_entry: Your QueryHub access was switched off — "
+                     "your grants are unchanged but nothing will run.")]
+        return []
+
+    if table == "principal_setting":
+        key = row.get("setting_key")
+        if key == "max_rows":
+            if op == "DELETE":
+                return [(user, ":1234: :x: Your higher row limit was removed — "
+                               "you're back to the normal limit.")]
+            return [(user, f":1234: Your queries can now return up to "
+                           f"*{row.get('setting_value')}* rows, "
+                           f"{_fmt_until(new.get('valid_until'))}.")]
+        return []          # exclude_from_metrics and friends: nothing to say
 
     log.warning("auth_events: no builder for table %r — marking processed", table)
     return []
@@ -264,12 +419,34 @@ def _alias_of(target_id) -> str | None:
     return t.alias if t else None
 
 
-def _team_info(team_id) -> tuple[str | None, list[str]]:
+_NEW_MODEL_TABLES = {"access_grant", "role_assignment", "team_member",
+                     "principal", "principal_setting"}
+
+
+def _team_info(team_id, table: str | None = None) -> tuple[str | None, list[str]]:
+    """Name and members of a team, from whichever model the event came from.
+
+    Chosen by the table the event was captured on, NOT by the flag: an outbox
+    row written before the switch must still resolve correctly after it, and
+    the two models number teams independently — team 3 is a different team in
+    each. Reading the wrong one would name the wrong team and DM the wrong
+    people.
+    """
     if team_id is None:
         return None, []
-    row = db.fetch_one("SELECT name FROM teams WHERE id = %s", (team_id,))
-    members = db.fetch_all(
-        "SELECT slack_user_id FROM team_members WHERE team_id = %s", (team_id,))
+    if table in _NEW_MODEL_TABLES:
+        row = db.fetch_one(
+            "SELECT display_name AS name FROM team WHERE id = %s", (team_id,))
+        members = db.fetch_all(
+            "SELECT i.external_id AS slack_user_id "
+            "  FROM team_member tm "
+            "  JOIN principal_identity i ON i.principal_id = tm.principal_id "
+            "   AND i.provider = 'slack' AND NOT i.is_deleted "
+            " WHERE tm.team_id = %s AND NOT tm.is_deleted", (team_id,))
+    else:
+        row = db.fetch_one("SELECT name FROM teams WHERE id = %s", (team_id,))
+        members = db.fetch_all(
+            "SELECT slack_user_id FROM team_members WHERE team_id = %s", (team_id,))
     return (row["name"] if row else None,
             [m["slack_user_id"] for m in members])
 

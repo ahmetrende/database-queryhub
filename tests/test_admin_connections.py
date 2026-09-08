@@ -89,7 +89,12 @@ def wire(monkeypatch):
     """Super-admin session, one registered target, no references, and a cursor
     standing in for the transaction. Tests reach into `state` to vary it."""
     state = {"row": _row(), "refs": dict(NO_REFS), "cur": FakeCursor(),
-             "audit": [], "super": True}
+             "audit": [], "super": True,
+             # Which team owns each target (migration 115). The listing joins
+             # `target_team` now, so a fixture that patched only
+             # `list_admin_rows` would reach for a real database — which the
+             # suite forbids, correctly.
+             "owners": []}
 
     monkeypatch.setattr(web_admin.admins, "is_admin", lambda uid: True)
     monkeypatch.setattr(web_admin.admins, "is_super_admin",
@@ -101,6 +106,8 @@ def wire(monkeypatch):
     monkeypatch.setattr(ra.targets, "list_admin_rows", lambda: [state["row"]])
     monkeypatch.setattr(ra.targets, "reference_counts", lambda tid: state["refs"])
     monkeypatch.setattr(ra.db, "transaction", lambda: FakeTxn(state["cur"]))
+    monkeypatch.setattr(ra.db, "fetch_all",
+                        lambda sql, params=None: state["owners"])
     monkeypatch.setattr(ra.audit, "log_in",
                         lambda cur, rid, uid, name, action, details=None:
                         state["audit"].append((action, details)))
@@ -584,3 +591,31 @@ def test_a_listed_connection_exposes_no_ciphertext(wire):
     # The raw engine id travels alongside the display label so the edit form
     # can round-trip a value the CHECK constraint accepts.
     assert entry["engineId"] == "postgres" and entry["engine"] == "PostgreSQL"
+
+
+def test_the_listing_says_which_team_owns_each_target(wire):
+    """A target was an independent object: the only link to a team was a
+    hostname string joined at query time, so this screen could not answer
+    "whose database is this" — the question an admin brings to it before
+    deciding anything else.
+
+    Many-to-many, because six production databases are shared between two
+    teams, and `syncedFrom` because a synced link is not the reader's to
+    correct here while a hand-made one is."""
+    wire["owners"] = [
+        {"target_id": wire["row"]["id"], "id": 7, "name": "payments-be",
+         "display_name": "Payments BE", "source": "pod-sync"},
+        {"target_id": wire["row"]["id"], "id": 8, "name": "identity-be",
+         "display_name": "Identity BE", "source": None},
+    ]
+    entry = ra.admin_connections(claims=SUPER)["connections"][0]
+    assert [o["displayName"] for o in entry["owners"]] == ["Payments BE", "Identity BE"]
+    assert [o["syncedFrom"] for o in entry["owners"]] == ["pod-sync", None]
+
+
+def test_a_target_nobody_owns_says_so_with_an_empty_list(wire):
+    """Twenty of the enabled fleet. An absent key would make the screen guess
+    between "no owner" and "the server did not tell me"."""
+    wire["owners"] = []
+    entry = ra.admin_connections(claims=SUPER)["connections"][0]
+    assert entry["owners"] == []

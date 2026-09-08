@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from . import db
+from . import access, db
 
 
 # ===========================================================================
@@ -25,11 +25,25 @@ from . import db
 # ===========================================================================
 
 
+def _v2() -> bool:
+    """Whether authorization comes from the nine-table model.
+
+    Imported from `teams` rather than re-reading the key here: one helper, one
+    key, so the two modules cannot end up on different sides of the switch
+    mid-request — which would be a request authorized by one model and approved
+    by the other.
+    """
+    from .teams import use_v2
+    return use_v2()
+
+
 def list_active() -> list[dict]:
     """Every Slack user who counts as admin RIGHT NOW (permanent +
     currently-active temp). Columns: slack_user_id, name, source
     ('permanent' | 'temp'), expires_at (None for permanent). De-dup'd
     on slack_user_id with permanent rows winning."""
+    if _v2():
+        return access.list_admins()
     rows = db.fetch_all(
         "SELECT slack_user_id, name, "
         "       'permanent'::text AS source, "
@@ -55,6 +69,8 @@ def list_active() -> list[dict]:
 def is_admin(principal_id: str) -> bool:
     """True iff the user has either a permanent admin row OR at least
     one active temp grant. Cheap — single query against the union."""
+    if _v2():
+        return access.is_admin(principal_id)
     row = db.fetch_one(
         "SELECT 1 "
         "  FROM admins "
@@ -75,6 +91,8 @@ def is_super_admin(principal_id: str) -> bool:
     others. Temp grants can NOT make someone a super-admin (their own
     scope columns mirror the same shape, and the grant code path
     requires the issuer to be permanent + unrestricted)."""
+    if _v2():
+        return access.is_super_admin(principal_id)
     row = db.fetch_one(
         "SELECT 1 FROM admins "
         " WHERE slack_user_id = %s "
@@ -211,10 +229,70 @@ def can_approve(admin_slack_id: str, request: dict) -> bool:
     veto — only the absence of any in-scope candidate does."""
     if not request:
         return False
+    if _v2():
+        return access.can_approve(admin_slack_id, request)
     candidates = _candidate_scope_rows(admin_slack_id)
     if not candidates:
         return False
     return any(_scope_admits(c, request) for c in candidates)
+
+
+def notify_list(request: dict) -> list[dict]:
+    """Everyone who should be DM'd about ONE pending request.
+
+    `list_active()` answers "who administers QueryHub", and four callers mean
+    exactly that — the Admin scopes screen, the IdP drift report, service
+    notices, CSV-import approvals (gated on `is_admin`, so a scoped approver
+    could not act on one anyway). Widening it would have put approvers into
+    the panel's drift report as admins the IdP does not know about.
+
+    This answers a different question, and it is the one the request fan-out
+    asks. Under the new model a `role_assignment` can say "approves for this
+    team, up to RW" — the person the whole scoped-approver feature exists for
+    — and `list_active()` filters `role = 'admin'`, so that person was never
+    in the list and never learned a request they could approve was waiting.
+
+    Two rules, and the difference between them is deliberate:
+
+      * an ADMIN is listed for every request. Out-of-scope ones arrive
+        view-only, which is transparency: an administrator seeing traffic
+        they cannot approve is the point.
+      * a scoped APPROVER is listed only when the request is in their scope.
+        They are not an administrator, and a pod lead who was DM'd every
+        request on the fleet would mute the bot within a day — at which
+        point the ones they CAN approve are lost too.
+
+    Takes the request so the scope test happens once, here, rather than in
+    each consumer: `dispatch_and_notify` hands the same list to the Slack
+    fan-out and to the notification_outbox row, and those two must never
+    name different people.
+    """
+    people = list_active()
+    if not _v2():
+        return people
+    seen = {p["slack_user_id"] for p in people}
+    rows = db.fetch_all(
+        "SELECT DISTINCT ON (i.external_id) "
+        "       i.external_id AS slack_user_id, p.display_name AS name, "
+        "       CASE WHEN ra.valid_until IS NULL THEN 'permanent' "
+        "            ELSE 'temp' END AS source, "
+        "       ra.valid_until AS expires_at "
+        "  FROM role_assignment ra "
+        "  JOIN principal p ON p.id = ra.principal_id AND NOT p.is_deleted "
+        "  JOIN principal_identity i ON i.principal_id = p.id "
+        "   AND NOT i.is_deleted AND i.provider = 'slack' "
+        " WHERE ra.role = 'approver' AND p.enabled "
+        "   AND NOT ra.is_deleted AND ra.revoked_at IS NULL "
+        "   AND (ra.valid_until IS NULL OR ra.valid_until > NOW()) "
+        " ORDER BY i.external_id, (ra.valid_until IS NOT NULL), ra.valid_until")
+    for r in rows:
+        uid = r["slack_user_id"]
+        if uid in seen:
+            continue
+        if can_approve(uid, request):
+            people.append(r)
+            seen.add(uid)
+    return people
 
 
 def by_email(email: str) -> dict | None:

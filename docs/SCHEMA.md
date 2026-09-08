@@ -85,7 +85,7 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
 | `067_execution_lease.sql` | Execution lease for orphaned-request reconciliation (STAB-01 / BUG-03). |
 | `068_target_engine.sql` | `target_servers.engine` — dispatch for multi-engine targets. |
 | `069_mssql_host_map.sql` | Bot-DB IP map for SQL Server Availability Group nodes. |
-| `070_target_pod_owner.sql` | `target_pod_owner`: each target → the engineering pod that owns it. |
+| `070_target_pod_owner.sql` | `target_pod_owner`: each target → the engineering pod that owns it, by name inference. Dropped in 104. |
 | `071_pii_exemption_keep_value_scan.sql` | Soft PII exemption: lift the column-NAME mask but keep the value scan. |
 | `072_web_notification_reads.sql` | Read-state for the web notification bell. |
 | `073_target_secrets_provider.sql` | Pluggable secrets provider per target. |
@@ -118,6 +118,23 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
   summary and the server's own NOTICE/WARNING output for a run, rendered in
   the Messages tab. A script that returns no rows used to finish with nothing
   on screen but a row count of zero.
+- **100_scrub_query_secrets** — `scrub_query_secrets(text)` and a `BEFORE
+  UPDATE` trigger on `requests` that masks `PASSWORD '…'` literals once a
+  request reaches a terminal status, so a role-management statement does not
+  keep a cleartext secret in the request history or in the DMs that quote it.
+- **101_idp_assertion** — `idp_assertion_jti`: the replay ledger for 60-second
+  identity assertions signed by a trusted portal (see AUTH.md §1.2); the insert
+  prunes expired rows. New `bot_config`: `idp_assertion_enabled` (off),
+  `idp_public_keys` (`{}`), `idp_sync_principal` (empty).
+- **102_notification_outbox** — `notification_outbox`: one row per pending
+  request and the admins told about it, for a portal to poll and acknowledge.
+  Slack DMs are unchanged.
+- **103_pod_inventory** — first shape of the pod inventory (`pod_roster`,
+  `pod_service_database`), superseded by 104 the next day.
+- **104_pod_tables_rename** — `pod`, `pod_detail`, `pod_mapping`: who is in
+  which pod and which database each service talks to, loaded by an external
+  collector as full-refresh snapshots. Drops `target_pod_owner`, whose guessed
+  ownership map they replace.
 
 ---
 
@@ -803,6 +820,20 @@ completion; `attempts` / `last_error` bound retries. The Slack process runs the
 poller, and so does the web process in the vanilla profile; processed rows are
 trimmed after `auth_outbox_retention_days` (default 14).
 
+### `idp_assertion_jti`
+
+Replay ledger for identity assertions from a trusted portal (migration 101, AUTH.md
+§1.2): one row per accepted `jti` with its `expires_at`. The primary key is what
+refuses a replay; each insert prunes the expired rows, so there is no sweep job.
+
+### `notification_outbox`
+
+One row per pending request and the admins notified about it (migration 102):
+`event_type`, `request_id`, `recipients`, `payload`, `processed_at`. Written on
+every submit next to the Slack DMs, never instead of them; read and acknowledged
+through two admin-gated routes so a portal can render an approvals queue without
+owning an admins table of its own.
+
 ### `schema_tables` / `schema_columns`
 
 Hourly snapshot of every reachable target schema, backing `/sql tables`,
@@ -816,11 +847,29 @@ Time-bounded per-user raises of the row/size caps (migration 059), so a one-off
 large export does not require changing the fleet default. Expired rows simply
 stop applying.
 
-### `target_pod_owner`
+### `pod`
 
-Maps each target to its owning team and lead (migration 070), populated from an
-external service catalog. Used for routing and reporting; absence is not an
-error.
+One row per pod (migration 104): `slug` (stable code), `name` (display name and
+the key — it is the one identifier every upstream source shares, and a brand-new
+pod may have no slug yet), `org`, `product`, `kanban_board`, `plan_boards`,
+`open_work`, `member_count`, `lead_name`. Loaded as a full-refresh snapshot by an
+external collector, so `loaded_at` is uniform across a load and says how stale
+it is. Nothing in the bot reads these tables yet; they are the seed of the
+team-based access model.
+
+### `pod_detail`
+
+One row per (pod, person): `pod_name` → `pod.name`, `person_name`, `email`,
+`lead_status` (`yes` / `no` / `unknown`).
+
+### `pod_mapping`
+
+One row per (service, database dependency, environment): `pod_slug`,
+`service_name`, `rds_endpoint` when the dependency names a real host,
+`pod_source` (how the owner was attributed — the portal, a same-repo or
+same-system guess, the catalog, or `unknown`), `cloud`, `environment`,
+`endpoint_status`. No foreign key to `pod` on purpose: the portal owns pods that
+carry services but no people.
 
 ### `mssql_host_map`
 

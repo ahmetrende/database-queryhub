@@ -41,7 +41,19 @@ async function qhFetch(path, opts = {}, _retried = false) {
   try { body = await res.json(); } catch (err) { /* non-JSON */ }
   if (!res.ok) {
     const err = (body && body.error) || { code: 'server_error', message: 'Request failed (' + res.status + ')' };
-    const e = new Error(err.message); e.code = err.code; e.status = res.status; throw e;
+    // Spread the envelope FIRST, then the named fields — the same rule PR #31
+    // put on the result payload, now on the error path. This listed `message`
+    // and `code` by hand, so every structured field the server sends beside
+    // them was dropped in transit: `expiredOn` on `access_expired`, `reasons`
+    // on `confirmation_required`, and `roleId` on the roles 409. Each one has
+    // a reader that silently falls back, which is why none of them ever
+    // surfaced as a bug — `qhConfirmReasons` re-splits the message text and
+    // the lapsed-grant panel uses the server's sentence, so the loss looked
+    // like the feature working.
+    const e = new Error(err.message);
+    Object.assign(e, err);
+    e.code = err.code; e.status = res.status;
+    throw e;
   }
   return body;
 }
@@ -198,6 +210,18 @@ const qhApi = {
   adminScopes:     ()     => qhFetch('/admin/scopes'),
   adminSaveScope:  (b)    => qhFetch('/admin/scopes', { method: 'POST', body: JSON.stringify(b) }),
   adminDelScope:   (id)   => qhFetch('/admin/scopes/' + encodeURIComponent(id), { method: 'DELETE' }),
+  // Roles — who may approve, grant or import, and over what. Reading needs any
+  // admin; both writes need a super-admin, so the view hides its controls
+  // rather than offering a button that 403s.
+  //
+  // The body goes through WHOLE and is never rebuilt field by field here. Twice
+  // now a client that re-listed the keys it knew about silently dropped the
+  // ones it did not (colTypes, then statements[] — PR #31), and a role's body
+  // is exactly the shape that invites it: seven optional fields where a missing
+  // `maxTier` is not an error, just a ceiling that quietly stops applying.
+  adminRoles:      ()     => qhFetch('/admin/roles'),
+  adminAddRole:    (b)    => qhFetch('/admin/roles', { method: 'POST', body: JSON.stringify(b) }),
+  adminDelRole:    (id)   => qhFetch('/admin/roles/' + encodeURIComponent(id), { method: 'DELETE' }),
   adminConnections:()     => qhFetch('/admin/connections'),
   // Target-server registry CRUD (super-admin). Passwords travel in the
   // credentials block on create/update and are never returned: a response

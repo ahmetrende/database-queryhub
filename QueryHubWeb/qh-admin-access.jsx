@@ -425,13 +425,15 @@ function GrantsView({ st, user }) {
               );
             }
             return (
-              <table className="qh-atable">
+              <div className="qh-tablewrap">
+              <table className="qh-atable qh-acttable">
                 <thead><tr><th>Subject</th><th>Target</th><th>Tier</th><th>Expires</th><th>Granted by</th><th></th></tr></thead>
                 <tbody>
                   {grouped.map(([k, list]) => <React.Fragment key={k || 'all'}>{k && <tr className="qh-grouphead"><td colSpan={6}>{k}<span className="qh-grouphead-n">{list.length}</span></td></tr>}{list.map(renderRow)}</React.Fragment>)}
                   {rows.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No grants match your filter.</td></tr>}
                 </tbody>
               </table>
+              </div>
             );
           })()}
         </>
@@ -556,7 +558,8 @@ function AutoView({ st, user }) {
         <AccSearch q={q} setQ={setQ} placeholder="Filter by person, team, server…" />
         <AccGroupBy group={group} setGroup={setGroup} options={[['none', 'None'], ['subject', 'Person or team'], ['server', 'Server']]} />
       </div>
-      <table className="qh-atable">
+      <div className="qh-tablewrap">
+      <table className="qh-atable qh-acttable">
         {/* "Subject" was the data model's word for what is a person on screen
             (CODE brief 2026-08-20 §2). */}
         <thead><tr><th>Person or team</th><th>Scope</th><th>Tier</th><th>Expiry</th><th>Granted by</th><th></th></tr></thead>
@@ -570,6 +573,7 @@ function AutoView({ st, user }) {
           {rows.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No auto-approve grants match your filter.</td></tr>}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -639,7 +643,8 @@ function ScopesView({ st, user }) {
         <AccSearch q={q} setQ={setQ} placeholder="Filter by admin, role, connection…" />
         <AccGroupBy group={group} setGroup={setGroup} options={[['none', 'None'], ['role', 'Role'], ['connection', 'Connection']]} />
       </div>
-      <table className="qh-atable">
+      <div className="qh-tablewrap">
+      <table className="qh-atable qh-acttable">
         <thead><tr><th>Admin</th><th>Role</th><th>Can approve</th><th>Connections</th><th></th></tr></thead>
         <tbody>
           {grouped.map(([k, list]) => (
@@ -651,6 +656,7 @@ function ScopesView({ st, user }) {
           {rows.length === 0 && <tr><td colSpan={5} className="qh-conn-empty">No admins match your filter.</td></tr>}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -761,7 +767,8 @@ function TeamsView({ st, user }) {
           </div>
         </>
       ) : (
-        <table className="qh-atable">
+        <div className="qh-tablewrap">
+        <table className="qh-atable qh-acttable">
           <thead><tr><th>Person</th><th>Handle</th><th>Teams</th><th></th></tr></thead>
           <tbody>
             {pRows.map(p => editPerson === p.handle ? (
@@ -784,6 +791,7 @@ function TeamsView({ st, user }) {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );
@@ -1186,14 +1194,15 @@ function ConnectionsView({ st, user }) {
         const arrow = (k) => (sort.key === k ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : '');
         const th = (k, label, cls) => <th className={'qh-sort-th' + (sort.key === k ? ' is-sorted' : '') + (cls || '')} onClick={() => toggleSort(k)}>{label}<span className="qh-sort-arw">{arrow(k)}</span></th>;
         return (
-          <table className="qh-atable qh-conntable">
+          <div className="qh-tablewrap">
+          <table className="qh-atable qh-conntable qh-acttable">
             <thead><tr>{th('name', 'Connection')}{th('engine', 'Engine')}{th('hosting', 'Hosting')}{th('enabled', 'Status')}{th('env', 'Environment')}{th('dbs', 'Databases')}<th className="qh-tright">Actions</th></tr></thead>
             <tbody>
               {rows.map(c => {
                 const probe = tested[c.id];
                 return (
                 <tr key={c.id}>
-                  <td><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b>{c.name}</b></div>{c.host && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}</td>
+                  <td><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b>{c.name}</b></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}</td>
                   <td className="qh-muted">{c.engine}</td>
                   {/* Provider + service on one line; the account and any custom
                       tags are on the hover, because this column sits between two
@@ -1228,6 +1237,7 @@ function ConnectionsView({ st, user }) {
               {rows.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No connections match your filter.</td></tr>}
             </tbody>
           </table>
+          </div>
         );
       })()}
     </div>
@@ -1238,4 +1248,6 @@ function ConnectionsView({ st, user }) {
 // person-first screen (`qh-admin-person.jsx`), which is a separate Babel scope:
 // one picker for every field that names a person, one expiry control everywhere
 // a grant can end — a second copy of either is a second set of rules.
-Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel });
+// `AccGroupBy` goes with them: the Roles screen groups by team, and its own
+// segmented control would be a second grouping idiom on one page.
+Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy });

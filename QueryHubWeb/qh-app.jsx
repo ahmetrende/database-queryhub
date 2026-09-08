@@ -248,8 +248,27 @@ function App() {
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
+  // Crossing between the editor and the admin panel is a move, so it gets a
+  // history entry in BOTH directions — this only cleared the hash on the way
+  // out, with replaceState, so neither crossing was a Back target and Back
+  // from anywhere inside the app left it for the sign-in page.
+  //
+  // Entering pushes a bare '#admin'; AdminPanel's own effect immediately
+  // REPLACES it with '#admin/<section>', so the crossing costs exactly one
+  // entry rather than two. pushState/replaceState do not fire `hashchange`,
+  // so neither write re-enters the listener above.
+  const viewFirst = useRef(true);
   useEffect(() => {
-    if (view === 'dev' && (location.hash || '').indexOf('#admin') === 0) window.history.replaceState(null, '', location.pathname + location.search);
+    const inAdmin = (location.hash || '').indexOf('#admin') === 0;
+    if (view === 'admin' && !inAdmin) {
+      window.history.pushState(null, '', '#admin');
+    } else if (view === 'dev' && inAdmin) {
+      const url = location.pathname + location.search;
+      // First pass is a deep link this session cannot honour, not a move.
+      if (viewFirst.current) window.history.replaceState(null, '', url);
+      else window.history.pushState(null, '', url);
+    }
+    viewFirst.current = false;
   }, [view]);
 
   // Real developer data (loaded from the API once signed in; empty until then).

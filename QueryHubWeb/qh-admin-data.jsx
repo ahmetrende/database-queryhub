@@ -77,6 +77,12 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const [grants, setGrants] = useAdminStateHook([]);
   const [autoGrants, setAutoGrants] = useAdminStateHook([]);
   const [scopes, setScopes] = useAdminStateHook([]);
+  const [roles, setRoles] = useAdminStateHook([]);
+  // `enforced` = the fleet's access_model_v2 switch. While it is false the DIRECT
+  // rows in /admin/roles are recorded but not consulted (the old path reads the
+  // legacy admins table), so the screen has to say so — a dormant approver row
+  // otherwise tells its reader something untrue about who can approve.
+  const [rolesEnforced, setRolesEnforced] = useAdminStateHook(true);
   const [people, setPeople] = useAdminStateHook([]);
   const [teams, setTeams] = useAdminStateHook([]);
   const [endpointReqs, setEndpointReqs] = useAdminStateHook([]);
@@ -110,6 +116,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const loadAudit = useAdminCb(() => qhApi.adminAudit().then(r => setAudit(r.audit || [])).catch(() => {}), []);
   const loadKill = useAdminCb(() => qhApi.adminKillGet().then(r => setKillSwitch({ enabled: !!r.enabled, message: r.message || '', by: r.by || null, at: r.at || null })).catch(() => {}), []);
   const loadScopes = useAdminCb(() => qhApi.adminScopes().then(r => setScopes(r.scopes || [])).catch(() => {}), []);
+  const loadRoles = useAdminCb(() => qhApi.adminRoles().then(r => { setRoles(r.roles || []); setRolesEnforced(r.enforced !== false); }).catch(() => {}), []);
   const loadEndpointReqs = useAdminCb(() => qhApi.adminEndpointReqs().then(r => setEndpointReqs((r.requests || []).map(x => ({ ...x, tier: x.tier || null })))).catch(() => {}), []);
   const loadPeople = useAdminCb(() => qhApi.adminPeople().then(r => setPeople(r.people || [])).catch(() => {}), []);
   const loadTeams = useAdminCb(() => qhApi.adminTeams().then(r => setTeams(r.teams || [])).catch(() => {}), []);
@@ -128,6 +135,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
       qhApi.adminAudit().then(r => setAudit(r.audit || [])),
       qhApi.adminKillGet().then(r => setKillSwitch({ enabled: !!r.enabled, message: r.message || '', by: r.by || null, at: r.at || null })),
       qhApi.adminScopes().then(r => setScopes(r.scopes || [])),
+      qhApi.adminRoles().then(r => { setRoles(r.roles || []); setRolesEnforced(r.enforced !== false); }),
       qhApi.adminEndpointReqs().then(r => setEndpointReqs((r.requests || []).map(x => ({ ...x, tier: x.tier || null })))),
       qhApi.adminFeedback().then(r => setFeedback(r.feedback || [])),
       qhApi.adminMetrics().then(r => setMetrics(r || {})),
@@ -254,6 +262,26 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const revokeAutoGrant = (id) => {
     qhApi.adminDelAutoGrant(id).then(() => { loadAuto(); loadAudit(); pushToast && pushToast('Auto-approve grant revoked.'); })
       .catch(e => fail(e, 'Revoke failed.'));
+  };
+
+  // Roles — POST /admin/roles, DELETE /admin/roles/{id}. Both need a super-admin;
+  // reading needs any admin, so the view hides the controls rather than letting
+  // them fail. The promise is RETURNED and NOT toasted on failure: every refusal
+  // this endpoint has (400 admin-with-scope, 404 no account) names a field, and
+  // the form renders it beside that field with the input still filled in — a
+  // toast would send the admin back to a form that no longer says what went
+  // wrong. Revoke has no form, so its refusal (409 on a mirrored row) is a toast.
+  const addRole = (r) =>
+    qhApi.adminAddRole({ subject: r.subject, role: r.role, scopeTeamId: r.scopeTeamId || null,
+      scopeTargetId: r.scopeTargetId || null, maxTier: r.maxTier || null,
+      validUntil: r.validUntil || null, reason: r.reason || null })
+      .then(res => { loadRoles(); loadAudit();
+        pushToast && pushToast('Role added: ' + ((res && res.name) || r.subject) + ' · ' + r.role + '.');
+        return res; })
+      .catch(e => { throw e; });
+  const removeRole = (id) => {
+    return qhApi.adminDelRole(id).then(() => { loadRoles(); loadAudit(); pushToast && pushToast('Role revoked.'); })
+      .catch(e => { fail(e, 'Revoke failed.'); throw e; });
   };
 
   // Admin scopes — real writes (POST /admin/scopes upserts a scoped/super
@@ -396,13 +424,14 @@ function useAdminState(pushToast, active, isAdminViewer) {
   };
 
   return {
-    queue, grants, autoGrants, scopes, people, teams, endpointReqs, feedback, audit, metrics, connections, killSwitch, config, pushToast,
+    queue, grants, autoGrants, scopes, roles, rolesEnforced, people, teams, endpointReqs, feedback, audit, metrics, connections, killSwitch, config, pushToast,
     loadError, loading, reload: reloadAll,
     decide, batchApprove, approveBundle, toggleKill,
     addGrant, updateGrant, revokeGrant, setSubjectGrants,
     effectiveAccess, copyAccess, resolvePerson,
     addAutoGrant, updateAutoGrant, revokeAutoGrant,
     saveScope, removeScope, decideEndpoint, saveConfig,
+    addRole, removeRole,
     addTeam, updateTeam, removeTeam, setPersonTeams,
     addConnection, updateConnection, removeConnection, setConnectionEnabled,
     reloadConnections: loadConnections,

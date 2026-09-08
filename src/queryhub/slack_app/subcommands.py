@@ -375,10 +375,7 @@ def _handle_teams(user_id, rest, client, respond, body):
         _handle_one_team(arg, respond)
         return
 
-    rows = db.fetch_all(
-        "SELECT id, name, description, member_count, grant_count "
-        "  FROM v_team_summary ORDER BY name"
-    )
+    rows = teams.list_team_summaries()
     if not rows:
         _respond(respond, "_No teams defined yet._")
         return
@@ -398,33 +395,17 @@ def _handle_teams(user_id, rest, client, respond, body):
 
 
 def _handle_one_team(team_name, respond):
-    team = db.fetch_one(
-        "SELECT id, name, description, created_at "
-        "  FROM teams WHERE name = %s",
-        (team_name,),
-    )
-    if team is None:
+    # Both shapes go through teams.py so they follow `access_model_v2` with
+    # the resolver. Reading the legacy tables here would have been correct
+    # today — the mirror keeps them equal — and wrong the day writes move,
+    # which is the kind of correctness that expires without failing.
+    detail = teams.team_detail(team_name)
+    if detail is None:
         _respond(respond,
                  f":question: No team named `{team_name}`. "
                  "Run `/sql teams` for the full list.")
         return
-    grants = db.fetch_all(
-        "SELECT ts.alias, g.mode, g.allowed_databases, g.target_role "
-        "  FROM team_target_grants g "
-        "  JOIN target_servers ts ON ts.id = g.target_server_id "
-        " WHERE g.team_id = %s ORDER BY ts.alias",
-        (team["id"],),
-    )
-    members = db.fetch_all(
-        "SELECT tm.slack_user_id, "
-        "       COALESCE(a.name, r.name, '(?)') AS name "
-        "  FROM team_members tm "
-        "  LEFT JOIN admins      a ON a.slack_user_id     = tm.slack_user_id "
-        "  LEFT JOIN requesters  r ON r.slack_user_id     = tm.slack_user_id "
-        " WHERE tm.team_id = %s "
-        " ORDER BY name NULLS LAST, tm.slack_user_id",
-        (team["id"],),
-    )
+    team, grants, members = detail["team"], detail["grants"], detail["members"]
 
     lines = [
         f"Team        : {team['name']}",

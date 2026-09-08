@@ -37,6 +37,9 @@ def main() -> int:
     except Exception:
         log.info("Starting QueryHub")
 
+    from . import access
+    access.warn_if_access_model_v2()
+
     # This entrypoint IS the Slack bot. In the vanilla (no-Slack) profile
     # there is nothing for it to do — the web process runs on its own — so
     # fail fast with a clear message instead of crashing deep in Bolt.

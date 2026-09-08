@@ -27,6 +27,7 @@ from queryhub import db  # noqa: E402
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
 # Arbitrary fixed key so concurrent invocations serialize on one lock.
+_LOCK_TIMEOUT = "3s"
 _ADVISORY_LOCK_KEY = 728041
 
 _LEDGER_DDL = """
@@ -76,6 +77,14 @@ def main(argv: list[str] | None = None) -> int:
     # survives commits) is held from first apply to last.
     with db.connection() as conn, conn.cursor() as cur:
         cur.execute("SELECT pg_advisory_lock(%s)", (_ADVISORY_LOCK_KEY,))
+        # Never queue for a lock on a live table. A migration that adds a
+        # column takes ACCESS EXCLUSIVE, and if anything is holding a
+        # conflicting lock the ALTER waits — with every reader that arrives
+        # afterwards queued behind it. On the busiest table that turns a
+        # metadata-only change into an outage. Fail fast instead and let the
+        # operator re-run: a migration that has to wait is a migration that
+        # should be attempted at a quieter moment.
+        cur.execute(f"SET lock_timeout = '{_LOCK_TIMEOUT}'")
         conn.commit()
         try:
             cur.execute(_LEDGER_DDL)

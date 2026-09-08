@@ -18,9 +18,36 @@ from __future__ import annotations
 from datetime import timezone
 from zoneinfo import ZoneInfo
 
-from . import admins, db, requesters
+from . import access, admins, db, requesters
 from . import config as cfg
 from .targets import TargetServer, _row_to_target
+
+
+# ---------------------------------------------------------------------------
+# the switch
+# ---------------------------------------------------------------------------
+#
+# Every function below has two bodies: the one that reads `teams` /
+# `team_target_grants` / `user_target_grants`, and a delegation to
+# `access.py`, which answers the same questions from the nine-table model.
+# `bot_config.access_model_v2` chooses, and it is read per call like every
+# other runtime setting, so switching back is a config change and not a deploy.
+#
+# The call sites are untouched — about 140 of them across ten modules — because
+# a rewrite of that size is a rewrite with a missed one in it. What changes is
+# what these bodies read, and nothing about what they return: the two are proved
+# to agree on every (principal, target, database) answer in the fleet by
+# `scripts/access_snapshot.py`, which is the only reason this flag may be
+# turned on.
+#
+# Delete the legacy halves once the flag has been on long enough to trust —
+# they are the rollback until then, which is why the duplication is deliberate
+# rather than laziness.
+
+
+def use_v2() -> bool:
+    return (cfg.get_setting("access_model_v2", "off") or "").strip().lower() \
+        == "on"
 
 
 def _is_unrestricted(principal_id: str) -> bool:
@@ -31,6 +58,9 @@ def _is_unrestricted(principal_id: str) -> bool:
         - bypass: every ENABLED target (respects ts.enabled flag)
     Use `admins.is_admin(slack_user_id)` directly when you need that
     finer distinction."""
+    if use_v2():
+        return access.is_admin(principal_id) or \
+            access.has_fleet_wide_grant(principal_id)
     return admins.is_admin(principal_id) or requesters.bypasses_team_grants(principal_id)
 
 
@@ -42,6 +72,8 @@ def list_targets_for_user(principal_id: str) -> list[TargetServer]:
                   normal user — bypass is "see everywhere", not "see
                   hidden things").
         - other:  only targets reached via their team grants, enabled."""
+    if use_v2():
+        return access.visible_targets(principal_id)
     if admins.is_admin(principal_id):
         rows = db.fetch_all(
             "SELECT id, alias, host, port, default_database, username, enabled, notes, "
@@ -81,6 +113,8 @@ def search_targets_for_user(
     principal_id: str, prefix: str, limit: int = 100
 ) -> list[TargetServer]:
     """Same as list_targets_for_user but with alias LIKE filter for typeahead."""
+    if use_v2():
+        return access.search_visible_targets(principal_id, prefix, limit)
     if admins.is_admin(principal_id):
         rows = db.fetch_all(
             "SELECT id, alias, host, port, default_database, username, enabled, notes, "
@@ -125,6 +159,8 @@ def search_targets_for_user(
 def can_use_target(principal_id: str, target_id: int) -> bool:
     """User may target this server if admin/bypass, OR has a team grant
     on it, OR has a user_target_grants row on it."""
+    if use_v2():
+        return access.can_use_target(principal_id, target_id)
     if _is_unrestricted(principal_id):
         return True
     row = db.fetch_one(
@@ -149,6 +185,8 @@ def can_use_database(principal_id: str, target_id: int, database_name: str) -> b
     """True iff the user's effective grant on this target permits
     `database_name`. Uses effective_grant_for_user as the single
     source of truth (user_target_grants override team grants)."""
+    if use_v2():
+        return access.can_use_database(principal_id, target_id, database_name)
     grant = effective_grant_for_user(principal_id, target_id)
     if grant is None:
         return False
@@ -164,6 +202,9 @@ def allowed_databases_for_user(
     all'. Resolution mirrors effective_grant_for_user: user_target_grants
     overrides team grants entirely; team grants aggregate (NULL beats
     list)."""
+    if use_v2():
+        got = access.resolve_target(principal_id, target_id)
+        return set() if got is None else got["databases"]
     grant = effective_grant_for_user(principal_id, target_id)
     if grant is None:
         return set()
@@ -225,6 +266,8 @@ def expired_grant_at(principal_id: str, target_id: int):
     when nothing here ever applied to them. The caller formats it — a transport
     that can render a state wants the date, not a sentence.
     """
+    if use_v2():
+        return access.expired_grant_at(principal_id, target_id)
     row = db.fetch_one(
         "SELECT max(expires_at) AS at FROM ("
         "  SELECT g.expires_at FROM user_target_grants g "
@@ -274,6 +317,9 @@ def effective_grant_for_user(
     wrong on its own terms and should be changed knowingly, not as a side
     effect of adding expiry.
     """
+    if use_v2():
+        return access.legacy_shape(
+            access.resolve_target(principal_id, target_id))
     if _is_unrestricted(principal_id):
         return {"mode": "ddl", "allowed_databases": None, "source": "admin_or_bypass"}
 
@@ -349,6 +395,9 @@ def effective_grants_for_user(
     Nothing on the SUBMISSION path uses this — that path resolves one target and
     should keep doing the cheapest possible thing.
     """
+    if use_v2():
+        return {tid: access.legacy_shape(got) for tid, got in
+                access.resolve_many(principal_id, target_ids).items()}
     ids = list(dict.fromkeys(int(t) for t in target_ids))
     if not ids:
         return {}
@@ -434,6 +483,9 @@ def effective_mode_for_database(
     the union `{dbA, dbB}` and could write to dbB. Here a grant
     contributes its tier ONLY to the databases it actually covers, resolved
     per grant and fail-closed."""
+    if use_v2():
+        got = access.resolve(principal_id, target_id, database_name)
+        return got["tier"] if got else None
     if _is_unrestricted(principal_id):
         return "ddl"
 
@@ -473,6 +525,8 @@ def has_any_grant(principal_id: str) -> bool:
     a team membership backed by a team grant, or a user_target_grants
     row. Used at /sql entry to short-circuit users with no access at
     all (they get the access-request flow)."""
+    if use_v2():
+        return access.has_any_grant(principal_id)
     if _is_unrestricted(principal_id):
         return True
     row = db.fetch_one(
@@ -489,3 +543,91 @@ def has_any_grant(principal_id: str) -> bool:
         (principal_id, principal_id),
     )
     return row is not None
+
+
+def list_team_summaries() -> list[dict]:
+    """Every team with its live member and grant counts, for `/sql teams`.
+
+    Flag-aware like the resolver above, and for the same reason: after the
+    cutover the legacy view describes a structure nothing decides with. It is
+    also the one Slack surface where the two models genuinely differ — the new
+    model carries teams from an org import (`source <> 'manual'`) that the
+    legacy table has never heard of.
+    """
+    if use_v2():
+        return db.fetch_all(
+            "SELECT t.id, t.name, t.description, "
+            "  (SELECT count(*) FROM team_member m "
+            "    WHERE m.team_id = t.id AND NOT m.is_deleted) AS member_count, "
+            "  (SELECT count(*) FROM access_grant g "
+            "    WHERE g.team_id = t.id AND NOT g.is_deleted "
+            "      AND g.revoked_at IS NULL AND NOT g.auto_approve "
+            "      AND (g.valid_until IS NULL OR g.valid_until > NOW())) "
+            "    AS grant_count, "
+            "  t.created_at "
+            "  FROM team t WHERE NOT t.is_deleted ORDER BY t.name")
+    return db.fetch_all(
+        "SELECT id, name, description, member_count, grant_count, created_at "
+        "  FROM v_team_summary ORDER BY name")
+
+
+def team_detail(team_name: str) -> dict | None:
+    """One team's members and grants, or None if there is no such team.
+
+    `grants` are the live ones only — neither revoked nor expired. The legacy
+    query listed every row in `team_target_grants`, so a grant that had been
+    revoked, or had simply run out, read as access the team still had. See
+    migrations 112 and 113, which fixed the same two omissions in the summary
+    count, and `test_every_grant_query_checks_expiry`, which is what caught
+    the expiry half here.
+    """
+    if use_v2():
+        team = db.fetch_one(
+            "SELECT id, name, description, created_at FROM team "
+            " WHERE name = %s AND NOT is_deleted", (team_name,))
+        if team is None:
+            return None
+        grants = db.fetch_all(
+            "SELECT COALESCE(ts.alias, 'every target') AS alias, g.tier AS mode, "
+            "       CASE WHEN g.all_databases THEN NULL "
+            "            ELSE ARRAY[g.database_name] END AS allowed_databases, "
+            "       g.db_role AS target_role "
+            "  FROM access_grant g "
+            "  LEFT JOIN target_servers ts ON ts.id = g.target_id "
+            " WHERE g.team_id = %s AND NOT g.is_deleted "
+            "   AND g.revoked_at IS NULL AND NOT g.auto_approve "
+            "   AND (g.valid_until IS NULL OR g.valid_until > NOW()) "
+            " ORDER BY alias", (team["id"],))
+        members = db.fetch_all(
+            "SELECT i.external_id AS slack_user_id, "
+            "       COALESCE(p.display_name, '(?)') AS name "
+            "  FROM team_member m "
+            "  JOIN principal p ON p.id = m.principal_id "
+            "  JOIN principal_identity i ON i.principal_id = p.id "
+            "   AND i.provider = 'slack' AND NOT i.is_deleted "
+            " WHERE m.team_id = %s AND NOT m.is_deleted "
+            " ORDER BY name NULLS LAST, i.external_id", (team["id"],))
+        return {"team": team, "grants": grants, "members": members}
+
+    team = db.fetch_one(
+        "SELECT id, name, description, created_at FROM teams WHERE name = %s",
+        (team_name,))
+    if team is None:
+        return None
+    grants = db.fetch_all(
+        "SELECT ts.alias, g.mode, g.allowed_databases, g.target_role "
+        "  FROM team_target_grants g "
+        "  JOIN target_servers ts ON ts.id = g.target_server_id "
+        " WHERE g.team_id = %s AND g.revoked_at IS NULL "
+        "   AND (g.expires_at IS NULL OR g.expires_at > NOW()) "
+        " ORDER BY ts.alias",
+        (team["id"],))
+    members = db.fetch_all(
+        "SELECT tm.slack_user_id, "
+        "       COALESCE(a.name, r.name, '(?)') AS name "
+        "  FROM team_members tm "
+        "  LEFT JOIN admins      a ON a.slack_user_id = tm.slack_user_id "
+        "  LEFT JOIN requesters  r ON r.slack_user_id = tm.slack_user_id "
+        " WHERE tm.team_id = %s "
+        " ORDER BY name NULLS LAST, tm.slack_user_id", (team["id"],))
+    return {"team": team, "grants": grants, "members": members}

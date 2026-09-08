@@ -86,6 +86,46 @@ approvals and result delivery are Slack DMs, and `users.info` remains the
 
 ---
 
+### 1.2 Identity assertions from a trusted portal (service to service)
+
+A third way in, for a portal that proxies QueryHub on behalf of its own
+signed-in users. There is no browser session: every request carries an
+`X-IDP-Assertion` header holding a 60-second JWT signed with Ed25519 (`EdDSA`)
+by the portal. `verify()` in `web/idp_assertion.py`:
+
+- looks the key up by `kid` in `bot_config.idp_public_keys` (a JSON object,
+  kid → PEM);
+- requires `exp`, `iat`, `sub`, `jti`, `aud` and `iss`, and checks `aud` /
+  `iss` against `idp_audience` / `idp_issuer` (defaults `queryhub` / `idp`);
+- checks the assertion is bound to THIS request — method, path with its query
+  string, and body — so one minted for a call cannot be replayed against another;
+- refuses a reused `jti` through the `idp_assertion_jti` ledger;
+- applies the same `web_allowed_email_domain` gate the OIDC providers apply;
+- resolves the asserted address to an existing `requesters` or `admins` row and
+  proceeds as that principal. An unknown address is refused, never created.
+
+A request that carries the header is judged by the assertion ONLY —
+`current_user` never falls through to the cookie after refusing one. Such
+requests record `origin = idp` next to `slack` and `web`.
+
+Everything here is inert until `bot_config.idp_assertion_enabled = on`. Beyond
+the proxied `/api` surface the portal gets two things, both behind
+`require_admin("review")`:
+
+- `POST /api/admin/principals/sync` — the reconcile. Only the principal named
+  in `bot_config.idp_sync_principal` may call it. It enables and disables
+  `requesters` rows to match the list of addresses the portal sends, never
+  writes `admins`, refuses a list that would disable every requester, returns
+  the addresses it cannot resolve for a human to onboard, and writes an
+  `idp_principal_sync` audit row. **A requester missing from the list is
+  disabled** — read the list before the first run.
+- `GET /api/admin/notifications/outbox` and
+  `POST /api/admin/notifications/outbox/{id}/processed` — the pending-request
+  feed and its acknowledgement.
+
+Give the sync account an `admins` row scoped to nothing (`scope_team_ids='{}'`,
+`scope_target_ids='{}'`): it passes the admin gate and can approve no request.
+
 ## 2. Login flow (one-time identity)
 
 **Slack OIDC** — a standard authorization-code round-trip:

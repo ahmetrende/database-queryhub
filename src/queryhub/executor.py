@@ -34,7 +34,7 @@ except ModuleNotFoundError:  # vanilla profile: the [slack] extra isn't installe
 if TYPE_CHECKING:  # only a type hint — no runtime dependency on slack_sdk
     from slack_sdk.web import WebClient
 
-from . import admins, audit, cancellation, cell_format, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, ratings, requesters, row_limits, stmt_guard, targets, teams
+from . import access, admins, audit, cancellation, cell_format, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, ratings, requesters, row_limits, stmt_guard, targets, teams
 from . import config as cfg
 from .slack_app import notifications
 
@@ -170,6 +170,16 @@ def _team_role_for(principal_id: str, target_id: int) -> str | None:
     as the bot's login user) or when no role is configured."""
     if admins.is_admin(principal_id):
         return None
+    # Follows `access_model_v2` like every other authorization read. Nothing
+    # visible changes today — `target_role` and its successor `db_role` are
+    # NULL on every row in both models, so both branches answer None — but
+    # this is the one place a role configured AFTER the cutover would have
+    # been silently ignored, and a query then runs as the bot's login user
+    # instead of the role the grant named. Wrong in the permissive direction,
+    # and invisible.
+    if teams.use_v2():
+        got = access.resolve_target(principal_id, target_id)
+        return (got or {}).get("db_role")
     row = db.fetch_one(
         "SELECT g.target_role "
         "FROM team_target_grants g "

@@ -17,7 +17,9 @@ sync script now refuses to run while there is anything here left to take.
     # …then review the branch, run the gates, and open a pull request.
 
 What it does NOT do: push, merge, or invent a commit for the replica. It leaves
-a branch in this repository and prints what it found.
+a branch in this repository and prints what it found. It builds that branch in
+a throw-away worktree and brings their changes over as a PATCH, taking their
+whole files only when the patch does not apply — see `apply_theirs`.
 
 The baseline
 ------------
@@ -38,8 +40,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -123,6 +127,50 @@ def message(commits: list[dict], baseline: str, ref: str) -> str:
     return head + body + "\n" + "\n".join(coauthors(commits)) + "\n"
 
 
+def apply_theirs(baseline: str, ref: str, paths: list[str], branch: str,
+                 msg: str) -> tuple[str, list[str]]:
+    """Land their paths on a new `branch` and commit them. Returns (sha, replaced).
+
+    Two things this deliberately does NOT do to the checkout it runs in:
+
+    * It never switches its branch. The services run from this tree through an
+      editable install, so a `git checkout -b` here would change the code under
+      running processes before anyone decided to restart them. The branch is
+      built in a throw-away worktree and only the branch survives.
+    * It never takes their whole file when a patch will do. Checking out the
+      replica's version of a path replaces everything this repository changed
+      in that file since the baseline, silently — the first import this script
+      ran would have reverted three releases of `routes_admin.py` that way. So
+      the diff is applied as a patch first; a conflict is the signal, not
+      noise. Only when the patch does not apply are their files taken
+      wholesale, and `replaced` names every one of those whose upstream copy
+      had moved, so the caller can say what was lost.
+    """
+    start = git("rev-parse", "HEAD").strip()
+    wt = Path(tempfile.mkdtemp(prefix="import-replica-"))
+    try:
+        git("worktree", "add", "-q", "-b", branch, str(wt), start)
+        run = lambda *a, **k: subprocess.run(("git", *a), cwd=str(wt),  # noqa: E731
+                                            capture_output=True, text=True, **k)
+        patch = git("diff", "--binary", baseline, ref, "--", *paths)
+        replaced: list[str] = []
+        applied = run("apply", "--index", "--3way", input=patch)
+        if applied.returncode != 0:
+            run("reset", "-q", "--hard", start)
+            run("checkout", "-q", ref, "--", *paths)
+            run("add", "--", *paths)
+            moved = git("diff", "--name-only", baseline, start, "--", *paths)
+            replaced = [p for p in moved.splitlines() if p.strip()]
+        committed = run("commit", "-q", "-F", "-", input=msg)
+        if committed.returncode != 0:
+            sys.exit(f"commit failed:\n{committed.stderr.strip()}")
+        return run("rev-parse", "HEAD").stdout.strip(), replaced
+    finally:
+        # The worktree was the workbench, not the result: the branch stays.
+        git("worktree", "remove", "--force", str(wt), check=False)
+        shutil.rmtree(wt, ignore_errors=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -173,22 +221,16 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit(f"branch {args.branch} already exists here — delete it or pass "
                  f"--branch with another name.")
 
-    start = git("rev-parse", "HEAD").strip()
-    git("checkout", "-q", "-b", args.branch)
-    # Checkout the paths from the replica rather than applying a patch: their
-    # tree is the authority for those files, and a patch would conflict against
-    # anything that moved upstream in the meantime — noise, since the whole
-    # point is to take THEIR version of the files they touched.
-    git("checkout", ref, "--", *paths)
-    git("add", "--", *paths)
     msg = message(commits, baseline, ref)
-    proc = subprocess.run(("git", "commit", "-F", "-"), cwd=str(ROOT),
-                          input=msg, capture_output=True, text=True)
-    if proc.returncode != 0:
-        git("checkout", "-q", start)
-        sys.exit(f"commit failed:\n{proc.stderr.strip()}")
+    sha, replaced = apply_theirs(baseline, ref, paths, args.branch, msg)
+    if replaced:
+        print("  their patch did not apply cleanly; took THEIR version of these files,\n"
+              "  which drops what this repository changed in them since the baseline:")
+        for path in replaced:
+            print(f"    {path}")
+        print("  review that diff before merging.")
 
-    print(f"\n  branch {args.branch} created on {start[:8]}")
+    print(f"  branch {args.branch} = {sha[:8]}; this checkout stayed where it was.")
     print("  now: run the gates, review the diff, and open a pull request.")
     print("    python3 scripts/check_repo_clean.py && python3 -m pytest -q")
     return 0

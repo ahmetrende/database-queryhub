@@ -109,6 +109,13 @@ def test_middleware_caches_the_body_without_stealing_it(monkeypatch):
         seen["dep_body"] = request.scope.get("_body")
         return {"ok": True}
 
+    # create_app() may have mounted the built frontend at "/" — a Mount matches
+    # every path regardless of method, so a route appended after it is never
+    # reached and StaticFiles answers 405 to the POST. That happens only where
+    # the bundle has been built (an operator's checkout), never in CI, which is
+    # exactly the kind of test that looks fine until it doesn't. Put the probe
+    # first so the middleware, not the mount, is what this test measures.
+    app.router.routes.insert(0, app.router.routes.pop())
     client = TestClient(app)
     r = client.post("/api/_probe_body", content=b'{"sql":"SELECT 1"}',
                     headers={deps.ASSERTION_HEADER: "tok",

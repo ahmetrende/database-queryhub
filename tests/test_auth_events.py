@@ -10,7 +10,7 @@ def alias_of(tid):
     return ALIAS.get(tid)
 
 
-def team_info(team_id):
+def team_info(team_id, table=None):
     return ("payments", ["U01AAAAAAAA", "U01BBBBBBBB"]) if team_id == 3 else (None, [])
 
 
