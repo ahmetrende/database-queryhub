@@ -49,6 +49,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The MCP door is opt-in, and so is its dependency. The roadmap's vanilla
+# profile promises a newcomer nothing mandatory beyond a database, and this
+# pulls thirteen packages -- including a second HTTP client stack, since the
+# SDK is on httpx2 while QueryHub is on httpx. Neither service imports it: the
+# policy and the tools are SDK-free on purpose, so the package installs,
+# imports and tests without this extra present.
+#
+# Upper-bounded like the others, and for a sharper reason: 2.x renamed the
+# server class and deleted the 1.x import path, so a major here is a rewrite
+# of the adapter, not a bump.
+mcp = [
+    "mcp>=2.2.0,<3",
+]
 dev = [
     "pytest>=8.0",
     # Coverage is measured and gated in CI (see .github/workflows/ci.yml):

@@ -312,6 +312,20 @@ Close before the repository goes public or before any "try me" artifact ships.
 - [ ] **White-label branding** admin (name, logo, accent) on the theme-token
       system; **PII region packs** (generic + country-specific, selectable);
       **i18n**; **Helm chart**.
+- [ ] **Masking-exemption admin screen.** `pii_masking_exemptions` is
+      psql-only today: 31 rows, written by hand, and every one of them widens
+      what a result shows. The screen has to make the semantics legible rather
+      than expose the columns — scope is a ladder (target / database / schema /
+      table / column) where each rung reaches further, `keep_value_scan`
+      separates "stop matching this column by NAME" from "stop looking at the
+      values", and `apply_in_joins` decides whether the exemption survives a
+      query that also touches a masked table. Those three are the ones a person
+      gets wrong from a form. `reason` is not a note: it is what an auditor
+      reads later, so it belongs in the flow rather than beside it. Needs a
+      preview against a real recent query on that table — the honest question
+      is "what will people see that they do not see now", and the current
+      answer takes a psql session and knowledge of which of two resolver
+      functions applies.
 - [ ] Position PII masking honestly in docs as accidental-exposure mitigation,
       not a hard data boundary (that lives in column privilege / RLS / masking
       views on the target).

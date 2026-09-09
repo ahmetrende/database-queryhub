@@ -20,9 +20,14 @@ from __future__ import annotations
 SLACK = "slack"
 WEB = "web"
 IDP = "idp"
+# A program came through the MCP door rather than a person through a UI.
+# Declared here for the same reason IDP is: the value has one spelling,
+# and the surfaces that show an admin which door was used learn it in one
+# place instead of four.
+MCP = "mcp"
 
 # Display names, for the surfaces that show a human which door was used.
-_LABELS = {SLACK: "Slack", WEB: "Web", IDP: "IdP"}
+_LABELS = {SLACK: "Slack", WEB: "Web", IDP: "IdP", MCP: "MCP"}
 
 
 def normalize(origin: str | None) -> str:
