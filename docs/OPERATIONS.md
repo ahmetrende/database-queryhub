@@ -1251,6 +1251,16 @@ The bot keeps the permanent `admins` table immutable — temp grants
 go into `temp_admin_grants`, and `is_admin` / `can_approve` /
 `list_active` consult both tables.
 
+> **Not in force while `access_model_v2` is on.** Under the new model
+> those three answers come from `access.py`, which reads
+> `role_assignment` and does not know this table; the migration-109
+> mirror does not project it either, so a row written here decides
+> nothing. Nobody has been caught by it — the table has never held a
+> row — but do not use this recipe to arrange on-call cover until the
+> temp grant is either mirrored into `role_assignment` or replaced by
+> a time-bounded `admin` role row, which `role_assignment.valid_until`
+> already supports. Write the role row directly in the meantime.
+
 ### Inspect
 
 ```sql

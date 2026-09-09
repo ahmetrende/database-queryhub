@@ -1841,33 +1841,57 @@ def _guard_admin(
     body: dict,
     request_id: int | None = None,
 ) -> bool:
-    """Block non-admins. When `request_id` is supplied, additionally
-    enforce admins.can_approve(admin, request) — scope-based RBAC.
-    NULL on all scope columns = wildcard (super admin, current
-    default). Non-NULL columns narrow the admin's authority."""
+    """Block anyone who may not act here.
+
+    Two different questions, and this used to ask only the first one.
+
+    With NO request in hand the action is administrative -- approving an
+    endpoint request, acting on a whole bundle -- and `is_admin` is the gate.
+
+    WITH a request, the question is authority over THAT request, and
+    `admins.can_approve` answers it on its own: an admin satisfies it
+    fleet-wide (narrowed by their scope columns, if any), and a scoped
+    approver satisfies it inside their scope. Demanding `is_admin` first made
+    the scope check unreachable for the only people it was added for -- a pod
+    lead was DM'd about a request from their own pod, on their own pod's
+    database, and refused with "you are not an authorized admin" when they
+    pressed Approve. The notification became scope-aware and the button did
+    not.
+
+    A request that has gone away cannot be judged on scope, so it falls back
+    to the administrative gate rather than to nothing.
+    """
     user_id = body["user"]["id"]
-    if not admins.is_admin(user_id):
-        ack()
-        notifications.dm_requester(
-            client, user_id,
-            ":no_entry: You are not an authorized admin for the SQL bot.",
-        )
-        return False
+    req = None
     if request_id is not None:
         req = db.fetch_one(
-            "SELECT id, query, target_server_id, requester_slack_id "
+            # `required_tier` and `engine` are what the scope check needs to
+            # know how high this request reaches. Selected explicitly, not
+            # `*`, so the next person sees that the list is load-bearing.
+            "SELECT id, query, target_server_id, requester_slack_id, "
+            "       required_tier, engine "
             "FROM requests WHERE id = %s",
             (request_id,),
         )
-        if req is not None and not admins.can_approve(user_id, req):
+    if req is None:
+        if not admins.is_admin(user_id):
             ack()
             notifications.dm_requester(
                 client, user_id,
-                ":no_entry: This request is outside your admin scope "
-                "(tier / target / team restriction). Ask another admin "
-                "with broader scope to handle it.",
+                ":no_entry: You are not an authorized admin for the SQL bot.",
             )
             return False
+    elif not admins.can_approve(user_id, req):
+        ack()
+        notifications.dm_requester(
+            client, user_id,
+            ":no_entry: This request is outside your approval scope "
+            "(tier / target / team restriction). Ask an admin, or someone "
+            "with broader scope, to handle it."
+            if admins.has_approval_authority(user_id)
+            else ":no_entry: You are not an authorized admin for the SQL bot.",
+        )
+        return False
     profile_sync.maybe_backfill_user_profile(client, user_id)
     return True
 
@@ -2225,14 +2249,20 @@ def handle_access_request_submission(ack: Ack, body: dict, client: WebClient) ->
 
     ack()
 
-    new_row = access_requests.create(
-        principal_id=user["id"],
-        name=user.get("name") or user.get("username"),
-        target_server_id=parsed["target_server_id"],
-        database_name=parsed["database_name"],
-        attempted_query=parsed["attempted_query"],
-        reason=parsed["reason"],
-    )
+    try:
+        new_row = access_requests.create(
+            principal_id=user["id"],
+            name=user.get("name") or user.get("username"),
+            target_server_id=parsed["target_server_id"],
+            database_name=parsed["database_name"],
+            attempted_query=parsed["attempted_query"],
+            reason=parsed["reason"],
+        )
+    except access_requests.ControlPlaneRefused as exc:
+        # The target picker offers every enabled target on purpose, so the
+        # refusal has to happen here rather than by hiding the option.
+        notifications.dm_requester(client, user["id"], f":no_entry: {exc}")
+        return
     if new_row is None:
         # Lost a race with another submission — tell the user gently.
         notifications.dm_requester(
@@ -2337,6 +2367,12 @@ def handle_access_approve(ack: Ack, body: dict, client: WebClient) -> None:
                       f"tier (*{(ag.get('mode') or '?').upper()}*) already exists — "
                       "adjust it manually if intended.")
         requester_note = "\n\nA DBA will finalize your access shortly."
+    elif ag.get("reason") == "control_plane":
+        grant_line = ("\n:no_entry: Auto-grant refused: this is the bot's own "
+                      "control-plane database. It holds the audit log and the "
+                      "grant tables, and is not grantable from here.")
+        requester_note = ("\n\nThis connection cannot be granted through an "
+                          "access request.")
     elif ag.get("reason") == "no_target":
         grant_line = ("\n:warning: Auto-grant skipped: this server is not onboarded "
                       "as a target yet — onboard it, then grant manually.")
@@ -2627,11 +2663,15 @@ def handle_dba_failed_submission(ack: Ack, body: dict, client: WebClient) -> Non
 
 
 def _bundle_pending_items_in_scope(bundle_id: int, admin_id: str) -> list[dict]:
-    """Pending items in a bundle that this admin's scope allows. Loads
-    each item with the fields admins.can_approve() looks at."""
+    """Pending items in a bundle that this admin's scope allows.
+
+    Loads each item with the fields `admins.can_approve()` looks at -- which
+    this docstring already claimed while omitting `required_tier`, the one
+    whose absence makes a tier ceiling admit nothing.
+    """
     rows = db.fetch_all(
         "SELECT id, query, target_server_id, requester_slack_id, "
-        "       scheduled_for, bundle_id "
+        "       required_tier, engine, scheduled_for, bundle_id "
         "  FROM requests "
         " WHERE bundle_id = %s AND status = 'pending' "
         " ORDER BY position",

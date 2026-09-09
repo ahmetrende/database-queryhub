@@ -455,6 +455,23 @@ def db_schema(conn: str, dbname: str, claims: dict = Depends(deps.current_user))
     for c in crows:
         cols_by_table.setdefault(c["table_id"], []).append(c)
 
+    # One PII lookup for the whole response, not one per column.
+    #
+    # This asked `pii.column_pii_map([name])` inside the per-column loop, and
+    # that helper reloads the pattern catalog from the bot DB on every call --
+    # its docstring says "called once per result", which is true of the
+    # executor and was not true here. The largest catalogued database has just
+    # over 40,000 columns, so one /schema request issued that many identical
+    # SELECTs.
+    #
+    # Batching is behaviour-identical because the old call passed the column
+    # NAME and nothing else: no table, no SQL, no lineage. Name-level
+    # granularity is what it already had, so the set of flagged names is the
+    # same set, computed once.
+    all_names = sorted({c["column_name"] for c in crows})
+    pii_names = {all_names[i] for i in pii.column_pii_map(all_names)} \
+        if all_names else set()
+
     tables, views = [], []
     for tr in trows:
         fks = mapping.fk_map(tr.get("foreign_keys"))
@@ -463,7 +480,7 @@ def db_schema(conn: str, dbname: str, claims: dict = Depends(deps.current_user))
             name = c["column_name"]
             entry = {"name": name, "type": c["data_type"],
                      "nullable": not c["not_null"], "pk": bool(c["is_pk"]),
-                     "pii": bool(pii.column_pii_map([name]))}
+                     "pii": name in pii_names}
             if name in fks:
                 entry["fk"] = fks[name]
             columns.append(entry)

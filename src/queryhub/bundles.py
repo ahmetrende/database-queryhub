@@ -159,6 +159,9 @@ def list_items(cur: Any, bundle_id: int) -> list[dict]:
                r.database_name, r.query, r.wants_result, r.justification,
                r.row_count, r.truncated, r.error_message,
                r.executed_at, r.completed_at, r.risk_summary,
+               -- the approval-scope check reads these; without them a tier
+               -- ceiling admits nothing (see access.can_approve)
+               r.required_tier, r.engine,
                ts.alias AS target_alias, ts.host AS target_host
           FROM requests r
           JOIN target_servers ts ON ts.id = r.target_server_id

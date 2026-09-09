@@ -38,6 +38,20 @@ def test_merge_databases():
 
 # ---- decide() + _auto_grant against a scripted connection -------------------
 
+
+@pytest.fixture(autouse=True)
+def _ordinary_target(monkeypatch):
+    """`_auto_grant` asks `grants.control_plane_target_ids()` whether the
+    target is the bot's own metadata database, and that reads `bot_config`.
+    These tests forbid a real connection, so answer it here: the fixture
+    targets in this file are ordinary ones.
+
+    Autouse and empty-set rather than per-test, so the next test added to this
+    file gets the same answer instead of a confusing connection error."""
+    monkeypatch.setattr("queryhub.grants.control_plane_target_ids",
+                        lambda: set())
+
+
 class FakeConn:
     """Records every execute; serves scripted fetchone() results in order."""
     def __init__(self, fetch_results):

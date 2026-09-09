@@ -252,20 +252,52 @@ def admin_dm_blocks(access_request: dict, target: targets.TargetServer | None,
     # Approve. We only generate the *additive* snippet (existing-team path)
     # because creating a NEW team is a strategic decision; admin is pointed
     # at deploy/team_admin_templates.sql for that.
-    db_arg = (
-        f"ARRAY['{access_request['database_name']}']"
-        if access_request.get("database_name") else "NULL"
-    )
-    snippet = (
-        "-- Add user to existing team (replace TEAM_NAME):\n"
-        f"INSERT INTO team_members (team_id, slack_user_id) VALUES\n"
-        f"    ((SELECT id FROM teams WHERE name = 'TEAM_NAME'), '{requester_id}')\n"
-        f"ON CONFLICT DO NOTHING;\n"
-        "-- Ensure that team has the grant for this target+db:\n"
-        f"INSERT INTO team_target_grants (team_id, target_server_id, allowed_databases) VALUES\n"
-        f"    ((SELECT id FROM teams WHERE name = 'TEAM_NAME'), {target_id_for_snippet}, {db_arg})\n"
-        f"ON CONFLICT DO NOTHING;"
-    )
+    # The snippet has to name the tables the live model actually reads.
+    # Against the legacy ones after the pod cutover this recipe did not just
+    # do nothing: `(SELECT id FROM teams WHERE name = ...)` returns NULL from
+    # an empty table, so the admin's paste failed on a not-null column. A
+    # broken recipe on the card is worse than no recipe, because it is read as
+    # the supported way to do this.
+    from .. import teams as teams_mod
+    dbn = access_request.get("database_name")
+    if teams_mod.use_v2():
+        db_col = f"'{dbn}'" if dbn else "NULL"
+        snippet = (
+            "-- Add user to an existing team (replace TEAM_NAME with its name "
+            "or label):\n"
+            "INSERT INTO team_member (team_id, principal_id)\n"
+            "SELECT t.id, i.principal_id\n"
+            "  FROM team t, principal_identity i\n"
+            " WHERE (t.name = 'TEAM_NAME' OR t.display_name = 'TEAM_NAME')\n"
+            "   AND NOT t.is_deleted\n"
+            f"   AND i.external_id = '{requester_id}' AND i.provider = 'slack'\n"
+            "   AND NOT i.is_deleted\n"
+            "ON CONFLICT (team_id, principal_id) WHERE NOT is_deleted "
+            "DO NOTHING;\n"
+            "-- Ensure that team has the grant for this target+db:\n"
+            "INSERT INTO access_grant\n"
+            "  (team_id, target_id, all_targets, database_name, all_databases,\n"
+            "   tier, valid_from, reason)\n"
+            f"SELECT t.id, {target_id_for_snippet}, FALSE, {db_col}, "
+            f"{'FALSE' if dbn else 'TRUE'}, 'ro', now(),\n"
+            "       'granted from an access request'\n"
+            "  FROM team t\n"
+            " WHERE (t.name = 'TEAM_NAME' OR t.display_name = 'TEAM_NAME')\n"
+            "   AND NOT t.is_deleted\n"
+            "ON CONFLICT DO NOTHING;"
+        )
+    else:
+        db_arg = f"ARRAY['{dbn}']" if dbn else "NULL"
+        snippet = (
+            "-- Add user to existing team (replace TEAM_NAME):\n"
+            f"INSERT INTO team_members (team_id, slack_user_id) VALUES\n"
+            f"    ((SELECT id FROM teams WHERE name = 'TEAM_NAME'), '{requester_id}')\n"
+            f"ON CONFLICT DO NOTHING;\n"
+            "-- Ensure that team has the grant for this target+db:\n"
+            f"INSERT INTO team_target_grants (team_id, target_server_id, allowed_databases) VALUES\n"
+            f"    ((SELECT id FROM teams WHERE name = 'TEAM_NAME'), {target_id_for_snippet}, {db_arg})\n"
+            f"ON CONFLICT DO NOTHING;"
+        )
     blocks.append({"type": "divider"})
     blocks.append({
         "type": "section",

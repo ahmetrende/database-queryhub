@@ -18,7 +18,7 @@ from datetime import timezone
 
 from slack_sdk.web import WebClient
 
-from .. import admins, bundles, csv_import, db, grants, schema_catalog, teams, templates
+from .. import admins, audit, bundles, csv_import, db, grants, schema_catalog, teams, templates
 from .. import config as cfg
 from .. import targets as targets_mod
 from . import admin_grant, modal, notifications
@@ -351,12 +351,24 @@ def _handle_kill(user_id, rest, client, respond, body):
     if arg not in ("on", "off"):
         _respond(respond, ":warning: Usage: `/sql kill on` or `/sql kill off`.")
         return
-    db.execute("UPDATE bot_config SET value = %s WHERE key = 'kill_switch'", (arg,))
-    cfg.invalidate_cache()   # the kill switch must take effect on the next call
     user_name = db.fetch_one(
         "SELECT name FROM admins WHERE slack_user_id = %s", (user_id,)
     )
     actor = (user_name or {}).get("name") or user_id
+    # The config write and the audit row go in ONE transaction. This wrote
+    # the switch and then only `log.warning`, so the single most consequential
+    # toggle in the product -- it halts every query on every target -- left no
+    # trace an auditor can read: journald rotates, `audit_log` does not. The
+    # web route beside it has always written one. A crash between the two
+    # statements would otherwise leave the fleet stopped with no record of who
+    # stopped it.
+    with db.transaction() as cur:
+        cur.execute("UPDATE bot_config SET value = %s, updated_at = NOW() "
+                    " WHERE key = 'kill_switch'", (arg,))
+        audit.log_in(cur, None, user_id, actor, "kill_switch_set",
+                     {"enabled": arg == "on", "from": current, "to": arg,
+                      "via": "slack"})
+    cfg.invalidate_cache()   # the kill switch must take effect on the next call
     log.warning("kill_switch toggled to %s by %s", arg, actor)
     _respond(respond,
              f":zap: `kill_switch` set to *{arg}* by {actor}. "

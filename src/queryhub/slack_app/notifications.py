@@ -1161,11 +1161,16 @@ def _build_bundle_dm_blocks(bundle: dict, items: list[dict],
     any_pending_in_scope = False
     item_blocks: list[dict] = []
     for it in items:
+        # `required_tier` and `engine` are not decoration: a role row with a
+        # tier ceiling is SKIPPED when the tier is absent, so leaving them out
+        # showed every ceiling-bearing admin a view-only bundle.
         item_for_scope = {
             "id": it["id"],
             "query": it["query"],
             "target_server_id": it["target_server_id"],
             "requester_slack_id": bundle["requester_slack_id"],
+            "required_tier": it.get("required_tier"),
+            "engine": it.get("engine"),
         }
         in_scope = admins.can_approve(admin_id, item_for_scope)
         if it["status"] == "pending":

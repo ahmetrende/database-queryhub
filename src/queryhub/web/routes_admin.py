@@ -1480,6 +1480,46 @@ class TeamIn(BaseModel):
     members: list[str] | None = None
 
 
+def _team_for_write(team_id: int) -> dict:
+    """The team this id names, in whichever model the screen is reading.
+
+    The Teams list started answering from the nine-table model when the read
+    path followed the switch, but the three mutation routes kept addressing
+    the legacy `teams` table by the id the list had handed out. Those are
+    different tables with different sequences: after the pod cutover the list
+    returns ids 14-26 while `teams` is empty and its sequence sits at 10. So a
+    rename reported success and changed nothing, a delete answered 404 for
+    every team on the screen, and once four teams had been created through the
+    web the two id spaces would have started overlapping -- at which point the
+    rename would have edited a DIFFERENT team than the one on screen.
+
+    Returns the row plus `source`, which the callers use to refuse editing a
+    team this screen does not own.
+    """
+    if teams_mod.use_v2():
+        return db.fetch_one(
+            "SELECT id, name, display_name, source FROM team "
+            " WHERE id = %s AND NOT is_deleted", (team_id,))
+    row = db.fetch_one("SELECT id, name FROM teams WHERE id = %s", (team_id,))
+    return {**row, "display_name": None, "source": None} if row else None
+
+
+def _refuse_synced_team(team: dict) -> None:
+    """A team that arrived from an org import is not this screen's to edit.
+
+    `scripts/import_teams.py` and the pod sync own every row carrying their
+    `source`, and reconcile it on the next run -- so a rename here would be
+    silently undone, which is worse than being refused. Same rule the
+    connection-owner rows already follow: a synced link is not the reader's to
+    correct, a hand-made one is.
+    """
+    if team.get("source"):
+        raise deps._error(
+            409, "synced_team",
+            f"This team is kept in step with '{team['source']}' and cannot be "
+            f"edited here; change it at the source.")
+
+
 @router.post("/teams", status_code=201)
 def admin_create_team(body: TeamIn, claims: dict = Depends(deps.current_user)):
     uid = admin.require_admin(claims, "access")
@@ -1490,12 +1530,28 @@ def admin_create_team(body: TeamIn, claims: dict = Depends(deps.current_user)):
         raise deps._error(409, "conflict", f"A team named '{name}' already exists.")
     members = _valid_member_ids(body.members)
     with db.transaction() as cur:
-        cur.execute("INSERT INTO teams (name, description) VALUES (%s, %s) "
-                    "RETURNING id", (name, (body.desc or "").strip() or None))
-        tid = cur.fetchone()["id"]
-        for m in members:
-            cur.execute("INSERT INTO team_members (team_id, slack_user_id) "
-                        "VALUES (%s, %s) ON CONFLICT DO NOTHING", (tid, m))
+        if teams_mod.use_v2():
+            # `source` stays NULL: a team made here is hand-made, and the
+            # importers only reconcile rows carrying their own source.
+            cur.execute(
+                "INSERT INTO team (name, display_name, description) "
+                "VALUES (%s, %s, %s) RETURNING id",
+                (name, name, (body.desc or "").strip() or None))
+            tid = cur.fetchone()["id"]
+            for m in members:
+                cur.execute(
+                    "INSERT INTO team_member (team_id, principal_id) "
+                    "SELECT %s, i.principal_id FROM principal_identity i "
+                    " WHERE i.external_id = %s AND i.provider = 'slack' "
+                    "   AND NOT i.is_deleted "
+                    "ON CONFLICT DO NOTHING", (tid, m))
+        else:
+            cur.execute("INSERT INTO teams (name, description) VALUES (%s, %s) "
+                        "RETURNING id", (name, (body.desc or "").strip() or None))
+            tid = cur.fetchone()["id"]
+            for m in members:
+                cur.execute("INSERT INTO team_members (team_id, slack_user_id) "
+                            "VALUES (%s, %s) ON CONFLICT DO NOTHING", (tid, m))
         audit.log_in(cur, None, uid, claims.get("name"), "team_created",
                      {"team": name, "team_id": tid, "members": members})
     return {"id": str(tid), "name": name, "desc": (body.desc or "").strip(),
@@ -1508,9 +1564,10 @@ def admin_update_team(team_id: int, body: TeamIn,
     """Rename/re-describe a team and reconcile its membership in one save. The
     team_members trigger DMs every added/removed member automatically."""
     uid = admin.require_admin(claims, "access")
-    team = db.fetch_one("SELECT id, name FROM teams WHERE id = %s", (team_id,))
+    team = _team_for_write(team_id)
     if team is None:
         raise deps._error(404, "not_found", "No such team.")
+    _refuse_synced_team(team)
     name = (body.name or "").strip()
     if not name:
         raise deps._error(400, "bad_request", "Team name is required.")
@@ -1518,18 +1575,54 @@ def admin_update_team(team_id: int, body: TeamIn,
         raise deps._error(409, "conflict", f"A team named '{name}' already exists.")
     desired = set(_valid_member_ids(body.members))
     with db.transaction() as cur:
-        cur.execute("UPDATE teams SET name = %s, description = %s WHERE id = %s",
-                    (name, (body.desc or "").strip() or None, team_id))
-        cur.execute("SELECT slack_user_id FROM team_members WHERE team_id = %s",
-                    (team_id,))
-        existing = {r["slack_user_id"] for r in cur.fetchall()}
-        to_add, to_remove = desired - existing, existing - desired
-        if to_remove:
-            cur.execute("DELETE FROM team_members WHERE team_id = %s "
-                        "AND slack_user_id = ANY(%s)", (team_id, list(to_remove)))
-        for m in to_add:
-            cur.execute("INSERT INTO team_members (team_id, slack_user_id) "
-                        "VALUES (%s, %s) ON CONFLICT DO NOTHING", (team_id, m))
+        if teams_mod.use_v2():
+            cur.execute(
+                "UPDATE team SET name = %s, display_name = %s, description = %s "
+                " WHERE id = %s", (name, name,
+                                   (body.desc or "").strip() or None, team_id))
+            cur.execute(
+                "SELECT i.external_id AS slack_user_id FROM team_member m "
+                "  JOIN principal_identity i ON i.principal_id = m.principal_id "
+                "   AND i.provider = 'slack' AND NOT i.is_deleted "
+                " WHERE m.team_id = %s AND NOT m.is_deleted", (team_id,))
+            existing = {r["slack_user_id"] for r in cur.fetchall()}
+            to_add, to_remove = desired - existing, existing - desired
+            if to_remove:
+                # Soft delete, like every other reader of this table expects:
+                # a membership that ended is a fact somebody may be reading a
+                # message about.
+                cur.execute(
+                    "UPDATE team_member m SET is_deleted = TRUE "
+                    "  FROM principal_identity i "
+                    " WHERE m.team_id = %s AND i.principal_id = m.principal_id "
+                    "   AND i.provider = 'slack' AND NOT i.is_deleted "
+                    "   AND i.external_id = ANY(%s)", (team_id, list(to_remove)))
+            for m in to_add:
+                cur.execute(
+                    "INSERT INTO team_member (team_id, principal_id) "
+                    "SELECT %s, i.principal_id FROM principal_identity i "
+                    " WHERE i.external_id = %s AND i.provider = 'slack' "
+                    "   AND NOT i.is_deleted "
+                    # `team_member_uq` is PARTIAL (WHERE NOT is_deleted), so
+                    # the inference has to carry the same predicate. A member
+                    # removed earlier does not conflict at all and gets a fresh
+                    # row, which is what soft delete is for -- the old row
+                    # stays as the record that the membership once ended.
+                    "ON CONFLICT (team_id, principal_id) WHERE NOT is_deleted "
+                    "DO NOTHING", (team_id, m))
+        else:
+            cur.execute("UPDATE teams SET name = %s, description = %s WHERE id = %s",
+                        (name, (body.desc or "").strip() or None, team_id))
+            cur.execute("SELECT slack_user_id FROM team_members WHERE team_id = %s",
+                        (team_id,))
+            existing = {r["slack_user_id"] for r in cur.fetchall()}
+            to_add, to_remove = desired - existing, existing - desired
+            if to_remove:
+                cur.execute("DELETE FROM team_members WHERE team_id = %s "
+                            "AND slack_user_id = ANY(%s)", (team_id, list(to_remove)))
+            for m in to_add:
+                cur.execute("INSERT INTO team_members (team_id, slack_user_id) "
+                            "VALUES (%s, %s) ON CONFLICT DO NOTHING", (team_id, m))
         audit.log_in(cur, None, uid, claims.get("name"), "team_updated",
                      {"team": name, "team_id": team_id,
                       "added": sorted(to_add), "removed": sorted(to_remove)})
@@ -1540,13 +1633,26 @@ def admin_update_team(team_id: int, body: TeamIn,
 @router.delete("/teams/{team_id}", status_code=204)
 def admin_delete_team(team_id: int, claims: dict = Depends(deps.current_user)):
     uid = admin.require_admin(claims, "access")
-    team = db.fetch_one("SELECT id, name FROM teams WHERE id = %s", (team_id,))
+    team = _team_for_write(team_id)
     if team is None:
         raise deps._error(404, "not_found", "No such team.")
+    _refuse_synced_team(team)
     with db.transaction() as cur:
-        # team_members + team_target_grants cascade on delete; their auth_event
-        # triggers DM every affected member (lost membership + lost access).
-        cur.execute("DELETE FROM teams WHERE id = %s", (team_id,))
+        if teams_mod.use_v2():
+            # Soft delete here, and the grants with it: `access_grant` rows
+            # naming this team keep answering otherwise, and the resolver does
+            # not join `team.is_deleted`.
+            cur.execute("UPDATE team SET is_deleted = TRUE WHERE id = %s",
+                        (team_id,))
+            cur.execute("UPDATE team_member SET is_deleted = TRUE "
+                        " WHERE team_id = %s AND NOT is_deleted", (team_id,))
+            cur.execute("UPDATE access_grant SET revoked_at = NOW() "
+                        " WHERE team_id = %s AND revoked_at IS NULL "
+                        "   AND NOT is_deleted", (team_id,))
+        else:
+            # team_members + team_target_grants cascade on delete; their
+            # auth_event triggers DM every affected member.
+            cur.execute("DELETE FROM teams WHERE id = %s", (team_id,))
         audit.log_in(cur, None, uid, claims.get("name"), "team_deleted",
                      {"team": team["name"], "team_id": team_id})
     return
@@ -1569,21 +1675,54 @@ def admin_set_person_teams(slack_id: str, body: PersonTeamsIn,
             desired.add(int(t))
         except (TypeError, ValueError):
             pass
+    # Same seam as the three team routes: the People tab lists teams from
+    # whichever model is live, so the ids it sends back have to be checked
+    # against that model. Validated against `teams` alone, every id from a v2
+    # screen fell out here and the save quietly set the person's membership to
+    # nothing.
+    v2 = teams_mod.use_v2()
     if desired:  # keep only teams that actually exist
-        rows = db.fetch_all("SELECT id FROM teams WHERE id = ANY(%s)",
-                            (list(desired),))
+        rows = db.fetch_all(
+            "SELECT id FROM team WHERE id = ANY(%s) AND NOT is_deleted"
+            if v2 else "SELECT id FROM teams WHERE id = ANY(%s)",
+            (list(desired),))
         desired = {r["id"] for r in rows}
     with db.transaction() as cur:
-        cur.execute("SELECT team_id FROM team_members WHERE slack_user_id = %s",
-                    (slack_id,))
-        existing = {r["team_id"] for r in cur.fetchall()}
-        to_add, to_remove = desired - existing, existing - desired
-        if to_remove:
-            cur.execute("DELETE FROM team_members WHERE slack_user_id = %s "
-                        "AND team_id = ANY(%s)", (slack_id, list(to_remove)))
-        for tid in to_add:
-            cur.execute("INSERT INTO team_members (team_id, slack_user_id) "
-                        "VALUES (%s, %s) ON CONFLICT DO NOTHING", (tid, slack_id))
+        if v2:
+            cur.execute(
+                "SELECT m.team_id FROM team_member m "
+                "  JOIN principal_identity i ON i.principal_id = m.principal_id "
+                "   AND i.provider = 'slack' AND NOT i.is_deleted "
+                " WHERE i.external_id = %s AND NOT m.is_deleted", (slack_id,))
+            existing = {r["team_id"] for r in cur.fetchall()}
+            to_add, to_remove = desired - existing, existing - desired
+            if to_remove:
+                cur.execute(
+                    "UPDATE team_member m SET is_deleted = TRUE "
+                    "  FROM principal_identity i "
+                    " WHERE i.principal_id = m.principal_id "
+                    "   AND i.provider = 'slack' AND NOT i.is_deleted "
+                    "   AND i.external_id = %s AND m.team_id = ANY(%s) "
+                    "   AND NOT m.is_deleted", (slack_id, list(to_remove)))
+            for tid in to_add:
+                cur.execute(
+                    "INSERT INTO team_member (team_id, principal_id) "
+                    "SELECT %s, i.principal_id FROM principal_identity i "
+                    " WHERE i.external_id = %s AND i.provider = 'slack' "
+                    "   AND NOT i.is_deleted "
+                    "ON CONFLICT (team_id, principal_id) WHERE NOT is_deleted "
+                    "DO NOTHING", (tid, slack_id))
+        else:
+            cur.execute("SELECT team_id FROM team_members WHERE slack_user_id = %s",
+                        (slack_id,))
+            existing = {r["team_id"] for r in cur.fetchall()}
+            to_add, to_remove = desired - existing, existing - desired
+            if to_remove:
+                cur.execute("DELETE FROM team_members WHERE slack_user_id = %s "
+                            "AND team_id = ANY(%s)", (slack_id, list(to_remove)))
+            for tid in to_add:
+                cur.execute("INSERT INTO team_members (team_id, slack_user_id) "
+                            "VALUES (%s, %s) ON CONFLICT DO NOTHING", (tid, slack_id))
         audit.log_in(cur, None, uid, claims.get("name"), "person_teams_set",
                      {"slack_id": slack_id, "teams": sorted(desired),
                       "added": sorted(to_add), "removed": sorted(to_remove)})
@@ -1763,17 +1902,40 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
 
           teams_joined: list[int] = []
           if body.includeTeams:
-              cur.execute(
-                  "INSERT INTO team_members (team_id, slack_user_id) "
-                  "SELECT team_id, %s FROM team_members WHERE slack_user_id = %s "
-                  "ON CONFLICT DO NOTHING RETURNING team_id",
-                  (slack_id, body.source))
+              # Copy the memberships from the model that holds them. Against
+              # the legacy tables this copied nothing at all after the pod
+              # cutover, and said so in the past tense.
+              if teams_mod.use_v2():
+                  cur.execute(
+                      "INSERT INTO team_member (team_id, principal_id) "
+                      "SELECT m.team_id, dst.principal_id "
+                      "  FROM team_member m "
+                      "  JOIN principal_identity src "
+                      "    ON src.principal_id = m.principal_id "
+                      "   AND src.provider = 'slack' AND NOT src.is_deleted "
+                      "  CROSS JOIN principal_identity dst "
+                      " WHERE src.external_id = %s AND NOT m.is_deleted "
+                      "   AND dst.external_id = %s AND dst.provider = 'slack' "
+                      "   AND NOT dst.is_deleted "
+                      "ON CONFLICT (team_id, principal_id) WHERE NOT is_deleted "
+                      "DO NOTHING RETURNING team_id",
+                      (body.source, slack_id))
+              else:
+                  cur.execute(
+                      "INSERT INTO team_members (team_id, slack_user_id) "
+                      "SELECT team_id, %s FROM team_members WHERE slack_user_id = %s "
+                      "ON CONFLICT DO NOTHING RETURNING team_id",
+                      (slack_id, body.source))
               teams_joined = [r["team_id"] for r in cur.fetchall()]
               # Names, not just ids: the caller's confirmation says "joined
               # petrels, platform", and it cannot build that from integers.
               if teams_joined:
-                  cur.execute("SELECT name FROM teams WHERE id = ANY(%s) ORDER BY name",
-                              (teams_joined,))
+                  cur.execute(
+                      "SELECT COALESCE(display_name, name) AS name FROM team "
+                      " WHERE id = ANY(%s) ORDER BY 1"
+                      if teams_mod.use_v2() else
+                      "SELECT name FROM teams WHERE id = ANY(%s) ORDER BY name",
+                      (teams_joined,))
                   team_names = [r["name"] for r in cur.fetchall()]
               to_write = src_grants
           else:
@@ -1953,7 +2115,18 @@ def admin_effective_access(slack_id: str,
         "  FROM admins WHERE slack_user_id = %s",
         (slack_id, slack_id))
 
+    # Read from the model that holds the memberships. This is a security
+    # screen -- an admin asks it what somebody can reach before deciding -- and
+    # against the legacy tables it answered "no teams" for everybody once the
+    # pod cutover emptied them.
     teams_of = db.fetch_all(
+        "SELECT t.id, COALESCE(t.display_name, t.name) AS name "
+        "  FROM team_member m JOIN team t ON t.id = m.team_id "
+        "  JOIN principal_identity i ON i.principal_id = m.principal_id "
+        "   AND i.provider = 'slack' AND NOT i.is_deleted "
+        " WHERE i.external_id = %s AND NOT m.is_deleted AND NOT t.is_deleted "
+        " ORDER BY 2"
+        if teams_mod.use_v2() else
         "SELECT t.id, t.name FROM team_members m JOIN teams t ON t.id = m.team_id "
         " WHERE m.slack_user_id = %s ORDER BY t.name", (slack_id,))
 

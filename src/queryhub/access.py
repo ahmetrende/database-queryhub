@@ -413,9 +413,25 @@ def can_approve(principal_id: str, request: dict) -> bool:
     its scope. One in-scope row is enough — an out-of-scope row is not a veto,
     only the absence of any in-scope row is.
 
-    The tier comes from the request's persisted `required_tier` where there is
-    one, exactly as the old check does: it was classified with the target's
-    engine at submit time and a client cannot tamper with it.
+    The tier comes from `admins.request_tier`, the same engine-aware rule the
+    legacy check uses: the value persisted at submit where there is one, else
+    derived with the target's own engine.
+
+    That shared call is the fix for the worst bug of the switch. This read
+    `request["required_tier"]` directly, and a missing key became `""`, whose
+    rank is the 99 default -- ABOVE every ceiling, so line by line every role
+    row carrying a `max_tier` was skipped and the answer was "no authority
+    anywhere". Three callers pass a four-column row (the Slack approve/reject
+    guard and both bundle scope loaders), so under `access_model_v2` nobody
+    with a tier ceiling could approve anything from Slack: an RO-ceiling admin
+    was refused an RO request, and so was every pod lead. Only unscoped
+    super-admins, who have no ceiling to skip, still worked -- which is why it
+    read as "some people" rather than as broken.
+
+    A missing tier must not be silently permissive OR silently restrictive.
+    Deriving it makes the row complete no matter which caller built it, and
+    the callers were fixed as well, because a function that only works when
+    every caller remembers a column will find the one that does not.
     """
     if not request:
         return False
@@ -437,14 +453,22 @@ def can_approve(principal_id: str, request: dict) -> bool:
             not any(r["role"] == "admin" for r in rows):
         return False
 
-    tier = (request.get("required_tier") or "").strip().lower()
+    from . import admins  # lazy: admins imports this module
+    tier = admins.request_tier(request)
     tid = request.get("target_server_id")
     requester = request.get("requester_slack_id")
     requester_teams: set[int] | None = None
 
     for r in rows:
         if not r["any_tier"] and r["max_tier"]:
-            if _TIER_RANK.get(tier, 99) > _TIER_RANK.get(r["max_tier"], 99):
+            # Both ranks fail CLOSED. `get(..., 99)` on the CEILING made an
+            # unreadable ceiling admit everything -- `rank > 99` is false for
+            # every request -- so a typo removed the limit instead of removing
+            # the authority. Migration 116 stops such a row existing; this
+            # stops one that already does from being the widest row in the
+            # table.
+            ceiling = _TIER_RANK.get(r["max_tier"])
+            if ceiling is None or _TIER_RANK.get(tier, 99) > ceiling:
                 continue
         if not r["all_targets"]:
             if tid is None or r["scope_target_id"] != tid:

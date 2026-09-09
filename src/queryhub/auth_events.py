@@ -43,11 +43,18 @@ def is_enabled() -> bool:
 # Pure helpers — no DB access, unit-tested.
 # --------------------------------------------------------------------------
 
+# What the person is told they have become. Two of these are deliberately
+# hedged: `granter` and `importer` can be written on the Roles screen, but
+# nothing reads them. Grant authority is still `admins.can_grant`
+# (`grants.py`) and import authority is still the `import_grants` table
+# (`csv_import.py`), so a DM saying "you can now grant access" would be
+# telling somebody about a power they do not have. Say what is true -- the
+# role is recorded -- until the enforcement exists.
 _ROLE_LABEL = {
     "admin": "an *admin*",
     "approver": "an *approver*",
-    "granter": "able to *grant access*",
-    "importer": "able to *import CSV*",
+    "granter": "recorded as a *granter* (not yet enforced)",
+    "importer": "recorded as an *importer* (not yet enforced)",
 }
 
 

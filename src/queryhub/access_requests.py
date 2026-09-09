@@ -22,6 +22,38 @@ from . import audit, db
 _TIER_RANK = {"ro": 0, "rw": 1, "ddl": 2}
 
 
+class ControlPlaneRefused(ValueError):
+    """Raised when a request or grant names the bot's own metadata database."""
+
+
+def _refuse_control_plane(target_server_id: int | None) -> None:
+    """The bot's own control-plane database is never grantable through this
+    flow.
+
+    `grants.grant` and `grants.grant_many` have refused it since the DDL-only
+    elevation work, and the web endpoint-request route refuses it at
+    submission (`routes_requests.py`, "That connection cannot be requested").
+    This path had neither check and does not call `grants.grant` at all -- it
+    writes `user_target_grants` directly -- so the Slack access-request flow
+    could hand out a grant that every other path refuses. The Slack target
+    picker offers it too: `handle_access_target_options` deliberately returns
+    ALL enabled targets, because a person asking for access is by definition
+    asking for something they cannot reach.
+
+    A grant here is not an ordinary over-grant. `queryhub` holds the audit
+    log, the grant tables and the config that decides who may approve, so read
+    access is a disclosure of the whole access model and write access would let
+    somebody edit the record of their own actions.
+    """
+    if target_server_id is None:
+        return
+    from . import grants          # lazy: grants imports this module's siblings
+    if int(target_server_id) in grants.control_plane_target_ids():
+        raise ControlPlaneRefused(
+            "That connection is the bot's own control-plane database and "
+            "cannot be requested or granted here.")
+
+
 def requested_tier_of(row: dict) -> str:
     """The tier an access request asks for, from the persisted `requested_tier`
     column only, defaulting to least-privilege 'ro'.
@@ -90,6 +122,7 @@ def create(
     tier = (requested_tier or "").strip().lower() or None
     if tier is not None and tier not in _TIER_RANK:
         raise ValueError(f"invalid requested_tier: {requested_tier!r}")
+    _refuse_control_plane(target_server_id)
     try:
         return db.insert_returning(
             "INSERT INTO access_requests "
@@ -134,6 +167,17 @@ def _auto_grant(cur, row: dict, decided_by_slack_id: str,
     Conservative by design (see module docstring): unknown target -> skip;
     active grant at a different tier -> skip (never silently upgrade or
     downgrade); same tier -> merge databases (None = all absorbs)."""
+    # Refused here as a REASON, not an exception. The approve button already
+    # renders "auto-grant skipped, and why", and a request created before this
+    # guard existed must stay decidable -- an admin has to be able to reject
+    # it. `create()` raises instead, because there the person is still holding
+    # the form and can be told.
+    if row.get("target_server_id") is not None:
+        from . import grants
+        if int(row["target_server_id"]) in grants.control_plane_target_ids():
+            return {"applied": False, "reason": "control_plane",
+                    "mode": None, "databases": None}
+
     tid = row.get("target_server_id")
     if tid is None:
         return {"applied": False, "reason": "no_target",

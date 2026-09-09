@@ -156,8 +156,15 @@ def _candidate_scope_rows(admin_slack_id: str) -> list[dict]:
     )
 
 
-def _request_tier(request: dict) -> str:
+def request_tier(request: dict) -> str:
     """The engine-aware required tier (ro/rw/ddl) for a request.
+
+    Public because the NEW model has to answer this the same way. It read
+    `required_tier` off the request dict directly, with no fallback, while
+    claiming in its own docstring to behave 'exactly as the old check
+    does' -- so a caller passing a row without that column got a silent
+    wrong answer instead of an error. Two implementations of one
+    security-relevant rule is what produced that, so there is now one.
 
     Prefer the value persisted at submit — it was classified with the
     target's engine and cannot be tampered with by the client. Otherwise
@@ -189,8 +196,13 @@ def _scope_admits(scope: dict, request: dict) -> bool:
     use it."""
     # max_tier
     if scope["max_tier"]:
-        request_tier = _request_tier(request)
-        if _TIER_RANK.get(request_tier, 99) > _TIER_RANK.get(scope["max_tier"], 99):
+        tier = request_tier(request)
+        # Fail closed on BOTH sides: a ceiling this code cannot read is not a
+        # licence to approve anything. See access.can_approve and migration
+        # 116. `admins.max_tier` has always had a CHECK, so this half is
+        # defence in depth rather than a live hole.
+        ceiling = _TIER_RANK.get(scope["max_tier"])
+        if ceiling is None or _TIER_RANK.get(tier, 99) > ceiling:
             return False
 
     # target scope. NULL means "every target" (a deliberate wildcard); an EMPTY
@@ -235,6 +247,30 @@ def can_approve(admin_slack_id: str, request: dict) -> bool:
     if not candidates:
         return False
     return any(_scope_admits(c, request) for c in candidates)
+
+
+def has_approval_authority(slack_id: str) -> bool:
+    """True if this person can approve SOMETHING, anywhere, at any tier.
+
+    Used only to pick between two refusals. "This is outside your scope"
+    reads as nonsense to somebody who has no scope at all, and "you are not
+    an authorized admin" reads as a bug to a pod lead who approves for their
+    own team every day -- which is how the real one was reported.
+    """
+    if is_admin(slack_id):
+        return True
+    if not _v2():
+        # The legacy model has no approver who is not an admin, so there is
+        # no third state to describe.
+        return False
+    return any(r["role"] in ("admin", "approver")
+               for r in access.roles(slack_id))
+
+
+# The old private name. Three test modules and the SEC-ENG
+# reasoning reference it; an alias costs nothing and renaming
+# them would obscure that history.
+_request_tier = request_tier
 
 
 def notify_list(request: dict) -> list[dict]:
