@@ -28,14 +28,31 @@ const MxIcon = {
 
 // The ladder, each rung wider than the last. Rendered in this order everywhere —
 // the order IS the argument, and shuffling it in one place would undo it.
+//
+// `table` and `fleet` were added in the 2026-09-09 (c) round, after CODE found
+// the stored model has two reaches the form could not produce:
+//   `table` is a completeness gap with a real cost — without it, somebody who
+//   wants "this whole table" has to pick `schema`, which is WIDER. A missing
+//   rung that forces the wider choice is the exact failure the ladder exists to
+//   prevent, so adding it is unambiguous.
+//   `fleet` is the harder call. One of the 30 live exemptions IS fleet-wide
+//   (schema `dba`, every database, every server, super-admins only), so the
+//   widest exemption on the fleet could not be recreated through the screen it
+//   appears on. Leaving it un-creatable would push the single most dangerous
+//   operation back into psql — the least legible tool, and the thing this screen
+//   replaced. So it exists, and it is gated harder than any other rung: off the
+//   top of the ladder rather than a peer card, a TYPED confirmation instead of a
+//   checkbox, and super-admins-only as the starting audience.
 const QH_MX_RUNGS = {
-  column: { label: 'One column', of: 'in one table', count: 'the narrowest thing there is' },
-  schema: { label: 'A whole schema', of: 'every column in it', count: 'a few exist' },
-  database: { label: 'A whole database', of: 'masking off for anything read there', count: 'rare' },
-  server: { label: 'A whole server', of: 'masking off for every database on it', count: 'rare' },
+  column: { label: 'One column', of: 'in one table' },
+  table: { label: 'A whole table', of: 'every column in it' },
+  schema: { label: 'A whole schema', of: 'every column in every table in it' },
+  database: { label: 'A whole database', of: 'masking off for anything read there' },
+  server: { label: 'A whole server', of: 'masking off for every database on it' },
+  fleet: { label: 'Every server', of: 'masking off across the whole fleet' },
 };
-const QH_MX_ORDER = ['column', 'schema', 'database', 'server'];
-const mxWide = (s) => s !== 'column';
+const QH_MX_ORDER = ['column', 'table', 'schema', 'database', 'server'];
+const mxWide = (s) => s !== 'column' && s !== 'table';
 const mxTarget = (e) => (e.schema ? e.schema + '.' : '') + (e.table ? e.table + '.' : '') + (e.column || '');
 
 // The reach, as a sentence. Same job as `RoleSentence` on the Roles screen and
@@ -45,9 +62,15 @@ const mxTarget = (e) => (e.schema ? e.schema + '.' : '') + (e.table ? e.table + 
 function MxReach({ e }) {
   const conn = <b>{e.connectionName || e.connectionId}</b>;
   const db = <b>{e.databaseName || e.databaseId}</b>;
+  // Fleet-wide is read from the SCOPE, never from a missing connection: the
+  // widest row in the model must not be the thing a blank field produces.
+  if (e.scope === 'fleet') return <div className="qh-mxsent">{e.schema
+    ? <>Unmasks <b>every column in schema {e.schema}</b> — <b>every database on every server</b>.</>
+    : <>Turns masking off <b>across the whole fleet</b> — every database on every server.</>}</div>;
   if (e.scope === 'server') return <div className="qh-mxsent">Turns masking off for <b>every database on {e.connectionName || e.connectionId}</b>.</div>;
   if (e.scope === 'database') return <div className="qh-mxsent">Turns masking off for <b>everything read in {e.databaseName || e.databaseId}</b>, on {conn}.</div>;
   if (e.scope === 'schema') return <div className="qh-mxsent">Unmasks <b>every column in schema {e.schema}</b> — {db} on {conn}.</div>;
+  if (e.scope === 'table') return <div className="qh-mxsent">Unmasks <b>every column in {e.schema}.{e.table}</b> — {db} on {conn}.</div>;
   return <div className="qh-mxsent">Unmasks <b>{e.schema}.{e.table}.{e.column}</b> in {db} on {conn}.</div>;
 }
 
@@ -76,7 +99,7 @@ function MxRow({ e, canWrite, moot, onToggle, onRemove, onAlso }) {
           {/* A scope chip appears only on the WIDE rungs. 27 of 30 rows are one
               column, so the default needs no label and the exception carries
               one — a chip on every row would make them all read the same. */}
-          {wide && <span className={'qh-mxchip is-' + e.scope}>{e.scope === 'server' ? 'whole server' : e.scope === 'database' ? 'whole database' : 'whole schema'}</span>}
+          {wide && <span className={'qh-mxchip is-' + e.scope}>{e.scope === 'fleet' ? 'every server' : e.scope === 'server' ? 'whole server' : e.scope === 'database' ? 'whole database' : 'whole schema'}</span>}
           {!e.enabled && <span className="qh-mxchip is-off">off</span>}
           {e.missing && <span className="qh-mxchip is-gone">matches nothing</span>}
           {e.audience === 'super' && <span className="qh-mxchip is-aud">super-admins only</span>}
@@ -132,7 +155,7 @@ function MxForm({ st, seed, onDone }) {
     connectionId: (seed && seed.connectionId) || '', databaseId: (seed && seed.databaseId) || '',
     scope: 'column', schema: (seed && seed.schema) || '', table: (seed && seed.table) || '', column: (seed && seed.column) || '',
     strength: (seed && seed.strength) || 'soft', survivesJoin: !!(seed && seed.survivesJoin),
-    audience: 'everyone', reason: '', confirmed: false,
+    audience: 'everyone', reason: '', confirmed: false, typed: '',
   }));
   const [cat, setCat] = useMx(null);
   const [catErr, setCatErr] = useMx(null);
@@ -168,6 +191,13 @@ function MxForm({ st, seed, onDone }) {
 
   const wide = mxWide(f.scope);
   const needsConfirm = f.scope === 'database' || f.scope === 'server';
+  // Fleet-wide is the only rung that cannot be reached by clicking. A checkbox
+  // is enough for "this server" because there is a server name on screen to
+  // read; there is nothing to read for the fleet, so the confirmation is the
+  // sentence itself, typed.
+  const FLEET_PHRASE = 'every server';
+  const needsType = f.scope === 'fleet';
+  const typedOk = !needsType || f.typed.trim().toLowerCase() === FLEET_PHRASE;
   // A prefilled target (Add it there, from a sibling server's suggestion) can
   // name a column the catalog snapshot does not have. The form says so and
   // blocks Save rather than leaving a blank picker beside a button that names
@@ -177,12 +207,16 @@ function MxForm({ st, seed, onDone }) {
   const ready = !!f.connectionId
     && (f.scope === 'server' || !!f.databaseId)
     && (f.scope !== 'schema' || !!f.schema)
+    && (f.scope !== 'table' || (!!f.schema && !!f.table))
     && (f.scope !== 'column' || (!!f.schema && !!f.table && !!f.column));
-  const bad = !ready || colGone || !f.reason.trim() || (needsConfirm && !f.confirmed);
+  // Fleet-wide has no connection or database to pick — that IS its reach — so
+  // it is ready as soon as the reason and the typed phrase are in.
+  const readyAll = f.scope === 'fleet' ? true : ready;
+  const bad = !readyAll || colGone || !f.reason.trim() || (needsConfirm && !f.confirmed) || !typedOk;
 
   const preview = { connectionId: f.connectionId, databaseId: f.databaseId, scope: f.scope, schema: f.schema, table: f.table, column: f.column };
   const runPreview = () => {
-    if (!ready || prevBusy) return;
+    if (!readyAll || prevBusy) return;
     setPrevBusy(true);
     st.maskPreview(preview).then(r => { setPrev(r); setPrevBusy(false); }).catch(() => { setPrev({ error: true }); setPrevBusy(false); });
   };
@@ -198,11 +232,13 @@ function MxForm({ st, seed, onDone }) {
   // The button says the consequence, in the words of the rung. "Save" on a
   // control that turns masking off for a production server is the one label
   // that would make the wide rungs feel like the narrow ones.
-  const saveLabel = !ready ? 'Add exemption'
-    : f.scope === 'server' ? 'Turn masking off for all of ' + (conn ? conn.name : '')
-      : f.scope === 'database' ? 'Turn masking off for ' + (db ? db.name : '')
-        : f.scope === 'schema' ? 'Unmask every column in ' + f.schema
-          : 'Unmask ' + f.table + '.' + f.column;
+  const saveLabel = !readyAll ? 'Add exemption'
+    : f.scope === 'fleet' ? 'Turn masking off across the whole fleet'
+      : f.scope === 'server' ? 'Turn masking off for all of ' + (conn ? conn.name : '')
+        : f.scope === 'database' ? 'Turn masking off for ' + (db ? db.name : '')
+          : f.scope === 'schema' ? 'Unmask every column in ' + f.schema
+            : f.scope === 'table' ? 'Unmask every column in ' + f.table
+              : 'Unmask ' + f.table + '.' + f.column;
 
   const asRow = { ...preview, connectionName: conn ? conn.name : '', databaseName: db ? db.name : '',
     strength: f.strength, survivesJoin: f.survivesJoin };
@@ -212,11 +248,11 @@ function MxForm({ st, seed, onDone }) {
       <div className="qh-accedit-label">Where<span className="qh-accedit-hint">The server and database the exemption is written against.</span></div>
       <div className="qh-mxfields">
         <label className="qh-rolefield"><span className="qh-rolefield-l">Server</span>
-          <select className="qh-select" value={f.connectionId} onChange={e => set({ connectionId: e.target.value, databaseId: '', schema: '', table: '', column: '' })}>
-            <option value="">Pick a server…</option>
+          <select className="qh-select" disabled={f.scope === 'fleet'} value={f.connectionId} onChange={e => set({ connectionId: e.target.value, databaseId: '', schema: '', table: '', column: '' })}>
+            <option value="">{f.scope === 'fleet' ? 'Every server' : 'Pick a server…'}</option>
             {conns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select></label>
-        {f.scope !== 'server' && <label className="qh-rolefield"><span className="qh-rolefield-l">Database</span>
+        {f.scope !== 'server' && f.scope !== 'fleet' && <label className="qh-rolefield"><span className="qh-rolefield-l">Database</span>
           <select className="qh-select" disabled={!conn} value={f.databaseId} onChange={e => set({ databaseId: e.target.value, schema: '', table: '', column: '' })}>
             <option value="">{conn ? 'Pick a database…' : 'Pick a server first'}</option>
             {dbs.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
@@ -228,25 +264,46 @@ function MxForm({ st, seed, onDone }) {
       <div className="qh-mxrungs">
         {QH_MX_ORDER.map(k => (
           <button key={k} type="button" className={'qh-mxrung' + (f.scope === k ? ' is-on' : '') + (mxWide(k) ? ' is-wide' : '')}
-                  onClick={() => set({ scope: k, confirmed: false, table: k === 'column' ? f.table : '', column: k === 'column' ? f.column : '', schema: (k === 'column' || k === 'schema') ? f.schema : '' })}>
+                  onClick={() => set({ scope: k, confirmed: false, typed: '',
+                    table: (k === 'column' || k === 'table') ? f.table : '',
+                    column: k === 'column' ? f.column : '',
+                    schema: (k === 'column' || k === 'table' || k === 'schema') ? f.schema : '' })}>
             <span className="qh-mxrung-l">{QH_MX_RUNGS[k].label}{f.scope === k && <MxIcon.check />}</span>
             <span className="qh-mxrung-w">{QH_MX_RUNGS[k].of}</span>
           </button>
         ))}
       </div>
+      {/* Off the top of the ladder, not a sixth peer card. One of the 30 live
+          exemptions is this shape, so it has to be creatable — but it is wider
+          than the top rung of a ladder built to make width feel wide, and it
+          should not sit in the same row as "one column". */}
+      <button type="button" className={'qh-mxfleet' + (f.scope === 'fleet' ? ' is-on' : '')}
+              onClick={() => set({ scope: f.scope === 'fleet' ? 'column' : 'fleet', confirmed: false, typed: '',
+                connectionId: '', databaseId: '', table: '', column: '',
+                audience: f.scope === 'fleet' ? 'everyone' : 'super' })}>
+        <MxIcon.warn />
+        <span className="qh-mxfleet-t">{QH_MX_RUNGS.fleet.label}<span className="qh-mxfleet-w">{QH_MX_RUNGS.fleet.of} — wider than any rung above. Starts restricted to super-admins.</span></span>
+        {f.scope === 'fleet' && <MxIcon.check />}
+      </button>
 
       {/* Table and column are PICKED from the catalog, never typed — 156,000
           known columns, and a typo writes an exemption that silently matches
           nothing. Each column shows what currently masks it, which is the
           question that brought most people to this screen. */}
-      {(f.scope === 'column' || f.scope === 'schema') && (
+      {(f.scope === 'column' || f.scope === 'schema' || f.scope === 'table' || f.scope === 'fleet') && (
         <div className="qh-mxfields" style={{ marginTop: 12 }}>
-          <label className="qh-rolefield"><span className="qh-rolefield-l">Schema</span>
-            <select className="qh-select" disabled={!cat} value={f.schema} onChange={e => set({ schema: e.target.value, table: '', column: '' })}>
-              <option value="">{cat ? 'Pick a schema…' : 'Loading catalog…'}</option>
-              {schemas.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
-            </select></label>
-          {f.scope === 'column' && <label className="qh-rolefield"><span className="qh-rolefield-l">Table</span>
+          <label className="qh-rolefield"><span className="qh-rolefield-l">Schema{f.scope === 'fleet' && <span className="qh-accedit-hint"> — optional</span>}</span>
+            {f.scope === 'fleet'
+              // No catalog to read across the fleet, and the live fleet-wide row
+              // names a schema (`dba`) that exists on every server — so this one
+              // rung takes a typed schema name. It is the exception the comment
+              // above earns, not a relaxation of the pick-never-type rule.
+              ? <input className="qh-input" placeholder="e.g. dba — leave empty for every schema" value={f.schema} onChange={e => set({ schema: e.target.value })} />
+              : <select className="qh-select" disabled={!cat} value={f.schema} onChange={e => set({ schema: e.target.value, table: '', column: '' })}>
+                <option value="">{cat ? 'Pick a schema…' : 'Loading catalog…'}</option>
+                {schemas.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+              </select>}</label>
+          {(f.scope === 'column' || f.scope === 'table') && <label className="qh-rolefield"><span className="qh-rolefield-l">Table</span>
             <select className="qh-select" disabled={!schema} value={f.table} onChange={e => set({ table: e.target.value, column: '' })}>
               <option value="">{schema ? 'Pick a table…' : 'Pick a schema first'}</option>
               {tables.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
@@ -270,14 +327,20 @@ function MxForm({ st, seed, onDone }) {
           every row of the list. The confirm is a checkbox and not a typed
           server name: three of these exist and the people writing them are
           right to; the point is that it cannot happen by tabbing past. */}
-      {ready && !colGone && (
-        <div className={'qh-mxreach' + (wide ? ' is-wide' : '')}>
-          {wide && <MxIcon.warn />}
+      {readyAll && !colGone && (
+        <div className={'qh-mxreach' + (wide ? ' is-wide' : '')}>          {wide && <MxIcon.warn />}
           <div>
             <MxReach e={asRow} />
             {needsConfirm && <label className="qh-mxconfirm">
               <input type="checkbox" checked={f.confirmed} onChange={e => setF(x => ({ ...x, confirmed: e.target.checked }))} />
               <span>I mean to switch masking off for {f.scope === 'server' ? 'every database on ' + (conn ? conn.name : '') : 'everything in ' + (db ? db.name : '')}.</span>
+            </label>}
+            {/* The only rung whose confirmation cannot be clicked. There is no
+                server name on screen to read for the fleet, so the confirmation
+                IS the sentence. */}
+            {needsType && <label className="qh-mxtype">
+              <span>Type <b>{FLEET_PHRASE}</b> to confirm this reaches all of them.</span>
+              <input className="qh-input" value={f.typed} onChange={e => setF(x => ({ ...x, typed: e.target.value }))} placeholder={FLEET_PHRASE} />
             </label>}
           </div>
         </div>
@@ -315,6 +378,7 @@ function MxForm({ st, seed, onDone }) {
         <option value="everyone">Everyone who can read it</option>
         <option value="super">Super-admins only</option>
       </select>
+      {f.scope === 'fleet' && f.audience === 'everyone' && <div className="qh-mxnote">Widening a fleet-wide exemption to everyone is a second decision, not part of this one — the live fleet-wide row is restricted to super-admins.</div>}
 
       <div className="qh-accedit-label" style={{ marginTop: 16 }}>Why<span className="qh-accedit-hint">Required. This is what an auditor reads when asking why this data stopped being protected — say what you checked, not that you checked it.</span></div>
       <textarea className="qh-input qh-mxreason-in" rows={3} value={f.reason} onChange={e => set({ reason: e.target.value })}
@@ -323,9 +387,9 @@ function MxForm({ st, seed, onDone }) {
       <div className="qh-mxprev">
         <div className="qh-mxprev-head">
           <div className="qh-roleprev-h">Before saving</div>
-          <button className="qh-btn qh-btn-sm" disabled={!ready || prevBusy} onClick={runPreview}>{prevBusy ? 'Checking…' : prev ? 'Check again' : 'Show what this changes'}</button>
+          <button className="qh-btn qh-btn-sm" disabled={!readyAll || prevBusy} onClick={runPreview}>{prevBusy ? 'Checking…' : prev ? 'Check again' : 'Show what this changes'}</button>
         </div>
-        {!prev && <div className="qh-mxprev-idle">{ready ? 'Runs a recent real query against this table and shows one row masked both ways.' : 'Pick a target first.'}</div>}
+        {!prev && <div className="qh-mxprev-idle">{readyAll ? 'Runs a recent real query against this table and shows one row masked both ways.' : 'Pick a target first.'}</div>}
         {prev && prev.error && <div className="qh-mxprev-idle">Could not build a preview. The exemption is still what the sentence above says.</div>}
         {/* No sample is a finding, not an empty box. */}
         {prev && !prev.error && !prev.seen && !prev.wide && <div className="qh-mxprev-idle">Nothing has queried <code>{f.table}</code> in the last {prev.days} days, so there is no real row to show. The change is what the sentence above says.</div>}
@@ -351,7 +415,7 @@ function MxForm({ st, seed, onDone }) {
         <button className="qh-btn qh-btn-sm" onClick={onDone}>Cancel</button>
         <button className={'qh-btn qh-btn-sm ' + (wide ? 'qh-btn-danger' : 'qh-btn-primary')} disabled={bad || busy} onClick={save}>{busy ? 'Saving…' : saveLabel}</button>
       </div>
-      {ready && !f.reason.trim() && <div className="qh-mxnote">A reason is required — an exemption without one is unreadable to whoever finds it next.</div>}
+      {readyAll && !f.reason.trim() && <div className="qh-mxnote">A reason is required — an exemption without one is unreadable to whoever finds it next.</div>}
     </div>
   );
 }

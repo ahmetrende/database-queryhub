@@ -36,18 +36,26 @@ function client() {
   return loadInto(win, 'qh-api.jsx').qhApi;
 }
 
-// Callers, in load order. Any file that reaches for the client belongs here.
-const CALLERS = [
-  'qh-admin-data.jsx', 'qh-data.jsx', 'qh-admin-access.jsx',
-  'qh-admin-person.jsx', 'qh-admin-roles.jsx', 'qh-admin-mask.jsx',
-  'qh-admin-insights.jsx', 'qh-admin-config.jsx', 'qh-admin.jsx',
-  'qh-panels.jsx', 'qh-editor.jsx', 'qh-home.jsx', 'qh-whatsnew.jsx',
-];
+// The callers, DERIVED from main.jsx's imports rather than listed here.
+//
+// A hand-maintained list is the same bug this test exists to catch, one level
+// up: the 2026-09-09 (b) round added qh-admin-audit.jsx, and a literal array
+// here would have skipped the one new file whose new `qhApi.` call was the
+// whole reason to look. main.jsx is already the authority on what the bundle
+// loads, so it is the authority on what to check.
+function callers() {
+  const main = read('main.jsx');
+  const out = [];
+  for (const m of main.matchAll(/^\s*import\s+'\.\/([^']+\.jsx)'/gm)) out.push(m[1]);
+  return out;
+}
 
 test('no screen calls a client method that does not exist', () => {
   const api = client();
   const missing = [];
-  for (const f of CALLERS) {
+  const files = callers();
+  assert.ok(files.length >= 10, 'main.jsx yielded only ' + files.length + ' callers');
+  for (const f of files) {
     // Comments are stripped first: a method named in prose is not a call, and
     // these files carry a lot of prose.
     const src = read(f)

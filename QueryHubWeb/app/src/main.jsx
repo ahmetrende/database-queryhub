@@ -33,6 +33,13 @@ import './qh-admin-roles.jsx';
 // #admin/mask would render blank in the built app only.
 import './qh-admin-mask.jsx';
 import './qh-admin-insights.jsx';
+// New in the 2026-09-09 (b) round, and it must load AFTER qh-admin-insights.jsx:
+// the audit view moved out of that file and reads its `qhDurMs` export off
+// window, so the reverse order leaves the duration column undefined. Missing
+// this import at all is worse and silent — `vite build` succeeds, the file is
+// simply not in the bundle, and Insights -> Audit trail renders blank in the
+// built app while the raw prototype looks correct.
+import './qh-admin-audit.jsx';
 import './qh-admin-config.jsx';
 import './qh-admin.jsx';
 import './qh-whatsnew.jsx';

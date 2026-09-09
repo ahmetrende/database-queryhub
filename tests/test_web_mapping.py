@@ -374,23 +374,59 @@ def test_the_id_is_a_string_like_every_other_id_in_the_contract():
     assert e["requestId"] == "7" and isinstance(e["requestId"], str)
 
 
-def test_the_table_renders_the_column():
-    """Header and cell counts have to match or the CSS grid shifts every row —
-    which is exactly what a 9-track grid with 10 children does."""
+def test_the_audit_row_has_as_many_cells_as_the_grid_has_tracks():
+    """A CSS grid with fewer tracks than the row has children shifts every row
+    after the first — which is what a 9-track grid with 10 cells did on the old
+    audit table. The row was rebuilt in the 2026-09-09 (b) round and moved to
+    its own file, so this now counts BOTH sides instead of asserting a fixed
+    number: the old test hardcoded 10 and would have passed a redesign that
+    broke the invariant it was written for.
+    """
     import re
     from pathlib import Path
     web = Path(__file__).resolve().parent.parent / "QueryHubWeb"
-    jsx = (web / "qh-admin-insights.jsx").read_text(encoding="utf-8")
-    assert "qh-auditreq" in jsx
-    assert "a.requestId" in jsx
+    jsx = (web / "qh-admin-audit.jsx").read_text(encoding="utf-8")
+
+    # The row's DIRECT children, counted by walking tags and tracking depth —
+    # `qh-audwhat` nests two spans of its own, so a flat count would be wrong.
+    i = jsx.index("className={'qh-audrow'")
+    body = jsx[i:jsx.index("</button>", i)]
+    depth, cells = 0, 0
+    for m in re.finditer(r"<(/?)(span|div)\b|(/>)", body):
+        if m.group(3):                      # self-closing
+            if depth == 0:
+                cells += 1
+            continue
+        if m.group(1):                      # closing tag
+            depth -= 1
+            if depth == 0:
+                cells += 1
+        else:
+            depth += 1
+    assert cells > 0, "could not find the audit row's cells"
+
     css = (web / "QueryHub.html").read_text(encoding="utf-8")
-    m = re.search(r"\.qh-auditline \{[^}]*grid-template-columns:([^;]+);", css)
-    assert m, "the audit grid definition moved"
-    tracks = m.group(1).replace("minmax(0, 1.3fr)", "X").replace(
-        "minmax(0, 2fr)", "X").split()
-    assert len(tracks) == 10, (
-        f"the audit row has 10 cells but the grid declares {len(tracks)} tracks: "
-        f"{m.group(1).strip()}")
+    m = re.search(r"\.qh-audrow \{[^}]*grid-template-columns:([^;]+);", css)
+    assert m, "the audit row grid definition moved"
+    # Split on top-level whitespace only: `minmax(0, 1fr)` is one track.
+    tracks, depth_p, cur = [], 0, ""
+    for ch in m.group(1).strip():
+        if ch == "(":
+            depth_p += 1
+        elif ch == ")":
+            depth_p -= 1
+        if ch.isspace() and depth_p == 0:
+            if cur:
+                tracks.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur:
+        tracks.append(cur)
+
+    assert len(tracks) == cells, (
+        f"the audit row renders {cells} cells but the grid declares "
+        f"{len(tracks)} tracks: {m.group(1).strip()}")
 
 
 def test_queue_item_carries_its_batch_position(monkeypatch):

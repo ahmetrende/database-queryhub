@@ -66,7 +66,7 @@ function AdminPanel({ st, adminRole, setAdminRole, user }) {
       ['conns', 'Connections', AdminIcons.conns, erCount],
     ]},
     { label: 'Insights', items: [
-      ['audit', 'Audit log', AdminIcons.audit, null],
+      ['audit', 'Audit trail', AdminIcons.audit, null],
       ['metrics', 'Metrics', AdminIcons.metrics, null],
       ['feedback', 'Feedback', AdminIcons.feedback, null],
     ]},
@@ -172,7 +172,7 @@ function AdminPanel({ st, adminRole, setAdminRole, user }) {
         {curNav === 'roles' && <RolesView st={st} user={user} canWrite={isSuper} />}
         {curNav === 'mask' && <MaskingView st={st} user={user} />}
         {curNav === 'conns' && <ConnectionsView st={st} user={user} />}
-        {curNav === 'audit' && <AuditView2 st={st} />}
+        {curNav === 'audit' && <AuditView st={st} />}
         {curNav === 'metrics' && <MetricsView st={st} />}
         {curNav === 'feedback' && <FeedbackView st={st} />}
         {curNav === 'config' && <SystemConfigView st={st} user={user} />}

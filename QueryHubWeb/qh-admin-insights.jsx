@@ -1,15 +1,8 @@
-// QueryHub Admin — insights views: Audit log, Metrics, Feedback.
+// QueryHub Admin — insights views: Metrics, Feedback.
+// The audit screen moved to its own file in the 2026-09-09 (b) round; it grew a
+// detail rail, server-side paging and a derived category vocabulary, and none of
+// that belongs in a file whose other two views are charts.
 const { useState: useIns } = React;
-
-const QH_AUDIT_KINDS = {
-  approve: { label: 'Approvals', color: 'var(--fg-accent)', bg: 'var(--brand-adaptive-light)' },
-  reject:  { label: 'Rejections', color: 'var(--fg-danger)', bg: 'var(--danger-adaptive-light)' },
-  changes: { label: 'Change requests', color: 'var(--fg-warning)', bg: 'var(--warning-adaptive-light)' },
-  grant:   { label: 'Grants', color: '#15688C', bg: 'var(--sup-blue-light)' },
-  auto:    { label: 'Auto-approve', color: 'var(--fg-accent)', bg: 'var(--brand-adaptive-light)' },
-  scope:   { label: 'Scopes', color: 'var(--fg-secondary)', bg: 'var(--adaptive-medium)' },
-  access:  { label: 'Access', color: '#6D4ACF', bg: 'var(--adaptive-medium)' },
-};
 
 // Human-readable execution duration from milliseconds.
 function qhDurMs(ms) {
@@ -19,89 +12,6 @@ function qhDurMs(ms) {
   if (s < 60) return (s < 10 ? s.toFixed(1) : Math.round(s)) + 's';
   const m = Math.floor(s / 60), rs = Math.round(s % 60);
   return m + 'm' + (rs ? ' ' + rs + 's' : '');
-}
-
-// ---------- Audit log ----------
-function AuditView2({ st }) {
-  const [filter, setFilter] = useIns('all');
-  const [q, setQ] = useIns('');
-  // Search runs SERVER-SIDE over the whole audit_log (not just the recent
-  // window loaded into st.audit), debounced. Empty search shows st.audit.
-  const [remote, setRemote] = useIns(null);
-  React.useEffect(() => {
-    const term = q.trim();
-    if (!term) { setRemote(null); return; }
-    let alive = true;
-    const h = setTimeout(() => {
-      window.qhApi.adminAudit('?q=' + encodeURIComponent(term) + '&limit=300')
-        .then(r => { if (alive) setRemote(r.audit || []); })
-        .catch(() => { if (alive) setRemote([]); });
-    }, 250);
-    return () => { alive = false; clearTimeout(h); };
-  }, [q]);
-  const base = remote !== null ? remote : st.audit;
-  const rows = base.filter(a => filter === 'all' || a.kind === filter);
-  const chips = [['all', 'All'], ...Object.entries(QH_AUDIT_KINDS).map(([k, v]) => [k, v.label])];
-  return (
-    <div className="qh-apad">
-      <div className="qh-aview-head"><div><div className="qh-aview-title">Audit log</div><div className="qh-aview-sub">Every admin action, immutable and attributed.</div></div></div>
-      <div className="qh-audit-controls">
-        <div className="qh-chips">
-          {chips.map(([k, l]) => <button key={k} className={'qh-chip' + (filter === k ? ' is-active' : '')} onClick={() => setFilter(k)}>{l}</button>)}
-        </div>
-        <div className="qh-search sm">
-          <svg className="qh-search-ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-          <input className="qh-search-in" placeholder="Filter by actor, target…" value={q} onChange={e => setQ(e.target.value)} />
-        </div>
-      </div>
-      <div className="qh-auditlog">
-        <div className="qh-auditline is-head">
-          <span />
-          <span>Time</span>
-          <span>Request</span>
-          <span>By</span>
-          <span>Action</span>
-          <span>Requester · target</span>
-          <span>Tier</span>
-          <span className="qh-audit-r">Rows</span>
-          <span className="qh-audit-r">Duration</span>
-          <span>Query</span>
-        </div>
-        {rows.length === 0 && <div className="qh-aempty"><div>No matching entries.</div></div>}
-        {rows.map(a => {
-          const k = QH_AUDIT_KINDS[a.kind] || QH_AUDIT_KINDS.scope;
-          const copy = () => { qhCopyText(a.query).then(ok => st.pushToast && st.pushToast(ok ? 'Query copied to clipboard.' : 'Could not copy — the browser blocked clipboard access.')); };
-          return (
-            <div key={a.id} className="qh-auditline">
-              <span className="qh-auditdot" style={{ background: k.color }} />
-              <span className="qh-auditwhen">{qhFmt(a.time)}</span>
-              {/* The request id the requester saw in their tab, so the audit log
-                  and the query screen share a visible key. Dash for entries with
-                  no request behind them (grants, scopes, kill switch). */}
-              <span className="qh-auditreq">{a.requestId ? '#' + a.requestId : '—'}</span>
-              <span className="qh-auditactor">{a.actor}</span>
-              <span className="qh-auditevent">{a.event}</span>
-              <span className="qh-audittarget" title={a.target}>{a.target || '—'}</span>
-              <span className="qh-audit-tier">{a.tier ? <TierBadge tier={a.tier} sm /> : ''}</span>
-              <span className="qh-audit-r qh-audit-num">{a.rows != null ? Number(a.rows).toLocaleString() : '—'}</span>
-              <span className="qh-audit-r qh-audit-num">{a.durationMs != null ? qhDurMs(a.durationMs) : '—'}</span>
-              <span className="qh-auditquery">
-                {a.query ? (
-                  <>
-                    <code className="qh-auditquery-sql" title={a.query}>{a.query}</code>
-                    <button className="qh-auditquery-copy" onClick={copy} title="Copy full query" aria-label="Copy full query">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-                    </button>
-                  </>
-                ) : <span className="qh-audit-dash">—</span>}
-              </span>
-              {a.info && <span className="qh-auditinfo" title={a.info}>{a.info}</span>}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
 }
 
 // ---------- Metrics ----------
@@ -337,4 +247,6 @@ function FeedbackView({ st }) {
   );
 }
 
-Object.assign(window, { AuditView2, MetricsView, FeedbackView });
+// qhDurMs is exported because the audit screen (qh-admin-audit.jsx) formats the
+// same durations and a second copy of the rounding rules would drift.
+Object.assign(window, { MetricsView, FeedbackView, qhDurMs });

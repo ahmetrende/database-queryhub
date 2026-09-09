@@ -272,6 +272,14 @@ const qhApi = {
   adminDelTeam:    (id)   => qhFetch('/admin/teams/' + encodeURIComponent(id), { method: 'DELETE' }),
   adminSetPersonTeams:(slackId, teamIds) => qhFetch('/admin/people/' + encodeURIComponent(slackId) + '/teams', { method: 'PUT', body: JSON.stringify({ teams: teamIds }) }),
   adminAudit:      (qs)   => qhFetch('/admin/audit' + (qs || '')),
+  // The rebuilt Audit trail (design 2026-09-09 (b)) reads ONE search endpoint
+  // that also carries the facet counts and the derived category/effect. The
+  // route is not built yet — the category cut and the actor field both move in
+  // round (c), and building it against the (b) shape would be building the
+  // wrong derivation twice. The method exists so a missing name cannot throw
+  // synchronously inside the view's effect: a 404 lands in its own .catch and
+  // the screen says "Could not load the trail" instead of unmounting the panel.
+  adminAuditSearch:(body) => qhFetch('/admin/audit/search', { method: 'POST', body: JSON.stringify(body || {}) }),
   adminMetrics:    ()     => qhFetch('/admin/metrics'),
   adminFeedback:   ()     => qhFetch('/admin/feedback'),
   adminConfig:     ()      => qhFetch('/admin/config'),

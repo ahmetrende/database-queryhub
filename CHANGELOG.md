@@ -9,6 +9,48 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.30] — 2026-09-09
+
+The audit trail rebuilt on a derived vocabulary, and a masking ladder that can
+express every reach the model already stored.
+
+### Added
+
+- **The Audit trail, on categories nobody has to maintain.** The screen used to
+  need a chip per action name, which is why it showed 37 of 132. Every row now
+  carries a category and an effect derived server-side from its action name by
+  an ordered pattern table (migration 118), so a new action type inherits a
+  category for free and one nothing claims is counted as `unclassified` rather
+  than filed under something it is not. Measured: 47 patterns classify 121 of
+  132 action types, and the 8 that stay unclassified are visible on screen as a
+  count instead of being absorbed.
+- **Three dimensions instead of one.** Seven kinds (requests, data protection,
+  access, connections, configuration, usage, unclassified), six effects (added,
+  changed, removed, read, decided, ran) and three actor kinds (a person, the
+  auto-approver, a background job). *Data protection x Read* is every time
+  somebody looked at unmasked personal data — a question the old vocabulary
+  could not ask. *Requests x the auto-approver* is what was approved without
+  anybody looking, which is 78% of that category.
+- **Every count carries its denominator, and every exclusion says its size.**
+  Two slices are excluded by default and both are stated with a control to
+  include them: the per-request lifecycle the queue and history screens already
+  show, and product usage. Including the first triples the list, so it says so.
+  Chips state the count they would produce, because a filter whose size you can
+  only learn by clicking it is how a bucket stays unexamined.
+- **A detail rail for the payload**, with the request block first — 77% of rows
+  have one — the raw action name shown as the evidence the category was derived
+  from, and the authority a machine acted under named where it can be resolved.
+- **Two more rungs on the masking ladder**: a whole table, whose absence forced
+  the wider "whole schema" choice, and fleet-wide, which the stored model always
+  allowed and the screen could not produce. Fleet-wide is gated harder than
+  anything else there: off the top of the ladder, a typed confirmation, and
+  restricted to super-admins to start.
+
+### Fixed
+
+- The masking-exemptions screen listed every reach except the two it could not
+  name, so one live exemption could be read but not reproduced.
+
 ## [1.0.29] — 2026-09-09
 
 The release the access-model rewrite landed in. Authorization now resolves from

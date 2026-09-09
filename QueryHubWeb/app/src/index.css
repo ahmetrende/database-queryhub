@@ -1250,6 +1250,103 @@
   .qh-rolerow.is-off .qh-rolerow-name { font-weight: 500; color: var(--fg-secondary); }
   .qh-role-why.is-danger { color: var(--fg-danger); }
   .qh-roleform-act { margin-top: 9px; }
+  /* ---------- Audit trail (redesign 2026-09-09 (b)) ---------- */
+  .qh-audwrap { display: flex; flex-direction: column; min-height: 0; }
+  /* Search is the primary control, not an afterthought beside the chips: it
+     reaches the whole table server-side and it is how most sessions start. */
+  .qh-audsearch { display: flex; align-items: center; gap: 10px; padding: 0 12px; height: 42px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-full); color: var(--fg-tertiary); }
+  .qh-audsearch:focus-within { border-color: var(--brand-green); box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-audsearch-in { flex: 1 1 auto; min-width: 0; border: 0; background: none; outline: none; font: inherit; font-size: 13.5px; color: var(--fg-primary); }
+  .qh-audsearch-in::placeholder { color: var(--fg-tertiary); }
+  .qh-audfilters { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 10px; }
+  .qh-audfrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .qh-audfl { flex-shrink: 0; width: 42px; font-size: 11px; font-weight: 600; color: var(--fg-tertiary); }
+  /* Every chip carries its count. A filter whose size you can only learn by
+     clicking it is how the old Scopes bucket stayed unexamined for months. */
+  .qh-chipn { margin-left: 6px; font-size: 10.5px; font-weight: 600; color: var(--fg-tertiary); font-variant-numeric: tabular-nums; }
+  .qh-chip.is-active .qh-chipn { color: var(--fg-accent); }
+  .qh-chip.is-unclassified { border-style: dashed; }
+  .qh-audrange { margin-left: auto; }
+  /* The scope line. Every number carries its denominator, so "this is
+     everything" and "this is a slice" are tellable apart at a glance. */
+  .qh-audscope { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 9px 12px; margin-bottom: 10px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); font-size: 12px; color: var(--fg-secondary); }
+  .qh-audscope b { font-weight: 600; color: var(--fg-primary); }
+  .qh-audscope-l > span:not(.qh-audscope-n) { flex: 1 1 220px; min-width: 0; text-wrap: pretty; }
+  .qh-chip.is-excluded { border-style: dashed; color: var(--fg-tertiary); }
+  .qh-audscope-n { font-size: 15px; font-weight: 700; color: var(--fg-primary); font-variant-numeric: tabular-nums; }
+  .qh-audscope { flex-direction: column; align-items: stretch; gap: 8px; }
+  .qh-audscope-l { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  /* The declared exclusions, as a list. Each says what INCLUDING it would add,
+     because the lifecycle slice is 2.1x the visible trail — "show everything"
+     triples the list and must not read as a few more rows. */
+  .qh-audexcl { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding-top: 8px; border-top: 1px solid var(--stroke-light); }
+  .qh-audexcl-l { font-size: 11px; font-weight: 600; color: var(--fg-tertiary); }
+  .qh-audexcl-b { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; background: none; border: 1px dashed var(--stroke-strong); border-radius: var(--r-full); font: inherit; font-size: 11.5px; color: var(--fg-secondary); cursor: pointer; }
+  .qh-audexcl-b:hover { border-color: var(--brand-green); color: var(--fg-accent); }
+  .qh-audexcl-b.is-on { border-style: solid; background: var(--brand-adaptive-light); border-color: var(--brand-green); color: var(--fg-accent); }
+  .qh-audexcl-n { font-size: 10.5px; color: var(--fg-tertiary); font-variant-numeric: tabular-nums; }
+  .qh-audexcl-b.is-on .qh-audexcl-n { color: var(--fg-accent); }
+  /* A machine actor is named as a machine. Rendering a person for a machine
+     action states something untrue, so the two machine kinds get their own
+     quiet treatment rather than sitting in the same ink as a name. */
+  .qh-audactor.is-auto { font-size: 11px; padding: 1px 6px; border-radius: var(--r-2xs); background: var(--adaptive-light); color: var(--fg-tertiary); }
+  .qh-audactor.is-job { font-family: var(--qh-mono); font-size: 10.5px; color: var(--fg-tertiary); }
+  .qh-chip.is-machine { border-style: dashed; }
+  .qh-audnoreq { margin-top: 12px; font-size: 11.5px; color: var(--fg-tertiary); }
+  .qh-audexp { display: block; margin-top: 4px; }
+  .qh-audsplit { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; align-items: start; }
+  .qh-audlist { min-width: 0; border: 1px solid var(--stroke-light); border-radius: var(--r-md); overflow: hidden; background: var(--bg-white); }
+  .qh-audday-h { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; padding: 6px 14px; background: var(--bg-light); border-bottom: 1px solid var(--stroke-light); font-size: 11px; font-weight: 700; color: var(--fg-secondary); }
+  .qh-audday-n { color: var(--fg-tertiary); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .qh-audrow { display: grid; grid-template-columns: 66px 96px minmax(0, 1fr) 128px 52px; gap: 12px; align-items: baseline; width: 100%; padding: 8px 14px; background: none; border: 0; border-bottom: 1px solid var(--stroke-light); font: inherit; text-align: left; cursor: pointer; }
+  .qh-audrow:hover { background: var(--adaptive-light); }
+  .qh-audrow.is-sel { background: var(--brand-adaptive-light); }
+  .qh-audtime { font-family: var(--qh-mono); font-size: 11px; color: var(--fg-tertiary); font-variant-numeric: tabular-nums; }
+  /* Category is a quiet label, not a colour code: six tinted chips per screen
+     would be decoration, and this list is scanned for words. Unclassified is
+     the one that differs, because it is the one that should get fixed. */
+  .qh-audcat { justify-self: start; padding: 1px 7px; border-radius: var(--r-2xs); background: var(--adaptive-light); font-size: 10.5px; font-weight: 600; color: var(--fg-secondary); white-space: nowrap; }
+  .qh-audcat.is-protection { background: var(--warning-adaptive-light); color: var(--fg-warning); }
+  .qh-audcat.is-unclassified { background: none; border: 1px dashed var(--stroke-strong); color: var(--fg-tertiary); }
+  .qh-audwhat { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .qh-audlabel { font-size: 12.5px; color: var(--fg-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qh-audtarget { font-family: var(--qh-mono); font-size: 11px; color: var(--fg-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qh-audby { font-size: 11.5px; color: var(--fg-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qh-audactor.is-id { font-family: var(--qh-mono); font-size: 11px; color: var(--fg-tertiary); }
+  .qh-audunknown { color: var(--fg-tertiary); }
+  .qh-audreq { font-family: var(--qh-mono); font-size: 11px; color: var(--fg-tertiary); text-align: right; }
+  .qh-audbusy, .qh-audend, .qh-audmore { display: block; width: 100%; padding: 12px; text-align: center; font-size: 12px; color: var(--fg-tertiary); }
+  /* The two empty states are prose plus one button, so they get column flow —
+     the shared .qh-aempty centres a single line and overlaps a second. */
+  .qh-audlist .qh-aempty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 34px 24px; text-align: center; }
+  .qh-audlist .qh-aempty .qh-audhint { max-width: 40ch; margin: 0; }
+  .qh-audmore { border: 0; border-top: 1px solid var(--stroke-light); border-radius: 0; }
+  /* The detail rail. Fixed width and its own scroll, so a paragraph-long payload
+     never moves the list under the cursor — which an expanding row cannot avoid. */
+  .qh-auddetail { position: sticky; top: 0; max-height: calc(100dvh - 150px); display: flex; flex-direction: column; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-md); overflow: hidden; }
+  .qh-auddetail.is-idle { border-style: dashed; border-color: var(--stroke-light); background: none; }
+  .qh-auddetail-idle { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 32px 20px; text-align: center; font-size: 12px; line-height: 1.5; color: var(--fg-tertiary); text-wrap: pretty; }
+  .qh-auddetail-head { flex-shrink: 0; display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--stroke-light); }
+  .qh-auddetail-t { flex: 1 1 auto; font-size: 13.5px; font-weight: 600; color: var(--fg-primary); text-wrap: pretty; }
+  .qh-auddetail-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 14px 16px; }
+  .qh-auddetail-sec { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 16px 0 7px; font-size: 11px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: var(--fg-tertiary); }
+  .qh-audkv { display: flex; flex-direction: column; gap: 7px; }
+  .qh-audkv > div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 10px; align-items: baseline; }
+  .qh-audkv > div.is-long { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .qh-audkv dt { font-size: 11.5px; color: var(--fg-tertiary); }
+  .qh-audkv dd { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--fg-primary); overflow-wrap: break-word; min-width: 0; text-wrap: pretty; }
+  .qh-audkv.is-payload dt { font-family: var(--qh-mono); font-size: 11px; }
+  .qh-audnull { color: var(--fg-tertiary); }
+  .qh-audcode { font-family: var(--qh-mono); font-size: 11px; padding: 1px 5px; border-radius: var(--r-2xs); background: var(--adaptive-light); overflow-wrap: break-word; }
+  .qh-audhint { margin-top: 3px; font-size: 11.5px; line-height: 1.5; color: var(--fg-tertiary); text-wrap: pretty; }
+  .qh-audsql { margin-top: 10px; }
+  .qh-audsql-h { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 5px; font-size: 11px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: var(--fg-tertiary); }
+  .qh-audsql pre { margin: 0; padding: 9px 11px; background: var(--bg-light); border-radius: var(--r-xs); font-family: var(--qh-mono); font-size: 11px; line-height: 1.55; color: var(--fg-secondary); white-space: pre-wrap; overflow-wrap: break-word; }
+  /* Nothing in the product removes an audit row, so the rail says so rather than
+     leaving a space where a delete button would go on any other screen. */
+  .qh-audimmutable { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--stroke-light); font-size: 11px; color: var(--fg-tertiary); }
+  @media (max-width: 1180px) { .qh-audsplit { grid-template-columns: minmax(0, 1fr); } .qh-auddetail { position: static; max-height: none; } .qh-auddetail.is-idle { display: none; } }
+
   /* ---------- Masking exemptions (design 2026-09-09) ---------- */
   .qh-mxlist { display: flex; flex-direction: column; gap: 8px; }
   .qh-mxgroup { margin-bottom: 14px; }
@@ -1305,6 +1402,23 @@
   .qh-mxrung.is-on .qh-mxrung-l { color: var(--fg-accent); }
   .qh-mxrung.is-wide.is-on .qh-mxrung-l { color: var(--fg-danger); }
   .qh-mxrung-w { font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); text-wrap: pretty; }
+  /* Off the top of the ladder, not a sixth peer card: it is wider than the top
+     rung of a ladder built to make width feel wide, and it should not sit in
+     the same row as "one column". */
+  .qh-mxfleet { display: flex; align-items: flex-start; gap: 9px; width: 100%; margin-top: 8px; padding: 10px 12px; background: none; border: 1px dashed var(--stroke-strong); border-radius: var(--r-sm); font: inherit; text-align: left; color: var(--fg-secondary); cursor: pointer; }
+  .qh-mxfleet:hover { border-color: var(--fg-danger); color: var(--fg-danger); }
+  .qh-mxfleet.is-on { border-style: solid; background: var(--danger-adaptive-light); border-color: var(--fg-danger); color: var(--fg-danger); }
+  .qh-mxfleet-t { flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; font-size: 13px; font-weight: 600; }
+  .qh-mxfleet-w { font-size: 11.5px; font-weight: 400; line-height: 1.45; color: var(--fg-tertiary); text-wrap: pretty; }
+  .qh-mxfleet.is-on .qh-mxfleet-w { color: var(--fg-danger); }
+  /* The typed confirmation is a separate step, separated by whitespace that
+     clears the reach sentence's own line-height (19.5px). A 14px gap let a
+     wrapped sentence run into it; a rule read as an underline on the last line
+     of the sentence, which was worse. */
+  .qh-mxtype { display: flex; flex-direction: column; gap: 6px; margin-top: 22px; font-size: 12.5px; line-height: 1.45; color: var(--fg-danger); }
+  .qh-mxreach .qh-mxsent { display: block; }
+  .qh-mxtype .qh-input { max-width: 220px; }
+  .qh-mxchip.is-fleet { color: var(--fg-danger); background: var(--danger-adaptive-light); }
   .qh-mxnote { margin-top: 10px; padding: 8px 11px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-xs); font-size: 12px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
   .qh-mxreach { display: flex; align-items: flex-start; gap: 9px; margin-top: 12px; padding: 11px 13px; border-radius: var(--r-sm); background: var(--bg-light); border: 1px solid var(--stroke-medium); }
   .qh-mxreach.is-wide { background: var(--danger-adaptive-light); border-color: var(--fg-danger); color: var(--fg-danger); }

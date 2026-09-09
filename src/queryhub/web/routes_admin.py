@@ -2880,6 +2880,24 @@ def admin_mask_exemptions(claims: dict = Depends(deps.current_user)):
     }
 
 
+def _slack_ids_in(*values) -> set[str]:
+    """The Slack ids among these values. A raw id is what a row without a linked
+    request carries as its subject, so this is how the trail avoids showing one."""
+    return {v for v in values if isinstance(v, str) and v.startswith("U")}
+
+
+def _resolve_slack_names(ids) -> dict[str, str]:
+    """Batched id -> display name. Shared by both audit routes: two copies of
+    this lookup would be two answers to "who is this", and the screen that shows
+    a bare id is the one nobody notices is wrong."""
+    ids = list(ids)
+    if not ids:
+        return {}
+    return {r["slack_user_id"]: r["name"] for r in db.fetch_all(
+        "SELECT slack_user_id, name FROM requesters "
+        "WHERE slack_user_id = ANY(%s)", (ids,)) if r.get("name")}
+
+
 @router.get("/audit")
 def admin_audit(kind: str | None = None, q: str | None = None,
                 limit: int = 100, claims: dict = Depends(deps.current_user)):
@@ -2932,17 +2950,9 @@ def admin_audit(kind: str | None = None, q: str | None = None,
     ids = set()
     for r in rows:
         d = r.get("details") if isinstance(r.get("details"), dict) else {}
-        for v in (d.get("user"), d.get("grantee"), d.get("slack_user_id"),
-                  r.get("actor_slack_id")):
-            if isinstance(v, str) and v.startswith("U"):
-                ids.add(v)
-    names: dict[str, str] = {}
-    if ids:
-        for nr in db.fetch_all(
-                "SELECT slack_user_id, name FROM requesters "
-                "WHERE slack_user_id = ANY(%s)", (list(ids),)):
-            if nr.get("name"):
-                names[nr["slack_user_id"]] = nr["name"]
+        ids |= _slack_ids_in(d.get("user"), d.get("grantee"),
+                             d.get("slack_user_id"), r.get("actor_slack_id"))
+    names = _resolve_slack_names(ids)
 
     def _name_of(slack_id):
         return names.get(slack_id, slack_id) if slack_id else slack_id
@@ -2954,6 +2964,358 @@ def admin_audit(kind: str | None = None, q: str | None = None,
             continue
         out.append(mapping.admin_audit_entry(r, k, _alias_of, _name_of))
     return {"audit": out}
+
+
+# ---------------------------------------------------------------------------
+# The audit trail's one search endpoint (design 2026-09-09 (c))
+# ---------------------------------------------------------------------------
+#
+# One endpoint answers the whole screen: the page, every denominator, the facet
+# counts each chip states, and the declared exclusions with what including one
+# would add. It is one endpoint because the screen's failure was disagreement
+# between numbers — a chip whose size you only learn by clicking it is how the
+# old Scopes bucket stayed unexamined for months.
+
+#: The one deliberate per-request exclusion, plus usage. Both are DECLARED: the
+#: screen names each, states what including it would add, and can turn it on.
+#: `category` ties a slice to a kind so the chip for that kind can read
+#: "excluded" instead of a contradictory 0.
+AUDIT_EXCLUSIONS = (
+    {"id": "lifecycle", "category": None,
+     "label": "per-request lifecycle",
+     "sub": "submitted, started, completed, failed — the queue and history "
+            "screens show these request by request"},
+    {"id": "usage", "category": "usage",
+     "label": "product usage",
+     "sub": "somebody opened a screen; no authority changed"},
+)
+
+_AUDIT_CATEGORIES = ("requests", "protection", "access", "connections",
+                     "config", "usage", "unclassified")
+_AUDIT_EFFECTS = ("added", "changed", "removed", "read", "decided", "ran")
+_AUDIT_ACTOR_KINDS = ("person", "auto", "job")
+_AUDIT_ACRONYMS = {"pii": "PII", "ddl": "DDL", "sql": "SQL", "ro": "RO",
+                   "rw": "RW", "crm": "CRM", "dba": "DBA", "idp": "IdP",
+                   "csv": "CSV"}
+
+
+def _audit_label(action: str) -> str:
+    """A readable label for a raw action name. Presentation only — the raw name
+    is shown beside it in the rail, because the category is derived FROM it and
+    an auditor questioning a classification should see the evidence."""
+    words = str(action or "").replace("_", " ").split()
+    if not words:
+        return ""
+    out = [_AUDIT_ACRONYMS.get(w.lower(), w) for w in words]
+    if out[0] not in _AUDIT_ACRONYMS.values():
+        out[0] = out[0][:1].upper() + out[0][1:]
+    return " ".join(out)
+
+
+class AuditSearchIn(BaseModel):
+    q: str | None = None
+    categories: list[str] | None = None
+    effects: list[str] | None = None
+    actorKinds: list[str] | None = None
+    since: str | None = Field(None, alias="from")
+    until: str | None = Field(None, alias="to")
+    include: list[str] | None = None
+    cursor: int | None = None
+    limit: int = Field(60, ge=1, le=200)
+
+    model_config = {"populate_by_name": True}
+
+
+# Classification happens once per DISTINCT action name and is joined back, not
+# called per row: 132 names against 26k rows, so the cost does not grow with the
+# table. Everything else in the query hangs off this CTE.
+_AUDIT_CTE = (
+    "WITH names AS ("
+    "  SELECT d.action, k[1] AS category, k[2] AS effect "
+    "    FROM (SELECT DISTINCT action FROM audit_log) d, "
+    "         LATERAL audit_classify(d.action) k), "
+    "scoped AS ("
+    "  SELECT al.id, al.action, n.category, n.effect, "
+    "         CASE WHEN al.actor_slack_id = 'AUTO' THEN 'auto' "
+    "              WHEN al.actor_slack_id IS NULL THEN 'job' "
+    "              ELSE 'person' END AS actor_kind, "
+    "         (al.action = ANY(%(life)s)) AS is_life "
+    "    FROM audit_log al "
+    "    JOIN names n ON n.action = al.action "
+    "    LEFT JOIN requests r ON r.id = al.request_id "
+    "    LEFT JOIN target_servers ts ON ts.id = r.target_server_id "
+    "   WHERE {where}) "
+)
+
+_AUDIT_SEARCH_SQL = (
+    "(al.actor_name ILIKE %(q)s OR r.requester_name ILIKE %(q)s "
+    " OR ts.alias ILIKE %(q)s OR r.database_name ILIKE %(q)s "
+    " OR al.action ILIKE %(q)s OR r.query ILIKE %(q)s "
+    " OR al.details::text ILIKE %(q)s)"
+)
+
+
+def _audit_where(body: AuditSearchIn) -> tuple[str, dict]:
+    """The predicates that scope the whole screen: the search term and the date
+    range. Deliberately NOT the exclusions or the chips — those are applied as
+    FILTERs on one scan, so every denominator comes from the same pass."""
+    where = ["TRUE"]
+    params: dict = {"life": sorted(mapping.AUDIT_EXCLUDE)}
+    if body.q:
+        where.append(_AUDIT_SEARCH_SQL)
+        params["q"] = "%" + body.q.strip() + "%"
+    if body.since:
+        where.append("al.created_at >= %(since)s")
+        params["since"] = body.since
+    if body.until:
+        where.append("al.created_at <= %(until)s")
+        params["until"] = body.until
+    return " AND ".join(where), params
+
+
+@router.post("/audit/search")
+def admin_audit_search(body: AuditSearchIn,
+                       claims: dict = Depends(deps.current_user)):
+    """The audit trail: one page, every denominator, and the facet counts.
+
+    Three things this endpoint is careful about, each of which is a bug the
+    screen was designed to remove:
+
+    **Category and effect are derived here, never in the client.** A client-side
+    rule is a second copy of the vocabulary that drifts from the one the counts
+    were computed with. `classified` rides along because a row nothing claims is
+    the signal the whole screen hangs on — it is counted, not absorbed.
+
+    **The facets are counted BEFORE the category/effect/actor filter**, so every
+    chip can state the count it would produce. A filter whose size you can only
+    learn by clicking it is how the old Scopes bucket stayed unexamined.
+
+    **Four denominators, and they are different numbers.** `matched` is what the
+    list shows; `total` is the scope the chips divide up; `grandTotal` adds back
+    the declared exclusions; `searchTotal` is the whole trail. The screen says
+    "everything the trail holds" only when nothing is excluded, and a
+    completeness claim that is false by default is the exact failure this
+    replaces.
+
+    Reads `audit_log`, never `audit_log_reportable` — the reportable views drop
+    the operator's own rows to keep self-test traffic out of product metrics,
+    and an audit trail that omits a class of actors is not an audit trail.
+    """
+    admin.require_admin(claims, "review")
+
+    bad = ([c for c in (body.categories or []) if c not in _AUDIT_CATEGORIES]
+           + [e for e in (body.effects or []) if e not in _AUDIT_EFFECTS]
+           + [a for a in (body.actorKinds or []) if a not in _AUDIT_ACTOR_KINDS])
+    if bad:
+        raise deps._error(400, "bad_request",
+                          f"Unknown filter value: {', '.join(sorted(bad))}.")
+
+    where, params = _audit_where(body)
+    cte = _AUDIT_CTE.format(where=where)
+    include = set(body.include or [])
+    show_life = "lifecycle" in include
+    show_usage = "usage" in include
+
+    # ONE scan, grouped by the few things every number is derived from. The grid
+    # is at most (action x actor kind x lifecycle) rows — a couple of hundred —
+    # so the page below is the only other pass over the table.
+    grid = db.fetch_all(
+        cte + "SELECT action, category, effect, actor_kind, is_life, "
+              "       count(*) AS n FROM scoped "
+              " GROUP BY action, category, effect, actor_kind, is_life", params)
+
+    def in_scope(g) -> bool:
+        if g["is_life"] and not show_life:
+            return False
+        if g["category"] == "usage" and not show_usage:
+            return False
+        return True
+
+    def chips_ok(g) -> bool:
+        if body.categories and g["category"] not in body.categories:
+            return False
+        if body.effects and g["effect"] not in body.effects:
+            return False
+        if body.actorKinds and g["actor_kind"] not in body.actorKinds:
+            return False
+        return True
+
+    facets_c = {k: 0 for k in _AUDIT_CATEGORIES}
+    facets_e = {k: 0 for k in _AUDIT_EFFECTS}
+    facets_a = {k: 0 for k in _AUDIT_ACTOR_KINDS}
+    grand_total = matched = total = 0
+    hidden = {x["id"]: 0 for x in AUDIT_EXCLUSIONS}
+    types: set[str] = set()
+    types_unclassified: set[str] = set()
+    for g in grid:
+        n = g["n"]
+        grand_total += n
+        if g["is_life"] and not show_life:
+            hidden["lifecycle"] += n
+        elif g["category"] == "usage" and not show_usage:
+            # `elif`: a lifecycle row is counted once, under the slice that is
+            # actually hiding it, or the two numbers would double-count and the
+            # control would promise rows the other one already promised.
+            hidden["usage"] += n
+        if not in_scope(g):
+            continue
+        total += n
+        facets_c[g["category"]] = facets_c.get(g["category"], 0) + n
+        facets_e[g["effect"]] = facets_e.get(g["effect"], 0) + n
+        facets_a[g["actor_kind"]] = facets_a.get(g["actor_kind"], 0) + n
+        types.add(g["action"])
+        if g["category"] == "unclassified":
+            types_unclassified.add(g["action"])
+        if chips_ok(g):
+            matched += n
+
+    # The page. Same CTE, the chips applied, keyset on id so a cursor cannot
+    # skip or repeat a row when new ones arrive mid-read.
+    page_where = ["TRUE"]
+    pp = dict(params)
+    if not show_life:
+        page_where.append("NOT s.is_life")
+    if not show_usage:
+        page_where.append("s.category <> 'usage'")
+    if body.categories:
+        page_where.append("s.category = ANY(%(cats)s)")
+        pp["cats"] = list(body.categories)
+    if body.effects:
+        page_where.append("s.effect = ANY(%(effs)s)")
+        pp["effs"] = list(body.effects)
+    if body.actorKinds:
+        page_where.append("s.actor_kind = ANY(%(acts)s)")
+        pp["acts"] = list(body.actorKinds)
+    if body.cursor:
+        page_where.append("s.id < %(cursor)s")
+        pp["cursor"] = body.cursor
+    pp["lim"] = body.limit
+
+    rows = db.fetch_all(
+        cte + "SELECT s.id, s.category, s.effect, s.actor_kind, "
+              "  al.action, al.actor_slack_id, al.actor_name, al.details, "
+              "  al.created_at, al.request_id, "
+              "  r.requester_name, r.database_name, r.query, r.row_count, "
+              "  r.required_tier, r.executed_at, r.completed_at, "
+              "  ts.alias AS target_alias, "
+              "  g.slack_user_id AS via_user, g.max_tier AS via_tier, "
+              "  g.database_name AS via_db, gts.alias AS via_target "
+              "  FROM scoped s "
+              "  JOIN audit_log al ON al.id = s.id "
+              "  LEFT JOIN requests r ON r.id = al.request_id "
+              "  LEFT JOIN target_servers ts ON ts.id = r.target_server_id "
+              # The authority a machine acted under. Recorded at write time as a
+              # REFERENCE (`grant_id`), so naming it is a join — and the window
+              # can be gone, which is why the null has to be distinguishable
+              # from "there was never one".
+              "  LEFT JOIN auto_approve_grants g "
+              "    ON s.actor_kind = 'auto' "
+              "   AND al.details ->> 'grant_id' ~ '^[0-9]+$' "
+              "   AND g.id = (al.details ->> 'grant_id')::int "
+              "  LEFT JOIN target_servers gts ON gts.id = g.target_server_id "
+              f" WHERE {' AND '.join(page_where)} "
+              " ORDER BY s.id DESC LIMIT %(lim)s", pp)
+
+    ids = set()
+    for r in rows:
+        d = r.get("details") if isinstance(r.get("details"), dict) else {}
+        ids |= _slack_ids_in(d.get("user"), d.get("grantee"),
+                             d.get("slack_user_id"), r.get("actor_slack_id"),
+                             r.get("via_user"))
+    names = _resolve_slack_names(ids)
+
+    out = [_audit_row(r, names) for r in rows]
+    cursor = out[-1]["id"] if len(rows) == body.limit else None
+    search_total = db.fetch_one("SELECT count(*) AS n FROM audit_log")["n"]
+
+    return {
+        "rows": out,
+        "cursor": cursor,
+        "matched": matched,
+        "total": total,
+        "grandTotal": grand_total,
+        "searchTotal": search_total,
+        "facets": {"categories": facets_c, "effects": facets_e,
+                   "actorKinds": facets_a},
+        "actionTypes": {"total": len(types),
+                        "unclassified": len(types_unclassified)},
+        "exclusions": [
+            {**{k: x[k] for k in ("id", "label", "sub", "category")},
+             "included": x["id"] in include,
+             # What INCLUDING it would add. Zero once it is included — the
+             # control then reads "shown" rather than promising rows twice.
+             "rows": hidden[x["id"]]}
+            for x in AUDIT_EXCLUSIONS
+        ],
+    }
+
+
+def _audit_via(r: dict, names: dict) -> str | None:
+    """How a machine came to act. Three outcomes, and the screen renders each
+    differently, so they must stay distinguishable:
+
+    * a window that still exists — named, subject to target at a tier;
+    * a window whose id is on the row but which has since been deleted —
+      `auto_approve_grants` has no `revoked_at`, rows are removed, and 2 of the
+      4,477 auto-approvals on this trail point at one that is gone;
+    * a fingerprint match, which names the earlier request instead.
+
+    None means the row is not a machine action at all.
+    """
+    d = r.get("details") if isinstance(r.get("details"), dict) else {}
+    fp = d.get("fingerprint_match_request_id")
+    if fp:
+        return f"query fingerprint matched request #{fp}"
+    if not d.get("grant_id"):
+        return None
+    if not r.get("via_user"):
+        return "an auto-approve window that no longer exists"
+    who = names.get(r["via_user"], r["via_user"])
+    target = r.get("via_target") or "any target"
+    if r.get("via_db"):
+        target += "/" + r["via_db"]
+    tier = (r.get("via_tier") or "").upper()
+    return f"auto-approve window · {who} → {target}{(' ' + tier) if tier else ''}"
+
+
+def _audit_row(r: dict, names: dict) -> dict:
+    """One row, in the shape the screen reads. `actor.name` stays null when no
+    named account exists — never a fabricated display name, and never blank."""
+    handle = r.get("actor_slack_id") or "system"
+    name = r.get("actor_name") or names.get(r.get("actor_slack_id") or "")
+    req = None
+    if r.get("request_id"):
+        dur = None
+        if r.get("executed_at") and r.get("completed_at"):
+            dur = int((r["completed_at"] - r["executed_at"]).total_seconds() * 1000)
+        req = {
+            "id": r["request_id"],
+            "requester": r.get("requester_name") or "—",
+            "connection": r.get("target_alias") or "—",
+            "database": r.get("database_name") or "—",
+            "tier": (r.get("required_tier") or "").upper() or None,
+            "rows": r.get("row_count"),
+            "durationMs": dur,
+            "sql": r.get("query"),
+        }
+    target = None
+    if r.get("target_alias"):
+        target = r["target_alias"] + ("/" + r["database_name"]
+                                      if r.get("database_name") else "")
+    return {
+        "id": r["id"],
+        "time": mapping.iso(r["created_at"]),
+        "actor": {"handle": handle, "name": name or None,
+                  "kind": r["actor_kind"], "via": _audit_via(r, names)},
+        "action": r["action"],
+        "actionLabel": _audit_label(r["action"]),
+        "category": r["category"],
+        "effect": r["effect"],
+        "classified": r["category"] != "unclassified",
+        "target": target,
+        "detail": r.get("details") if isinstance(r.get("details"), dict) else {},
+        "request": req,
+    }
 
 
 @router.get("/metrics")
