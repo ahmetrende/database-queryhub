@@ -30,6 +30,14 @@ current ceiling. Call `classify_sql` first if you want to know whether a
 statement will be accepted before you submit it, rather than learning it from
 a refusal.
 
+`submit_query` waits for an auto-approved result and returns the first rows
+with it, so one call is usually the whole exchange. It returns early with an id
+when a human has to approve; poll `query_status` then, and expect minutes.
+
+`describe_database` lists table names. Pass `table` with part of a name to get
+columns -- asking for everything on a large database returns megabytes and
+tells you almost nothing.
+
 Do not paste credentials, personal data or secrets into a query. Do not retry
 a refused statement unchanged; the refusal names what to change.
 """
@@ -70,18 +78,23 @@ def build():
     def list_connections() -> dict:
         return _wrap(tools.list_connections)()
 
-    @server.tool(description="Tables and columns of one database, from QueryHub's catalog.")
-    def describe_database(connection: str, database: str) -> dict:
-        return _wrap(tools.describe_database)(connection, database)
+    @server.tool(description="What is in a database: table names, or the columns "
+                             "of tables matching `table`.")
+    def describe_database(connection: str, database: str,
+                          table: str | None = None) -> dict:
+        return _wrap(tools.describe_database)(connection, database, table)
 
     @server.tool(description="What tier a statement needs, and whether this door accepts it.")
     def classify_sql(connection: str, sql: str) -> dict:
         return _wrap(tools.classify_sql)(connection, sql)
 
-    @server.tool(description="Submit a statement for review and execution.")
+    @server.tool(description="Submit a statement, and wait for the result if it "
+                             "is auto-approved.")
     def submit_query(connection: str, sql: str, database: str | None = None,
-                     justification: str | None = None) -> dict:
-        return _wrap(tools.submit_query)(connection, database, sql, justification)
+                     justification: str | None = None,
+                     wait_seconds: int = tools.DEFAULT_WAIT_SECONDS) -> dict:
+        return _wrap(tools.submit_query)(connection, database, sql,
+                                         justification, wait_seconds)
 
     @server.tool(description="Where a submitted query has got to.")
     def query_status(request_id: int) -> dict:

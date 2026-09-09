@@ -83,6 +83,11 @@ function useAdminState(pushToast, active, isAdminViewer) {
   // legacy admins table), so the screen has to say so — a dormant approver row
   // otherwise tells its reader something untrue about who can approve.
   const [rolesEnforced, setRolesEnforced] = useAdminStateHook(true);
+  // Masking exemptions (design 2026-09-09). `maskingEnabled` is the fleet-wide
+  // pii_mask_on_return switch: with it off every row on the screen is moot, and
+  // the screen has to say so rather than implying it is doing something.
+  const [maskExemptions, setMaskExemptions] = useAdminStateHook([]);
+  const [maskMeta, setMaskMeta] = useAdminStateHook({ maskingEnabled: true, nameRules: 0, valueDetectors: [] });
   const [people, setPeople] = useAdminStateHook([]);
   const [teams, setTeams] = useAdminStateHook([]);
   const [endpointReqs, setEndpointReqs] = useAdminStateHook([]);
@@ -117,6 +122,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const loadKill = useAdminCb(() => qhApi.adminKillGet().then(r => setKillSwitch({ enabled: !!r.enabled, message: r.message || '', by: r.by || null, at: r.at || null })).catch(() => {}), []);
   const loadScopes = useAdminCb(() => qhApi.adminScopes().then(r => setScopes(r.scopes || [])).catch(() => {}), []);
   const loadRoles = useAdminCb(() => qhApi.adminRoles().then(r => { setRoles(r.roles || []); setRolesEnforced(r.enforced !== false); }).catch(() => {}), []);
+  const loadMask = useAdminCb(() => qhApi.adminMaskExemptions().then(r => { setMaskExemptions(r.exemptions || []); setMaskMeta({ maskingEnabled: r.maskingEnabled !== false, nameRules: r.nameRules || 0, valueDetectors: r.valueDetectors || [] }); }).catch(() => {}), []);
   const loadEndpointReqs = useAdminCb(() => qhApi.adminEndpointReqs().then(r => setEndpointReqs((r.requests || []).map(x => ({ ...x, tier: x.tier || null })))).catch(() => {}), []);
   const loadPeople = useAdminCb(() => qhApi.adminPeople().then(r => setPeople(r.people || [])).catch(() => {}), []);
   const loadTeams = useAdminCb(() => qhApi.adminTeams().then(r => setTeams(r.teams || [])).catch(() => {}), []);
@@ -136,6 +142,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
       qhApi.adminKillGet().then(r => setKillSwitch({ enabled: !!r.enabled, message: r.message || '', by: r.by || null, at: r.at || null })),
       qhApi.adminScopes().then(r => setScopes(r.scopes || [])),
       qhApi.adminRoles().then(r => { setRoles(r.roles || []); setRolesEnforced(r.enforced !== false); }),
+      qhApi.adminMaskExemptions().then(r => { setMaskExemptions(r.exemptions || []); setMaskMeta({ maskingEnabled: r.maskingEnabled !== false, nameRules: r.nameRules || 0, valueDetectors: r.valueDetectors || [] }); }),
       qhApi.adminEndpointReqs().then(r => setEndpointReqs((r.requests || []).map(x => ({ ...x, tier: x.tier || null })))),
       qhApi.adminFeedback().then(r => setFeedback(r.feedback || [])),
       qhApi.adminMetrics().then(r => setMetrics(r || {})),
@@ -284,6 +291,23 @@ function useAdminState(pushToast, active, isAdminViewer) {
       .catch(e => { fail(e, 'Revoke failed.'); throw e; });
   };
 
+  // Masking exemptions. Add RETURNS its promise and does not toast on failure,
+  // for the same reason roles do not: every refusal names a field the open form
+  // is still showing. Turn-off and remove have no form, so theirs are toasts.
+  // The catalog and the preview are pass-throughs — they are reads the FORM
+  // makes as it is filled in, not screen state, and caching them in the hook
+  // would hand the form a snapshot of a different database than the one picked.
+  const addMaskExemption = (b) => qhApi.adminAddMaskExemption(b)
+    .then(res => { loadMask(); loadAudit(); pushToast && pushToast('Exemption added.'); return res; });
+  const setMaskExemptionEnabled = (id, enabled) => qhApi.adminSetMaskExemption(id, enabled)
+    .then(() => { loadMask(); loadAudit(); pushToast && pushToast(enabled ? 'Exemption turned back on.' : 'Exemption turned off — that column is masked again.'); })
+    .catch(e => fail(e, 'Could not change the exemption.'));
+  const removeMaskExemption = (id) => qhApi.adminDelMaskExemption(id)
+    .then(() => { loadMask(); loadAudit(); pushToast && pushToast('Exemption removed.'); })
+    .catch(e => fail(e, 'Remove failed.'));
+  const maskCatalog = (connectionId, databaseId) => qhApi.adminMaskCatalog(connectionId, databaseId);
+  const maskPreview = (b) => qhApi.adminMaskPreview(b);
+
   // Admin scopes — real writes (POST /admin/scopes upserts a scoped/super
   // admin; DELETE disables one). The backend guards the last super-admin and
   // the auth-event trigger DMs the affected user.
@@ -424,7 +448,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
   };
 
   return {
-    queue, grants, autoGrants, scopes, roles, rolesEnforced, people, teams, endpointReqs, feedback, audit, metrics, connections, killSwitch, config, pushToast,
+    queue, grants, autoGrants, scopes, roles, rolesEnforced, maskExemptions, maskMeta, people, teams, endpointReqs, feedback, audit, metrics, connections, killSwitch, config, pushToast,
     loadError, loading, reload: reloadAll,
     decide, batchApprove, approveBundle, toggleKill,
     addGrant, updateGrant, revokeGrant, setSubjectGrants,
@@ -432,6 +456,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
     addAutoGrant, updateAutoGrant, revokeAutoGrant,
     saveScope, removeScope, decideEndpoint, saveConfig,
     addRole, removeRole,
+    addMaskExemption, setMaskExemptionEnabled, removeMaskExemption, maskCatalog, maskPreview,
     addTeam, updateTeam, removeTeam, setPersonTeams,
     addConnection, updateConnection, removeConnection, setConnectionEnabled,
     reloadConnections: loadConnections,

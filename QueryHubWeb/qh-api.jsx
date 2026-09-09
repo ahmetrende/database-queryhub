@@ -220,6 +220,15 @@ const qhApi = {
   // is exactly the shape that invites it: seven optional fields where a missing
   // `maxTier` is not an error, just a ceiling that quietly stops applying.
   adminRoles:      ()     => qhFetch('/admin/roles'),
+  // Masking exemptions. The GET is live; the four writers below are the P3
+  // roadmap item and will 404 until the routes exist — which is why the screen
+  // that calls them is super-admin only and read-only in practice today.
+  adminMaskExemptions:()  => qhFetch('/admin/mask-exemptions'),
+  adminAddMaskExemption:(b) => qhFetch('/admin/mask-exemptions', { method: 'POST', body: JSON.stringify(b) }),
+  adminSetMaskExemption:(id, enabled) => qhFetch('/admin/mask-exemptions/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ enabled: !!enabled }) }),
+  adminDelMaskExemption:(id) => qhFetch('/admin/mask-exemptions/' + encodeURIComponent(id), { method: 'DELETE' }),
+  adminMaskCatalog:(connectionId, databaseId) => qhFetch('/admin/mask-exemptions/catalog?connection=' + encodeURIComponent(connectionId) + (databaseId ? '&database=' + encodeURIComponent(databaseId) : '')),
+  adminMaskPreview:(b) => qhFetch('/admin/mask-exemptions/preview', { method: 'POST', body: JSON.stringify(b) }),
   adminAddRole:    (b)    => qhFetch('/admin/roles', { method: 'POST', body: JSON.stringify(b) }),
   adminDelRole:    (id)   => qhFetch('/admin/roles/' + encodeURIComponent(id), { method: 'DELETE' }),
   adminConnections:()     => qhFetch('/admin/connections'),

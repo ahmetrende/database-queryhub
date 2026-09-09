@@ -946,10 +946,24 @@ def _match_pii_type(name: str, patterns) -> str | None:
     did before, so this can never mask less than the pattern alone would on real
     PII. `full_name` has no metadata qualifier in it; `database_name` does.
     """
+    entry = match_column_rule(name, patterns)
+    return entry[1] if entry else None
+
+
+def match_column_rule(name: str, patterns) -> tuple | None:
+    """The catalog entry a column name matches, or None. `_match_pii_type` is
+    this function's answer with the type taken off it.
+
+    Split out because the masking-exemptions screen has to name the rule that
+    fired, not just the kind it decided — half the exemptions ever written are
+    for a column somebody was surprised to see masked, and the surprise is not
+    knowing which rule caught it. Answering that from a second copy of this
+    loop would be a screen that explains a decision some other code made.
+    """
     name = (name or "").lower()
     tokens = set(re.split(r"[_\s\-]+", name))
     for entry in patterns:
-        pat, ptype, mtype = entry[0], entry[1], entry[2]
+        pat, mtype = entry[0], entry[2]
         excludes = entry[3] if len(entry) > 3 else None
         matched = False
         if mtype == "token" and pat in tokens:
@@ -965,8 +979,52 @@ def _match_pii_type(name: str, patterns) -> str | None:
             continue
         if excludes and any(x in tokens or x in name for x in excludes):
             continue                      # a qualifier says this is not PII
-        return ptype
+        return entry
     return None
+
+
+# What each kind is, in the words a reader of the exemptions screen needs. The
+# masker decides `full` vs `partial`: everything routed to `_redact` (address,
+# birthdate, anything unrecognised) replaces the whole cell, the rest keep a
+# recognisable shape.
+_PII_KIND_LABEL = {
+    "email": "an email address",
+    "phone": "a phone number",
+    "name": "a person's name",
+    "address": "a postal address",
+    "birthdate": "a date of birth",
+    "iban": "a bank account (IBAN)",
+    "card": "a card number",
+    "tckn": "a national id",
+    "vkn": "a tax id",
+    "generic": "personal data",
+}
+
+
+def explain_columns(names: list[str]) -> dict[str, dict]:
+    """For each column name that the NAME catalog masks, the rule that caught
+    it: {name: {"key": pattern, "label": what it is, "mask": full|partial}}.
+
+    Batched — the catalog is loaded once for the whole list, the same reason
+    `column_pii_map` takes a list. A name the catalog does not match is absent
+    from the result rather than present with a null.
+    """
+    patterns = _load_column_patterns()
+    out: dict[str, dict] = {}
+    for raw in names:
+        if not raw:
+            continue
+        entry = match_column_rule(raw, patterns)
+        if not entry:
+            continue
+        ptype = entry[1]
+        out[raw] = {
+            "key": entry[0],
+            "label": _PII_KIND_LABEL.get(ptype, ptype),
+            "mask": "partial" if _COLUMN_MASKERS.get(ptype) not in (None, _redact)
+                    else "full",
+        }
+    return out
 
 
 def _source_columns_by_position(sql: str, columns: list[str],

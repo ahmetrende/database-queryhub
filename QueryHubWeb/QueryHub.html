@@ -1259,6 +1259,99 @@
   .qh-rolerow.is-off .qh-rolerow-name { font-weight: 500; color: var(--fg-secondary); }
   .qh-role-why.is-danger { color: var(--fg-danger); }
   .qh-roleform-act { margin-top: 9px; }
+  /* ---------- Masking exemptions (design 2026-09-09) ---------- */
+  .qh-mxlist { display: flex; flex-direction: column; gap: 8px; }
+  .qh-mxgroup { margin-bottom: 14px; }
+  .qh-mxgroup-h { display: flex; align-items: center; gap: 8px; margin: 12px 0 7px; font-size: 12.5px; font-weight: 600; color: var(--fg-secondary); }
+  .qh-mxgroup-n { padding: 1px 7px; border-radius: 999px; background: var(--adaptive-light); font-size: 11px; color: var(--fg-tertiary); }
+  .qh-mxrow { display: flex; align-items: flex-start; gap: 14px; padding: 11px 13px; background: var(--bg-white); border: 1px solid var(--stroke-light); border-radius: var(--r-md); }
+  /* A wide exemption LOOKS wide. Tonal ground + a stronger border, no stripe and
+     no per-row warning banner: the brief's ask is that hierarchy carries the
+     weight so an ordinary correct row is not shouted at. */
+  .qh-mxrow.is-wide { background: var(--warning-adaptive-light); border-color: var(--stroke-strong); }
+  /* Turned off genuinely does nothing, so dimming the sentence is honest here
+     (unlike a disabled account on the Roles screen, where the row still stands). */
+  .qh-mxrow.is-off { background: var(--bg-light); }
+  .qh-mxrow.is-off .qh-mxsent, .qh-mxrow.is-off .qh-mxlines, .qh-mxrow.is-moot .qh-mxsent { color: var(--fg-tertiary); }
+  .qh-mxrow.is-off .qh-mxsent b { color: var(--fg-secondary); }
+  .qh-mxrow-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .qh-mxrow-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .qh-mxpath { font-family: var(--qh-mono); font-size: 12px; line-height: 1.55; color: var(--fg-primary); overflow-wrap: break-word; min-width: 0; }
+  .qh-mxsep { margin: 0 5px; color: var(--fg-tertiary); }
+  .qh-mxall { color: var(--fg-warning); }
+  .qh-mxchip { padding: 2px 8px; border-radius: var(--r-2xs); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-secondary); background: var(--adaptive-strong); }
+  .qh-mxchip.is-server, .qh-mxchip.is-database { color: var(--fg-danger); background: var(--danger-adaptive-light); }
+  .qh-mxchip.is-schema { color: var(--fg-warning); background: var(--warning-adaptive-light); }
+  .qh-mxchip.is-off { color: var(--fg-tertiary); background: var(--adaptive-medium); }
+  .qh-mxchip.is-gone { color: var(--fg-warning); background: var(--warning-adaptive-light); }
+  .qh-mxchip.is-aud { color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  .qh-mxsent { font-size: 13px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-mxsent b { font-weight: 600; color: var(--fg-primary); }
+  .qh-mxlines { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); }
+  .qh-mxwhy { font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); }
+  .qh-mxwhy.is-gone { color: var(--fg-warning); }
+  .qh-mxwhy code, .qh-mxnote code, .qh-mxevidence code, .qh-roleempty-p code { font-family: var(--qh-mono); font-size: 11px; padding: 1px 4px; border-radius: var(--r-2xs); background: var(--adaptive-light); }
+  .qh-mxreason { margin-top: 2px; font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-mxmeta { font-size: 11px; font-family: var(--qh-mono); color: var(--fg-tertiary); }
+  .qh-mxsug { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 5px; padding: 6px 9px; border-radius: var(--r-xs); background: var(--adaptive-light); font-size: 11.5px; color: var(--fg-secondary); }
+  .qh-mxacts { flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+  .qh-mxdel { padding: 0; background: none; border: 0; font: inherit; font-size: 12px; color: var(--fg-tertiary); cursor: pointer; }
+  .qh-mxdel:hover { color: var(--fg-danger); }
+  .qh-mxcount { margin-left: auto; font-size: 11.5px; color: var(--fg-tertiary); }
+  /* --- the add flow --- */
+  .qh-mxform { margin: 0 0 16px; padding: 16px 18px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-lg); }
+  .qh-mxfields { display: flex; gap: 12px; flex-wrap: wrap; }
+  .qh-mxfields .qh-select { min-width: 190px; }
+  .qh-mxcolfield .qh-select { min-width: 300px; }
+  .qh-mxrungs { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+  .qh-mxrung { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); font: inherit; text-align: left; cursor: pointer; }
+  .qh-mxrung:hover { border-color: var(--stroke-accent); }
+  .qh-mxrung.is-on { background: var(--brand-adaptive-light); border-color: var(--brand-green); }
+  /* The two wide rungs are picked deliberately or not at all, so selecting one
+     changes the colour of the choice itself — not just of a warning beside it. */
+  .qh-mxrung.is-wide.is-on { background: var(--danger-adaptive-light); border-color: var(--fg-danger); }
+  .qh-mxrung-l { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--fg-primary); }
+  .qh-mxrung.is-on .qh-mxrung-l { color: var(--fg-accent); }
+  .qh-mxrung.is-wide.is-on .qh-mxrung-l { color: var(--fg-danger); }
+  .qh-mxrung-w { font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); text-wrap: pretty; }
+  .qh-mxnote { margin-top: 10px; padding: 8px 11px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-xs); font-size: 12px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-mxreach { display: flex; align-items: flex-start; gap: 9px; margin-top: 12px; padding: 11px 13px; border-radius: var(--r-sm); background: var(--bg-light); border: 1px solid var(--stroke-medium); }
+  .qh-mxreach.is-wide { background: var(--danger-adaptive-light); border-color: var(--fg-danger); color: var(--fg-danger); }
+  .qh-mxreach.is-wide .qh-mxsent, .qh-mxreach.is-wide .qh-mxsent b { color: var(--fg-danger); }
+  .qh-mxconfirm { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; font-size: 12.5px; line-height: 1.45; color: var(--fg-danger); cursor: pointer; }
+  .qh-mxq { margin-top: 12px; }
+  .qh-mxq-t { margin-bottom: 7px; font-size: 13px; font-weight: 600; color: var(--fg-primary); text-wrap: pretty; }
+  .qh-mxopts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
+  .qh-mxopt { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); font: inherit; text-align: left; cursor: pointer; }
+  .qh-mxopt:hover { border-color: var(--stroke-accent); }
+  .qh-mxopt.is-on { background: var(--brand-adaptive-light); border-color: var(--brand-green); }
+  .qh-mxopt-l { font-size: 13px; font-weight: 600; color: var(--fg-primary); }
+  .qh-mxopt.is-on .qh-mxopt-l { color: var(--fg-accent); }
+  .qh-mxopt-w { font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); text-wrap: pretty; }
+  .qh-mxevidence { margin-top: 8px; font-size: 12px; line-height: 1.5; color: var(--fg-secondary); }
+  .qh-mxreason-in { display: block; width: 100%; max-width: 620px; height: auto; padding: 9px 11px; line-height: 1.5; resize: vertical; }
+  .qh-mxprev { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--stroke-light); }
+  .qh-mxprev-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .qh-mxprev-idle { font-size: 12.5px; line-height: 1.5; color: var(--fg-tertiary); text-wrap: pretty; }
+  .qh-mxprev-q { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 9px 11px; background: var(--bg-light); border-radius: var(--r-xs); }
+  .qh-mxprev-q code { font-family: var(--qh-mono); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; color: var(--fg-secondary); }
+  .qh-mxprev-by { flex-shrink: 0; font-size: 11px; color: var(--fg-tertiary); }
+  .qh-mxdiffwrap { display: flex; flex-direction: column; gap: 8px; }
+  /* The honest question is "what will people see that they cannot see now?", so
+     the answer is two rows of the same real query — today's and after's — with
+     the one changed cell carrying the colour. */
+  .qh-mxdiff { border-collapse: collapse; font-size: 11.5px; }
+  .qh-mxdiff th, .qh-mxdiff td { padding: 6px 10px; border-bottom: 1px solid var(--stroke-light); text-align: left; white-space: nowrap; }
+  .qh-mxdiff td { font-family: var(--qh-mono); }
+  .qh-mxdiff th { font-size: 10.5px; font-weight: 600; letter-spacing: 0.03em; color: var(--fg-tertiary); }
+  .qh-mxdiff th.is-t { color: var(--fg-accent); }
+  .qh-mxdiff td.qh-mxdiff-k { font-family: inherit; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-tertiary); }
+  .qh-mxdiff td.is-masked { color: var(--fg-tertiary); background: var(--adaptive-light); }
+  /* The unmasked value is the single most-read cell on the screen, so it takes
+     full-contrast ink and lets the brand TINT carry "this is what changes" —
+     the accent-on-accent pairing the chips inherit is 3.16:1, fine on a 10px
+     uppercase label and not fine here. */
+  .qh-mxdiff td.is-clear { color: var(--fg-primary); background: var(--brand-adaptive-light); font-weight: 600; }
   /* Subject combo (CODE brief 2026-08-22 §3): one control for the people list
      AND a principal id QueryHub has never seen. Fixed width so the form row does
      not reflow as it filters, and the popup is absolute — eight matches must not
@@ -1784,6 +1877,7 @@
 <script type="text/babel" src="qh-admin-access.jsx"></script>
 <script type="text/babel" src="qh-admin-person.jsx"></script>
 <script type="text/babel" src="qh-admin-roles.jsx"></script>
+<script type="text/babel" src="qh-admin-mask.jsx"></script>
 <script type="text/babel" src="qh-admin-insights.jsx"></script>
 <script type="text/babel" src="qh-admin-config.jsx"></script>
 <script type="text/babel" src="qh-admin.jsx"></script>

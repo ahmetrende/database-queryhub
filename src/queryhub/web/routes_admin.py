@@ -28,6 +28,7 @@ from .. import (
     engines,
     errors,
     grants,
+    pii,
     requesters,
     schema_catalog,
     targets,
@@ -2708,16 +2709,175 @@ def admin_revoke_role(role_id: int, claims: dict = Depends(deps.current_user)):
 
 # ---- Insights (review): audit / metrics / feedback --------------------------
 
-# The registry-CRUD actions are not in mapping.AUDIT_KIND, so the SQL filter
-# below would drop them and the screen that writes them could not show them
-# back. Listed here explicitly; admin_audit_entry falls back to kind "other"
-# and an underscore->space label, which already reads correctly ("Connection
-# created"). Folding them into AUDIT_KIND belongs with the next pass over the
-# admin surface,
-# which owns the filter chips these kinds drive.
-_CONNECTION_ACTIONS = ("connection_created", "connection_updated",
-                       "connection_deleted")
-_AUDIT_ACTIONS = tuple(mapping.AUDIT_KIND.keys()) + _CONNECTION_ACTIONS
+# Nothing is listed here any more. The screen used an ALLOWLIST of action
+# names, which meant it showed what somebody had remembered to name: 110 of
+# the 132 actions this table holds were invisible, `withdrawn` among them --
+# a requester withdrew a request, the admins' cards kept their buttons, and
+# the audit trail did not record that anything had happened. `result_unmasked`
+# was hidden too, which is a super-admin reading unmasked personal data.
+#
+# The same screen had already been caught hiding things once, by reading
+# `audit_log_reportable` and therefore dropping the operator's own activity --
+# the most privileged there is. Twice is a shape, not an accident: an audit
+# view must fail towards showing too much, so the filter is now a denylist of
+# per-request lifecycle noise and everything else is visible by default.
+# --- masking exemptions -----------------------------------------------------
+#
+# READ ONLY. Every one of the rows this serves was typed into psql, and the
+# screen that reads it (Access -> Masking exemptions) can list and explain them
+# but not write one — creating and editing is the P3 roadmap item. Serving the
+# list first is worth it on its own: these are the rows that switch protection
+# OFF, and until now they were invisible to everyone who does not have psql.
+
+
+def _mask_scope(r: dict) -> str:
+    """Which rung of the ladder a row sits on: the narrowest field it names.
+
+    NULL is a wildcard in this table, so the reach is decided by the narrowest
+    field that is filled in and everything wider is "all of them". That is also
+    why a blank form is dangerous and why the screen asks for the rung first.
+    """
+    if r["column_name"]:
+        return "column"
+    if r["table_name"]:
+        return "table"
+    if r["schema_name"]:
+        return "schema"
+    if r["database_name"]:
+        return "database"
+    return "server"
+
+
+def _mask_covers(r: dict, target: int, database: str,
+                 table: str, column: str) -> bool:
+    """Does exemption row `r` already reach this exact column? NULL matches
+    anything, the same way `pii._load_exemptions` reads it."""
+    return (
+        (r["target_server_id"] is None or r["target_server_id"] == target)
+        and (r["database_name"] is None or r["database_name"] == database)
+        and (r["table_name"] is None or r["table_name"] == table)
+        and (r["column_name"] is None or r["column_name"] == column)
+    )
+
+
+@router.get("/mask-exemptions")
+def admin_mask_exemptions(claims: dict = Depends(deps.current_user)):
+    """Every masking exemption, what it reaches, and why the column was masked
+    in the first place.
+
+    Three things are resolved here rather than left to the screen:
+
+    `maskedBy` is the NAME rule that caught the column, read from the same
+    matcher the masker uses (`pii.explain_columns`). Half the exemptions ever
+    written are for a column somebody was surprised to see masked, and the
+    surprise is not knowing which rule fired. A column with no `maskedBy` is
+    worth seeing too: it means the name catalog does not mask it any more, so
+    the exemption is only still doing something through the value scan.
+
+    `missing` says the exemption points at a table or column the catalog does
+    not have. It is computed for the column and table rungs only, and only when
+    the catalog knows that (target, database) pair at all — otherwise a target
+    QueryHub has never snapshotted would report every one of its exemptions as
+    dead. The wider rungs are deliberately never marked missing: "the table is
+    gone" is not a state a server-wide exemption can be in.
+
+    `alsoOn` is the suggestion the same database on another server is missing
+    this exemption. A primary and its migrated copy routinely disagree, and the
+    operator may have meant exactly one of them — so it is a suggestion, not an
+    error, and it is only offered for a row that is switched on.
+    """
+    admin.require_admin(claims, "access")
+    rows = db.fetch_all(
+        "SELECT e.id, e.target_server_id, e.database_name, e.schema_name, "
+        "       e.table_name, e.column_name, e.reason, e.enabled, "
+        "       e.created_by, e.created_at, e.apply_in_joins, "
+        "       e.keep_value_scan, e.super_admin_only, ts.alias "
+        "  FROM pii_masking_exemptions e "
+        "  LEFT JOIN target_servers ts ON ts.id = e.target_server_id "
+        " ORDER BY e.enabled DESC, e.id")
+
+    names = sorted({r["column_name"] for r in rows if r["column_name"]})
+    explained = pii.explain_columns(names) if names else {}
+
+    # One catalog read for every table any exemption names. Bounded by the
+    # exemptions, not by the fleet: 457 rows against 156k catalogued columns.
+    tbls = sorted({r["table_name"] for r in rows if r["table_name"]})
+    dbs = sorted({r["database_name"] for r in rows if r["database_name"]})
+    cat: set[tuple] = set()
+    known: set[tuple] = set()
+    if tbls and dbs:
+        for c in db.fetch_all(
+                "SELECT st.target_server_id AS t, st.database_name AS d, "
+                "       st.table_name AS tb, sc.column_name AS c "
+                "  FROM schema_tables st "
+                "  JOIN target_servers ts ON ts.id = st.target_server_id "
+                "  LEFT JOIN schema_columns sc ON sc.table_id = st.id "
+                " WHERE ts.enabled AND st.table_name = ANY(%s) "
+                "   AND st.database_name = ANY(%s)", (tbls, dbs)):
+            known.add((c["t"], c["d"]))
+            cat.add((c["t"], c["d"], c["tb"], c["c"]))
+            cat.add((c["t"], c["d"], c["tb"], None))
+
+    aliases = {r["id"]: r["alias"] for r in db.fetch_all(
+        "SELECT id, alias FROM target_servers WHERE enabled")}
+    live = [r for r in rows if r["enabled"]]
+
+    out = []
+    for r in rows:
+        scope = _mask_scope(r)
+        tid, dbname = r["target_server_id"], r["database_name"]
+
+        missing = False
+        if scope in ("column", "table") and tid is not None and dbname:
+            if (tid, dbname) in known:
+                missing = (tid, dbname, r["table_name"],
+                           r["column_name"]) not in cat
+
+        also = []
+        if r["enabled"] and scope == "column" and dbname:
+            for other, alias in sorted(aliases.items(), key=lambda kv: kv[1]):
+                if other == tid:
+                    continue
+                if (other, dbname, r["table_name"], r["column_name"]) not in cat:
+                    continue
+                if any(_mask_covers(x, other, dbname, r["table_name"],
+                                    r["column_name"]) for x in live):
+                    continue
+                also.append({"connectionId": other, "connectionName": alias})
+
+        out.append({
+            "id": r["id"],
+            "scope": scope,
+            "connectionId": tid,
+            # NULL is a wildcard, so it is named as one. A row that reaches
+            # every server must not read as a row with a blank server.
+            "connectionName": r["alias"] or "every server",
+            "databaseId": dbname,
+            "databaseName": dbname or "every database",
+            "schema": r["schema_name"],
+            "table": r["table_name"],
+            "column": r["column_name"],
+            "strength": "soft" if r["keep_value_scan"] else "full",
+            "survivesJoin": bool(r["apply_in_joins"]),
+            "audience": "super" if r["super_admin_only"] else "everyone",
+            "reason": r["reason"],
+            "createdBy": r["created_by"],
+            "createdAt": mapping.iso(r["created_at"]),
+            "enabled": bool(r["enabled"]),
+            "missing": missing,
+            "maskedBy": explained.get(r["column_name"] or ""),
+            "alsoOn": also,
+        })
+
+    return {
+        "exemptions": out,
+        # Masking off fleet-wide makes every row above moot, and the screen
+        # says so at the top rather than implying it is doing something.
+        "maskingEnabled": pii.is_enabled(),
+        "nameRules": db.fetch_one(
+            "SELECT count(*) AS n FROM pii_column_patterns WHERE enabled")["n"],
+        "valueDetectors": [d.name for d in pii.active_detectors()],
+    }
 
 
 @router.get("/audit")
@@ -2731,8 +2891,8 @@ def admin_audit(kind: str | None = None, q: str | None = None,
     # target alias/db, action and the full query), NOT over a client-loaded
     # window — otherwise anything older than the newest `limit` events is
     # invisible to search. Matches are then ordered newest-first and capped.
-    params: list = [list(_AUDIT_ACTIONS)]
-    where = "al.action = ANY(%s)"
+    params: list = [list(mapping.AUDIT_EXCLUDE)]
+    where = "NOT (al.action = ANY(%s))"
     term = (q or "").strip()
     if term:
         like = f"%{term}%"
@@ -2789,7 +2949,7 @@ def admin_audit(kind: str | None = None, q: str | None = None,
 
     out = []
     for r in rows:
-        k = mapping.AUDIT_KIND.get(r["action"], "other")
+        k = mapping.audit_kind(r["action"])
         if kind and k != kind:
             continue
         out.append(mapping.admin_audit_entry(r, k, _alias_of, _name_of))

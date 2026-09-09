@@ -26,6 +26,12 @@ import './qh-admin-person.jsx';
 // from — RolesView reads all six off window and a build that loaded this
 // first would find them undefined.
 import './qh-admin-roles.jsx';
+// New in the 2026-09-09 round. Same load position as the <script> tag in
+// QueryHub.html: after qh-admin-roles.jsx, before qh-admin-insights.jsx.
+// Without this import (and the symlink beside it) `vite build` SUCCEEDS
+// and silently omits the file — MaskingView would be undefined and
+// #admin/mask would render blank in the built app only.
+import './qh-admin-mask.jsx';
 import './qh-admin-insights.jsx';
 import './qh-admin-config.jsx';
 import './qh-admin.jsx';

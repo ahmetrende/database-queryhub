@@ -336,6 +336,66 @@ def auto_grant_entry(row: dict, alias_of: "callable") -> dict:
 # audit view and the most privileged user's did not. Reported as "my queries do
 # not show up in the audit log"; the rows were in `audit_log` all along, filtered
 # out by this allow-list.
+#: Actions the audit screen leaves out: the per-request lifecycle, which the
+#: queue and history screens already show request by request. 17,657 of the
+#: 25,890 rows in this table are these four plus their import equivalents, and
+#: an audit trail that is nine parts "somebody submitted a query" is one nobody
+#: reads.
+#:
+#: A DENYLIST, not an allowlist, and that is the whole point. The screen used
+#: an allowlist of 37 action names, so of the 132 distinct actions the table
+#: actually holds, 110 were invisible -- including `withdrawn`, which is how
+#: this was found, and `result_unmasked`, which is a super-admin looking at
+#: unmasked personal data. Every action added to the product over months was
+#: silently absent until somebody thought to add its name here, and nobody
+#: ever did. An audit view must fail towards showing too much.
+AUDIT_EXCLUDE = frozenset({
+    "submitted", "execution_started", "completed", "failed",
+    "import_submitted", "import_execution_started", "import_completed",
+    "cancel_requested", "scheduled_dispatched",
+})
+
+#: Keyword rules, tried in order, for actions this module has never been told
+#: about. The dictionary below still wins where it has an entry; this is what
+#: stops the next hundred actions from arriving as "other".
+#:
+#: The categories are the seven the screen draws, and no more: an eighth needs
+#: a chip and a colour, which is a design change rather than a mapping one.
+#: Connection and config work therefore lands in `scope`, which is where the
+#: screen already puts anything it does not recognise.
+_KIND_RULES = (
+    ("auto_approve", "auto"),
+    ("pii", "grant"),
+    ("grant", "grant"),
+    ("revoke", "grant"),
+    ("unmask", "access"),
+    ("download", "access"),
+    ("viewed", "access"),
+    ("login", "access"),
+    ("signout", "access"),
+    ("withdraw", "reject"),
+    ("cancel", "reject"),
+    ("reject", "reject"),
+    ("kill", "kill"),
+)
+
+
+def audit_kind(action: str) -> str:
+    """The category an audit row is drawn in.
+
+    Explicit mapping first, then keyword rules, then `scope` -- which is what
+    the screen falls back to anyway, so an action nobody has classified is
+    drawn consistently rather than differently.
+    """
+    a = (action or "").strip().lower()
+    if a in AUDIT_KIND:
+        return AUDIT_KIND[a]
+    for needle, kind in _KIND_RULES:
+        if needle in a:
+            return kind
+    return "scope"
+
+
 AUDIT_KIND = {
     "approved": "approve", "auto_approved": "approve",
     "auto_approved_fingerprint": "approve",
@@ -343,6 +403,7 @@ AUDIT_KIND = {
     "auto_approve_window_approved": "approve", "import_approved": "approve",
     "completed_manually": "approve",
     "rejected": "reject", "cancelled": "reject", "escalated_to_dba": "reject",
+    "withdrawn": "reject", "cancelled_running": "reject",
     "changes_requested": "changes",
     "user_grant_added": "grant", "team_grant_added": "grant",
     "team_grant_removed": "grant", "access_revoked": "grant",

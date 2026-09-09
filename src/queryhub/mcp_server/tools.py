@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import time
 from pathlib import Path
 
 from .. import core_submit, db, origins, query_safety, targets, teams
@@ -25,6 +26,24 @@ log = logging.getLogger(__name__)
 #: context, so an unbounded page is a way to spend somebody's whole context on
 #: one query by accident.
 MAX_ROWS = 200
+
+#: Table names one listing may return. The largest catalogue here holds
+#: 2,727 tables; all of them, with columns, is 2.6 MB of JSON.
+MAX_TABLES = 300
+
+#: Tables one filtered call may describe in full. A loose filter still
+#: matches hundreds, and each carries every column.
+MAX_DETAIL_TABLES = 25
+
+#: How long `submit_query` will wait for a result before handing back an
+#: id to poll. Under the timeout an MCP client typically applies, so the
+#: wait ends in an answer rather than in the client giving up.
+DEFAULT_WAIT_SECONDS = 25
+MAX_WAIT_SECONDS = 60
+
+#: Rows returned inline when the wait pays off. Small: the point is to
+#: answer in one round trip, not to move the whole result into a context.
+INLINE_ROWS = 20
 
 
 class ToolError(Exception):
@@ -107,39 +126,87 @@ def list_connections() -> dict:
     return {"connections": out, "maxTier": policy.max_tier().upper()}
 
 
-def describe_database(connection: str, database: str) -> dict:
-    """Tables and columns, from QueryHub's own catalog.
+def describe_database(connection: str, database: str,
+                      table: str | None = None) -> dict:
+    """What is in a database. Two questions, two answers.
 
-    Read from the stored snapshot rather than the live server: describing a
-    schema should not open a production connection, and the snapshot is what
-    every other surface autocompletes from, so an assistant and a person see
-    the same shape.
+    Without `table` this lists table NAMES. With one it returns the columns of
+    the tables whose name contains it. That split is not tidiness: asked for
+    everything, the largest catalogued database here answers with 2,727 tables
+    and 2.6 MB of JSON, which lands in the caller's context in one go and
+    leaves no room for the work it was fetched for. Names alone are ~30x
+    smaller, and they are what an assistant actually needs first -- it asks
+    what exists, then asks about one thing.
+
+    Both halves are capped and say so when they truncate. A cap that stays
+    quiet reads as "that is all there is", which is worse than a short answer.
     """
     uid = _me()
     t = _target_or_refuse(uid, connection)
+    want = (table or "").strip().lower()
+
+    if not want:
+        rows = db.fetch_all(
+            "SELECT st.schema_name, st.table_name, st.relkind, "
+            "       COUNT(sc.id) AS columns "
+            "  FROM schema_tables st "
+            "  LEFT JOIN schema_columns sc ON sc.table_id = st.id "
+            " WHERE st.target_server_id = %s AND st.database_name = %s "
+            " GROUP BY st.schema_name, st.table_name, st.relkind "
+            " ORDER BY st.schema_name, st.table_name "
+            " LIMIT %s", (t.id, database, MAX_TABLES + 1))
+        if not rows:
+            raise ToolError(
+                "no_catalog",
+                f"No catalogued schema for '{database}' on '{connection}'. It "
+                f"may not be a database you hold, or its first snapshot has "
+                f"not run.")
+        more = len(rows) > MAX_TABLES
+        rows = rows[:MAX_TABLES]
+        return {
+            "connection": t.alias, "database": database,
+            "tables": [{"schema": r["schema_name"], "table": r["table_name"],
+                        "kind": r["relkind"], "columns": r["columns"]}
+                       for r in rows],
+            "truncated": more,
+            "note": (f"Showing the first {MAX_TABLES} tables. Pass `table` with "
+                     f"part of a name to see columns."
+                     if more else
+                     "Pass `table` with part of a name to see its columns."),
+        }
+
     rows = db.fetch_all(
         "SELECT st.schema_name, st.table_name, st.relkind, "
         "       sc.column_name, sc.data_type, sc.is_pk "
         "  FROM schema_tables st "
         "  JOIN schema_columns sc ON sc.table_id = st.id "
         " WHERE st.target_server_id = %s AND st.database_name = %s "
+        "   AND lower(st.table_name) LIKE %s "
         " ORDER BY st.schema_name, st.table_name, sc.column_name",
-        (t.id, database))
+        (t.id, database, f"%{want}%"))
     if not rows:
         raise ToolError(
-            "no_catalog",
-            f"No catalogued schema for '{database}' on '{connection}'. It may "
-            f"not be a database you hold, or its first snapshot has not run.")
+            "no_match",
+            f"No catalogued table matching '{table}' in '{database}' on "
+            f"'{connection}'. Call this without `table` to see what is there.")
     tables: dict[tuple, dict] = {}
     for r in rows:
         key = (r["schema_name"], r["table_name"])
+        if key not in tables and len(tables) >= MAX_DETAIL_TABLES:
+            continue          # a loose filter can still match hundreds
         e = tables.setdefault(key, {"schema": r["schema_name"],
                                     "table": r["table_name"],
                                     "kind": r["relkind"], "columns": []})
         e["columns"].append({"name": r["column_name"], "type": r["data_type"],
                              "pk": bool(r["is_pk"])})
-    return {"connection": t.alias, "database": database,
-            "tables": list(tables.values())}
+    matched = len({(r["schema_name"], r["table_name"]) for r in rows})
+    return {
+        "connection": t.alias, "database": database, "match": table,
+        "tables": list(tables.values()),
+        "truncated": matched > len(tables),
+        "note": (f"{matched} tables matched; showing {len(tables)}. Narrow the "
+                 f"`table` filter." if matched > len(tables) else None),
+    }
 
 
 def classify_sql(connection: str, sql: str) -> dict:
@@ -167,7 +234,8 @@ def classify_sql(connection: str, sql: str) -> dict:
 
 
 def submit_query(connection: str, database: str | None, sql: str,
-                 justification: str | None = None) -> dict:
+                 justification: str | None = None,
+                 wait_seconds: int = DEFAULT_WAIT_SECONDS) -> dict:
     """Submit a statement. Governed exactly as a Slack or web submit is.
 
     The tier ceiling is checked here, before `validate_submission`, so a
@@ -220,14 +288,73 @@ def submit_query(connection: str, database: str | None, sql: str,
     core_submit.dispatch_and_notify(None, prep, outcome, dm_requester=False)
 
     rid = outcome.row["id"]
-    return {
+    out = {
         "requestId": rid,
         "requiredTier": required.upper(),
         "decision": "auto_approved" if outcome.auto_approved else "needs_approval",
         "status": outcome.row.get("status"),
-        "note": (None if outcome.auto_approved else
-                 "A DBA has been notified. Poll query_status for the outcome."),
     }
+    if not outcome.auto_approved:
+        # Waiting here would burn the whole budget and still return nothing: a
+        # human approval is minutes, not seconds.
+        out["note"] = ("A DBA has been notified. Poll query_status for the "
+                       "outcome; approval is a human step and takes minutes.")
+        return out
+
+    wait = max(0, min(int(wait_seconds), MAX_WAIT_SECONDS))
+    if wait:
+        final = _await_result(rid, wait)
+        out.update(final)
+    else:
+        out["note"] = "Poll query_status for the outcome."
+    return out
+
+
+def _await_result(request_id: int, seconds: int) -> dict:
+    """Block until the request settles, or until the budget runs out.
+
+    Measured on this fleet: a trivial auto-approved statement takes about 1.4
+    seconds end to end, most of it two fresh connections to the target -- one
+    for the pre-flight plan, one to run it. That is under a second of real
+    work and over a second of connecting, and the caller should not have to
+    spend a round trip discovering it finished.
+
+    Polling belongs here rather than in the caller: an assistant asked to poll
+    picks its own interval, and whatever it picks is added to a wait that was
+    already over. One call in, one answer out.
+
+    This blocks the server for the duration, which is fine while the transport
+    is stdio and serves one caller. An HTTP transport serving several will need
+    this to run per-connection rather than per-process; the deadline is bounded
+    for that reason.
+    """
+    deadline = time.monotonic() + seconds
+    delay = 0.15
+    while True:
+        row = db.fetch_one(
+            "SELECT status, row_count, error_message, csv_file_path "
+            "  FROM requests WHERE id = %s", (request_id,))
+        status = (row or {}).get("status")
+        if status in ("completed", "failed", "rejected", "cancelled"):
+            out = {"status": status, "rowCount": row["row_count"],
+                   "error": row["error_message"]}
+            if status == "completed" and row["csv_file_path"]:
+                try:
+                    page = fetch_result(request_id, 0, INLINE_ROWS)
+                    out["columns"] = page.get("columns")
+                    out["rows"] = page.get("rows")
+                    out["moreRows"] = page.get("more")
+                except ToolError as e:
+                    # The result exists but could not be read -- say which,
+                    # rather than reporting the request as unfinished.
+                    out["resultError"] = e.message
+            return out
+        if time.monotonic() >= deadline:
+            return {"status": status,
+                    "note": (f"Still {status} after {seconds}s. Poll "
+                             f"query_status; the work continues either way.")}
+        time.sleep(delay)
+        delay = min(delay * 1.5, 1.0)   # tight at first, then back off
 
 
 # --- reading back ------------------------------------------------------------

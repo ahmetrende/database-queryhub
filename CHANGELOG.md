@@ -9,6 +9,107 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.29] — 2026-09-09
+
+The release the access-model rewrite landed in. Authorization now resolves from
+nine tables instead of seventeen, a third door opened for programs, and the
+screens that read the new model stopped disagreeing with the routes that write
+it.
+
+### Added
+
+- **The nine-table access model, switched on.** `principal`,
+  `principal_identity`, `principal_credential`, `team`, `team_member`,
+  `access_grant`, `role_assignment`, `principal_setting` and `tier` replace
+  seventeen tables whose relationships were implied rather than declared. The
+  old tables were copied in, verified row by row against a snapshot tool built
+  for the purpose, and reads moved over behind one `bot_config` key
+  (`access_model_v2`) so the switch could be thrown and thrown back. Legacy
+  writes are projected into the new tables for as long as both exist, and
+  authorization-change notifications fire from either side.
+- **A scoped approver is told a request is waiting for them.** An approver whose
+  authority covers one team or one target used to learn about a pending request
+  only by opening the queue.
+- **The Roles screen.** Who can approve what, as sentences rather than three
+  chips the reader has to assemble: fleet-wide admins, team-scoped approvers,
+  their tier ceilings and their expiry dates, with the rows that are mirrored
+  from the old table marked as such. Readable by any admin; writable by a
+  super-admin.
+- **An org-structure importer.** A generic loader for team/person/service
+  structure exported from an internal service catalog, plus the inventory tables
+  it lands in, so team membership and the team that owns a target can be
+  reconciled from the system of record instead of typed twice. A target's owning
+  team is now a relation, not a join computed at request time.
+- **A team's lead is synced as an approver for what that team owns**, and may
+  approve their own team's requests and only their own.
+- **An MCP surface — a third door, for programs.** Alongside Slack and the web
+  UI, QueryHub speaks the Model Context Protocol over stdio: six tools
+  (`list_connections`, `describe_database`, `classify_sql`, `submit_query`,
+  `query_status`, `fetch_result`). It resolves the caller's own grants, refuses
+  what they may not run, masks what comes back and audits every step. Off by
+  default (`mcp_enabled`), read-only by default (`mcp_max_tier`), and an
+  auto-approved query returns its first rows inside the same call — measured at
+  1.4 s end to end.
+- **A masking-exemptions screen.** Every place PII masking is deliberately
+  switched off, super-admin only: what each exemption reaches, whether it also
+  stops reading the values, whether it survives a join, which name rule caught
+  the column in the first place, and the reason somebody wrote for it. Read-only
+  in this release.
+- The browser Back button now walks the app instead of leaving it, and dismisses
+  the topmost modal before navigating.
+
+### Changed
+
+- Admin tables scroll inside their own box, so a wide table no longer scrolls
+  the page sideways.
+- `describe_database` and the schema response ask about PII once per response
+  once per response instead of once per column, so the rule catalog is read once
+  no matter how wide the table is.
+
+### Fixed
+
+- **A withdrawn request stayed on the admin queue** when it was withdrawn from
+  the web: the buttons were still on the card, and pressing one answered
+  "already decided". The web path now retires the admin cards the way the Slack
+  path does, and the withdrawal is written to the audit trail.
+- **The audit screen was hiding most of what it exists to show.** It filtered
+  `audit_log` through a hand-written list of 37 action names against 132 real
+  actions, so most of them were invisible — a requester withdrawing a request,
+  masking being switched off for a column, every auto-approve grant. The filter is
+  inverted: everything is shown except the per-request lifecycle the queue and
+  history screens already show. Visible action types went from 37 to 123.
+- Six admin routes wrote to the legacy tables while the screens above them read
+  the new model — creating, renaming and deleting a team, setting a person's
+  teams, copying access, and effective access. An emptied table answers
+  "nothing" rather than failing, so none of them surfaced as an error. The
+  Teams list was the dangerous one: it served new-model ids against an old
+  sequence, so a few more teams would have made a rename edit a different team
+  than the one on screen, silently.
+- `/sql whoami` and `/sql roles` named no teams at all after the switch: the
+  view behind them read only the legacy tables. It unions both models now, which
+  needs no switch to be correct — whichever side is empty contributes nothing.
+- Halting the fleet from Slack wrote no audit row, though the same action from
+  the web did.
+- The access-request card's copy-paste recipe named tables that no longer exist,
+  and the flow accepted a request against the control-plane database it must
+  refuse.
+- An admin's own auto-approve waiver was ignored, and a drift gate counted
+  tombstoned rows as live.
+
+### Security
+
+- **A tier ceiling admitted every tier.** A ceiling that could not be read
+  resolved to rank 99 — a value chosen to fail closed on the *request* side of
+  the comparison, which on the ceiling side meant "anything is below this".
+  Both sides now fail closed, and the request's tier is derived by the engine-
+  aware shared rule rather than from a display label that reports `ro` for a
+  blocked statement.
+- Two repository gates stopped telling the truth after the access-model cutover:
+  the sensitive-data scanner's dynamic denylist and the copy-verification gate
+  both read only the old tables, so a name that existed only in the new model
+  was not on the denylist. Both read both models now, so a name that lives only in
+  the new one is covered.
+
 ## [1.0.28] — 2026-09-06
 
 ### Added

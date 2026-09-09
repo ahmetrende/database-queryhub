@@ -902,6 +902,46 @@ def _own_request(request_id: int, uid: str) -> dict:
     return row
 
 
+def _retire_admin_cards(row: dict, claims: dict) -> None:
+    """Take a withdrawn request off the admins' queue.
+
+    The route above has always described this step -- "close the row, leave the
+    audit line, and (for a pending one) take it off the admins' queue" -- and
+    only did the first two. `cancellation.withdraw` is a database function with
+    no Slack client, correctly, so the caller owes the messages, and this
+    caller did not pay.
+
+    What an admin saw: a card with live Approve / Reject buttons for a request
+    the requester had withdrawn. Pressing one answered "already decided", which
+    reads as a bug in the button rather than a request that is gone, so it gets
+    pressed again -- four times, on the one that prompted this. The Slack
+    withdraw path has always updated the cards; this is the same action on the
+    other surface, behaving differently.
+
+    Failures are swallowed and logged. The withdrawal is committed and
+    answered; a Slack API problem must not turn a successful withdrawal into an
+    error the requester has to interpret.
+    """
+    client = _bot_client()
+    if client is None:          # vanilla profile: no Slack, nothing to retire
+        return
+    from ..slack_app import notifications
+    who = claims.get("name") or claims.get("sub") or "the requester"
+    try:
+        if row.get("bundle_id"):
+            notifications.update_bundle_admin_dms(client, row["bundle_id"])
+        else:
+            notifications.update_all_admin_messages(
+                client, row,
+                f":wastebasket: Withdrawn by {who} — no action needed.")
+            notifications.update_requester_card(
+                client, row, status_emoji=":wastebasket:",
+                status_text="Withdrawn before it ran")
+    except Exception:
+        log.exception("could not retire admin cards for withdrawn request %s",
+                      row.get("id"))
+
+
 @router.post("/queries/{request_id}/cancel")
 def query_cancel(request_id: int, claims: dict = Depends(deps.current_user)):
     """Stop a query that is currently running.
@@ -928,6 +968,7 @@ def query_cancel(request_id: int, claims: dict = Depends(deps.current_user)):
     # executing, stopping it means reaching the actual database connection.
     if row["status"] in cancellation.WITHDRAWABLE:
         if cancellation.withdraw(request_id, uid, claims.get("name")):
+            _retire_admin_cards(row, claims)
             return {"id": str(request_id), "stopped": True,
                     "outcome": "withdrawn",
                     "message": "Request withdrawn before it ran."}

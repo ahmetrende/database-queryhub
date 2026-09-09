@@ -245,3 +245,88 @@ def test_the_origin_says_which_door():
     assert origins.MCP == "mcp"
     assert origins.label("mcp") == "MCP"
     assert "origin=origins.MCP" in inspect.getsource(tools.submit_query)
+
+
+# --- answering in one round trip, and not in megabytes -----------------------
+#
+# Both of these are about what an assistant can afford, which is a different
+# budget from what a browser can afford. A page of a web UI may be 2 MB and a
+# person scrolls it; 2 MB into a model's context is the context, and the work
+# it was fetched for no longer fits.
+
+
+def test_listing_a_database_returns_names_not_every_column():
+    """Measured on the largest catalogue here: 2,727 tables with their columns
+    is 2.6 MB of JSON. Names alone are 27 KB, and they are what an assistant
+    needs first -- it asks what exists, then asks about one thing."""
+    src = inspect.getsource(tools.describe_database)
+    head = src[:src.index("if not want:")]
+    assert "table: str | None = None" in head
+    listing = src[src.index("if not want:"):src.index("rows = db.fetch_all(\n        \"SELECT st.schema_name, st.table_name, st.relkind, \"\n        \"       sc.column_name")]
+    assert "COUNT(sc.id)" in listing, "the listing counts columns, it does not fetch them"
+    assert "sc.column_name" not in listing
+
+
+def test_both_halves_are_capped_and_say_when_they_truncate():
+    """A cap that stays quiet reads as "that is all there is", which sends the
+    reader looking for a table that the answer simply left out."""
+    src = inspect.getsource(tools.describe_database)
+    assert "MAX_TABLES" in src and "MAX_DETAIL_TABLES" in src
+    assert src.count('"truncated"') == 2
+    assert "Narrow the" in src
+
+
+def test_a_loose_filter_cannot_pull_hundreds_of_tables_in_full():
+    """`table="a"` matched 2,073 tables on the largest database. Each one
+    carries every column."""
+    src = inspect.getsource(tools.describe_database)
+    assert "len(tables) >= MAX_DETAIL_TABLES" in src
+
+
+def test_submitting_waits_for_an_auto_approved_result():
+    """One call in, one answer out. The work is about 1.4 seconds here, most of
+    it two fresh connections to the target; making the caller poll adds its own
+    interval on top of a wait that was already over."""
+    src = inspect.getsource(tools.submit_query)
+    assert "_await_result(rid, wait)" in src
+    assert "wait_seconds: int = DEFAULT_WAIT_SECONDS" in inspect.getsource(tools.submit_query)
+
+
+def test_it_does_not_wait_for_a_human():
+    """Approval is minutes. Waiting there would spend the whole budget and
+    still return nothing, having also held the server for the duration."""
+    src = inspect.getsource(tools.submit_query)
+    i = src.index("if not outcome.auto_approved:")
+    branch = src[i:src.index("wait = max(", i)]
+    assert "return out" in branch
+    assert "_await_result" not in branch
+
+
+def test_the_wait_is_bounded_and_backs_off():
+    """Bounded because it blocks the server; backing off because a query that
+    takes ten seconds should not be polled forty times."""
+    src = inspect.getsource(tools._await_result)
+    assert "MAX_WAIT_SECONDS" in inspect.getsource(tools.submit_query)
+    assert "time.monotonic() >= deadline" in src
+    assert "min(delay * 1.5" in src
+
+
+def test_a_wait_that_runs_out_says_the_work_continues():
+    """A timeout here is not a failure of the query. Reporting it as one would
+    have an assistant resubmit a statement that is still running."""
+    src = inspect.getsource(tools._await_result)
+    assert "the work continues either way" in src
+
+
+def test_the_inline_page_is_small():
+    """The point is to answer in one round trip, not to move the whole result
+    into a context. `fetch_result` is still there for the rest."""
+    assert tools.INLINE_ROWS <= 50
+    assert "fetch_result(request_id, 0, INLINE_ROWS)" in inspect.getsource(tools._await_result)
+
+
+def test_an_unreadable_result_is_reported_as_such():
+    """Not as an unfinished request: the difference decides whether the caller
+    waits again or asks a person."""
+    src = inspect.getsource(tools._await_result)
+    assert '"resultError"' in src
