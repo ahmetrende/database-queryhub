@@ -9,6 +9,79 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.31] — 2026-09-10
+
+Masking exemptions became writable from the panel, and two ways masking was
+wrong in the stored model were found while building it. Patch bump: the
+`bot_config` keys and the audit contract are unchanged.
+
+### Security
+
+- **A schema on a narrow exemption no longer widens it.** `pii_masking_exemptions`
+  rows that name a table or a column also carry a schema, to NARROW what they
+  cover. One branch read it as though the row were schema-scoped, so a single
+  exemption on one column lifted masking for EVERY statement whose tables were
+  all schema-qualified in that schema. Measured on the live fleet before the
+  fix: three such rows on two targets, firing on 25 real requests since
+  2026-08-13. The columns those requests returned were already exempt by their
+  own rows, so nothing measurable was exposed — the hole was in what the next
+  query would have got. It mattered more than its age suggests because the new
+  Add-exemption form makes a schema mandatory on the column rung, which would
+  have made the accident the default.
+- **A schema now narrows what it names.** The mirror of the same confusion:
+  `table_name` matches the bare name, so an exemption for one schema's table
+  also freed a same-named table in another. A row that names a schema is held
+  to it, and the rule can only ever refuse — a statement that writes the table
+  unqualified, or that will not parse, is unchanged, because refusing there
+  would start masking data that comes back unmasked today. Replayed over 3,211
+  completed requests: no answer changed.
+
+### Added
+
+- **Masking exemptions can be written from the panel.** Create, switch off,
+  remove, the catalog the pickers read, and a preview. Super-admin only; every
+  change is audited under data protection. The rung is the contract: `scope` is
+  what the operator confirmed on screen and everything narrower is forced to
+  NULL, so a stale form field cannot store a different row than the sentence
+  that was agreed. Fleet-wide comes from the scope, never from a missing
+  connection.
+- **A preview that reads one real row.** A generated `SELECT … LIMIT 1` on the
+  read-only credential, in a read-only transaction, at most six columns, and
+  only for a table a real query has touched in the last 30 days — that query is
+  evidence the table is live, never re-executed. Both sides of the diff run
+  through the real masker, so the screen cannot promise an outcome the executor
+  would not produce.
+- **Masking changes notify the admins** (migration 122). Twenty-one triggers
+  covered the tables deciding who may READ what; the table deciding what they
+  SEE had none. It is the one with no subject of its own, so the event carries
+  no user and the poller fans it out to the people who can undo it.
+- **Targets carry the cloud account they live in.** Resolved from the RDS
+  inventory of every reachable account rather than from the endpoint, whose
+  middle token is an opaque resource id and not an account number. Shown as one
+  line on the hover already under a connection name.
+
+### Fixed
+
+- **A database that is not on the server named with it is refused at submit.**
+  Nothing checked the pair; the catalog knew and the check was already written
+  for auto-approve grants. Pre-flight also stopped failing open on
+  `database "x" does not exist`, which arrives as a connection error and was
+  being treated like a timeout — an answer that can never change waited on an
+  approver and then failed at execution.
+- **The database select is read by name, not by a prefix scan.** Its action_id
+  is salted with the target so Slack re-fetches its options, and the block can
+  then hold more than one entry.
+- **The connections payload asks four questions, not one per row.** 313
+  statements and 656ms became 9 and 61ms for a 50-connection reader; the admin
+  listing went from 121/231ms to 5/18ms, byte-identical output.
+- **The hourly catalog refresh diffs instead of rewriting** (migration 123). It
+  deleted and re-inserted every row each hour: 172,450,815 `schema_columns`
+  rows written over the life of a table holding 156,736. A full fleet refresh
+  now writes none of them.
+- **The audit search uses an index** instead of reading every row.
+- **Every authority question has one answer** whichever door it is asked
+  through.
+
 ## [1.0.30] — 2026-09-09
 
 The audit trail rebuilt on a derived vocabulary, and a masking ladder that can
