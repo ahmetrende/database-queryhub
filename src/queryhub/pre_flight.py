@@ -17,6 +17,7 @@ toggle is `bot_config.query_plan_logging` (default 'off')."""
 from __future__ import annotations
 
 import logging
+import re
 
 import psycopg
 import sqlglot
@@ -67,6 +68,28 @@ def is_explainable(query: str) -> bool:
         return False
     leading = head[0].upper().strip("(")
     return leading not in _NON_EXPLAINABLE_LEADING and leading != "CREATE"
+
+
+#: `database "x" does not exist` — SQLSTATE 3D000. A connect failure the
+#: caller caused, which no retry can fix: the one OperationalError that must
+#: not fail open.
+#:
+#: Matched on the MESSAGE, not the code, because psycopg leaves `sqlstate`
+#: None on a failure raised during connect — measured on this build, against a
+#: real server, before relying on it. The code is still checked first in case
+#: a later psycopg fills it in. Postgres's wording for 3D000 is a fixed
+#: format string (`database "%s" does not exist`), so the pattern is as stable
+#: as the code would have been.
+_INVALID_CATALOG_NAME = "3D000"
+_NO_SUCH_DATABASE_RE = re.compile(r'database "[^"]*" does not exist',
+                                  re.IGNORECASE)
+
+
+def _is_missing_database(exc: Exception) -> bool:
+    """True when the server said the database does not exist."""
+    if getattr(exc, "sqlstate", None) == _INVALID_CATALOG_NAME:
+        return True
+    return bool(_NO_SUCH_DATABASE_RE.search(str(exc)))
 
 
 def explain(
@@ -185,6 +208,19 @@ def explain(
         # Network / auth / timeout — fail-open. User isn't punished for our
         # transport problems; if it's still broken at execution time the
         # executor will surface the real error.
+        #
+        # EXCEPT when the server told us the request itself is impossible.
+        # `3D000 invalid_catalog_name` means the database does not exist: not
+        # a transport problem, not transient, and it will never succeed no
+        # matter how long anybody waits. Request 7596 rode this open door —
+        # a database from a DIFFERENT server reached submit, this branch
+        # swallowed `database "nova" does not exist` as if it were a
+        # timeout, an approver spent 45 minutes on it, and it failed at
+        # execution with the same message. Only that one code is surfaced:
+        # an auth failure is OUR bad credential and still fails open,
+        # because telling a requester about it helps nobody.
+        if _is_missing_database(e):
+            return False, errors.scrub(e), None
         log.warning(
             "pre-flight EXPLAIN fail-open on operational error "
             "(target=%s db=%s mode=%s): %s",

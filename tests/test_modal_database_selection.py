@@ -112,3 +112,21 @@ def test_the_batch_item_uses_its_own_indexed_key():
     base = f"{modal.BATCH_A_DATABASE}_2"
     section = {base: _sel(None), f"{base}_v7": _sel("other_db")}
     assert _db(modal.read_db_block(section, base, 7)) == "other_db"
+
+
+# ---------------------------------------------------------------------------
+# request 7596: the cross-server case, in the shape it actually happened
+# ---------------------------------------------------------------------------
+#
+# Logged sequence: target 52 selected, its only database picked, target 50
+# selected 16 seconds later, submitted 6 seconds after that — and the database
+# from 52 was submitted against 50, which does not have it. The reader must
+# never answer with another target's choice, whichever keys are present.
+
+def test_the_database_of_the_target_you_left_is_never_returned():
+    for section in (
+        {f"{A}_v52": _sel("other_db"), f"{A}_v50": _sel(None)},   # both keys
+        {f"{A}_v52": _sel("other_db")},                            # only the old
+        {f"{A}_v50": _sel(None), f"{A}_v52": _sel("other_db")},    # reversed
+    ):
+        assert _db(modal.read_db_block(section, A, 50)) is None

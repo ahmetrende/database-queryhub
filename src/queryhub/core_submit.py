@@ -280,6 +280,43 @@ def validate_submission(
 
     database = database_name or target.default_database
 
+    # Does the database the requester NAMED exist on the server they named?
+    #
+    # Only what they typed, never the fallback: a `default_database` that is
+    # wrong is our configuration problem, not theirs, and refusing it would
+    # break every blank-database submission on a target whose default is not
+    # catalogued.
+    #
+    # Nothing checked this before, and the modal can hand the submit a
+    # database belonging to a DIFFERENT server -- pick a target, pick its
+    # database, switch target, submit. Request 7596 did exactly that: `nova`
+    # (which lives on one server) submitted against another, where pre-flight
+    # failed open on the connect error, an approver spent 45 minutes on it,
+    # and it died at execution with `database "nova" does not exist`. The
+    # catalog knew at submit time; nobody asked it.
+    #
+    # `validate_scope` is the check auto-approve grants already use, and it
+    # stays quiet for a target whose catalog is empty, so a freshly onboarded
+    # server is not blocked. The window it cannot cover is a database created
+    # since the last hourly snapshot; measured over the whole request history
+    # (6,027 with a named database) it would have refused two, one of them
+    # this incident and the other a database that has since moved to its own
+    # server. So the message names what the catalog does know -- a real new
+    # database then reads as "the catalog has not caught up", not as a typo.
+    if database_name:
+        try:
+            auto_approve.validate_scope(target.id, database_name)
+        except auto_approve.ScopeError:
+            known = [r["d"] for r in db.fetch_all(
+                "SELECT DISTINCT database_name AS d FROM schema_tables "
+                " WHERE target_server_id = %s ORDER BY 1", (target.id,))]
+            sample = ", ".join(f"`{d}`" for d in known[:8])
+            more = "" if len(known) <= 8 else f" (+{len(known) - 8} more)"
+            return Rejection(
+                "database",
+                f"`{target.alias}` has no database named `{database_name}` — "
+                f"did it come from another server? It has: {sample}{more}.")
+
     # allowed_databases is None = no restriction; non-None set = whitelist.
     allowed_dbs = grant["allowed_databases"]
     if allowed_dbs is not None and database not in allowed_dbs:

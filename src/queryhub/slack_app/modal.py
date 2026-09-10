@@ -1,8 +1,12 @@
 """Slack modal for /sql submissions."""
 from __future__ import annotations
 
+import logging
+
 from .. import auto_approve, config as cfg, db, inventory, query_safety, targets, teams
 from . import ro_window, schema_browser
+
+log = logging.getLogger(__name__)
 
 MODAL_CALLBACK_ID = "sql_request_modal"
 BATCH_MODAL_CALLBACK_ID = "sql_batch_modal"
@@ -718,11 +722,31 @@ def read_db_block(db_section: dict, base: str, target_id) -> dict:
     means anything, and the unsalted one is accepted solely as the
     before-any-switch case. Another target's key is never used.
     """
+    picked_key = None
     if target_id is not None:
         exact = db_section.get(f"{base}_v{target_id}")
         if exact:
-            return exact
-    return db_section.get(base) or {}
+            picked_key = f"{base}_v{target_id}"
+            block = exact
+        else:
+            picked_key, block = base, db_section.get(base) or {}
+    else:
+        picked_key, block = base, db_section.get(base) or {}
+
+    # Diagnostic, because the first fix for this was aimed at a mechanism that
+    # had been inferred rather than observed -- and request 7596 then submitted
+    # a database belonging to a different server anyway. What Slack actually
+    # puts in this block after a views.update is the open question, so log the
+    # shape of it: the keys present, which one was used, and the database name
+    # each holds. Names only -- no SQL text, nothing a result could carry.
+    if len(db_section) > 1 or (target_id is not None
+                               and f"{base}_v{target_id}" not in db_section):
+        log.info(
+            "db-block: target=%s picked=%s keys=%s",
+            target_id, picked_key,
+            {k: ((v or {}).get("selected_option") or {}).get("value")
+             for k, v in db_section.items()})
+    return block
 
 
 def parse_submission(view_or_state: dict) -> dict:
