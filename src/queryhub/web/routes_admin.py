@@ -2482,7 +2482,11 @@ def admin_delete_scope(admin_id: str, claims: dict = Depends(deps.current_user))
 # `admins.can_approve` reads the old table and a row written here is inert. That
 # is deliberate — the rows can be prepared and reviewed before the switch.
 
-_ROLES = ("approver", "granter", "importer", "admin")
+#: `importer` was removed in 2026-09-09: nobody held it, nothing read it, and
+#: the org importer runs as the operator. A role that names an authority no
+#: code checks is worse than no role — it is read as protection that is not
+#: there. `granter` stayed and was WIRED instead (see grants._authz_v2).
+_ROLES = ("approver", "granter", "admin")
 
 
 class RoleIn(BaseModel):
@@ -2723,11 +2727,11 @@ def admin_revoke_role(role_id: int, claims: dict = Depends(deps.current_user)):
 # per-request lifecycle noise and everything else is visible by default.
 # --- masking exemptions -----------------------------------------------------
 #
-# READ ONLY. Every one of the rows this serves was typed into psql, and the
-# screen that reads it (Access -> Masking exemptions) can list and explain them
-# but not write one — creating and editing is the P3 roadmap item. Serving the
-# list first is worth it on its own: these are the rows that switch protection
-# OFF, and until now they were invisible to everyone who does not have psql.
+# The rows that switch masking OFF. Until the list below shipped they were
+# invisible to anyone without psql; the write endpoints further down close the
+# other half, so the ladder that makes an exemption safe to write (rung first,
+# reach in a sentence, a preview of the actual data) is enforced by the product
+# rather than by whoever is typing the INSERT.
 
 
 def _mask_scope(r: dict) -> str:
@@ -2843,12 +2847,18 @@ def admin_mask_exemptions(claims: dict = Depends(deps.current_user)):
                 if any(_mask_covers(x, other, dbname, r["table_name"],
                                     r["column_name"]) for x in live):
                     continue
-                also.append({"connectionId": other, "connectionName": alias})
+                also.append({"connectionId": alias, "connectionName": alias})
 
         out.append({
             "id": r["id"],
             "scope": scope,
-            "connectionId": tid,
+            # The ALIAS, like every other connectionId in this API
+            # (`_connection_entry` gives a connection `id = alias`). This
+            # served the raw integer, so the one control that consumes it --
+            # "Add it there", which seeds the form from a sibling server --
+            # handed the form a number no connection matched, and the server
+            # picker came up blank on the one path where it was prefilled.
+            "connectionId": aliases.get(tid) or r["alias"],
             # NULL is a wildcard, so it is named as one. A row that reaches
             # every server must not read as a row with a blank server.
             "connectionName": r["alias"] or "every server",
@@ -2878,6 +2888,643 @@ def admin_mask_exemptions(claims: dict = Depends(deps.current_user)):
             "SELECT count(*) AS n FROM pii_column_patterns WHERE enabled")["n"],
         "valueDetectors": [d.name for d in pii.active_detectors()],
     }
+
+
+# --- masking exemptions: writes ---------------------------------------------
+#
+# These rows switch a protection OFF, so the write path is deliberately the
+# strictest in the panel: super-admin only (`require_admin(..., "access")`),
+# every call audited under a `pii_*` action so it lands in the audit trail's
+# `protection` category by construction, and -- since migration 122 -- every
+# change DMs the admins through the auth-event outbox, including one made from
+# psql.
+#
+# The rung is the contract. `scope` is what the operator confirmed on screen,
+# and it ALONE decides which columns of the row are written; every field
+# narrower than the rung is forced to NULL rather than trusted from the body.
+# Without that, a form that once had a table name in it and was widened to
+# "whole server" would post a body still carrying the table, and NULL being a
+# wildcard in this table means the row would be read back as a table row --
+# the operator confirming one sentence and the database storing another.
+
+_MASK_RUNGS = ("fleet", "server", "database", "schema", "table", "column")
+
+
+class MaskExemptionIn(BaseModel):
+    connectionId: str | None = None
+    databaseId: str | None = None
+    scope: str = "column"
+    # `schema` shadows a BaseModel attribute in pydantic, so the field is
+    # named for Python and aliased for the wire.
+    schema_name: str | None = Field(None, alias="schema")
+    table: str | None = None
+    column: str | None = None
+    strength: str = "soft"
+    survivesJoin: bool = False
+    audience: str = "everyone"
+    reason: str = ""
+
+    model_config = {"populate_by_name": True}
+
+
+class MaskPatchIn(BaseModel):
+    enabled: bool
+
+
+def _mask_fields(body: MaskExemptionIn) -> tuple[int | None, dict]:
+    """(target_id, row fields) for one submitted rung, or a 400.
+
+    Fleet is read from the SCOPE, never from a missing connection. Those are
+    different states -- "every server, deliberately" and "the server did not
+    come through" -- and the widest row in the table must not be reachable by
+    a dropdown that failed to populate.
+    """
+    scope = (body.scope or "").strip().lower()
+    if scope not in _MASK_RUNGS:
+        raise deps._error(400, "bad_request",
+                          "scope must be one of: " + ", ".join(_MASK_RUNGS))
+
+    tid = None
+    if scope != "fleet":
+        if not body.connectionId:
+            raise deps._error(400, "bad_request", "Pick a server.")
+        tid = _target_id_of(body.connectionId)
+        if tid is None:
+            raise deps._error(404, "not_found", "Unknown connection.")
+
+    def _need(value: str | None, what: str) -> str:
+        v = (value or "").strip()
+        if not v:
+            raise deps._error(400, "bad_request", f"{what} is required for the "
+                                                  f"{scope} rung.")
+        return v
+
+    dbname = schema = table = column = None
+    if scope in ("database", "schema", "table", "column"):
+        dbname = _need(body.databaseId, "A database")
+    if scope in ("schema", "table", "column"):
+        schema = _need(body.schema_name, "A schema")
+    elif scope == "fleet":
+        # The one rung where a schema is optional: it is how the fleet-wide
+        # `dba` toolkit row is written, and without it the rung means the
+        # whole fleet.
+        schema = (body.schema_name or "").strip() or None
+    if scope in ("table", "column"):
+        table = _need(body.table, "A table")
+    if scope == "column":
+        column = _need(body.column, "A column")
+
+    reason = (body.reason or "").strip()
+    if not reason:
+        raise deps._error(400, "bad_request",
+                          "A reason is required — an exemption without one is "
+                          "unreadable to whoever finds it next.")
+
+    strength = (body.strength or "soft").lower()
+    if strength not in ("soft", "full"):
+        raise deps._error(400, "bad_request", "strength must be soft or full.")
+    audience = (body.audience or "everyone").lower()
+    if audience not in ("everyone", "super"):
+        raise deps._error(400, "bad_request", "audience must be everyone or super.")
+
+    return tid, {
+        "target_server_id": tid,
+        "database_name": dbname,
+        "schema_name": schema,
+        "table_name": table,
+        "column_name": column,
+        # Soft keeps the value scan running; full stops both layers.
+        "keep_value_scan": strength == "soft",
+        "apply_in_joins": bool(body.survivesJoin),
+        "super_admin_only": audience == "super",
+        "reason": reason,
+    }
+
+
+def _mask_catalog_check(tid: int | None, dbname: str | None, schema: str | None,
+                        table: str | None, column: str | None) -> None:
+    """Refuse a row that names an object the catalog says is not there.
+
+    Only when the catalog knows that (target, database) pair at all -- a target
+    QueryHub has never snapshotted would otherwise refuse every exemption on
+    it. Same condition the read side uses to decide whether it may call a row
+    `missing`, so the screen and the write agree about when the catalog counts.
+    """
+    if tid is None or not dbname or not table:
+        return
+    known = db.fetch_one(
+        "SELECT 1 AS x FROM schema_tables WHERE target_server_id = %s "
+        "  AND database_name = %s LIMIT 1", (tid, dbname))
+    if not known:
+        return
+    row = db.fetch_one(
+        "SELECT st.id FROM schema_tables st "
+        " WHERE st.target_server_id = %s AND st.database_name = %s "
+        "   AND st.table_name = %s AND (%s::text IS NULL OR st.schema_name = %s)",
+        (tid, dbname, table, schema, schema))
+    if not row:
+        raise deps._error(
+            400, "bad_request",
+            f"The catalog has no table {schema + '.' if schema else ''}{table} "
+            f"in {dbname}. Pick it from the list rather than typing it.")
+    if column and not db.fetch_one(
+            "SELECT 1 AS x FROM schema_columns WHERE table_id = %s "
+            "  AND column_name = %s", (row["id"], column)):
+        raise deps._error(
+            400, "bad_request",
+            f"The catalog has no column {column} on {table}.")
+
+
+@router.post("/mask-exemptions", status_code=201)
+def admin_add_mask_exemption(body: MaskExemptionIn,
+                             claims: dict = Depends(deps.current_user)):
+    """Write one exemption. Super-admin only; the rung decides the row."""
+    uid = admin.require_admin(claims, "access")
+    tid, f = _mask_fields(body)
+    _mask_catalog_check(tid, f["database_name"], f["schema_name"],
+                        f["table_name"], f["column_name"])
+
+    # A duplicate of a row that is already switched on changes nothing and makes
+    # the list harder to read; a duplicate of a row that is switched OFF is
+    # somebody re-adding what was deliberately retired, so it is named rather
+    # than silently resurrected.
+    #
+    # "Duplicate" is decided by what the MASKER distinguishes, not by what the
+    # columns look like. On the table and column rungs it ignores `schema_name`
+    # (`pii._column_skips` matches the bare table name), so two rows differing
+    # only in schema are one rule twice -- and the form makes a schema
+    # mandatory on those rungs while 26 of the 30 rows written before it exist
+    # without one. Comparing the column straight would have found no duplicate
+    # for any of them and quietly grown a second copy of every legacy row.
+    schema_matters = f["table_name"] is None
+    dupe = db.fetch_one(
+        "SELECT id, enabled FROM pii_masking_exemptions "
+        " WHERE target_server_id IS NOT DISTINCT FROM %s "
+        "   AND database_name IS NOT DISTINCT FROM %s "
+        "   AND (NOT %s OR schema_name IS NOT DISTINCT FROM %s) "
+        "   AND table_name IS NOT DISTINCT FROM %s "
+        "   AND column_name IS NOT DISTINCT FROM %s "
+        " ORDER BY enabled DESC, id LIMIT 1",
+        (f["target_server_id"], f["database_name"],
+         schema_matters, f["schema_name"],
+         f["table_name"], f["column_name"]))
+    if dupe:
+        raise deps._error(
+            409, "conflict",
+            f"Exemption #{dupe['id']} already covers exactly this"
+            + ("." if dupe["enabled"] else " — it is switched off. Turn it back "
+                                           "on rather than adding a second one."))
+
+    # NOT suppressing app.auth_dm_suppress: the migration-122 trigger is what
+    # tells the other admins a protection just came off.
+    with db.transaction() as cur:
+        cur.execute(
+            "INSERT INTO pii_masking_exemptions "
+            "  (target_server_id, database_name, schema_name, table_name, "
+            "   column_name, keep_value_scan, apply_in_joins, "
+            "   super_admin_only, reason, created_by) "
+            "VALUES (%(target_server_id)s, %(database_name)s, %(schema_name)s, "
+            "        %(table_name)s, %(column_name)s, %(keep_value_scan)s, "
+            "        %(apply_in_joins)s, %(super_admin_only)s, %(reason)s, %(by)s) "
+            "RETURNING id", {**f, "by": uid})
+        new_id = cur.fetchone()["id"]
+        audit.log_in(cur, None, uid, claims.get("name"), "pii_exemption_added",
+                     {"exemption_id": new_id, "scope": body.scope,
+                      "target_id": tid, "database": f["database_name"],
+                      "schema": f["schema_name"], "table": f["table_name"],
+                      "column": f["column_name"],
+                      "strength": "soft" if f["keep_value_scan"] else "full",
+                      "survives_join": f["apply_in_joins"],
+                      "audience": "super" if f["super_admin_only"] else "everyone",
+                      "reason": f["reason"]})
+    return {"id": str(new_id)}
+
+
+@router.patch("/mask-exemptions/{exemption_id}")
+def admin_set_mask_exemption(exemption_id: int, body: MaskPatchIn,
+                             claims: dict = Depends(deps.current_user)):
+    """Switch one exemption on or off. Off is the safe direction — the column
+    goes back to being masked — so it is the only edit the screen offers."""
+    uid = admin.require_admin(claims, "access")
+    with db.transaction() as cur:
+        cur.execute(
+            "UPDATE pii_masking_exemptions SET enabled = %s "
+            " WHERE id = %s AND enabled IS DISTINCT FROM %s "
+            "RETURNING target_server_id, database_name, schema_name, "
+            "          table_name, column_name",
+            (body.enabled, exemption_id, body.enabled))
+        row = cur.fetchone()
+        if row is None:
+            # Either it is gone or it is already in that state. Both are worth
+            # different words: a no-op that reports success is how a screen
+            # ends up showing a switch the database never moved.
+            if not db.fetch_one("SELECT 1 AS x FROM pii_masking_exemptions "
+                                " WHERE id = %s", (exemption_id,)):
+                raise deps._error(404, "not_found", "No such exemption.")
+            return {"id": str(exemption_id), "enabled": body.enabled,
+                    "changed": False}
+        audit.log_in(cur, None, uid, claims.get("name"), "pii_exemption_changed",
+                     {"exemption_id": exemption_id, "enabled": body.enabled,
+                      "target_id": row["target_server_id"],
+                      "database": row["database_name"],
+                      "schema": row["schema_name"], "table": row["table_name"],
+                      "column": row["column_name"]})
+    return {"id": str(exemption_id), "enabled": body.enabled, "changed": True}
+
+
+@router.delete("/mask-exemptions/{exemption_id}", status_code=204)
+def admin_delete_mask_exemption(exemption_id: int,
+                                claims: dict = Depends(deps.current_user)):
+    """Remove one exemption. The row's reach is copied into the audit detail
+    before it goes: after the DELETE there is nothing left to say what came
+    back under protection."""
+    uid = admin.require_admin(claims, "access")
+    with db.transaction() as cur:
+        cur.execute(
+            "DELETE FROM pii_masking_exemptions WHERE id = %s "
+            "RETURNING target_server_id, database_name, schema_name, "
+            "          table_name, column_name, enabled, reason",
+            (exemption_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise deps._error(404, "not_found", "No such exemption.")
+        audit.log_in(cur, None, uid, claims.get("name"), "pii_exemption_removed",
+                     {"exemption_id": exemption_id,
+                      "target_id": row["target_server_id"],
+                      "database": row["database_name"],
+                      "schema": row["schema_name"], "table": row["table_name"],
+                      "column": row["column_name"],
+                      "was_enabled": row["enabled"], "reason": row["reason"]})
+
+
+@router.get("/mask-exemptions/catalog")
+def admin_mask_catalog(connection: str | None = None,
+                       database: str | None = None,
+                       claims: dict = Depends(deps.current_user)):
+    """Schemas -> tables -> columns for one database, each column carrying the
+    name rule that masks it today.
+
+    The form picks from this and never accepts a typed identifier, which is
+    what keeps "whole server" out of reach of a typo in a table field. The rule
+    on each column is the other half: an operator writing an exemption is
+    almost always answering "why is this masked at all", and the answer is here
+    rather than one screen away.
+
+    Served whole, deliberately. The largest database in the fleet catalogues
+    40,412 columns and that is the one page where a truncated list is worse
+    than a slow one -- a table missing from the picker is a table the form will
+    not let anybody exempt, with nothing on screen saying so.
+    """
+    admin.require_admin(claims, "access")
+    # Both parameters are optional to FastAPI and required by the handler, so
+    # the admin gate runs FIRST. A required query param is validated before the
+    # dependency, and a 422 to an unauthenticated caller answers "this route
+    # exists and takes these arguments" — which is the question the gate is
+    # there not to answer.
+    if not connection:
+        raise deps._error(400, "bad_request", "Pick a server.")
+    tid = _target_id_of(connection)
+    if tid is None:
+        raise deps._error(404, "not_found", "Unknown connection.")
+    if not database:
+        raise deps._error(400, "bad_request", "Pick a database.")
+
+    rows = db.fetch_all(
+        "SELECT st.schema_name, st.table_name, sc.column_name "
+        "  FROM schema_tables st "
+        "  JOIN schema_columns sc ON sc.table_id = st.id "
+        " WHERE st.target_server_id = %s AND st.database_name = %s "
+        " ORDER BY st.schema_name, st.table_name, sc.ordinal",
+        (tid, database))
+    if not rows:
+        raise deps._error(
+            404, "not_found",
+            "No catalog snapshot for that database yet. It is written hourly; "
+            "a connection added since the last run has none.")
+
+    explained = pii.explain_columns(
+        sorted({r["column_name"] for r in rows if r["column_name"]}))
+
+    schemas: list[dict] = []
+    by_schema: dict[str, dict] = {}
+    by_table: dict[tuple, dict] = {}
+    for r in rows:
+        sname = r["schema_name"] or ""
+        s = by_schema.get(sname)
+        if s is None:
+            s = {"name": sname, "tables": []}
+            by_schema[sname] = s
+            schemas.append(s)
+        key = (sname, r["table_name"])
+        t = by_table.get(key)
+        if t is None:
+            t = {"name": r["table_name"], "columns": []}
+            by_table[key] = t
+            s["tables"].append(t)
+        t["columns"].append({"name": r["column_name"],
+                             "rule": explained.get(r["column_name"])})
+    return {"connectionId": connection, "databaseId": database,
+            "schemas": schemas}
+
+
+# --- masking exemptions: the preview ----------------------------------------
+#
+# This is the only place in QueryHub where a screen reads production data
+# without a request behind it, and it is here because the alternative is worse:
+# the sentence "unmasks `users.name`" does not tell an operator whether that
+# column holds people or venues, and getting that wrong is precisely how an
+# exemption removes a protection nobody meant to remove.
+#
+# The operator approved a real `SELECT ... LIMIT 1` against the target
+# (2026-09-10). Six guardrails around it, all enforced here:
+#
+#   1. super-admin only, like every other write on this screen;
+#   2. the RO credential, on a read-only transaction;
+#   3. exactly one row, and at most six columns;
+#   4. the statement is GENERATED from the catalog -- a recent user query is
+#      used as EVIDENCE that the table is live, never re-executed. Re-running
+#      somebody's stored SQL would run an arbitrary, arbitrarily expensive,
+#      possibly writing statement from an admin screen;
+#   5. a table nothing has queried recently is not read at all;
+#   6. every preview is audited as `pii_exemption_preview_unmasked`, which the
+#      audit vocabulary classifies protection x read -- the same category as
+#      any other look at unmasked personal data.
+#
+# The masked/unmasked pair is computed by the REAL masker, run twice over the
+# same row with the proposed exemption injected the second time. There is no
+# second implementation of the ladder to drift out of step.
+
+_MASK_PREVIEW_DAYS = 30
+_MASK_PREVIEW_COLS = 6
+_MASK_PREVIEW_TIMEOUT_MS = 5000
+
+
+class MaskPreviewIn(BaseModel):
+    connectionId: str | None = None
+    databaseId: str | None = None
+    scope: str = "column"
+    schema_name: str | None = Field(None, alias="schema")
+    table: str | None = None
+    column: str | None = None
+    # Not sent by the form today. Absent, the preview shows the FULL effect --
+    # the wider of the two -- because a preview that understates what an
+    # exemption uncovers is the one failure mode this screen cannot have.
+    strength: str = "full"
+
+    model_config = {"populate_by_name": True}
+
+
+def _mask_preview_evidence(tid: int, database: str, table: str) -> dict | None:
+    """The most recent real query that touched this table, or None.
+
+    Evidence, not a script: it decides WHETHER to read the table and it is what
+    the screen shows as provenance. `_tables_in` confirms the ILIKE prefilter,
+    so a table whose name merely appears in a string literal does not count.
+    """
+    rows = db.fetch_all(
+        "SELECT id, query, requester_name, requester_slack_id, engine, "
+        "       COALESCE(executed_at, created_at) AS at "
+        "  FROM requests "
+        " WHERE target_server_id = %s AND database_name = %s "
+        "   AND status = 'completed' "
+        "   AND created_at >= NOW() - make_interval(days => %s) "
+        "   AND query ILIKE %s "
+        " ORDER BY id DESC LIMIT 50",
+        (tid, database, _MASK_PREVIEW_DAYS, f"%{table}%"))
+    for r in rows:
+        try:
+            names = pii._tables_in(r["query"], engine=r["engine"] or "postgres")
+        except Exception:
+            names = None
+        if names and table.lower() in names:
+            return r
+    return None
+
+
+def _mask_preview_columns(tid: int, database: str, schema: str | None,
+                          table: str, column: str | None) -> list[str]:
+    """Which columns the sample row shows: the one being exempted, plus enough
+    neighbours to see that the rest of the row is still protected. Masked
+    columns are preferred as neighbours for exactly that reason -- a diff whose
+    other cells were never masked shows nothing about what stays covered."""
+    rows = db.fetch_all(
+        "SELECT sc.column_name AS n "
+        "  FROM schema_tables st JOIN schema_columns sc ON sc.table_id = st.id "
+        " WHERE st.target_server_id = %s AND st.database_name = %s "
+        "   AND st.table_name = %s "
+        "   AND (%s::text IS NULL OR st.schema_name = %s) "
+        " ORDER BY sc.ordinal", (tid, database, table, schema, schema))
+    names = [r["n"] for r in rows]
+    if not names:
+        return []
+    explained = pii.explain_columns(names)
+    picked = [column] if column and column in names else []
+    for n in names:
+        if len(picked) >= _MASK_PREVIEW_COLS:
+            break
+        if n not in picked and explained.get(n):
+            picked.append(n)
+    for n in names:
+        if len(picked) >= _MASK_PREVIEW_COLS:
+            break
+        if n not in picked:
+            picked.append(n)
+    # Back into table order, so the row reads like the table.
+    return [n for n in names if n in set(picked)]
+
+
+def _mask_preview_wide(tid: int | None, database: str | None,
+                       schema: str | None) -> dict:
+    """The count that stands in for a sample row on the wide rungs. Reading one
+    row would say nothing about a change that reaches thousands of them, and a
+    single innocuous-looking row is actively misleading there."""
+    where = ["TRUE"]
+    args: list = []
+    if tid is not None:
+        where.append("st.target_server_id = %s")
+        args.append(tid)
+    if database:
+        where.append("st.database_name = %s")
+        args.append(database)
+    if schema:
+        where.append("st.schema_name = %s")
+        args.append(schema)
+    rows = db.fetch_all(
+        "SELECT st.id AS tid, sc.column_name AS n "
+        "  FROM schema_tables st JOIN schema_columns sc ON sc.table_id = st.id "
+        " WHERE " + " AND ".join(where), tuple(args))
+    if not rows:
+        return {"wide": True, "tables": 0, "maskedColumns": 0}
+    explained = pii.explain_columns(sorted({r["n"] for r in rows if r["n"]}))
+    masked = sum(1 for r in rows if explained.get(r["n"]))
+    return {"wide": True, "tables": len({r["tid"] for r in rows}),
+            "maskedColumns": masked}
+
+
+@router.post("/mask-exemptions/preview")
+def admin_mask_preview(body: MaskPreviewIn,
+                       claims: dict = Depends(deps.current_user)):
+    """One real row, masked as it is today and as it would be after the row.
+
+    The "today" side is computed for an ORDINARY reader, not for the
+    super-admin running the preview: a `super_admin_only` exemption already in
+    place would otherwise make the before/after look identical to the one
+    person who can never see the difference.
+    """
+    uid = admin.require_admin(claims, "access")
+    scope = (body.scope or "").strip().lower()
+    if scope not in _MASK_RUNGS:
+        raise deps._error(400, "bad_request", "Unknown scope.")
+
+    tid = None
+    if scope != "fleet":
+        if not body.connectionId:
+            raise deps._error(400, "bad_request", "Pick a server.")
+        tid = _target_id_of(body.connectionId)
+        if tid is None:
+            raise deps._error(404, "not_found", "Unknown connection.")
+    database = (body.databaseId or "").strip() or None
+    schema = (body.schema_name or "").strip() or None
+    table = (body.table or "").strip() or None
+    column = (body.column or "").strip() or None
+
+    if scope in ("fleet", "server", "database", "schema"):
+        return _mask_preview_wide(tid, database, schema)
+    if not database or not table:
+        raise deps._error(400, "bad_request", "Pick a database and a table.")
+
+    evidence = _mask_preview_evidence(tid, database, table)
+    if evidence is None:
+        return {"seen": False, "days": _MASK_PREVIEW_DAYS}
+
+    target = targets.get(tid)
+    if target is None or (target.engine or "postgres") != "postgres":
+        # SQL Server needs TOP 1 and its own identifier quoting; ClickHouse is
+        # read-only spec. Saying so beats rendering a statement that will not
+        # parse on the other side.
+        raise deps._error(400, "bad_request",
+                          "Previews run on Postgres targets only.")
+
+    columns = _mask_preview_columns(tid, database, schema, table, column)
+    if not columns:
+        raise deps._error(400, "bad_request",
+                          "The catalog has no columns for that table.")
+
+    import psycopg
+    from psycopg import sql as pgsql
+
+    tbl = (pgsql.Identifier(schema, table) if schema
+           else pgsql.Identifier(table))
+    stmt = pgsql.SQL("SELECT {cols} FROM {tbl} LIMIT 1").format(
+        cols=pgsql.SQL(", ").join(pgsql.Identifier(c) for c in columns),
+        tbl=tbl)
+    try:
+        db_user, password = targets.get_credentials(tid, "ro")
+    except LookupError as e:
+        raise deps._error(400, "bad_request", str(e))
+
+    try:
+        with psycopg.connect(
+            host=target.host, port=target.port, dbname=database,
+            user=db_user, password=password, connect_timeout=5,
+            **cfg.target_ssl_kwargs(),
+            application_name=f"queryhub:mask-preview target={target.alias}"[:63],
+            options=f"-c statement_timeout={_MASK_PREVIEW_TIMEOUT_MS} "
+                    f"-c idle_in_transaction_session_timeout="
+                    f"{_MASK_PREVIEW_TIMEOUT_MS}",
+        ) as conn, conn.cursor() as cur:
+            cur.execute("SET TRANSACTION READ ONLY")
+            rendered = stmt.as_string(conn)
+            cur.execute(stmt)
+            row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 — an unreachable target is a preview
+        log.warning("mask preview failed on target %s: %s", tid, e)
+        raise deps._error(502, "upstream", errors.scrub(str(e)))
+
+    if row is None:
+        # An empty table is not "nobody queried it"; it is a table with nothing
+        # to show. Both leave the operator with the sentence and no sample.
+        return {"seen": False, "days": _MASK_PREVIEW_DAYS, "empty": True}
+
+    before, after = _mask_preview_pair(
+        tid, database, schema, table, column, columns, list(row),
+        strength=(body.strength or "full").lower())
+
+    with db.transaction() as cur:
+        audit.log_in(cur, None, uid, claims.get("name"),
+                     "pii_exemption_preview_unmasked",
+                     {"target_id": tid, "database": database, "schema": schema,
+                      "table": table, "column": column, "scope": scope,
+                      "columns": columns, "statement": rendered,
+                      "evidence_request_id": evidence["id"]})
+
+    return {
+        "seen": True,
+        "days": _MASK_PREVIEW_DAYS,
+        # What QueryHub ran, not what the evidence query was: an audit reader
+        # who sees this string must be able to trust it is the statement that
+        # touched the database.
+        "sql": rendered,
+        "by": claims.get("name") or uid,
+        "at": mapping.iso(datetime.now(timezone.utc)),
+        # Provenance for the decision to read at all, kept separate so the two
+        # can never be confused for one another.
+        "evidence": {"requestId": str(evidence["id"]),
+                     "by": evidence["requester_name"],
+                     "at": mapping.iso(evidence["at"]),
+                     "sql": " ".join((evidence["query"] or "").split())[:300]},
+        "columns": columns,
+        "before": dict(zip(columns, before)),
+        "after": dict(zip(columns, after)),
+    }
+
+
+def _preview_cell(value) -> str:
+    """One cell as the diff table shows it. NULL is named rather than rendered
+    as an empty cell: "this column is empty" and "this column was blanked" are
+    the two readings of a blank box, and only one of them is true."""
+    if value is None:
+        return "NULL"
+    text = value.decode("utf-8", "replace") if isinstance(value, (bytes, bytearray)) \
+        else str(value)
+    text = " ".join(text.split())
+    return text if len(text) <= 120 else text[:117] + "…"
+
+
+def _mask_preview_pair(tid: int, database: str, schema: str | None,
+                       table: str, column: str | None, columns: list[str],
+                       row: list, *, strength: str) -> tuple[list, list]:
+    """The same row masked twice: as stored rules see it, and with the proposed
+    exemption added. Both sides go through `pii.mask_row`, so whatever the
+    executor would do to this row is what the screen shows."""
+    sql = f"SELECT * FROM {schema + '.' if schema else ''}{table}"
+    proposed = {
+        "database_name": database, "schema_name": schema,
+        "table_name": table, "column_name": column,
+        "apply_in_joins": False,
+        "keep_value_scan": strength == "soft",
+        "super_admin_only": False,
+    }
+    # Strict reader on both sides: principal_id=None drops super-admin-only
+    # rows, which is what almost everybody who runs a query actually gets.
+    stored = pii._load_exemptions(tid, database, None)
+
+    def _render(rows: list[dict]) -> list:
+        skip_all, skip = pii.exemption_decision(
+            tid, database, sql, columns, rows=rows)
+        namescan = pii.exemption_namescan(
+            tid, database, sql, columns, rows=rows)
+        if skip_all:
+            return [_preview_cell(v) for v in row]
+        col_map = pii.column_pii_map(columns, sql)
+        for i in skip:
+            col_map.pop(i, None)
+        for i in namescan:
+            col_map.pop(i, None)
+        masked = pii.mask_row(list(row), set(), col_map, skip_cols=skip)
+        return [_preview_cell(v) for v in masked]
+
+    return _render(stored), _render(stored + [proposed])
 
 
 def _slack_ids_in(*values) -> set[str]:
@@ -3042,16 +3689,35 @@ _AUDIT_CTE = (
     "         (al.action = ANY(%(life)s)) AS is_life "
     "    FROM audit_log al "
     "    JOIN names n ON n.action = al.action "
-    "    LEFT JOIN requests r ON r.id = al.request_id "
-    "    LEFT JOIN target_servers ts ON ts.id = r.target_server_id "
     "   WHERE {where}) "
 )
 
+#: The free-text search, as a UNION of ONE-TABLE branches rather than one OR
+#: spanning three tables.
+#:
+#: The shape is the whole point. Written as a single OR across the joins, the
+#: filter is applied AFTER the join, so no per-table index can serve it —
+#: measured, the planner ignored four trigram indexes and sequentially scanned
+#: 26k rows every time (~420 ms). Each branch here touches one table, so each
+#: can be answered by a bitmap index scan and the results unioned: same rows
+#: (verified identical across ten terms, including the empty and everything
+#: cases), ~4x faster, and the gap widens as the table grows.
+#:
+#: `ILIKE '%term%'` can never use a btree — a leading wildcard has no prefix to
+#: seek. The indexes are GIN over trigrams (migration 119).
 _AUDIT_SEARCH_SQL = (
-    "(al.actor_name ILIKE %(q)s OR r.requester_name ILIKE %(q)s "
-    " OR ts.alias ILIKE %(q)s OR r.database_name ILIKE %(q)s "
-    " OR al.action ILIKE %(q)s OR r.query ILIKE %(q)s "
-    " OR al.details::text ILIKE %(q)s)"
+    "al.id IN ("
+    "  SELECT a2.id FROM audit_log a2 "
+    "   WHERE a2.action ILIKE %(q)s OR a2.actor_name ILIKE %(q)s "
+    "      OR a2.details::text ILIKE %(q)s "
+    "  UNION "
+    "  SELECT a3.id FROM audit_log a3 JOIN requests r3 ON r3.id = a3.request_id "
+    "   WHERE r3.requester_name ILIKE %(q)s OR r3.database_name ILIKE %(q)s "
+    "      OR r3.query ILIKE %(q)s "
+    "  UNION "
+    "  SELECT a4.id FROM audit_log a4 JOIN requests r4 ON r4.id = a4.request_id "
+    "    JOIN target_servers ts4 ON ts4.id = r4.target_server_id "
+    "   WHERE ts4.alias ILIKE %(q)s)"
 )
 
 

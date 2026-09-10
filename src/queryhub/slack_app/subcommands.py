@@ -341,6 +341,17 @@ def _handle_pending(user_id, rest, client, respond, body):
 # ---------- /sql kill (admin) ----------
 
 def _handle_kill(user_id, rest, client, respond, body):
+    # Super-admin, matching the web Kill switch. The dispatcher's `admin_only`
+    # flag only asks for an admin, so the same fleet-wide stop had two different
+    # privilege levels depending on which door you came through: a scoped DBA
+    # admin could halt every target from Slack and would be refused for the same
+    # action on the web. Nobody live could actually do it — both admins are
+    # super — but an authority that differs by door is one nobody can reason
+    # about, and this is the most consequential command in the product.
+    if not admins.is_super_admin(user_id):
+        _respond(respond, ":lock: The kill switch is super-admin only. "
+                          "Ask a super-admin, or use the web Kill switch.")
+        return
     arg = rest.strip().lower()
     current = (db.fetch_one("SELECT value FROM bot_config WHERE key = 'kill_switch'") or {}).get("value", "off")
     if not arg:

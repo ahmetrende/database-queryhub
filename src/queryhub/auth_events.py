@@ -43,18 +43,18 @@ def is_enabled() -> bool:
 # Pure helpers — no DB access, unit-tested.
 # --------------------------------------------------------------------------
 
-# What the person is told they have become. Two of these are deliberately
-# hedged: `granter` and `importer` can be written on the Roles screen, but
-# nothing reads them. Grant authority is still `admins.can_grant`
-# (`grants.py`) and import authority is still the `import_grants` table
-# (`csv_import.py`), so a DM saying "you can now grant access" would be
-# telling somebody about a power they do not have. Say what is true -- the
-# role is recorded -- until the enforcement exists.
+# What the person is told they have become.
+#
+# These used to be hedged, and the hedge was right at the time: `granter` and
+# `importer` could be written on the Roles screen while nothing read them, so a
+# DM saying "you can now grant access" would have told somebody about a power
+# they did not have. That gap is closed (2026-09-09): `granter` is enforced by
+# `grants._authz_v2` when the new model is on, and `importer` was removed
+# rather than left as a word that decided nothing. So these say what is true.
 _ROLE_LABEL = {
     "admin": "an *admin*",
     "approver": "an *approver*",
-    "granter": "recorded as a *granter* (not yet enforced)",
-    "importer": "recorded as an *importer* (not yet enforced)",
+    "granter": "able to *grant access* to others",
 }
 
 
@@ -98,11 +98,44 @@ def _scope_phrase(target_alias: str | None, database_name: str | None) -> str:
     return "*all targets*"
 
 
+def _mask_reach(row: dict, alias_of: "callable") -> str:
+    """An exemption's reach as a sentence fragment, narrowest field first.
+
+    NULL is a wildcard in that table, so the reach is decided by the narrowest
+    field that is filled in and everything wider is "all of them". Naming the
+    wildcard is the point: a row that reaches every server must not read like a
+    row whose server was left blank.
+    """
+    alias = alias_of(row.get("target_server_id")) or "every server"
+    dbname = row.get("database_name") or "every database"
+    if row.get("column_name"):
+        where = f"`{row.get('table_name') or '?'}.{row['column_name']}`"
+    elif row.get("table_name"):
+        where = f"every column in `{row['table_name']}`"
+    elif row.get("schema_name"):
+        where = f"every column in schema `{row['schema_name']}`"
+    else:
+        where = "every column"
+    return f"{where} — {dbname} on {alias}"
+
+
+def _mask_why(row: dict) -> str:
+    """The reason, trimmed onto the end of the DM. An exemption with no reason
+    is the one an auditor cannot read, so its absence is said out loud."""
+    reason = (row.get("reason") or "").strip()
+    if not reason:
+        return " No reason was given."
+    if len(reason) > 160:
+        reason = reason[:157].rstrip() + "…"
+    return f" Reason: {reason}"
+
+
 def build_notifications(
     event: dict,
     *,
     alias_of: "callable" = lambda tid: None,
     team_info: "callable" = lambda tid, table=None: (None, []),
+    admin_ids: "callable" = lambda: [],
 ) -> list[tuple[str, str]]:
     """Map one outbox event to [(slack_user_id, message)].
 
@@ -112,7 +145,10 @@ def build_notifications(
     versions. `table` is passed because the two models number teams in
     separate id spaces — `team_target_grants.team_id` points at `teams`,
     `access_grant.team_id` points at `team` — so the number alone cannot say
-    where to look. Returns [] for events that carry no user-visible change.
+    where to look. `admin_ids() -> [slack_user_id]` is the fan-out list for an
+    event with no subject of its own -- a masking exemption changes what every
+    reader sees, so the people told are the ones who can undo it.
+    Returns [] for events that carry no user-visible change.
     """
     table = event["table_name"]
     op = event["op"]
@@ -410,6 +446,44 @@ def build_notifications(
                            f"{_fmt_until(new.get('valid_until'))}.")]
         return []          # exclude_from_metrics and friends: nothing to say
 
+    if table == "pii_masking_exemptions":
+        # The one table here whose rows REMOVE a protection, and the one with
+        # no subject to address: an exemption changes what every reader of that
+        # column sees. So it fans out to the admins, who are the people who can
+        # undo it, and it says the reach in the row's own words rather than a
+        # row id -- "column X on Y" is what somebody can act on at 02:00;
+        # "exemption 31 changed" is something they have to go look up.
+        reach = _mask_reach(row, alias_of)
+        if op == "INSERT":
+            if not row.get("enabled"):
+                return []          # written switched off: nothing is unmasked
+            return [(uid, f":unlock: Masking turned OFF for {reach}"
+                          f"{_mention(row.get('created_by'))}."
+                          f"{_mask_why(row)}")
+                    for uid in admin_ids()]
+        if op == "DELETE":
+            if not row.get("enabled"):
+                return []          # removing a switched-off row changes nothing
+            return [(uid, f":lock: Masking exemption removed — {reach} "
+                          "is masked again.") for uid in admin_ids()]
+        if old.get("enabled") != new.get("enabled"):
+            return [(uid, f":lock: Masking exemption for {reach} was switched "
+                          "back ON — that data is masked again."
+                     if not new.get("enabled") else
+                     f":unlock: Masking exemption for {reach} was switched back "
+                     "off — that data is unmasked again.")
+                    for uid in admin_ids()]
+        # Reach or strength edited on a row that is already live. Anything else
+        # (reason typo) is not worth fifteen DMs.
+        if any(old.get(k) != new.get(k) for k in
+               ("target_server_id", "database_name", "schema_name",
+                "table_name", "column_name", "keep_value_scan",
+                "apply_in_joins", "super_admin_only")):
+            return [(uid, f":unlock: A live masking exemption changed — it now "
+                          f"covers {reach}.{_mask_why(new)}")
+                    for uid in admin_ids()]
+        return []
+
     log.warning("auth_events: no builder for table %r — marking processed", table)
     return []
 
@@ -456,6 +530,15 @@ def _team_info(team_id, table: str | None = None) -> tuple[str | None, list[str]
             "SELECT slack_user_id FROM team_members WHERE team_id = %s", (team_id,))
     return (row["name"] if row else None,
             [m["slack_user_id"] for m in members])
+
+
+def _admin_ids() -> list[str]:
+    """Who hears about a change with no subject of its own. Active admins only,
+    and Slack ids only: a `local:` principal has no DM to send to, and asking
+    Slack to open one is a per-event failure that would retry forever."""
+    from . import admins
+    return sorted({a["slack_user_id"] for a in admins.list_active()
+                   if (a.get("slack_user_id") or "").startswith("U")})
 
 
 def combine_notes(notes: list[str]) -> str:
@@ -508,7 +591,8 @@ def process_pending(client: WebClient, limit: int = 50) -> int:
         for ev in events:
             try:
                 notes = build_notifications(
-                    ev, alias_of=_alias_of, team_info=_team_info)
+                    ev, alias_of=_alias_of, team_info=_team_info,
+                    admin_ids=_admin_ids)
             except Exception as e:  # noqa: BLE001 — one bad row must not wedge the queue
                 log.exception("auth_events: event %s failed to build", ev["id"])
                 _fail(cur, ev, e)

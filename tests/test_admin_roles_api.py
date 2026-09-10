@@ -98,11 +98,30 @@ def test_an_unknown_role_is_refused_by_name():
     assert "_ROLES" in CREATE and "Unknown role" in CREATE
 
 
-def test_the_role_vocabulary_is_the_agreed_four():
+def test_the_role_vocabulary_is_only_roles_something_enforces():
+    """`importer` was removed on 2026-09-09 and `granter` was wired.
+
+    The pair had been written on the Roles screen while nothing read either, so
+    the screen was showing an authority that decided nothing — which reads as
+    protection that is not there. `granter` is now enforced by
+    `grants._authz_v2`; `importer` had no holders and no reader, and the org
+    importer runs as the operator, so it went. A role in this list must be a
+    role some code checks.
+    """
     m = re.search(r'_ROLES = \((.*?)\)', SRC, re.S)
     assert m
     assert set(re.findall(r'"(\w+)"', m.group(1))) == {
-        "approver", "granter", "importer", "admin"}
+        "approver", "granter", "admin"}
+
+
+def test_granter_is_actually_read_by_the_grant_path():
+    """The point of keeping it. If this stops being true, the role is back to
+    naming an authority nothing checks and belongs out of the vocabulary."""
+    from pathlib import Path
+    grants_src = (Path(__file__).resolve().parents[1] / "src" / "queryhub"
+                  / "grants.py").read_text(encoding="utf-8")
+    body = grants_src.split("def _authz_v2", 1)[1].split("\ndef ", 1)[0]
+    assert "'granter'" in body or '"granter"' in body
 
 
 def test_an_unknown_tier_is_refused():

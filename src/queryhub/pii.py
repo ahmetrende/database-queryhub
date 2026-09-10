@@ -716,8 +716,19 @@ def _schema_scoped_skip(rows: list[dict], sql: str, engine: str) -> bool:
       * every schema named must be exempt. One table from anywhere else and
         masking stays on for the whole result, the same rule joins already
         follow.
+
+    Only a row that is ACTUALLY schema-scoped counts -- no table, no column.
+    `schema_name` is a narrowing field on the other rungs, not a widening one,
+    and reading it off a column row here turned one narrow exemption into
+    "masking is off for that whole schema". Measured before the fix: three
+    column rows carrying `public` (targets 46 and 105) lifted masking entirely
+    for any statement whose tables were all written as `public.x` -- 25 real
+    requests. It is the same exclusion `exemption_decision` already makes one
+    branch above, where a schema row is explicitly NOT treated as database-wide.
     """
-    exempt = {(r["schema_name"] or "").lower() for r in rows if r.get("schema_name")}
+    exempt = {(r["schema_name"] or "").lower() for r in rows
+              if r.get("schema_name")
+              and not r.get("table_name") and not r.get("column_name")}
     if not exempt:
         return False
     try:
@@ -854,7 +865,8 @@ def _column_skips(col_rows: list[dict], tables: set[str] | None,
 def exemption_decision(target_id: int, database: str, sql: str,
                        columns: list[str],
                        engine: str = "postgres",
-                       principal_id: str | None = None) -> tuple[bool, set[int]]:
+                       principal_id: str | None = None,
+                       rows: list[dict] | None = None) -> tuple[bool, set[int]]:
     """Resolve pii_masking_exemptions for one statement's result.
 
     Returns (skip_all, skip_cols):
@@ -867,8 +879,15 @@ def exemption_decision(target_id: int, database: str, sql: str,
                         riding along an exempt table's query).
       skip_cols      -> result-column indexes exempted by column-level rows
                         (matched by name; a table-scoped column row also
-                        requires the only-exempt-tables condition)."""
-    rows = _load_exemptions(target_id, database, principal_id)
+                        requires the only-exempt-tables condition).
+
+    `rows` overrides the DB read. It exists for the Add-exemption preview,
+    which has to answer "what would this row change" and therefore needs the
+    same decision run twice -- once over what is stored and once over what is
+    about to be. A second implementation of this ladder is the one way that
+    screen could promise something the masker does not do."""
+    if rows is None:
+        rows = _load_exemptions(target_id, database, principal_id)
     if not rows:
         return False, set()
 
@@ -903,15 +922,18 @@ def exemption_decision(target_id: int, database: str, sql: str,
 def exemption_namescan(target_id: int, database: str, sql: str,
                        columns: list[str],
                        engine: str = "postgres",
-                       principal_id: str | None = None) -> set[int]:
+                       principal_id: str | None = None,
+                       rows: list[dict] | None = None) -> set[int]:
     """Result-column indexes for SOFT exemptions (keep_value_scan=true):
     the column-name mask is lifted, but the per-value content detectors still
     run. For a column that is mostly non-PII yet can hold the odd real PII
     (e.g. a crypto address column that also stores fiat IBANs) — genuine
     values pass, IBAN/card/TCKN/email cells still get masked. Same
     table-scoping rules as full column exemptions (fail-closed on unparseable
-    SQL for table-scoped rows)."""
-    rows = _load_exemptions(target_id, database, principal_id)
+    SQL for table-scoped rows). `rows` overrides the DB read, for the same
+    reason it does on `exemption_decision`."""
+    if rows is None:
+        rows = _load_exemptions(target_id, database, principal_id)
     ns_rows = [r for r in rows
                if r["column_name"] and r.get("keep_value_scan")]
     if not ns_rows:

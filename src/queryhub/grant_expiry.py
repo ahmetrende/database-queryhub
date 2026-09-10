@@ -117,6 +117,37 @@ def due(threshold_hours: int, floor_hours: int = 0) -> list[dict]:
                             WHERE n.grant_kind = 'team' AND n.grant_id = g.id
                               AND n.threshold_hours = %(h)s
                               AND n.expires_at = g.expires_at)
+        -- The nine-table model. A pod grant is written straight here and has no
+        -- legacy row, so without this branch the pod cutover quietly moved 32
+        -- grants out of the scanner's sight. Latent only because none of them
+        -- carries an expiry yet -- the first one to get one would have lapsed
+        -- with nobody warned, which is the failure this whole module exists to
+        -- prevent.
+        --
+        -- `mirrored_from IS NULL` keeps it to NATIVE rows. The mirror projects
+        -- the legacy grants into this table too, and warning off both copies
+        -- would DM the same person twice about the same access. It also keeps
+        -- out the auto-approve windows the mirror projects: losing one of those
+        -- does not remove access, it means queries need approval again, and
+        -- this module's sentence would be wrong about it.
+        UNION ALL
+        SELECT 'access', g.id,
+               i.external_id AS subject, g.tier AS mode, g.valid_until,
+               COALESCE(t.alias, 'every target'), tm.display_name
+          FROM access_grant g
+          LEFT JOIN target_servers t ON t.id = g.target_id
+          LEFT JOIN team tm ON tm.id = g.team_id
+          LEFT JOIN principal_identity i ON i.principal_id = g.principal_id
+           AND i.provider = 'slack' AND NOT i.is_deleted
+         WHERE NOT g.is_deleted AND g.revoked_at IS NULL
+           AND g.mirrored_from IS NULL
+           AND g.valid_until IS NOT NULL
+           AND g.valid_until > NOW() + make_interval(hours => %(lo)s)
+           AND g.valid_until <= NOW() + make_interval(hours => %(h)s)
+           AND NOT EXISTS (SELECT 1 FROM grant_expiry_notices n
+                            WHERE n.grant_kind = 'access' AND n.grant_id = g.id
+                              AND n.threshold_hours = %(h)s
+                              AND n.expires_at = g.valid_until)
         ORDER BY expires_at
         """,
         {"h": threshold_hours, "lo": floor_hours})
@@ -131,6 +162,17 @@ def recipients_for(grant: dict) -> list[str]:
     """
     if grant["kind"] == "user":
         return [grant["subject"]] if grant["subject"] else []
+    if grant["kind"] == "access":
+        # One row is either a person's grant or a team's, never both.
+        if grant["subject"]:
+            return [grant["subject"]]
+        rows = db.fetch_all(
+            "SELECT i.external_id FROM team_member m "
+            "  JOIN access_grant g ON g.team_id = m.team_id "
+            "  JOIN principal_identity i ON i.principal_id = m.principal_id "
+            "   AND i.provider = 'slack' AND NOT i.is_deleted "
+            " WHERE g.id = %s AND NOT m.is_deleted", (grant["id"],))
+        return [r["external_id"] for r in rows]
     rows = db.fetch_all(
         "SELECT m.slack_user_id FROM team_members m "
         "  JOIN team_target_grants g ON g.team_id = m.team_id "
@@ -144,7 +186,7 @@ def message(grant: dict, now: datetime | None = None) -> str:
     when = _fmt_left(grant["expires_at"] - now)
     stamp = grant["expires_at"].strftime("%Y-%m-%d %H:%M UTC")
     via = (f" (through the *{grant['team_name']}* team)"
-           if grant["kind"] == "team" else "")
+           if grant["team_name"] else "")
     return (f":hourglass: Your *{tier}* access to `{grant['alias']}`{via} "
             f"expires {when} — {stamp}. Queries stop being accepted after "
             "that. Ask an admin to extend it if you still need it.")

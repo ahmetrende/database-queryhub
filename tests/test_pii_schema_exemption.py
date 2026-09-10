@@ -177,3 +177,73 @@ def test_the_web_result_endpoint_passes_the_requester():
     assert 'principal_id=row["requester_slack_id"]' in src, (
         "the header-dot hint would disagree with the delivered file for a "
         "super-admin, which is worse than either answer alone")
+
+
+# ---------------------------------------------------------------------------
+# the mirror of the sharpest edge: a schema that is NOT the scope
+# ---------------------------------------------------------------------------
+#
+# The test above asks whether a schema row is read as database-wide. This one
+# asks the opposite question, and it was live for four weeks: a COLUMN row also
+# carries `schema_name`, as a narrowing field, and the schema branch read it as
+# if the row were schema-scoped. One narrow exemption on
+# `public.reward_campaigns.name` therefore lifted masking for every statement
+# whose tables were all written `public.x`.
+#
+# It reached production because the only way to write these rows was psql,
+# where nobody fills in a schema they do not need. The Add-exemption form makes
+# schema REQUIRED on the column rung, so every exemption written from the
+# screen would have carried one.
+
+COL_ROW_WITH_SCHEMA = {"database_name": "app", "schema_name": "public",
+                       "table_name": "reward_campaigns", "column_name": "name",
+                       "apply_in_joins": False, "keep_value_scan": False,
+                       "super_admin_only": False}
+
+TABLE_ROW_WITH_SCHEMA = {"database_name": "app", "schema_name": "public",
+                         "table_name": "reward_campaigns", "column_name": None,
+                         "apply_in_joins": False, "keep_value_scan": False,
+                         "super_admin_only": False}
+
+
+def test_a_column_rows_schema_does_not_exempt_the_schema(monkeypatch):
+    """One column exemption must not unmask an unrelated table in the same
+    schema, however the query qualifies its names."""
+    monkeypatch.setattr(pii, "_load_exemptions", _load([COL_ROW_WITH_SCHEMA]))
+    skip_all, cols = pii.exemption_decision(
+        1, "app", "SELECT email, phone FROM public.users", ["email", "phone"])
+    assert skip_all is False
+    assert cols == set()
+
+
+def test_a_table_rows_schema_does_not_exempt_the_schema(monkeypatch):
+    """Same for the table rung — it narrows the table, it does not widen to
+    everything beside it."""
+    monkeypatch.setattr(pii, "_load_exemptions", _load([TABLE_ROW_WITH_SCHEMA]))
+    skip_all, _ = pii.exemption_decision(
+        1, "app", "SELECT email FROM public.users", ["email"])
+    assert skip_all is False
+
+
+def test_the_column_row_still_fires_on_its_own_column(monkeypatch):
+    """The fix must not cost the row its actual job."""
+    monkeypatch.setattr(pii, "_load_exemptions", _load([COL_ROW_WITH_SCHEMA]))
+    skip_all, cols = pii.exemption_decision(
+        1, "app", "SELECT name FROM public.reward_campaigns", ["name"])
+    assert skip_all is False
+    assert cols == {0}
+
+
+def test_a_real_schema_row_beside_a_column_row_still_works(monkeypatch):
+    """Both kinds in scope at once: the schema row keeps its reach and the
+    column row keeps its narrowness."""
+    monkeypatch.setattr(
+        pii, "_load_exemptions", _load([DBA_ROW, COL_ROW_WITH_SCHEMA]))
+    skip_all, _ = pii.exemption_decision(
+        1, "app", "SELECT query FROM dba.blocking_sessions", ["query"],
+        principal_id="U_SUPER")
+    assert skip_all is True
+    skip_all, _ = pii.exemption_decision(
+        1, "app", "SELECT email FROM public.users", ["email"],
+        principal_id="U_SUPER")
+    assert skip_all is False

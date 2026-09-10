@@ -77,10 +77,21 @@ def control_plane_target_ids() -> set[int]:
     return {r["id"] for r in rows}
 
 
+#: Lowest first — the ceiling comparison and `allowed_tiers` share this order.
+_TIER_ORDER = ("ro", "rw", "ddl")
+
+
 def authz(principal_id: str) -> dict | None:
     """Grant capability for an admin, or None if they can't grant at all.
     Returns {'super': bool, 'max_tier': str|None}. max_tier None = unlimited.
     """
+    from . import teams as teams_mod
+    if teams_mod.use_v2():
+        return _authz_v2(principal_id)
+    return _authz_legacy(principal_id)
+
+
+def _authz_legacy(principal_id: str) -> dict | None:
     row = db.fetch_one(
         "SELECT can_grant, max_tier, "
         "  (max_tier IS NULL AND scope_team_ids IS NULL "
@@ -93,6 +104,43 @@ def authz(principal_id: str) -> dict | None:
     if not (row["is_super"] or row["can_grant"]):
         return None
     return {"super": row["is_super"], "max_tier": row["max_tier"]}
+
+
+def _authz_v2(principal_id: str) -> dict | None:
+    """The same question, asked of the nine-table model.
+
+    `granter` existed in that model's vocabulary and NOTHING read it — the
+    authority was still decided by `admins.can_grant`, so a role the Roles
+    screen displayed decided nothing. That is the seam this codebase has been
+    closing all week: a screen reading one model while the rule reads the other.
+
+    Fleet-wide with no ceiling is the definition of super here, exactly as the
+    legacy row's `is_super` expression says. A `granter` row grants the
+    capability without the ceiling being expressible on it — the schema forbids
+    `max_tier` on a granter — so a granter who also holds a capped admin row
+    keeps that cap, and the LOWEST cap wins.
+    """
+    rows = db.fetch_all(
+        "SELECT ra.role, ra.all_teams, ra.all_targets, ra.max_tier "
+        "  FROM role_assignment ra "
+        "  JOIN principal p ON p.id = ra.principal_id "
+        "  JOIN principal_identity i ON i.principal_id = p.id "
+        "   AND i.provider = 'slack' AND NOT i.is_deleted "
+        " WHERE i.external_id = %s AND p.enabled "
+        "   AND NOT ra.is_deleted AND ra.revoked_at IS NULL "
+        "   AND (ra.valid_until IS NULL OR ra.valid_until > NOW())",
+        (principal_id,),
+    )
+    if not rows:
+        return None
+    is_super = any(r["role"] == "admin" and r["all_teams"] and r["all_targets"]
+                   and r["max_tier"] is None for r in rows)
+    if not (is_super or any(r["role"] == "granter" for r in rows)):
+        return None
+    caps = [r["max_tier"] for r in rows if r["role"] == "admin" and r["max_tier"]]
+    ceiling = None if is_super else (
+        min(caps, key=lambda t: _TIER_ORDER.index(t)) if caps else None)
+    return {"super": is_super, "max_tier": ceiling}
 
 
 def allowed_tiers(cap: dict) -> list[str]:

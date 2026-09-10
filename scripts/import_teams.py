@@ -7,8 +7,8 @@ produces it — an HR export, a directory dump, a company-specific collector —
 stays outside this repo and outside this script.
 
     team,display_name,email,is_lead
-    cus-1-be,CUS 1 - BE,berk.tas@example.com,no
-    cus-1-be,CUS 1 - BE,emre.tepe@example.com,yes
+    platform-be,Platform Backend,ada@example.com,no
+    platform-be,Platform Backend,grace@example.com,yes
 
 `team` is the stable code and lands in `team.name`; `display_name` is what
 people read. Both `display_name` and `is_lead` are optional columns.
