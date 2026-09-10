@@ -247,3 +247,76 @@ def test_a_real_schema_row_beside_a_column_row_still_works(monkeypatch):
         1, "app", "SELECT email FROM public.users", ["email"],
         principal_id="U_SUPER")
     assert skip_all is False
+
+
+# ---------------------------------------------------------------------------
+# a schema on a narrow row NARROWS it
+# ---------------------------------------------------------------------------
+#
+# The other half of the same confusion. Once a column row's schema stopped
+# being read as "the whole schema is exempt", it was being read as nothing at
+# all: `table_name` matches the BARE name, so an exemption for
+# `venue.venues.description` also freed `other.venues.description` — the
+# same-name collision the schema dimension exists to prevent, arriving through
+# the rung nobody was checking.
+#
+# The rule can only ever refuse. An unqualified statement is admitted, because
+# its schema is genuinely unknowable from the text and refusing there would
+# start MASKING data that comes back unmasked today, for every query that does
+# not bother to qualify.
+
+VENUE_ROW = {"database_name": "app", "schema_name": "venue",
+             "table_name": "venues", "column_name": "description",
+             "apply_in_joins": True, "keep_value_scan": False,
+             "super_admin_only": False}
+
+NO_SCHEMA_ROW = {**VENUE_ROW, "schema_name": None}
+
+
+def _fires(row, sql):
+    monkey = [row]
+    return bool(pii._column_skips(
+        monkey, pii._tables_in(sql), ["description"], pii._table_refs_in(sql)))
+
+
+def test_the_same_name_in_another_schema_stays_masked():
+    """The leak. Without this, one exemption covers every `venues` in the
+    database."""
+    assert _fires(VENUE_ROW, "SELECT description FROM other.venues") is False
+
+
+def test_the_named_schema_still_fires():
+    assert _fires(VENUE_ROW, "SELECT description FROM venue.venues") is True
+
+
+def test_an_unqualified_statement_is_unchanged():
+    """The no-regression case, and the reason this is not fail-closed: most
+    real queries do not qualify, and refusing there would mask data that comes
+    back unmasked today."""
+    assert _fires(VENUE_ROW, "SELECT description FROM venues") is True
+
+
+def test_a_row_with_no_schema_is_untouched():
+    """26 of the 30 live rows. They must keep matching any schema."""
+    assert _fires(NO_SCHEMA_ROW, "SELECT description FROM other.venues") is True
+    assert _fires(NO_SCHEMA_ROW, "SELECT description FROM venues") is True
+
+
+def test_unparseable_sql_keeps_failing_closed():
+    assert _fires(VENUE_ROW, "SELECT description FROM (((") is False
+
+
+def test_a_table_the_statement_never_names_is_not_second_guessed():
+    """The row's table is absent from the statement, so the schema check has
+    nothing to say — the table-match rule above it already decided."""
+    assert pii._schema_admits(VENUE_ROW, {("public", "orders")}) is True
+
+
+def test_both_schemas_at_once_still_fires_and_that_is_documented():
+    """Known limit, asserted so it is a decision and not a surprise: one of the
+    two references does name the exempt schema, and which one the output column
+    came from is a lineage question, not a set question."""
+    assert _fires(
+        VENUE_ROW,
+        "SELECT v.description FROM other.venues v JOIN venue.venues w ON 1=1"
+    ) is True

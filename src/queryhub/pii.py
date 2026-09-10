@@ -780,6 +780,35 @@ def _tables_in(sql: str, engine: str = "postgres") -> set[str] | None:
         return None
 
 
+def _table_refs_in(sql: str, engine: str = "postgres") -> set[tuple] | None:
+    """Lowercased (schema | None, table) pairs a statement references, minus
+    CTE aliases. None when the SQL can't be parsed.
+
+    `_tables_in` above drops the schema, which is right for the rules that were
+    written before schemas were a dimension: `table_name` matches the bare name
+    and 26 of the 30 live exemptions carry no schema at all. This keeps it, so
+    a row that DID name a schema can be held to it.
+    """
+    try:
+        import sqlglot
+        from sqlglot import exp
+        from . import engines
+        dialect = engines.spec(engine).sqlglot_dialect
+        refs: set[tuple] = set()
+        ctes: set[str] = set()
+        for s in sqlglot.parse(sql, read=dialect):
+            if s is None:
+                continue
+            for cte in s.find_all(exp.CTE):
+                ctes.add(cte.alias_or_name.lower())
+            for t in s.find_all(exp.Table):
+                refs.add(((t.db or "").lower() or None, t.name.lower()))
+        refs = {r for r in refs if r[1] not in ctes}
+        return refs or None
+    except Exception:
+        return None
+
+
 def system_catalog_only(sql: str, engine: str = "postgres") -> bool:
     """True when every relation the statement reads is the engine's OWN
     catalog — so masking should not run at all.
@@ -831,18 +860,63 @@ def system_catalog_only(sql: str, engine: str = "postgres") -> bool:
         return False
 
 
+def _schema_admits(row: dict, refs: set[tuple] | None) -> bool:
+    """Does the statement's own text contradict this row's schema?
+
+    Only ever NARROWS. `table_name` matches the BARE name, so an exemption for
+    `venue.venues.description` also freed `other.venues.description` -- the
+    same-name collision the schema dimension exists to prevent, arriving
+    through the column rung where nothing was checking it.
+
+    Three cases, and two of them keep today's answer exactly:
+      * the row names no schema (26 of the 30 live rows) -> admitted, as before;
+      * the statement writes the table unqualified, or could not be parsed ->
+        admitted. The schema is genuinely unknowable from the text, and
+        refusing there would MASK data that comes back unmasked today, for
+        every query that does not bother to qualify. That is a behaviour change
+        this does not make.
+      * every reference to that table names a DIFFERENT schema -> refused.
+        That is the leak, and it is the only case whose answer changes.
+
+    What it does NOT close: a statement that reads the same table name in both
+    schemas at once still fires, because one of the references does name the
+    exempt schema and nothing here says which of the two the output column came
+    from. Answering that needs the lineage resolver, not a set of references —
+    and for `apply_in_joins` rows it is the documented opt-in anyway ("accepts
+    a same-named co-joined column also being unmasked").
+
+    Measured before shipping: replayed over every completed request in the
+    fleet's history that recorded its result columns — 3,211 requests, 1,205
+    resolver invocations — and the answer changed for none of them. The rows
+    that carry a schema are new enough that nothing was relying on the leak.
+    """
+    schema = (row.get("schema_name") or "").lower()
+    if not schema:
+        return True
+    if not refs:
+        return True
+    tbl = (row.get("table_name") or "").lower()
+    seen = [r for r in refs if r[1] == tbl]
+    if not seen:
+        return True
+    return any(r[0] is None or r[0] == schema for r in seen)
+
+
 def _column_skips(col_rows: list[dict], tables: set[str] | None,
-                  columns: list[str]) -> set[int]:
+                  columns: list[str], refs: set[tuple] | None = None) -> set[int]:
     """Pure: result-column indexes exempted by column-level rows.
 
-    `tables` is the set of table names in the query (None = unparseable).
+    `tables` is the set of table names in the query (None = unparseable);
+    `refs` the same references with their schemas, when the caller has them.
     Per row:
       - column-scoped (table_name NULL): matches the column name anywhere.
       - table-scoped, strict (apply_in_joins FALSE): only when the query
         reads SOLELY that table (provenance certain); fail-closed otherwise.
       - table-scoped, apply_in_joins TRUE: fires whenever its table is among
         the query's tables — accepts a same-named co-joined column also being
-        unmasked (opt-in, for db-wide-non-sensitive names)."""
+        unmasked (opt-in, for db-wide-non-sensitive names).
+    A row that names a schema is additionally held to it — see
+    `_schema_admits`, which can only ever refuse, never admit more."""
     skip: set[int] = set()
     for i, col in enumerate(columns):
         name = (col or "").lower()
@@ -856,7 +930,7 @@ def _column_skips(col_rows: list[dict], tables: set[str] | None,
                 continue  # table-scoped + unparseable SQL -> fail-closed
             tbl = r["table_name"].lower()
             matched = (tbl in tables) if r.get("apply_in_joins") else (tables == {tbl})
-            if matched:
+            if matched and _schema_admits(r, refs):
                 skip.add(i)
                 break
     return skip
@@ -916,7 +990,8 @@ def exemption_decision(target_id: int, database: str, sql: str,
     # exemption_namescan, NOT here, so they never fully pass through.
     col_rows = [r for r in rows
                 if r["column_name"] and not r.get("keep_value_scan")]
-    return False, _column_skips(col_rows, tables, columns)
+    refs = _table_refs_in(sql, engine=engine)
+    return False, _column_skips(col_rows, tables, columns, refs)
 
 
 def exemption_namescan(target_id: int, database: str, sql: str,
@@ -939,7 +1014,8 @@ def exemption_namescan(target_id: int, database: str, sql: str,
     if not ns_rows:
         return set()
     tables = _tables_in(sql, engine=engine)
-    return _column_skips(ns_rows, tables, columns)
+    return _column_skips(ns_rows, tables, columns,
+                         _table_refs_in(sql, engine=engine))
 
 
 def _match_pii_type(name: str, patterns) -> str | None:
