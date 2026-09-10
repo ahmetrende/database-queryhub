@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from queryhub.web import deps, routes_admin
+from queryhub.web import routes_admin
 from queryhub.web.routes_admin import MaskExemptionIn
 
 
