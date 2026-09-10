@@ -691,6 +691,40 @@ def build_modal(target_id: int | None = None,
     }
 
 
+def read_db_block(db_section: dict, base: str, target_id) -> dict:
+    """The database select's state, when the block can hold more than one
+    action_id.
+
+    The element's action_id is salted with the target (`act_database_v3`) so
+    Slack's client re-fetches its options after a target switch. Slack keeps
+    view state per (block_id, action_id) and the block_id does NOT change, so
+    after a switch `state.values[blk_database]` can carry two entries: the
+    render before the switch and the one after. Reading it with
+    `next(k.startswith(...))` took whichever the payload happened to serialise
+    first, and that is a coin toss between:
+
+      * the pre-target render, whose selection is null -> the submission falls
+        back to the target's `default_database`. That is the reported bug:
+        one target in this fleet defaults to a LOG database while the table
+        the query names lives in the service database, so submit-time validation
+        failed with
+        "Relation ... does not exist" — while the same query launched from a
+        favourite worked, because that path renders WITH a target from the
+        first frame and never grows a second entry.
+      * the previous TARGET's entry, whose selection is a database on a
+        different server. Nothing stopped that one from being submitted.
+
+    So the salted key for the target actually selected is the only entry that
+    means anything, and the unsalted one is accepted solely as the
+    before-any-switch case. Another target's key is never used.
+    """
+    if target_id is not None:
+        exact = db_section.get(f"{base}_v{target_id}")
+        if exact:
+            return exact
+    return db_section.get(base) or {}
+
+
 def parse_submission(view_or_state: dict) -> dict:
     """Pull a clean dict out of the submitted modal state.
 
@@ -745,14 +779,11 @@ def parse_submission(view_or_state: dict) -> dict:
     if not server_id_str:
         raise ValueError("Submitted modal has no target server selected.")
     server_id = int(server_id_str)
-    # Database action_id is dynamic (carries target_id suffix to bust the
-    # Slack client's options cache when target changes). Scan for the first
-    # action whose key starts with our static prefix.
+    # Database action_id is dynamic (carries a target_id suffix to bust the
+    # Slack client's options cache when the target changes) — see
+    # `read_db_block` for why the entry has to be picked by name.
     db_section = values.get(B_DATABASE, {})
-    db_block = next(
-        (v for k, v in db_section.items() if k.startswith(A_DATABASE)),
-        {},
-    )
+    db_block = read_db_block(db_section, A_DATABASE, server_id)
     selected = db_block.get("selected_option") or {}
     database = selected.get("value") or None
     query = (values.get(B_QUERY, {}).get(A_QUERY, {}).get("value") or "").strip()
@@ -1235,12 +1266,11 @@ def read_batch_state_from_view(view: dict) -> list[dict]:
                 alias = cached.get("ta")
                 target_host_port = cached.get("thp")
 
-        # Database: dynamic action_id, scan by prefix.
+        # Database: dynamic action_id — same salt, same rule as the single
+        # modal (see `read_db_block`).
         db_section = values.get(f"{BATCH_B_DATABASE}_{idx}", {})
-        db_block = next(
-            (v for k, v in db_section.items() if k.startswith(BATCH_A_DATABASE)),
-            {},
-        )
+        db_block = read_db_block(
+            db_section, f"{BATCH_A_DATABASE}_{idx}", tid)
         db_selected = db_block.get("selected_option") or {}
         database = db_selected.get("value") or None
         if database is None and idx - 1 < len(pm_items):

@@ -713,12 +713,10 @@ def _read_single_modal_state(view: dict) -> dict:
             target_id = None
         target_alias = ((selected_target.get("text") or {}).get("text") or "")
         target_alias = target_alias.replace("[disabled] ", "", 1) or None
-    # Database — dynamic action_id, scan by prefix.
+    # Database — dynamic action_id; picked by name, not by prefix scan
+    # (see modal.read_db_block).
     db_section = values.get(modal.B_DATABASE, {})
-    db_block = next(
-        (v for k, v in db_section.items() if k.startswith(modal.A_DATABASE)),
-        {},
-    )
+    db_block = modal.read_db_block(db_section, modal.A_DATABASE, target_id)
     db_selected = db_block.get("selected_option") or {}
     database_name = db_selected.get("value") or None
     # Query / result-format / justification / schedule.
@@ -3455,8 +3453,7 @@ def handle_open_schema_browser(ack: Ack, body: dict, client: WebClient) -> None:
     target_id = _target_id_from_view(view)
     values = view.get("state", {}).get("values", {})
     db_section = values.get(modal.B_DATABASE, {})
-    db_block = next(
-        (v for k, v in db_section.items() if k.startswith(modal.A_DATABASE)), {})
+    db_block = modal.read_db_block(db_section, modal.A_DATABASE, target_id)
     database = (db_block.get("selected_option") or {}).get("value")
 
     def _push(pushed_view: dict) -> None:
