@@ -18,10 +18,10 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "6.0.5",
+    "@vitejs/plugin-react": "6.1.1",
     "esbuild": "0.28.2",
     "jsdom": "^30.0.1",
-    "vite": "8.2.1"
+    "vite": "8.2.2"
   },
   "engines": {
     "node": "^20.19.0 || >=22.12.0"

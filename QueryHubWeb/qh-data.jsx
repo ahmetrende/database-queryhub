@@ -393,6 +393,21 @@ function qhHostingFull(conn) {
   qhCustomTags(conn).forEach(([k, v]) => parts.push(k + ' ' + v));
   return parts.join(' · ');
 }
+// The endpoint hover on a connection name, plus the account it lives in when
+// the registry knows. One line, not a column: an account id is looked up when
+// somebody is already asking "which one of these is this", and a fleet-wide
+// column of twelve-digit numbers is twelve digits of noise on every other row.
+//
+// `account` only reaches an admin (routes_data withholds it from the developer
+// payload), so for everyone else this is the endpoint line it always was.
+function qhEndpointHover(conn) {
+  if (!conn || !conn.host) return undefined;
+  const lines = [conn.host + (conn.port ? ':' + conn.port : '')
+    + (conn.defaultDatabase ? '/' + conn.defaultDatabase : '')];
+  const acct = qhTags(conn).account;
+  if (acct) lines.push('account ' + acct);
+  return lines.join('\n');
+}
 function qhCustomTags(conn) {
   const t = qhTags(conn);
   return Object.keys(t).filter(k => QH_TAG_RESERVED.indexOf(k) < 0 && t[k] != null && t[k] !== '')

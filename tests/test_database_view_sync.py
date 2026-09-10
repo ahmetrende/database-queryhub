@@ -46,13 +46,24 @@ def test_the_endpoint_never_escapes_the_grant_filter():
     That ordering is the invariant now. If the grant check ever moves below the
     payload build, or the endpoint is assigned before it, every whitelisted
     requester starts receiving the whole fleet's addresses — which is exactly
-    the outcome the old admin gate was reaching for."""
+    the outcome the old admin gate was reaching for.
+
+    The loop became two passes when the payload was batched (2026-09-10), so
+    the chain is longer: resolve every grant, skip the ungranted, and only what
+    survives that goes into `plan` — which is the only thing the second pass,
+    the one that writes `host`, iterates. Each link is asserted, because a
+    two-pass loop has a new way to go wrong that the one-pass version did not:
+    building the payload from the FLEET instead of from `plan`."""
     src = _routes_data()
-    grant = re.search(r"grant = teams\.effective_grant_for_user\(uid, t\.id\)", src)
+    resolve = re.search(r"grants = teams\.effective_grants_for_user\(", src)
     skip = re.search(r"if grant is None:\s*\n\s*continue", src)
+    keep = re.search(r"^\s*plan\.append\(", src, re.MULTILINE)
+    second = re.search(r"^\s*for t, grant, dbs in plan:", src, re.MULTILINE)
     host = re.search(r"^\s*entry\[\"host\"\]", src, re.MULTILINE)
-    assert grant and skip and host, "the connections loop was refactored — re-read it"
-    assert grant.start() < skip.start() < host.start(), (
+    assert resolve and skip and keep and second and host, (
+        "the connections loop was refactored — re-read it")
+    assert resolve.start() < skip.start() < keep.start() < second.start() \
+        < host.start(), (
         "the endpoint is built before the ungranted target is skipped — a "
         "requester would receive addresses they hold no grant on")
 

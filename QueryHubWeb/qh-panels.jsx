@@ -249,7 +249,7 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
         <TreeRow depth={base} expandable open={isOpen(did)} onToggle={() => { tog(did); onLoadSchema && onLoadSchema(c.id, db.id); }}
           icon={rightExtra !== undefined ? <img className="qh-engine-logo" src={qhEngineLogo(c)} alt={qhEngine(c).label} draggable={false} /> : TICN.db()}
           label={db.name} sub={sub} tier={db.tier} active={act} drag={qhQuoteIdent(db.name)} dbDrag={dbDragKey} nodeId={did}
-          title={rightExtra !== undefined ? [db.name, c.name + ' · ' + c.engine, c.host ? c.host + (c.port ? ':' + c.port : '') : '', qhHosting(c)].filter(Boolean).join('\n') : undefined}
+          title={rightExtra !== undefined ? [db.name, c.name + ' · ' + c.engine, c.host ? c.host + (c.port ? ':' + c.port : '') : '', qhHostingFull(c)].filter(Boolean).join('\n') : undefined}
           right={rightExtra}
           onCtx={(e) => openMenu(e, c, db)} onDbl={() => newQ(c, db)} />
         {isOpen(did) && (

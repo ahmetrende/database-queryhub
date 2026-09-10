@@ -1202,7 +1202,7 @@ function ConnectionsView({ st, user }) {
                 const probe = tested[c.id];
                 return (
                 <tr key={c.id}>
-                  <td><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b>{c.name}</b></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}</td>
+                  <td><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b>{c.name}</b></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={qhEndpointHover(c)} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}</td>
                   <td className="qh-muted">{c.engine}</td>
                   {/* Provider + service on one line; the account and any custom
                       tags are on the hover, because this column sits between two

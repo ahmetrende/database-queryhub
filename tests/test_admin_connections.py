@@ -113,6 +113,11 @@ def wire(monkeypatch):
                         state["audit"].append((action, details)))
     from queryhub.web import routes_data
     monkeypatch.setattr(routes_data, "_catalog_databases", lambda tid: ["ledger"])
+    # The listing reads the catalog for the whole fleet in one query now, so the
+    # batched form needs standing in for too — `ra.db.fetch_all` above answers
+    # every statement with the owners rows, and this one would read `d` off them.
+    monkeypatch.setattr(routes_data, "_catalog_databases_map",
+                        lambda tids: {tid: ["ledger"] for tid in tids})
     return state
 
 

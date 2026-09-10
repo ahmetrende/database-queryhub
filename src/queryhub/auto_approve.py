@@ -106,25 +106,17 @@ def grant_covers(
     return True
 
 
-def effective_grant(
-    principal_id: str,
-    required_mode: str,
-    target_server_id: int | None = None,
-    database_name: str | None = None,
-    at_time: datetime | None = None,
-) -> dict | None:
-    """Return the auto-approve grant row that covers (user, mode, target,
-    db) at `at_time` (defaults to NOW()). Multiple matches → most permissive
-    (highest max_tier, then latest expires_at). A target-scoped grant only
-    matches when `target_server_id` is supplied and equal; broad (NULL-scope)
-    grants match any target."""
-    if required_mode not in _TIER_RANK:
-        return None
-    at = at_time or datetime.now(timezone.utc)
-    # We can't easily encode the tier-rank check in SQL portably, so we
-    # filter in Python — the table is small (typically a handful of
-    # active grants).
-    rows = db.fetch_all(
+def active_grants(principal_id: str,
+                  at: datetime | None = None) -> list[dict]:
+    """Every auto-approve grant live for this principal at `at`.
+
+    The scope filtering happens in Python, so this read is the SAME for every
+    (target, database) `effective_grant` is asked about. A caller with many
+    questions loads it once and passes it back in — the connections payload
+    asked per database and issued 79 identical statements to do it.
+    """
+    at = at or datetime.now(timezone.utc)
+    return db.fetch_all(
         """
         SELECT id, slack_user_id, max_tier, target_server_id, database_name,
                starts_at, expires_at, reason, granted_by
@@ -135,6 +127,31 @@ def effective_grant(
         """,
         (principal_id, at, at),
     )
+
+
+def effective_grant(
+    principal_id: str,
+    required_mode: str,
+    target_server_id: int | None = None,
+    database_name: str | None = None,
+    at_time: datetime | None = None,
+    rows: list[dict] | None = None,
+) -> dict | None:
+    """Return the auto-approve grant row that covers (user, mode, target,
+    db) at `at_time` (defaults to NOW()). Multiple matches → most permissive
+    (highest max_tier, then latest expires_at). A target-scoped grant only
+    matches when `target_server_id` is supplied and equal; broad (NULL-scope)
+    grants match any target.
+
+    `rows` supplies the principal's live grants instead of reading them, for a
+    caller asking about many scopes at once — see `active_grants`."""
+    if required_mode not in _TIER_RANK:
+        return None
+    at = at_time or datetime.now(timezone.utc)
+    # We can't easily encode the tier-rank check in SQL portably, so we
+    # filter in Python — the table is small (typically a handful of
+    # active grants).
+    rows = active_grants(principal_id, at) if rows is None else rows
     candidates = [
         r for r in rows
         if grant_covers(r, required_mode, target_server_id, database_name)

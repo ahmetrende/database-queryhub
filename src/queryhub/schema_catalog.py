@@ -185,8 +185,29 @@ def _routines(target, password: str, database: str) -> list[dict]:
 
 def snapshot_database(target, password: str, database: str) -> tuple[int, int]:
     """Snapshot one target database into the bot DB. Returns
-    (n_tables, n_columns). The swap (delete old rows + insert new) runs in
-    a single bot-DB transaction so readers never see a partial catalog."""
+    (n_tables, n_columns). Runs in a single bot-DB transaction so readers never
+    see a partial catalog.
+
+    It is a DIFF, not a rewrite. It used to delete every row for the
+    (target, database) and insert the lot back each hour: 172,450,815
+    `schema_columns` rows written over the life of a table that holds 156,736,
+    ~3.8M a day, and the same again in dead tuples. A schema does not change
+    that often -- nearly all of it replaced a row with a byte-identical copy.
+
+    Three statements per kind now, whatever the size of the database:
+
+      * tables upsert on their natural key, unconditionally, because
+        `row_estimate` and `total_bytes` move every hour anyway and
+        `snapshot_at` has to advance even when nothing else did (the freshness
+        readout is `max(snapshot_at)`). One statement returns the id map that
+        used to cost one round trip per table -- 2,727 of them on the largest
+        database here.
+      * columns upsert on `(table_id, column_name)` with `DO UPDATE ... WHERE`
+        the stored row actually differs, so an unchanged column costs a read
+        and no write at all. That is where the 3.8M goes.
+      * anything the source no longer has is deleted by KEY, not by clearing
+        the table first. Dropping a table still cascades to its columns.
+    """
     if (getattr(target, "engine", None) or "postgres") == "mssql":
         from . import mssql_exec
         tables, columns = mssql_exec.catalog_snapshot(
@@ -203,30 +224,7 @@ def snapshot_database(target, password: str, database: str) -> tuple[int, int]:
     routines = _routines(target, password, database)
 
     with db.transaction() as cur:
-        cur.execute(
-            "DELETE FROM schema_tables "
-            "WHERE target_server_id = %s AND database_name = %s",
-            (target.id, database),
-        )
-        id_by_key: dict[tuple[str, str], int] = {}
-        for t in tables:
-            cur.execute(
-                "INSERT INTO schema_tables (target_server_id, database_name, "
-                " schema_name, table_name, relkind, row_estimate, total_bytes, "
-                " partition_count, partition_key, indexes, foreign_keys) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-                "RETURNING id",
-                (
-                    target.id, database,
-                    t["schema_name"], t["table_name"],
-                    _RELKIND_LABELS.get(t["relkind"], t["relkind"]),
-                    t["row_estimate"], t["total_bytes"],
-                    t["partition_count"], t["partition_key"],
-                    json.dumps(t["indexes"]) if t["indexes"] is not None else None,
-                    json.dumps(t["foreign_keys"]) if t["foreign_keys"] is not None else None,
-                ),
-            )
-            id_by_key[(t["schema_name"], t["table_name"])] = cur.fetchone()["id"]
+        id_by_key = _sync_tables(cur, target.id, database, tables)
         col_rows = [
             (
                 id_by_key[(c["schema_name"], c["table_name"])],
@@ -236,32 +234,144 @@ def snapshot_database(target, password: str, database: str) -> tuple[int, int]:
             for c in columns
             if (c["schema_name"], c["table_name"]) in id_by_key
         ]
-        cur.executemany(
-            "INSERT INTO schema_columns (table_id, ordinal, column_name, "
-            " data_type, not_null, default_expr, is_pk, in_index) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            col_rows,
-        )
-        # Same transaction as the tables swap: the catalog is read as one thing,
-        # so it is replaced as one thing.
-        cur.execute(
-            "DELETE FROM schema_functions "
-            "WHERE target_server_id = %s AND database_name = %s",
-            (target.id, database),
-        )
-        if routines:
-            cur.executemany(
-                "INSERT INTO schema_functions (target_server_id, database_name, "
-                " schema_name, routine_name, routine_kind, arg_signature, returns) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
-                # Overloads collapse to one suggestion; see migration 091.
-                "ON CONFLICT (target_server_id, database_name, schema_name, "
-                "             routine_name) DO NOTHING",
-                [(target.id, database, r["schema_name"], r["routine_name"],
-                  r["routine_kind"], r.get("arg_signature"), r.get("returns"))
-                 for r in routines],
-            )
+        _sync_columns(cur, list(id_by_key.values()), col_rows)
+        # Same transaction as the tables: the catalog is read as one thing, so
+        # it is replaced as one thing.
+        _sync_routines(cur, target.id, database, routines)
     return len(tables), len(col_rows)
+
+
+def _sync_tables(cur, target_id: int, database: str,
+                 tables: list[dict]) -> dict[tuple[str, str], int]:
+    """Upsert the table rows and return {(schema, table): id}, in two
+    statements. Rows the source no longer has are dropped, and their columns go
+    with them through the ON DELETE CASCADE."""
+    if not tables:
+        cur.execute("DELETE FROM schema_tables "
+                    " WHERE target_server_id = %s AND database_name = %s",
+                    (target_id, database))
+        return {}
+    cols = list(zip(*[
+        (t["schema_name"], t["table_name"],
+         _RELKIND_LABELS.get(t["relkind"], t["relkind"]),
+         t["row_estimate"], t["total_bytes"], t["partition_count"],
+         t["partition_key"],
+         json.dumps(t["indexes"]) if t["indexes"] is not None else None,
+         json.dumps(t["foreign_keys"]) if t["foreign_keys"] is not None else None)
+        for t in tables]))
+    cur.execute(
+        "INSERT INTO schema_tables (target_server_id, database_name, "
+        "  schema_name, table_name, relkind, row_estimate, total_bytes, "
+        "  partition_count, partition_key, indexes, foreign_keys, snapshot_at) "
+        "SELECT %s, %s, s, t, k, re, tb, pc, pk, ix::jsonb, fk::jsonb, NOW() "
+        "  FROM unnest(%s::text[], %s::text[], %s::text[], %s::bigint[], "
+        "              %s::bigint[], %s::int[], %s::text[], %s::text[], "
+        "              %s::text[]) AS u(s, t, k, re, tb, pc, pk, ix, fk) "
+        "ON CONFLICT (target_server_id, database_name, schema_name, table_name) "
+        "DO UPDATE SET relkind = EXCLUDED.relkind, "
+        "              row_estimate = EXCLUDED.row_estimate, "
+        "              total_bytes = EXCLUDED.total_bytes, "
+        "              partition_count = EXCLUDED.partition_count, "
+        "              partition_key = EXCLUDED.partition_key, "
+        "              indexes = EXCLUDED.indexes, "
+        "              foreign_keys = EXCLUDED.foreign_keys, "
+        "              snapshot_at = NOW() "
+        "RETURNING id, schema_name, table_name",
+        (target_id, database, *[list(c) for c in cols]))
+    id_by_key = {(r["schema_name"], r["table_name"]): r["id"]
+                 for r in cur.fetchall()}
+    cur.execute(
+        "DELETE FROM schema_tables "
+        " WHERE target_server_id = %s AND database_name = %s "
+        "   AND id <> ALL(%s)",
+        (target_id, database, list(id_by_key.values())))
+    return id_by_key
+
+
+def _sync_columns(cur, table_ids: list[int], col_rows: list[tuple]) -> None:
+    """Upsert the column rows and drop the ones the source no longer has.
+
+    The `WHERE` on the DO UPDATE is the whole point: without it Postgres writes
+    a new row version for every column every hour even when the values are
+    identical, which is the 3.8M-rows-a-day this replaced."""
+    if not table_ids:
+        return
+    if not col_rows:
+        cur.execute("DELETE FROM schema_columns WHERE table_id = ANY(%s)",
+                    (table_ids,))
+        return
+    c = list(zip(*col_rows))
+    cur.execute(
+        "INSERT INTO schema_columns (table_id, ordinal, column_name, "
+        "  data_type, not_null, default_expr, is_pk, in_index) "
+        "SELECT tid, ord, cname, dtype, nn, dflt, pk, inidx "
+        "  FROM unnest(%s::bigint[], %s::int[], %s::text[], %s::text[], "
+        "              %s::boolean[], %s::text[], %s::boolean[], %s::boolean[]) "
+        "       AS u(tid, ord, cname, dtype, nn, dflt, pk, inidx) "
+        "ON CONFLICT (table_id, column_name) DO UPDATE "
+        "   SET ordinal = EXCLUDED.ordinal, data_type = EXCLUDED.data_type, "
+        "       not_null = EXCLUDED.not_null, "
+        "       default_expr = EXCLUDED.default_expr, "
+        "       is_pk = EXCLUDED.is_pk, in_index = EXCLUDED.in_index "
+        " WHERE (schema_columns.ordinal, schema_columns.data_type, "
+        "        schema_columns.not_null, schema_columns.default_expr, "
+        "        schema_columns.is_pk, schema_columns.in_index) "
+        "    IS DISTINCT FROM "
+        "       (EXCLUDED.ordinal, EXCLUDED.data_type, EXCLUDED.not_null, "
+        "        EXCLUDED.default_expr, EXCLUDED.is_pk, EXCLUDED.in_index)",
+        [list(x) for x in c])
+    cur.execute(
+        "DELETE FROM schema_columns sc "
+        " WHERE sc.table_id = ANY(%s) "
+        "   AND NOT EXISTS (SELECT 1 FROM unnest(%s::bigint[], %s::text[]) "
+        "                          AS u(tid, cname) "
+        "                    WHERE u.tid = sc.table_id "
+        "                      AND u.cname = sc.column_name)",
+        (table_ids, list(c[0]), list(c[2])))
+
+
+def _sync_routines(cur, target_id: int, database: str,
+                   routines: list[dict]) -> None:
+    """Same diff for the routine suggestions. Overloads still collapse to one
+    row (migration 091), so the first signature seen wins and the rest are
+    skipped -- which is why this upserts nothing on conflict rather than
+    updating: whichever overload arrived first is as good an answer as any, and
+    rewriting it every hour would churn for no reader-visible difference."""
+    if not routines:
+        cur.execute("DELETE FROM schema_functions "
+                    " WHERE target_server_id = %s AND database_name = %s",
+                    (target_id, database))
+        return
+    seen: dict[tuple[str, str], dict] = {}
+    for r in routines:
+        seen.setdefault((r["schema_name"], r["routine_name"]), r)
+    rows = list(seen.values())
+    c = list(zip(*[(r["schema_name"], r["routine_name"], r["routine_kind"],
+                    r.get("arg_signature"), r.get("returns")) for r in rows]))
+    cur.execute(
+        "INSERT INTO schema_functions (target_server_id, database_name, "
+        "  schema_name, routine_name, routine_kind, arg_signature, returns) "
+        "SELECT %s, %s, s, n, k, a, r "
+        "  FROM unnest(%s::text[], %s::text[], %s::text[], %s::text[], "
+        "              %s::text[]) AS u(s, n, k, a, r) "
+        "ON CONFLICT (target_server_id, database_name, schema_name, "
+        "             routine_name) DO UPDATE "
+        "   SET routine_kind = EXCLUDED.routine_kind, "
+        "       arg_signature = EXCLUDED.arg_signature, "
+        "       returns = EXCLUDED.returns "
+        " WHERE (schema_functions.routine_kind, schema_functions.arg_signature, "
+        "        schema_functions.returns) IS DISTINCT FROM "
+        "       (EXCLUDED.routine_kind, EXCLUDED.arg_signature, "
+        "        EXCLUDED.returns)",
+        (target_id, database, *[list(x) for x in c]))
+    cur.execute(
+        "DELETE FROM schema_functions sf "
+        " WHERE sf.target_server_id = %s AND sf.database_name = %s "
+        "   AND NOT EXISTS (SELECT 1 FROM unnest(%s::text[], %s::text[]) "
+        "                          AS u(s, n) "
+        "                    WHERE u.s = sf.schema_name "
+        "                      AND u.n = sf.routine_name)",
+        (target_id, database, list(c[0]), list(c[1])))
 
 
 def catalog_functions(target_id: int, database: str,
@@ -281,6 +391,43 @@ def catalog_functions(target_id: int, database: str,
             (target_id, database, limit),
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+def catalog_functions_map(pairs: list[tuple],
+                          limit: int = 400) -> dict[tuple, list[dict]]:
+    """`catalog_functions` for many (target, database) pairs in one query.
+
+    Same order and the same per-pair cap, so a database over the limit is cut
+    at the same routine the single-pair call would cut it at. For the
+    connections payload, which asks about every database a reader can see and
+    was doing it one round trip at a time.
+    """
+    if not pairs:
+        return {}
+    tids = sorted({int(t) for t, _ in pairs})
+    dbs = sorted({d for _, d in pairs})
+    wanted = {(int(t), d) for t, d in pairs}
+    out: dict[tuple, list[dict]] = {}
+    with db.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT target_server_id AS t, database_name AS d, "
+            "       schema_name AS s, routine_name AS n, routine_kind AS k, "
+            "       arg_signature AS args, returns AS ret "
+            "FROM schema_functions "
+            "WHERE target_server_id = ANY(%s) AND database_name = ANY(%s) "
+            "ORDER BY target_server_id, database_name, schema_name, routine_name",
+            (tids, dbs),
+        )
+        for r in cur.fetchall():
+            key = (r["t"], r["d"])
+            if key not in wanted:
+                continue              # cross product of the two ANY lists
+            bucket = out.setdefault(key, [])
+            if len(bucket) >= limit:
+                continue
+            bucket.append({"s": r["s"], "n": r["n"], "k": r["k"],
+                           "args": r["args"], "ret": r["ret"]})
+    return out
 
 
 # ---------- browse / search (read side) -------------------------------------

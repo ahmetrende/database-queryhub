@@ -488,9 +488,11 @@ def _clean_tags(raw: dict | None) -> dict:
     return out
 
 
-def _connection_payload(row: dict) -> dict:
+def _connection_payload(row: dict, databases: list[str] | None = None) -> dict:
     from . import routes_data
-    return _connection_entry(row, routes_data._catalog_databases(row["id"]))
+    if databases is None:
+        databases = routes_data._catalog_databases(row["id"])
+    return _connection_entry(row, databases)
 
 
 def _require_target_row(conn: str) -> dict:
@@ -714,9 +716,15 @@ def admin_connections(claims: dict = Depends(deps.current_user)):
         owners.setdefault(row["target_id"], []).append(
             {"id": row["id"], "name": row["name"],
              "displayName": row["display_name"], "syncedFrom": row["source"]})
+    from . import routes_data
+    rows = targets.list_admin_rows()
+    # One read for the whole fleet. This asked per target, which is a round
+    # trip per row on the screen whose job is to show every row: 117 targets,
+    # 121 statements.
+    catalog_dbs = routes_data._catalog_databases_map([r["id"] for r in rows])
     out = []
-    for r in targets.list_admin_rows():
-        payload = _connection_payload(r)
+    for r in rows:
+        payload = _connection_payload(r, catalog_dbs.get(r["id"], []))
         payload["owners"] = owners.get(r["id"], [])
         out.append(payload)
     return {"connections": out}

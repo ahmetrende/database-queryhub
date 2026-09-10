@@ -94,6 +94,28 @@ def _catalog_databases(target_id: int) -> list[str]:
             if r["database_name"] not in _HIDDEN_DATABASES]
 
 
+def _catalog_databases_map(target_ids: list[int]) -> dict[int, list[str]]:
+    """`_catalog_databases` for many targets in one query.
+
+    The connections payload asked per target, which is one round trip per row
+    on a screen whose whole job is to render every row: 117 targets, 117
+    queries. Same filter, same order, one statement -- a target with no
+    snapshot is absent from the map, exactly as the single-target version
+    returns [] for it."""
+    ids = list(dict.fromkeys(int(t) for t in target_ids))
+    if not ids:
+        return {}
+    out: dict[int, list[str]] = {}
+    for r in db.fetch_all(
+            "SELECT DISTINCT target_server_id AS t, database_name AS d "
+            "  FROM schema_tables WHERE target_server_id = ANY(%s) "
+            " ORDER BY target_server_id, database_name", (ids,)):
+        if r["d"] in _HIDDEN_DATABASES:
+            continue
+        out.setdefault(r["t"], []).append(r["d"])
+    return out
+
+
 def _catalog_functions(target_id: int, database: str) -> list[dict]:
     """Routine suggestions for one database, or [] when the catalog has none.
 
@@ -138,6 +160,56 @@ def _catalog_tables(target_id: int, database: str) -> list[str]:
     return [r["n"] for r in _catalog_table_refs(target_id, database)]
 
 
+def _catalog_functions_map(pairs: list[tuple]) -> dict[tuple, list[dict]]:
+    """`_catalog_functions` for many pairs. Fails open the same way: a routine
+    catalog that cannot be read costs the reader their suggestions, never their
+    connection list."""
+    try:
+        return schema_catalog.catalog_functions_map(pairs)
+    except Exception:                              # noqa: BLE001
+        log.warning("function catalog unavailable for %d pair(s)", len(pairs),
+                    exc_info=True)
+        return {}
+
+
+def _catalog_table_refs_map(pairs: list[tuple]) -> dict[tuple, list[dict]]:
+    """`_catalog_table_refs` for many (target, database) pairs in one query.
+
+    The per-database cap is applied per pair here, the same way and with the
+    same +1 probe, so a database over the cap is truncated and reported
+    identically to the single-pair version. Ordering matches too: the caller
+    renders a tree from this and a differently-sorted tree is a different
+    screen."""
+    if not pairs:
+        return {}
+    cap = _max_tables_per_db()
+    tids = sorted({int(t) for t, _ in pairs})
+    dbs = sorted({d for _, d in pairs})
+    wanted = {(int(t), d) for t, d in pairs}
+    out: dict[tuple, list[dict]] = {}
+    over: set[tuple] = set()
+    for r in db.fetch_all(
+            "SELECT target_server_id AS t, database_name AS d, "
+            "       schema_name, table_name "
+            "  FROM schema_tables "
+            " WHERE target_server_id = ANY(%s) AND database_name = ANY(%s) "
+            "   AND relkind IN ('table','partitioned','view','matview') "
+            " ORDER BY target_server_id, database_name, schema_name, table_name",
+            (tids, dbs)):
+        key = (r["t"], r["d"])
+        if key not in wanted:
+            continue                      # cross product of the two ANY lists
+        bucket = out.setdefault(key, [])
+        if len(bucket) >= cap:
+            over.add(key)
+            continue
+        bucket.append({"s": r["schema_name"], "n": r["table_name"]})
+    for key in sorted(over):
+        log.info("connections: %s/%s has more than %d tables — list truncated",
+                 key[0], key[1], cap)
+    return out
+
+
 @router.get("/connections")
 def connections(claims: dict = Depends(deps.current_user)):
     deps.require_whitelisted(claims)
@@ -161,15 +233,28 @@ def connections(claims: dict = Depends(deps.current_user)):
                 "    AND status <> 'draft'",
                 (uid, uid))
         }
-    out = []
-    for t in (targets.list_all() if is_admin else targets.list_enabled()):
-        if not t.enabled and t.id not in used_disabled:
-            continue
-        grant = teams.effective_grant_for_user(uid, t.id)
+    # Two passes, because everything below is a batched read keyed by the
+    # (target, database) pairs this reader can actually see -- and that set is
+    # not known until the grants have been resolved.
+    #
+    # It used to be one pass and one round trip per thing: 313 statements and
+    # 656ms for a 50-connection reader, on the payload the app loads first and
+    # cannot render anything without. Four reads now, whatever the fleet size.
+    fleet = [t for t in (targets.list_all() if is_admin else targets.list_enabled())
+             if t.enabled or t.id in used_disabled]
+    grants = teams.effective_grants_for_user(uid, [t.id for t in fleet])
+    catalog_dbs = _catalog_databases_map([t.id for t in fleet])
+    # One read of the reader's auto-approve grants; the scope match is pure and
+    # runs per database below.
+    auto_rows = auto_approve.active_grants(uid)
+
+    plan = []
+    for t in fleet:
+        grant = grants.get(t.id)
         if grant is None:
             continue
         allowed = grant["allowed_databases"]  # None = all
-        dbs = sorted(allowed) if allowed is not None else _catalog_databases(t.id)
+        dbs = sorted(allowed) if allowed is not None else catalog_dbs.get(t.id, [])
         if not dbs:
             # Only fall back to the target's default DB when the grant is
             # UNRESTRICTED. A restricted grant that lists only hidden DBs
@@ -189,15 +274,24 @@ def connections(claims: dict = Depends(deps.current_user)):
         dbs = [d for d in dbs if d not in _HIDDEN_DATABASES]
         if not dbs:
             continue
+        plan.append((t, grant, dbs))
+
+    pairs = [(t.id, d) for t, _g, dbs in plan for d in dbs]
+    refs_map = _catalog_table_refs_map(pairs)
+    fns_map = _catalog_functions_map(pairs)
+
+    out = []
+    for t, grant, dbs in plan:
         db_entries = []
         auto_ro_any = False
         for d in dbs:
             aa = auto_approve.effective_grant(uid, "ro",
                                               target_server_id=t.id,
-                                              database_name=d) is not None
+                                              database_name=d,
+                                              rows=auto_rows) is not None
             auto_ro_any = auto_ro_any or aa
-            refs = _catalog_table_refs(t.id, d)
-            fns = _catalog_functions(t.id, d)
+            refs = refs_map.get((t.id, d), [])
+            fns = fns_map.get((t.id, d), [])
             db_entries.append({
                 "id": d,
                 "name": d,
