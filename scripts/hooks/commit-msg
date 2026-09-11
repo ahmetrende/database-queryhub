@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Refuse a commit message that names something that must not be published.
+#
+# `check_repo_clean.py` scans COMMITTED messages, so by the time it sees a leak
+# the only remedy it can offer is rewriting history — which it says itself.
+# Twice a real target alias reached a commit body that way. This runs while the
+# message is still a file in .git, where fixing it costs one edit.
+#
+# BLOCKS, unlike pre-push which only warns: a message is the one thing in this
+# repository that cannot be corrected after it is pushed.
+#
+# Fails closed — if the bot DB is unreachable the denylist is missing and the
+# scan proves nothing, so the commit is refused rather than waved through.
+# `git commit --no-verify` is the deliberate escape hatch.
+#
+# Install:  cp scripts/hooks/commit-msg .git/hooks/ && chmod +x .git/hooks/commit-msg
+set -u
+
+# Resolve the repo from the hook's own location, so a clone anywhere works.
+REPO=$(git rev-parse --show-toplevel)
+VENV="$REPO/.venv/bin/python3"
+[ -x "$VENV" ] || VENV=python3
+
+# The denylist is read from the bot DB; its connection lives in the operator's
+# env file. Absent (a fresh clone, CI), the scan fails closed and says so.
+set -a
+# shellcheck disable=SC1091
+[ -f /etc/queryhub/env ] && . /etc/queryhub/env
+set +a
+
+"$VENV" "$REPO/scripts/check_repo_clean.py" --message "$1"

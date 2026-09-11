@@ -165,6 +165,20 @@ class SlackOIDC:
             "redirect_uri": redirect_uri,
             "state": state,
         }
+        # Name the workspace. Slack: "If that workspace has been previously
+        # authenticated, the user will be signed in directly, bypassing the
+        # consent screen." Without it Slack has to ask WHICH workspace, and
+        # because it asks, it shows the whole consent screen again on every
+        # sign-in — which is what a returning user saw after each logout.
+        #
+        # It is the same id the exchange already gates on, so this cannot let
+        # anyone in who would have been refused; it stops them picking a
+        # workspace that is only going to be rejected a redirect later with
+        # `wrong_workspace`. Best-effort: if auth.test is unavailable the
+        # parameter is simply omitted and the flow behaves exactly as before.
+        team = _workspace_team_id()
+        if team:
+            params["team"] = team
         return f"{_SLACK_AUTHORIZE}?{urllib.parse.urlencode(params)}"
 
     def exchange(self, code: str, redirect_uri: str, state: str = "") -> Identity:
