@@ -430,6 +430,104 @@ def catalog_functions_map(pairs: list[tuple],
     return out
 
 
+# ---------- refresh health --------------------------------------------------
+#
+# The hourly refresh logged a warning on failure and exited 0, so a target
+# whose catalog stopped updating was invisible: browse, search and the /sql
+# autocomplete kept serving the last good snapshot with nothing saying it was
+# old. These functions decide, per target, whether that has happened long
+# enough to be worth telling somebody about.
+
+#: A target counts as failed only when NOTHING was snapshotted. A run where one
+#: database of twelve failed leaves the catalog mostly fresh, and alerting on it
+#: would page forever for a single permanently-broken database — the kind of
+#: alert people learn to ignore, which costs more than the gap it reports.
+_FAILED_PREFIXES = ("failed", "unreachable", "skipped")
+
+
+def summary_is_ok(summary: dict) -> tuple[bool, str | None]:
+    """(ok, first error) for one target's per-database refresh summary.
+
+    `ok` is True when at least one database was snapshotted. The error returned
+    is the first failing entry, which is what a reader needs: on a whole-target
+    failure there is only one, and on a partial failure it names the database
+    that broke.
+    """
+    if not summary:
+        return False, "no databases enumerated"
+    errors = [f"{dbname}: {outcome}" for dbname, outcome in sorted(summary.items())
+              if outcome.startswith(_FAILED_PREFIXES)]
+    ok = any(not outcome.startswith(_FAILED_PREFIXES)
+             for outcome in summary.values())
+    return ok, (errors[0] if errors else None)
+
+
+def refresh_verdict(ok: bool, failures: int, outstanding: bool,
+                    alert_after: int) -> tuple[bool, bool]:
+    """(alert, recovered) from one run's outcome. Pure — the whole decision.
+
+    `outstanding` is whether an alert is already open for this target, and it
+    is what makes the pair once-per-outage rather than once-per-run: the alert
+    fires on the run that CROSSES the threshold and never again, and the
+    all-clear fires on the first success after it. An hourly job with neither
+    guard would send an hourly DM for as long as the outage lasted, which is
+    how an alert becomes something people filter away.
+    """
+    alert = (not ok) and failures >= alert_after and not outstanding
+    recovered = ok and outstanding
+    return alert, recovered
+
+
+def record_refresh(target_id: int, ok: bool, error: str | None,
+                   alert_after: int) -> dict:
+    """Store this run's outcome and say what the caller should announce.
+
+    Returns {"alert": bool, "recovered": bool, "failures": int,
+             "stale_hours": float | None}.
+
+    `alert` fires once per outage, not once per run: it is True only on the run
+    that crosses `alert_after` consecutive failures while no alert is
+    outstanding. `recovered` is True on the first success after an alert, so
+    every alert gets its all-clear and a silent recovery cannot leave somebody
+    believing a target is still broken.
+    """
+    with db.transaction() as cur:
+        cur.execute(
+            "INSERT INTO schema_refresh_health AS h "
+            "  (target_server_id, last_ok_at, last_attempt_at, "
+            "   consecutive_failures, last_error) "
+            "VALUES (%(tid)s, CASE WHEN %(ok)s THEN NOW() END, NOW(), "
+            "        CASE WHEN %(ok)s THEN 0 ELSE 1 END, %(err)s) "
+            "ON CONFLICT (target_server_id) DO UPDATE SET "
+            "  last_ok_at = CASE WHEN %(ok)s THEN NOW() ELSE h.last_ok_at END, "
+            "  last_attempt_at = NOW(), "
+            "  consecutive_failures = CASE WHEN %(ok)s THEN 0 "
+            "                              ELSE h.consecutive_failures + 1 END, "
+            "  last_error = %(err)s "
+            "RETURNING consecutive_failures, alerted_at, last_ok_at",
+            {"tid": target_id, "ok": ok, "err": error})
+        row = cur.fetchone()
+        failures = row["consecutive_failures"]
+        outstanding = row["alerted_at"] is not None
+
+        alert, recovered = refresh_verdict(
+            ok, failures, outstanding, alert_after)
+        if alert:
+            cur.execute("UPDATE schema_refresh_health SET alerted_at = NOW() "
+                        " WHERE target_server_id = %s", (target_id,))
+        elif recovered:
+            cur.execute("UPDATE schema_refresh_health SET alerted_at = NULL "
+                        " WHERE target_server_id = %s", (target_id,))
+
+    stale_hours = None
+    if row["last_ok_at"] is not None and not ok:
+        from datetime import datetime, timezone
+        stale_hours = (datetime.now(timezone.utc)
+                       - row["last_ok_at"]).total_seconds() / 3600
+    return {"alert": alert, "recovered": recovered, "failures": failures,
+            "stale_hours": stale_hours}
+
+
 # ---------- browse / search (read side) -------------------------------------
 
 
