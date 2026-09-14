@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import pytest
 
-from queryhub.slack_app import modal
+from dba_slack_bot.slack_app import modal
 
 A = modal.A_DATABASE
 

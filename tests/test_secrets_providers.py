@@ -12,7 +12,7 @@ import types
 
 import pytest
 
-from queryhub import secrets_providers as sp
+from dba_slack_bot import secrets_providers as sp
 
 
 # ---- local vault provider (default) ----------------------------------------
@@ -126,7 +126,7 @@ def test_awssm_requires_secret_id():
 def test_awssm_ttl_zero_always_refetches(monkeypatch):
     # awssm_cache_ttl_seconds=0 disables the in-process cache, so a
     # rotated secret is picked up on the very next query.
-    from queryhub import config as cfg
+    from dba_slack_bot import config as cfg
     monkeypatch.setattr(cfg, "get_int",
                         lambda k, d=None: 0 if k == "awssm_cache_ttl_seconds" else d)
     client = _FakeSMClient(json.dumps({"ro": {"username": "u", "password": "p"}}))

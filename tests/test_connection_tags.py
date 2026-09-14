@@ -7,7 +7,7 @@ the derived vocabulary comes from the fleet rather than from a stored list.
 """
 import pytest
 
-from queryhub.web import routes_admin, deps
+from dba_slack_bot.web import routes_admin, deps
 
 
 # ---- validation -------------------------------------------------------------
@@ -111,7 +111,7 @@ def test_reserved_keys_sort_ahead_of_invented_ones(monkeypatch):
 # ---- the Slack approval line ------------------------------------------------
 
 def test_the_slack_line_names_the_machine_but_not_the_account():
-    from queryhub.slack_app import notifications
+    from dba_slack_bot.slack_app import notifications
 
     class T:
         tags = {"provider": "huawei", "service": "ECS",
@@ -123,7 +123,7 @@ def test_the_slack_line_names_the_machine_but_not_the_account():
 
 def test_an_untagged_target_adds_no_line():
     """An untagged fleet has to read exactly as it did before."""
-    from queryhub.slack_app import notifications
+    from dba_slack_bot.slack_app import notifications
 
     class T:
         tags = {}

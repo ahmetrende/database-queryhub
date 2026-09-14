@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from queryhub import config as cfg
-from queryhub import executor
-from queryhub.slack_app import notifications
+from dba_slack_bot import config as cfg
+from dba_slack_bot import executor
+from dba_slack_bot.slack_app import notifications
 
 
 class _Boom:
@@ -43,7 +43,7 @@ def test_web_decision_slack_client_none_without_slack(slack_off):
     vanilla profile it must return None BEFORE importing slack_sdk (which may
     not be installed) — otherwise approving a request would 500. apply_effects
     then no-ops every Slack side effect on the None client."""
-    from queryhub.web import routes_admin
+    from dba_slack_bot.web import routes_admin
     assert routes_admin._slack_client() is None
     # Profile backfill on a new grant likewise no-ops without Slack.
     assert routes_admin._slack_profile("U1") == {}
@@ -58,7 +58,7 @@ def test_access_request_fanout_noops_without_slack(slack_off):
     above — if the guard is removed, the first attribute access fails the test
     instead of being logged and hidden.
     """
-    from queryhub.slack_app import access
+    from dba_slack_bot.slack_app import access
     assert access.fan_out_admin_dms(_Boom(), {"id": 1,
                                               "requester_slack_id": "local:dev"},
                                     None) is None
@@ -71,8 +71,8 @@ def test_access_request_fanout_noops_without_slack(slack_off):
 def test_endpoint_request_is_submitted_not_503_without_slack(slack_off, monkeypatch):
     """The user-visible half of the same bug: the row was saved, the DBA could
     see and approve it, and the requester was told it had failed."""
-    from queryhub import access_requests, admins
-    from queryhub.web import deps, routes_requests
+    from dba_slack_bot import access_requests, admins
+    from dba_slack_bot.web import deps, routes_requests
 
     monkeypatch.setattr(deps, "require_whitelisted", lambda claims: None)
     monkeypatch.setattr(routes_requests, "_target_by_alias", lambda alias: None)
@@ -100,8 +100,8 @@ def test_endpoint_request_still_503s_when_there_are_no_admins(slack_off, monkeyp
     """The condition 503 is actually for: saved, but nobody can act on it."""
     from fastapi import HTTPException
 
-    from queryhub import access_requests, admins
-    from queryhub.web import deps, routes_requests
+    from dba_slack_bot import access_requests, admins
+    from dba_slack_bot.web import deps, routes_requests
 
     monkeypatch.setattr(deps, "require_whitelisted", lambda claims: None)
     monkeypatch.setattr(routes_requests, "_target_by_alias", lambda alias: None)

@@ -23,9 +23,9 @@ import logging
 import pytest
 from starlette.testclient import TestClient
 
-from queryhub import admins, db, requesters
-from queryhub.web import app as web_app
-from queryhub.web import routes_avatar, sessions
+from dba_slack_bot import admins, db, requesters
+from dba_slack_bot.web import app as web_app
+from dba_slack_bot.web import routes_avatar, sessions
 
 
 class FakeResponse:
@@ -49,7 +49,7 @@ class FakeResponse:
 def client(monkeypatch):
     logging.disable(logging.CRITICAL)
     monkeypatch.setattr(db, "init_pool", lambda: None)
-    from queryhub.slack_app import notifications
+    from dba_slack_bot.slack_app import notifications
     monkeypatch.setattr(notifications, "dm_all_admins", lambda *a, **k: None)
     monkeypatch.setattr(sessions, "verify_access",
                         lambda t: {"sub": "U0X", "sid": "s", "provider": "slack"}
@@ -209,7 +209,7 @@ def test_me_hands_the_ui_our_own_url_not_a_cdn_one():
     It must point at the proxy instead — asserted on the source because building
     a full /me response needs the whole admin/grant stack."""
     import inspect
-    from queryhub.web import app as app_mod
+    from dba_slack_bot.web import app as app_mod
     src = inspect.getsource(app_mod.create_app)
     assert '"avatar": "/api/avatar"' in src
     assert 'claims.get("avatar")' in src, "still gated on having one on file"

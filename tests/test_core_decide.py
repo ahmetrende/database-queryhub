@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from queryhub import core_decide
+from dba_slack_bot import core_decide
 
 
 class _FakeCur:
@@ -194,8 +194,8 @@ def test_decider_identity_is_written_to_the_row(wired):
 
 def test_immediate_approve_dispatches_to_the_executor(monkeypatch):
     """The one effect that must happen exactly once on approve."""
-    from queryhub import executor
-    from queryhub.slack_app import notifications
+    from dba_slack_bot import executor
+    from dba_slack_bot.slack_app import notifications
 
     submitted = []
     monkeypatch.setattr(executor, "submit",
@@ -216,8 +216,8 @@ def test_immediate_approve_dispatches_to_the_executor(monkeypatch):
 
 def test_deferred_approve_does_not_dispatch(monkeypatch):
     """A scheduled request must wait for the scheduler, not run at decide time."""
-    from queryhub import executor
-    from queryhub.slack_app import notifications
+    from dba_slack_bot import executor
+    from dba_slack_bot.slack_app import notifications
 
     submitted = []
     monkeypatch.setattr(executor, "submit",
@@ -235,8 +235,8 @@ def test_deferred_approve_does_not_dispatch(monkeypatch):
 
 @pytest.mark.parametrize("decision", ["reject", "changes"])
 def test_reject_and_changes_never_dispatch(monkeypatch, decision):
-    from queryhub import executor, ratings
-    from queryhub.slack_app import notifications
+    from dba_slack_bot import executor, ratings
+    from dba_slack_bot.slack_app import notifications
 
     submitted = []
     monkeypatch.setattr(executor, "submit",

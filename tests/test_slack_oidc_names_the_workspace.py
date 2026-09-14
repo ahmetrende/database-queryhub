@@ -18,7 +18,7 @@ import urllib.parse as up
 
 import pytest
 
-from queryhub.web import auth_providers as ap
+from dba_slack_bot.web import auth_providers as ap
 
 
 def _params(monkeypatch, team):

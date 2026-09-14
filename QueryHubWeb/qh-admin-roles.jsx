@@ -278,7 +278,7 @@ function RolesEmpty({ canWrite, onStart, teams, enforced }) {
   // The example carries the SAME explicit flags the wire does — a scoped row is
   // the entire point of this block, and reading scope from the booleans (§3)
   // means a locally-built row without them renders as fleet-wide.
-  const eg = { subject: 'clara.alvarez', name: 'Clara Alvarez', role: 'approver',
+  const eg = { subject: 'ceyda.aydin', name: 'Ceyda Aydın', role: 'approver',
     scopeTeamId: 't_payments', scopeTeamName: (teams && teams[2] ? teams[2].name : 'payments'),
     scopeTargetId: 'prod-main', scopeTargetName: 'prod-main',
     allTeams: false, allTargets: false, anyTier: false,
@@ -294,7 +294,7 @@ function RolesEmpty({ canWrite, onStart, teams, enforced }) {
         {enforced === false && <> Rows created here are <b>recorded but not yet in force</b> — the fleet still reads the admins table, so the mirrored rows below are the live ones.</>}</p>
       <div className="qh-roleempty-eg">
         <div className="qh-roleprev-h">For example</div>
-        <RoleRow r={eg} people={[{ handle: 'clara.alvarez', initials: 'CA' }]} canWrite={false} onRevoke={() => {}} />
+        <RoleRow r={eg} people={[{ handle: 'ceyda.aydin', initials: 'CA' }]} canWrite={false} onRevoke={() => {}} />
       </div>
       <dl className="qh-roledefs">
         <div><dt>Team</dt><dd>Whose requests they may approve. Left empty, everyone’s.</dd></div>

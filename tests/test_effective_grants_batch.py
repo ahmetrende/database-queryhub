@@ -14,7 +14,7 @@ and an EMPTY allowed_databases list (which means "every database", not "none").
 """
 import pytest
 
-from queryhub import teams
+from dba_slack_bot import teams
 
 
 def _rows(monkeypatch, *, user=(), team=(), unrestricted=False):
@@ -123,7 +123,7 @@ def test_the_batch_agrees_with_the_single():
     Measured 2026-09-01: 29 principals x 110 targets = 3190 comparisons, zero
     disagreements. This is the test that keeps the two implementations from
     drifting apart after the fact."""
-    from queryhub import db
+    from dba_slack_bot import db
 
     people = [r["slack_user_id"] for r in db.fetch_all(
         "SELECT slack_user_id FROM requesters "

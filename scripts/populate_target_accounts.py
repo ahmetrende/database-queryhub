@@ -41,7 +41,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from queryhub import audit, db  # noqa: E402
+from dba_slack_bot import audit, db  # noqa: E402
 
 # Only profiles that authenticate from the instance itself. An SSO profile in
 # the same file would prompt for a browser login halfway through a job.

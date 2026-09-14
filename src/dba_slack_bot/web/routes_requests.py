@@ -18,7 +18,7 @@ Two shapes, and the difference is the whole point:
 
 The catalogue is why this is not purely a UI change: until it existed, a
 requester had to type an alias they had never been shown, and the resulting
-`svc-prod-notifcation` was resolved by hand at the other end.
+`exc-prod-notifcation` was resolved by hand at the other end.
 """
 from __future__ import annotations
 

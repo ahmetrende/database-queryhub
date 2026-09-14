@@ -26,9 +26,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from queryhub import admins, crypto, db, schema_catalog  # noqa: E402
-from queryhub import config as cfg  # noqa: E402
-from queryhub import targets as targets_mod  # noqa: E402
+from dba_slack_bot import admins, crypto, db, schema_catalog  # noqa: E402
+from dba_slack_bot import config as cfg  # noqa: E402
+from dba_slack_bot import targets as targets_mod  # noqa: E402
 
 log = logging.getLogger("refresh_schema_catalog")
 
@@ -140,8 +140,8 @@ def _announce(notices: list[tuple[str, str]]) -> None:
         return
     try:
         from slack_sdk.web import WebClient
-        from queryhub.db import ENV
-        from queryhub.slack_app import notifications
+        from dba_slack_bot.db import ENV
+        from dba_slack_bot.slack_app import notifications
         client = WebClient(token=ENV.slack_bot_token)
         recipients = sorted({a["slack_user_id"] for a in admins.list_active()
                              if (a.get("slack_user_id") or "").startswith("U")})

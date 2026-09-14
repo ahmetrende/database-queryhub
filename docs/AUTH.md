@@ -44,7 +44,7 @@ same whichever button they used.
 
 ### 1.1 Configuring an OIDC provider
 
-Secrets live in the environment (`/etc/queryhub/web.env`), never in
+Secrets live in the environment (`/etc/slackbot/web.env`), never in
 `bot_config` — that table is shared by every instance on the same bot DB and
 is readable through the admin config screen.
 

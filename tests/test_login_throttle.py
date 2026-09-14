@@ -2,7 +2,7 @@
 monkeypatched, config comes from the conftest defaults (5 fails / 15 min)."""
 import pytest
 
-from queryhub.web import login_throttle as lt
+from dba_slack_bot.web import login_throttle as lt
 
 
 @pytest.fixture(autouse=True)

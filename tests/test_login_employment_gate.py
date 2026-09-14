@@ -11,7 +11,7 @@ principals have no Slack identity to ask about).
 """
 import pytest
 
-from queryhub.web import auth_providers, deps, routes_auth
+from dba_slack_bot.web import auth_providers, deps, routes_auth
 
 
 class _Resp:
@@ -31,7 +31,7 @@ def _identity(provider):
 def wired(monkeypatch):
     """A callback that would otherwise succeed: state valid, provider
     enabled, principal whitelisted. Only the employment answer varies."""
-    from queryhub import admins, requesters
+    from dba_slack_bot import admins, requesters
 
     state = auth_providers.make_state()
 
@@ -82,7 +82,7 @@ def test_an_employed_account_signs_in(wired, monkeypatch):
 def test_the_check_is_skipped_for_local_principals(wired, monkeypatch):
     """`local:<username>` is not a Slack id — asking users.info about it
     would fail closed and lock every vanilla install out of its own app."""
-    from queryhub import requesters
+    from dba_slack_bot import requesters
 
     class _Local:
         name = "local"

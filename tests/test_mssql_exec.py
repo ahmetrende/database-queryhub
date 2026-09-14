@@ -1,8 +1,8 @@
 """MSSQL ODBC connection-string builder — pure (no pyodbc / driver / DB)."""
 import pytest
 
-from queryhub import config as cfg
-from queryhub import mssql_exec as mx
+from dba_slack_bot import config as cfg
+from dba_slack_bot import mssql_exec as mx
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +69,7 @@ def test_multi_subnet_failover_default_on():
 # --- bot-DB host map (read-only routing without /etc/hosts) ------------------
 
 def test_load_host_map_keyed_lowercase(monkeypatch):
-    from queryhub import db as _db
+    from dba_slack_bot import db as _db
     monkeypatch.setattr(_db, "fetch_all", lambda *a, **k: [
         {"server_name": "TS-SQL0", "ip": "203.0.113.10"},
         {"server_name": "TS-SQL1", "ip": "203.0.113.11"}])

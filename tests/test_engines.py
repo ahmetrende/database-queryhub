@@ -1,5 +1,5 @@
 """engines — per-engine spec resolution + fail-closed execution gating."""
-from queryhub import engines
+from dba_slack_bot import engines
 
 
 def test_unknown_and_null_fall_back_to_postgres():

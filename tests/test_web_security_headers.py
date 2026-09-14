@@ -5,8 +5,8 @@ import logging
 import pytest
 from starlette.testclient import TestClient
 
-from queryhub import db
-from queryhub.web import app
+from dba_slack_bot import db
+from dba_slack_bot.web import app
 
 
 @pytest.fixture
@@ -16,7 +16,7 @@ def client(monkeypatch):
     # needs no database or Slack (mirrors CI).
     logging.disable(logging.CRITICAL)
     monkeypatch.setattr(db, "init_pool", lambda: None)
-    from queryhub.slack_app import notifications
+    from dba_slack_bot.slack_app import notifications
     monkeypatch.setattr(notifications, "dm_all_admins", lambda *a, **k: None)
     with TestClient(app.create_app()) as c:
         yield c
@@ -65,14 +65,14 @@ def test_build_stamp_is_a_meta_tag_not_an_inline_script(tmp_path, monkeypatch):
     display breaks — so pin the shape."""
     logging.disable(logging.CRITICAL)
     monkeypatch.setattr(db, "init_pool", lambda: None)
-    from queryhub.slack_app import notifications
+    from dba_slack_bot.slack_app import notifications
     monkeypatch.setattr(notifications, "dm_all_admins", lambda *a, **k: None)
 
     (tmp_path / "index.html").write_text(
         "<html><head><title>t</title></head><body></body></html>",
         encoding="utf-8")
     monkeypatch.setenv("QH_WEB_STATIC_DIR", str(tmp_path))
-    from queryhub.web import build_info
+    from dba_slack_bot.web import build_info
     monkeypatch.setattr(build_info, "build", lambda: {
         # A quote in a branch name must not break out of the attribute.
         "version": "r999", "sha": "abc1234", "branch": 'we"ird', "date": "2026-07-25"})
@@ -130,7 +130,7 @@ def test_same_origin_state_change_not_blocked_by_csrf_gate(client):
 ])
 def test_cookie_secure_is_derived_from_the_deployment(
         monkeypatch, base_url, setting, expected):
-    from queryhub.web import routes_auth
+    from dba_slack_bot.web import routes_auth
 
     def fake_get_setting(key, default=None):
         if key == "web_cookie_secure":

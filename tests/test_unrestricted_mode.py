@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from queryhub import query_safety as qs
+from dba_slack_bot import query_safety as qs
 
 
 # ---------------------------------------------------------------------------

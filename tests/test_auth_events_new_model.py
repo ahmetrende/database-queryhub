@@ -12,7 +12,7 @@ one message per kind of change, addressed to the right people.
 """
 import pytest
 
-from queryhub import auth_events as ae
+from dba_slack_bot import auth_events as ae
 
 
 def ev(table, op, new=None, old=None, user="U1", team_id=None):

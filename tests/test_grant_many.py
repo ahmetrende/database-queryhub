@@ -13,7 +13,7 @@ import contextlib
 
 import pytest
 
-from queryhub import grants
+from dba_slack_bot import grants
 
 
 class _Cur:
@@ -62,7 +62,7 @@ def cur(monkeypatch):
                         lambda *a, **k: c.__dict__.setdefault("notified", []).append(a[0]))
     # The notify path asks the catalog for the target's alias — a real query,
     # and this file is testing the transaction, not the label.
-    monkeypatch.setattr("queryhub.targets.get", lambda tid: None)
+    monkeypatch.setattr("dba_slack_bot.targets.get", lambda tid: None)
     c.committed = committed
     return c
 

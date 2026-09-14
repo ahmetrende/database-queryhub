@@ -1,5 +1,5 @@
 -- Feature flag for the AST-based second-pass safety layer
--- (src/queryhub/ast_safety.py). Default on — every new install
+-- (src/dba_slack_bot/ast_safety.py). Default on — every new install
 -- gets the extra defense automatically. Flip to 'off' from psql /
 -- bot_config UPDATE if a legitimate query is being mistakenly
 -- blocked by sqlglot's parser (rare; the regex layer is still

@@ -10,9 +10,9 @@
 --   - DataGrip / DataSpell  : highlight block + run, dialog prompts for params
 --   - DBeaver / IntelliJ    : same as DataGrip (JDBC named-param binding)
 --
--- Connect as the queryhub user against the queryhub database.
+-- Connect as the slackbot user against the slackbot database.
 --
---   psql -h <bot-db-host> -U queryhub -d queryhub \
+--   psql -h <bot-db-host> -U slackbot -d slackbot \
 --        -v slack_user_id=U0NEW01 -v admin_name='Surname Name' \
 --        -f deploy/db_admin_templates.sql
 --

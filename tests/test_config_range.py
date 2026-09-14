@@ -1,6 +1,6 @@
 """C18: bot_config int values are range-checked on write — no negatives,
 and no zero for keys where zero would disable a safety limit."""
-from queryhub.web import config_admin as ca
+from dba_slack_bot.web import config_admin as ca
 
 
 def test_negative_int_rejected():

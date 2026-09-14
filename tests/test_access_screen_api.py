@@ -16,7 +16,7 @@ surface rather than a missing feature:
 """
 import pytest
 
-from queryhub.web import routes_admin as ra
+from dba_slack_bot.web import routes_admin as ra
 
 
 # --- several people, one call, all or nothing --------------------------------

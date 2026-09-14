@@ -22,7 +22,7 @@ import re
 
 import pytest
 
-from queryhub import access, admins
+from dba_slack_bot import access, admins
 
 NEEDED = {"required_tier", "engine", "query", "target_server_id",
           "requester_slack_id"}
@@ -63,8 +63,8 @@ def test_a_row_with_no_tier_column_is_still_answered():
 
 
 @pytest.mark.parametrize("module,func", [
-    ("queryhub.slack_app.handlers", "_guard_admin"),
-    ("queryhub.slack_app.handlers", "_bundle_pending_items_in_scope"),
+    ("dba_slack_bot.slack_app.handlers", "_guard_admin"),
+    ("dba_slack_bot.slack_app.handlers", "_bundle_pending_items_in_scope"),
 ])
 def test_the_slack_loaders_select_what_the_scope_check_reads(module, func):
     """Belt as well as braces. The derivation makes a short row work; loading
@@ -79,7 +79,7 @@ def test_the_slack_loaders_select_what_the_scope_check_reads(module, func):
 def test_the_bundle_item_scope_row_carries_the_tier():
     """A bundle DM decides per item whether to show buttons. Without the tier
     every ceiling-bearing admin saw a view-only bundle."""
-    from queryhub.slack_app import notifications
+    from dba_slack_bot.slack_app import notifications
     src = inspect.getsource(notifications)
     i = src.index("item_for_scope = {")
     block = src[i:i + 500]
@@ -89,7 +89,7 @@ def test_the_bundle_item_scope_row_carries_the_tier():
 def test_the_bundle_item_query_returns_the_tier():
     """`bundles.list_items` feeds that dict; the column has to exist to be
     copied."""
-    from queryhub import bundles
+    from dba_slack_bot import bundles
     src = inspect.getsource(bundles.list_items)
     assert "required_tier" in src
 
@@ -98,7 +98,7 @@ def test_the_loader_docstring_no_longer_claims_more_than_it_does():
     """It said it loaded "the fields admins.can_approve() looks at" while
     omitting the one whose absence broke it. A comment that is wrong is worse
     than none, because it stops the next person looking."""
-    from queryhub.slack_app import handlers
+    from dba_slack_bot.slack_app import handlers
     doc = handlers._bundle_pending_items_in_scope.__doc__ or ""
     assert "required_tier" in doc
 
@@ -153,7 +153,7 @@ def test_a_request_in_hand_is_gated_on_can_approve_not_on_is_admin():
     """With a request, the question is authority over THAT request, and
     `can_approve` answers it whole: an admin satisfies it fleet-wide, a scoped
     approver inside their scope."""
-    from queryhub.slack_app import handlers
+    from dba_slack_bot.slack_app import handlers
     src = inspect.getsource(handlers._guard_admin)
     # the admin gate survives, but only on the branch with no request
     i = src.index("if req is None:")
@@ -167,7 +167,7 @@ def test_an_administrative_action_still_needs_an_admin():
     """Approving an endpoint request or acting on a whole bundle carries no
     request to be scoped against, so `is_admin` remains the gate there. Six
     call sites pass no request_id and must not have been widened."""
-    from queryhub.slack_app import handlers
+    from dba_slack_bot.slack_app import handlers
     src = inspect.getsource(handlers._guard_admin)
     assert "if request_id is not None:" in src
     assert "if req is None:" in src
@@ -177,7 +177,7 @@ def test_a_request_that_has_gone_away_falls_back_to_the_admin_gate():
     """Its scope cannot be judged, so the fallback is the stricter question,
     not none. Previously a vanished request skipped the scope check entirely
     while the admin gate had already passed."""
-    from queryhub.slack_app import handlers
+    from dba_slack_bot.slack_app import handlers
     doc = handlers._guard_admin.__doc__ or ""
     assert "gone away" in doc
 
@@ -186,7 +186,7 @@ def test_the_refusal_tells_a_scoped_approver_which_refusal_it_is():
     """"You are not an authorized admin" reads as a bug to a pod lead who
     approves for their own team every day, and "outside your scope" reads as
     nonsense to somebody with no scope at all."""
-    from queryhub.slack_app import handlers
+    from dba_slack_bot.slack_app import handlers
     src = inspect.getsource(handlers._guard_admin)
     assert "admins.has_approval_authority(user_id)" in src
     assert "outside your approval scope" in src

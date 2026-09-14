@@ -1,6 +1,6 @@
 """The super-admin elevation is for DDL, and only DDL.
 
-`queryhub_superadmin` is a member of `rds_superuser`. It was granted to all
+`dba_slackbot_superadmin` is a member of `rds_superuser`. It was granted to all
 three logins after two RO requests failed with "Permission denied to set role":
 the SELECTs never ran, they died on a SET ROLE that had been asked for
 regardless of tier. Granting the membership fixed the symptom and turned the
@@ -13,7 +13,7 @@ elevated. DDL is what the role is for, because the bot's login owns nothing.
 """
 import pytest
 
-from queryhub import executor as ex
+from dba_slack_bot import executor as ex
 
 SUPER = "U_SUPER"
 PLAIN = "U_PLAIN"
@@ -23,11 +23,11 @@ PLAIN = "U_PLAIN"
 def fleet(monkeypatch):
     monkeypatch.setattr(ex.admins, "is_super_admin", lambda uid: uid == SUPER)
     monkeypatch.setattr(ex.db, "fetch_one",
-                        lambda *a, **k: {"super_ddl_role": "queryhub_superadmin"})
+                        lambda *a, **k: {"super_ddl_role": "dba_slackbot_superadmin"})
 
 
 def test_ddl_enters_the_role(fleet):
-    assert ex._super_role_for(SUPER, 3, "ddl") == "queryhub_superadmin"
+    assert ex._super_role_for(SUPER, 3, "ddl") == "dba_slackbot_superadmin"
 
 
 def test_a_read_does_not(fleet):
@@ -62,4 +62,4 @@ def test_the_tier_is_checked_before_anything_is_read(monkeypatch):
 def test_an_omitted_mode_keeps_the_old_behaviour(fleet):
     # The caller that asks without a tier is the audit flag, which mirrors
     # whatever the executor decided; leaving it unchanged keeps that honest.
-    assert ex._super_role_for(SUPER, 3) == "queryhub_superadmin"
+    assert ex._super_role_for(SUPER, 3) == "dba_slackbot_superadmin"

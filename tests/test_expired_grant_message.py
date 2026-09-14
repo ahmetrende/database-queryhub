@@ -12,8 +12,8 @@ that a UI is meant to branch on gets its own code and its own key.
 """
 from datetime import datetime, timezone
 
-from queryhub import core_submit, teams
-from queryhub.web import routes_queries
+from dba_slack_bot import core_submit, teams
+from dba_slack_bot.web import routes_queries
 
 AUG14 = datetime(2026, 8, 14, 9, 30, tzinfo=timezone.utc)
 

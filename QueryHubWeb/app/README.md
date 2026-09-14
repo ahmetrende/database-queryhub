@@ -1,7 +1,7 @@
 # QueryHub Web — Vite build
 
 Production build of the QueryHub Web frontend. The FastAPI app
-(`queryhub.web`) serves `dist/` at `/` when it exists, else falls
+(`dba_slack_bot.web`) serves `dist/` at `/` when it exists, else falls
 back to the raw babel-in-browser prototype one level up.
 
 ## Source of truth

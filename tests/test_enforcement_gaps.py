@@ -30,7 +30,7 @@ def target():
 
 
 def test_a_database_outside_the_grant_is_refused(monkeypatch, target):
-    from queryhub.slack_app import subcommands as sc
+    from dba_slack_bot.slack_app import subcommands as sc
     monkeypatch.setattr(sc.teams, "can_use_database",
                         lambda uid, tid, db: db == "app")
     monkeypatch.setattr(sc.teams, "allowed_databases_for_user",
@@ -45,7 +45,7 @@ def test_a_database_outside_the_grant_is_refused(monkeypatch, target):
 
 def test_the_refusal_lists_what_the_user_may_browse(monkeypatch, target):
     """A refusal with no way forward gets read as a broken tool."""
-    from queryhub.slack_app import subcommands as sc
+    from dba_slack_bot.slack_app import subcommands as sc
     monkeypatch.setattr(sc.teams, "can_use_database", lambda u, t, d: False)
     monkeypatch.setattr(sc.teams, "allowed_databases_for_user",
                         lambda u, t: {"app", "reporting"})
@@ -56,7 +56,7 @@ def test_the_refusal_lists_what_the_user_may_browse(monkeypatch, target):
 
 
 def test_a_database_inside_the_grant_still_resolves(monkeypatch, target):
-    from queryhub.slack_app import subcommands as sc
+    from dba_slack_bot.slack_app import subcommands as sc
     monkeypatch.setattr(sc.teams, "can_use_database",
                         lambda uid, tid, db: db == "app")
     monkeypatch.setattr(sc.schema_catalog, "list_snapshot_databases",
@@ -68,7 +68,7 @@ def test_a_database_inside_the_grant_still_resolves(monkeypatch, target):
 def test_an_unrestricted_grant_browses_everything(monkeypatch, target):
     """allowed_databases IS NULL means no restriction — admins and full grants
     must not be narrowed by this check."""
-    from queryhub.slack_app import subcommands as sc
+    from dba_slack_bot.slack_app import subcommands as sc
     monkeypatch.setattr(sc.teams, "can_use_database", lambda u, t, d: True)
     monkeypatch.setattr(sc.schema_catalog, "list_snapshot_databases",
                         lambda tid: ["app", "other", "third"])
@@ -80,7 +80,7 @@ def test_an_unrestricted_grant_browses_everything(monkeypatch, target):
 def test_the_default_database_is_checked_too(monkeypatch, target):
     """`/sql tables target` with no database uses target.default_database. If
     only the explicit form were checked, omitting the name would bypass it."""
-    from queryhub.slack_app import subcommands as sc
+    from dba_slack_bot.slack_app import subcommands as sc
     calls = []
 
     def _can(uid, tid, dbname):
@@ -100,7 +100,7 @@ def test_the_grant_check_uses_the_same_helper_as_submit():
     submit path calls, so a change to the rule cannot leave the browser behind."""
     import pathlib
     src = (pathlib.Path(__file__).resolve().parent.parent / "src"
-           / "queryhub" / "slack_app" / "subcommands.py").read_text()
+           / "dba_slack_bot" / "slack_app" / "subcommands.py").read_text()
     assert "teams.can_use_database(user_id, target.id, database)" in src
 
 
@@ -120,7 +120,7 @@ def _imp(**over):
 
 @pytest.fixture
 def import_env(monkeypatch):
-    from queryhub import executor
+    from dba_slack_bot import executor
     target = type("T", (), {"id": 7, "alias": "svc-prod-example",
                             "engine": "postgres"})()
     monkeypatch.setattr(executor.targets, "get", lambda tid: target)
@@ -145,7 +145,7 @@ def import_env(monkeypatch):
 def test_a_revoked_importer_does_not_get_their_import_run(import_env,
                                                           monkeypatch):
     executor, failures, reached = import_env
-    from queryhub import csv_import
+    from dba_slack_bot import csv_import
     monkeypatch.setattr(csv_import, "can_import", lambda uid: False)
     executor._import_run(_imp(), None)
     assert failures and "permission to import was removed" in failures[0]
@@ -155,7 +155,7 @@ def test_a_revoked_importer_does_not_get_their_import_run(import_env,
 def test_losing_access_to_the_database_stops_the_import(import_env,
                                                         monkeypatch):
     executor, failures, reached = import_env
-    from queryhub import csv_import
+    from dba_slack_bot import csv_import
     monkeypatch.setattr(csv_import, "can_import", lambda uid: True)
     monkeypatch.setattr(executor.teams, "can_use_database",
                         lambda uid, tid, dbname: False)
@@ -168,7 +168,7 @@ def test_a_still_authorized_import_gets_past_the_re_auth(import_env,
                                                          monkeypatch):
     """The other half of the argument: the guards must not reject everything."""
     executor, failures, reached = import_env
-    from queryhub import csv_import
+    from dba_slack_bot import csv_import
     monkeypatch.setattr(csv_import, "can_import", lambda uid: True)
     monkeypatch.setattr(executor.teams, "can_use_database",
                         lambda uid, tid, dbname: True)
@@ -183,7 +183,7 @@ def test_the_import_claim_is_conditional_on_approved():
     the same file twice, and a COPY into an existing table APPENDS."""
     import pathlib
     src = (pathlib.Path(__file__).resolve().parent.parent / "src"
-           / "queryhub" / "executor.py").read_text(encoding="utf-8")
+           / "dba_slack_bot" / "executor.py").read_text(encoding="utf-8")
     assert ("\"WHERE id=%s AND status='approved'\", (import_id,),") in src
     claim = src.index("UPDATE csv_imports SET status='executing'")
     guard = src.index("if cur.rowcount == 0:", claim)
@@ -196,7 +196,7 @@ def test_the_re_auth_runs_before_any_credential_is_fetched():
     decrypt a secret for nothing, and ordering is the only thing preventing it."""
     import pathlib
     src = (pathlib.Path(__file__).resolve().parent.parent / "src"
-           / "queryhub" / "executor.py").read_text(encoding="utf-8")
+           / "dba_slack_bot" / "executor.py").read_text(encoding="utf-8")
     run = src.index("def _import_run(")
     reauth = src.index("_ci_auth.can_import(requester)", run)
     creds = src.index('targets.get_credentials(target.id, "ddl")', run)

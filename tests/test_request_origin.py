@@ -15,7 +15,7 @@ import pathlib
 
 import pytest
 
-from queryhub import origins
+from dba_slack_bot import origins
 
 
 # --- the vocabulary ---------------------------------------------------------
@@ -60,7 +60,7 @@ def test_result_delivery_asks_the_question_through_the_helper():
     for today's two values and stops being true at the third: an IdP request
     would have had its result DM'd to a Slack account its requester may not be
     using — and, after phase 3, may not have."""
-    from queryhub import executor
+    from dba_slack_bot import executor
     import inspect
     src = inspect.getsource(executor._deliver_result_to_requester)
     assert "origins.is_slack" in src
@@ -73,8 +73,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 @pytest.mark.parametrize("rel", [
-    "src/queryhub/slack_app/notifications.py",
-    "src/queryhub/web/mapping.py",
+    "src/dba_slack_bot/slack_app/notifications.py",
+    "src/dba_slack_bot/web/mapping.py",
 ])
 def test_no_surface_hardcodes_the_two_way_branch(rel):
     # Code only: mapping.py's comments quote the old strings to explain why the

@@ -5,7 +5,7 @@ Name allow-listing alone let `statement_timeout=0` disable the timeout and
 """
 import pytest
 
-from queryhub import query_safety as qs
+from dba_slack_bot import query_safety as qs
 
 ALLOWED = qs.SET_ALLOWED_DEFAULT
 

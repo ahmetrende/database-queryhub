@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from queryhub.slack_app import handlers, modal
+from dba_slack_bot.slack_app import handlers, modal
 
 
 def _context_texts(view):

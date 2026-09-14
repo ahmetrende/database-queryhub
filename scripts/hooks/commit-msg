@@ -25,7 +25,7 @@ VENV="$REPO/.venv/bin/python3"
 # env file. Absent (a fresh clone, CI), the scan fails closed and says so.
 set -a
 # shellcheck disable=SC1091
-[ -f /etc/queryhub/env ] && . /etc/queryhub/env
+[ -f /etc/slackbot/env ] && . /etc/slackbot/env
 set +a
 
 "$VENV" "$REPO/scripts/check_repo_clean.py" --message "$1"

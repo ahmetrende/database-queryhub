@@ -1,7 +1,7 @@
 """schema_catalog + schema_browser — pure formatting/parsing (no DB)."""
-from queryhub import schema_catalog as sc
-from queryhub.slack_app import schema_browser as sb
-from queryhub.slack_app import subcommands as sub
+from dba_slack_bot import schema_catalog as sc
+from dba_slack_bot.slack_app import schema_browser as sb
+from dba_slack_bot.slack_app import subcommands as sub
 
 
 def test_postgres_is_hidden_everywhere():

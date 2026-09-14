@@ -12,7 +12,7 @@ import zipfile
 
 import pytest
 
-from queryhub.web import routes_queries as rq
+from dba_slack_bot.web import routes_queries as rq
 
 
 def _zip(tmp_path, *tables):

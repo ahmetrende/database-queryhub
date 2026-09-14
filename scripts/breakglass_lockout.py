@@ -49,7 +49,7 @@ the elevated role where one is configured). That needs `BOT_DB_*` and the
 master key:
 
     source .venv/bin/activate
-    set -a && source /etc/queryhub/env && set +a
+    set -a && source /etc/slackbot/env && set +a
     python3 scripts/breakglass_lockout.py --apply
 
 If the bot's own credentials are what you distrust, connect as yourself
@@ -103,7 +103,7 @@ import psycopg  # noqa: E402
 from psycopg import sql as pgsql  # noqa: E402
 
 try:  # the bot's own modules, for the metadata-DB path
-    from queryhub import audit, config as cfg, db, targets  # noqa: E402
+    from dba_slack_bot import audit, config as cfg, db, targets  # noqa: E402
 except Exception:  # noqa: BLE001 - a --plan run must not need any of it
     # Not only ImportError: config.py resolves BOT_DB_* at import time and
     # raises RuntimeError when they are absent, which is precisely the machine

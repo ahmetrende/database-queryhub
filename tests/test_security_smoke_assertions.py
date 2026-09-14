@@ -47,7 +47,7 @@ def _setting(values):
 
 
 def test_a_disabled_seam_is_skipped_not_passed(monkeypatch):
-    from queryhub import config as cfg
+    from dba_slack_bot import config as cfg
     monkeypatch.setattr(cfg, "get_setting",
                         _setting({"idp_assertion_enabled": "off"}))
     client = _RefusingClient()
@@ -63,7 +63,7 @@ def test_a_disabled_seam_is_skipped_not_passed(monkeypatch):
 def test_keyless_checks_run_and_the_rest_are_skipped(monkeypatch):
     """Without the panel's private key only the outsider checks are possible;
     the others must be reported as not run rather than quietly dropped."""
-    from queryhub import config as cfg
+    from dba_slack_bot import config as cfg
     monkeypatch.setattr(cfg, "get_setting", _setting({
         "idp_assertion_enabled": "on",
         "idp_public_keys": '{"k1": "-----BEGIN PUBLIC KEY-----\\nAAA\\n-----END PUBLIC KEY-----"}',

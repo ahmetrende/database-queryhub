@@ -46,7 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from queryhub import audit, db  # noqa: E402
+from dba_slack_bot import audit, db  # noqa: E402
 
 _TRUE = {"yes", "y", "true", "1", "lead"}
 

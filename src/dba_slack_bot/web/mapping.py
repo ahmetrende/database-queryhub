@@ -526,7 +526,17 @@ def admin_audit_entry(row: dict, kind: str, alias_of: "callable",
 
     req_tid = row.get("req_target_server_id")
     req_db = row.get("req_database_name")
+    # The roster name beats the copy stored on the request: that copy is a
+    # snapshot of whatever Slack said at submit time, so one person shows up
+    # under several spellings and often under a login handle. `name_of` returns
+    # the id back when it knows nobody, which is not an improvement on the
+    # snapshot -- so that case keeps the snapshot.
     req_who = row.get("req_requester_name")
+    req_uid = row.get("req_requester_slack_id")
+    if req_uid and name_of:
+        resolved = name_of(req_uid)
+        if resolved and resolved != req_uid:
+            req_who = resolved
     req_q = row.get("req_query")
 
     rows = row.get("req_row_count")

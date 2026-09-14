@@ -1,7 +1,7 @@
 """Admin grant/revoke — pure helpers + modal structure (no DB/Slack)."""
-from queryhub import grants
-from queryhub.slack_app import admin_grant as ag
-from queryhub.slack_app import handlers
+from dba_slack_bot import grants
+from dba_slack_bot.slack_app import admin_grant as ag
+from dba_slack_bot.slack_app import handlers
 
 
 def test_db_options_read_targets_from_private_metadata(monkeypatch):
@@ -148,7 +148,7 @@ def test_the_grant_modal_takes_more_than_one_person():
     """Access is handed to a GROUP as often as to a person — a new joiner and
     their two teammates, an on-call rota. The modal used to be one pass each,
     with the target, tier, databases and reason retyped every time."""
-    import queryhub.slack_app.admin_grant as ag
+    import dba_slack_bot.slack_app.admin_grant as ag
     m = ag.grant_modal(allowed_tiers=["ro"])
     el = next(b for b in m["blocks"] if b.get("block_id") == ag.B_USER)["element"]
     assert el["type"] == "multi_users_select"
@@ -163,7 +163,7 @@ def test_the_modal_does_not_try_to_read_a_dm_it_cannot_see():
 
     The shape that CAN carry the person is a message shortcut, whose payload
     has `message.user`. Until that exists, the field opens empty."""
-    from queryhub.slack_app import subcommands as sc
+    from dba_slack_bot.slack_app import subcommands as sc
     import inspect
     src = inspect.getsource(sc._handle_grant)
     assert "conversations_info" not in src

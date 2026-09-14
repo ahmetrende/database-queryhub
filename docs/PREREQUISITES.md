@@ -13,7 +13,7 @@ Everything you need to have ready **before** running through
 
 > **Surfaces & engines.** Section 1 covers the **Slack** surface. The
 > **web UI** (QueryHub Web) is a separate process on the same core
-> (`python -m queryhub.web`, FastAPI + TLS); with Slack installed you
+> (`python -m dba_slack_bot.web`, FastAPI + TLS); with Slack installed you
 > can log into it via Slack OIDC, without Slack via local accounts. Target
 > databases can be **PostgreSQL or SQL Server**; SQL Server targets also need
 > the Microsoft ODBC driver (`msodbcsql18`) + the `mssql` extra
@@ -81,7 +81,7 @@ needed). Create the app once per workspace.
 - `SLACK_APP_TOKEN` (`xapp-…`)
 - Workspace admin install consent (one-time)
 
-Both tokens will be stored encrypted in `/etc/queryhub/secrets.enc`
+Both tokens will be stored encrypted in `/etc/slackbot/secrets.enc`
 via `scripts/manage_env_secrets.py init` during install.
 
 ---
@@ -99,7 +99,7 @@ audit log, target registry, config, ratings, etc.
   port) over TCP.
 - Roughly **2-5 GB** disk to start; grows with `audit_log` +
   `requests.explain_plan` (capped per row).
-- A dedicated database is recommended (e.g., `queryhub` on a shared
+- A dedicated database is recommended (e.g., `slackbot` on a shared
   Postgres host), but the bot can also share a cluster with other
   apps as long as it owns its own DB.
 
@@ -109,9 +109,9 @@ You need a Postgres admin user — `postgres`, `rds_superuser`, or any
 role that can `CREATE DATABASE` + `CREATE ROLE` — to run
 `deploy/setup_db.sql` once. That script:
 
-- Creates the `queryhub` login role (NOSUPERUSER, NOCREATEDB,
+- Creates the `slackbot` login role (NOSUPERUSER, NOCREATEDB,
   NOCREATEROLE, connection-limit 20)
-- Creates the `queryhub` database, owned by the `queryhub` role
+- Creates the `slackbot` database, owned by the `slackbot` role
 - Grants nothing else — the bot is self-contained inside its own DB
 
 After this, the admin role is no longer needed.
@@ -137,11 +137,11 @@ one** login role:
 
 | Role | Required? | Privileges | Used for |
 |---|---|---|---|
-| `queryhub_ro` | **yes** | `pg_read_all_data` (PG14+) | RO queries (SELECT/EXPLAIN/etc.) |
-| `queryhub_rw` | optional | `pg_read_all_data` + `pg_write_all_data` | RW queries (INSERT/UPDATE/DELETE/MERGE) |
-| `queryhub_ddl` | optional | granular DDL grants (see below) or `rds_superuser` | DDL (CREATE/ALTER/DROP). The bot escalates owner-only ops to manual DBA execution, so you can keep this role narrow |
+| `dba_slackbot_ro` | **yes** | `pg_read_all_data` (PG14+) | RO queries (SELECT/EXPLAIN/etc.) |
+| `dba_slackbot_rw` | optional | `pg_read_all_data` + `pg_write_all_data` | RW queries (INSERT/UPDATE/DELETE/MERGE) |
+| `dba_slackbot_ddl` | optional | granular DDL grants (see below) or `rds_superuser` | DDL (CREATE/ALTER/DROP). The bot escalates owner-only ops to manual DBA execution, so you can keep this role narrow |
 
-Helper script: `deploy/grant_readonly.sql` provisions `queryhub_ro`
+Helper script: `deploy/grant_readonly.sql` provisions `dba_slackbot_ro`
 in a single database. Run once per database on each target.
 
 The bot stores each role's password encrypted (Fernet) in
@@ -155,19 +155,19 @@ If you want DDL execution but don't want to give `rds_superuser`, the
 typical granular grant set is:
 
 ```sql
-CREATE ROLE queryhub_ddl WITH LOGIN PASSWORD '...'
+CREATE ROLE dba_slackbot_ddl WITH LOGIN PASSWORD '...'
     NOSUPERUSER NOCREATEDB NOREPLICATION CONNECTION LIMIT 5;
 
-GRANT CONNECT ON DATABASE <db>     TO queryhub_ddl;
-GRANT USAGE   ON SCHEMA public     TO queryhub_ddl;
-GRANT CREATE  ON SCHEMA public     TO queryhub_ddl;
+GRANT CONNECT ON DATABASE <db>     TO dba_slackbot_ddl;
+GRANT USAGE   ON SCHEMA public     TO dba_slackbot_ddl;
+GRANT CREATE  ON SCHEMA public     TO dba_slackbot_ddl;
 GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
-    ON ALL TABLES IN SCHEMA public TO queryhub_ddl;
-GRANT USAGE   ON ALL SEQUENCES IN SCHEMA public TO queryhub_ddl;
+    ON ALL TABLES IN SCHEMA public TO dba_slackbot_ddl;
+GRANT USAGE   ON ALL SEQUENCES IN SCHEMA public TO dba_slackbot_ddl;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
-    ON TABLES TO queryhub_ddl;
+    ON TABLES TO dba_slackbot_ddl;
 ```
 
 This lets the role CREATE new objects + do all DML on existing ones,
@@ -187,23 +187,23 @@ The bot is a long-running daemon; a small VM or container is enough.
 |---|---|
 | OS | Linux with systemd. Ubuntu 22.04+ tested; any modern distro works |
 | CPU / RAM | 1 vCPU / 512 MB is plenty for a small org; bumps as request volume grows |
-| Disk | ~2 GB for the venv + CSV results buffer (`/var/lib/queryhub/results`); CSVs auto-cleanup per `results_ttl_hours` |
+| Disk | ~2 GB for the venv + CSV results buffer (`/var/lib/slackbot/results`); CSVs auto-cleanup per `results_ttl_hours` |
 | Python | `python3.11` + `python3.11-venv` + `python3-pip` |
 | System packages | `libpq-dev`, `git` |
-| Sudo | Needed during install to create `/etc/queryhub`, `/var/lib/queryhub`, `/var/log/queryhub` and to install the systemd unit |
+| Sudo | Needed during install to create `/etc/slackbot`, `/var/lib/slackbot`, `/var/log/slackbot` and to install the systemd unit |
 | User | A normal Linux user (e.g. `ubuntu`) that owns the repo and the runtime directories. Service runs as this user; not root |
 
 ### Filesystem layout (created during install)
 
 ```
-/etc/queryhub/
+/etc/slackbot/
 ├── env               # non-secret config (mode 600, owner $BOT_USER)
 ├── master.key        # Fernet master key (mode 600, owner $BOT_USER)
 ├── master.key.fingerprint
 └── secrets.enc       # encrypted Slack tokens + bot DB password
 
-/var/lib/queryhub/results/   # CSV results, auto-cleaned per TTL
-/var/log/queryhub/           # not currently used; reserved for future
+/var/lib/slackbot/results/   # CSV results, auto-cleaned per TTL
+/var/log/slackbot/           # not currently used; reserved for future
 ```
 
 ---
@@ -260,7 +260,7 @@ parameter group to include the application name. Suggested:
 %m [%p] %q%u@%d %r %a %x %e %i
 ```
 
-The bot sets `application_name=queryhub req=<id> by=<email-or-slack-id>`
+The bot sets `application_name=slackbot req=<id> by=<email-or-slack-id>`
 on every target connection, so this prefix makes "which request ran
 this query" visible in the target's Postgres log alongside the
 query itself.
@@ -268,7 +268,7 @@ query itself.
 ### Per-team Postgres role enforcement
 
 For defense-in-depth beyond the bot's application-layer team grants,
-provision a `queryhub_team_<name>` role on each target with team-scoped
+provision a `slackbot_team_<name>` role on each target with team-scoped
 SELECT/INSERT/etc. privileges. Set `team_target_grants.target_role`
 to the role name, and the bot will `SET LOCAL ROLE <role>` before
 running the query — so Postgres enforces team boundaries natively.

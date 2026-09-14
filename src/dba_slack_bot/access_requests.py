@@ -40,7 +40,7 @@ def _refuse_control_plane(target_server_id: int | None) -> None:
     ALL enabled targets, because a person asking for access is by definition
     asking for something they cannot reach.
 
-    A grant here is not an ordinary over-grant. `queryhub` holds the audit
+    A grant here is not an ordinary over-grant. `slackbot` holds the audit
     log, the grant tables and the config that decides who may approve, so read
     access is a disclosure of the whole access model and write access would let
     somebody edit the record of their own actions.

@@ -16,7 +16,7 @@ the exact moment somebody goes looking.
 """
 import inspect
 
-from queryhub.slack_app import subcommands
+from dba_slack_bot.slack_app import subcommands
 
 
 def _kill() -> str:
@@ -51,7 +51,7 @@ def test_the_row_records_what_it_changed_from():
 def test_the_action_name_matches_the_web_route():
     """Both surfaces toggle the same switch. Two names for it means an
     auditor filtering `audit_log` sees half the history."""
-    from queryhub.web import routes_admin
+    from dba_slack_bot.web import routes_admin
     assert '"kill_switch_set"' in inspect.getsource(routes_admin.set_kill)
 
 

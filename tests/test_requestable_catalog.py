@@ -3,7 +3,7 @@
 Before this, the "request access" modal was two free-text fields. A requester's
 connection list only contains targets they already hold a grant on, so they were
 typing the name of a server they had never been shown: the request arrived as
-prose, an admin resolved `svc-prod-notifcation` by hand, and only then granted.
+prose, an admin resolved `exc-prod-notifcation` by hand, and only then granted.
 
 `GET /requestable` answers "what is missing" instead. The exclusions are the
 interesting part — a list that offers something the backend would refuse is
@@ -11,7 +11,7 @@ worse than one that leaves it out.
 """
 import pytest
 
-from queryhub.web import routes_requests as rr
+from dba_slack_bot.web import routes_requests as rr
 
 
 class _T:
@@ -80,7 +80,7 @@ def test_the_control_plane_is_never_offered(catalog):
     # queries. grants.grant refuses it, so offering it would only produce a
     # request that cannot be approved.
     out = catalog([_T(1, "bot-control"), _T(7, "prod-main")], {},
-                  {1: ["queryhub"], 7: ["payments"]}, control_plane={1})
+                  {1: ["slackbot"], 7: ["payments"]}, control_plane={1})
     assert [c["connectionId"] for c in out] == ["prod-main"]
 
 

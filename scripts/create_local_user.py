@@ -8,7 +8,7 @@ Slack ids, so it flows through grants / admins / audit unchanged.
 Run on the host with the bot environment loaded (DB creds + master key),
 exactly like the other scripts:
 
-    source .venv/bin/activate && set -a && source /etc/queryhub/env && set +a \\
+    source .venv/bin/activate && set -a && source /etc/slackbot/env && set +a \\
         && python3 scripts/create_local_user.py --username alice --admin
 
 The password is read INTERACTIVELY (getpass): it is never passed on the
@@ -36,7 +36,7 @@ import getpass
 import re
 import sys
 
-from queryhub import admins, db, local_users, passwords
+from dba_slack_bot import admins, db, local_users, passwords
 
 _MIN_PW_LEN = 8
 _USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,59}$")

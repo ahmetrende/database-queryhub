@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = (ROOT / "src" / "queryhub" / "web" / "routes_admin.py").read_text(encoding="utf-8")
+SRC = (ROOT / "src" / "dba_slack_bot" / "web" / "routes_admin.py").read_text(encoding="utf-8")
 
 
 def _route(method: str, path: str) -> str:
@@ -118,7 +118,7 @@ def test_granter_is_actually_read_by_the_grant_path():
     """The point of keeping it. If this stops being true, the role is back to
     naming an authority nothing checks and belongs out of the vocabulary."""
     from pathlib import Path
-    grants_src = (Path(__file__).resolve().parents[1] / "src" / "queryhub"
+    grants_src = (Path(__file__).resolve().parents[1] / "src" / "dba_slack_bot"
                   / "grants.py").read_text(encoding="utf-8")
     body = grants_src.split("def _authz_v2", 1)[1].split("\ndef ", 1)[0]
     assert "'granter'" in body or '"granter"' in body
@@ -210,7 +210,7 @@ def test_the_ceiling_roles_are_the_ones_can_approve_actually_reads():
     third role, this is what fails."""
     import re as _re
     from pathlib import Path as _P
-    acc = (_P(__file__).resolve().parent.parent / "src" / "queryhub"
+    acc = (_P(__file__).resolve().parent.parent / "src" / "dba_slack_bot"
            / "access.py").read_text(encoding="utf-8")
     reads = _re.search(r'roles\(principal_id\) if r\["role"\] in \(([^)]*)\)', acc)
     stores = _re.search(r'_ROLES_WITH_CEILING = \(([^)]*)\)', SRC)
@@ -325,7 +325,7 @@ def test_a_disabled_principal_holds_no_roles():
     which is the case this whole column exists for."""
     import inspect
 
-    from queryhub import access
+    from dba_slack_bot import access
     src = inspect.getsource(access.roles)
     assert "p.enabled" in src
 
@@ -337,7 +337,7 @@ def test_the_grant_resolvers_deliberately_do_not_filter_enabled():
     the equivalence the whole cutover rests on."""
     import inspect
 
-    from queryhub import access
+    from dba_slack_bot import access
     assert "p.enabled" not in inspect.getsource(access._covering)
     i = access.__dict__["_ME"]
     assert "enabled" not in i, "the shared CTE must stay neutral"

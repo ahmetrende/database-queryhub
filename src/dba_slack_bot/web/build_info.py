@@ -21,7 +21,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# src/queryhub/web/build_info.py → parents[3] is the repo root.
+# src/dba_slack_bot/web/build_info.py → parents[3] is the repo root.
 _ROOT = str(Path(__file__).resolve().parents[3])
 _TTL = 30.0
 _bcache: dict = {"v": None, "t": 0.0}

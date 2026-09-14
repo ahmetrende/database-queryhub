@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from queryhub import schema_catalog
+from dba_slack_bot import schema_catalog
 
 
 # ---------------------------------------------------------------------------

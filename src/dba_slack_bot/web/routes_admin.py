@@ -3548,9 +3548,16 @@ def _resolve_slack_names(ids) -> dict[str, str]:
     ids = list(ids)
     if not ids:
         return {}
+    # `admins` as well as `requesters`: an admin who never submitted a query has
+    # no requesters row, and their id was landing on the trail raw. Requesters
+    # win a tie -- it is the row profile_sync keeps fresh for everyone.
     return {r["slack_user_id"]: r["name"] for r in db.fetch_all(
-        "SELECT slack_user_id, name FROM requesters "
-        "WHERE slack_user_id = ANY(%s)", (ids,)) if r.get("name")}
+        "SELECT slack_user_id, name, 2 AS pref FROM admins "
+        " WHERE slack_user_id = ANY(%(ids)s) AND name IS NOT NULL "
+        "UNION ALL "
+        "SELECT slack_user_id, name, 1 FROM requesters "
+        " WHERE slack_user_id = ANY(%(ids)s) AND name IS NOT NULL "
+        "ORDER BY pref DESC", {"ids": ids}) if r.get("name")}
 
 
 @router.get("/audit")
@@ -3579,6 +3586,7 @@ def admin_audit(kind: str | None = None, q: str | None = None,
         "SELECT al.id, al.request_id, al.actor_slack_id, al.actor_name, al.action, "
         "  al.details, al.created_at, "
         "  r.requester_name AS req_requester_name, "
+        "  r.requester_slack_id AS req_requester_slack_id, "
         "  r.target_server_id AS req_target_server_id, "
         "  r.database_name AS req_database_name, r.query AS req_query, "
         "  r.row_count AS req_row_count, r.executed_at AS req_executed_at, "
@@ -3606,7 +3614,8 @@ def admin_audit(kind: str | None = None, q: str | None = None,
     for r in rows:
         d = r.get("details") if isinstance(r.get("details"), dict) else {}
         ids |= _slack_ids_in(d.get("user"), d.get("grantee"),
-                             d.get("slack_user_id"), r.get("actor_slack_id"))
+                             d.get("slack_user_id"), r.get("actor_slack_id"),
+                             r.get("req_requester_slack_id"))
     names = _resolve_slack_names(ids)
 
     def _name_of(slack_id):
@@ -3869,7 +3878,8 @@ def admin_audit_search(body: AuditSearchIn,
         cte + "SELECT s.id, s.category, s.effect, s.actor_kind, "
               "  al.action, al.actor_slack_id, al.actor_name, al.details, "
               "  al.created_at, al.request_id, "
-              "  r.requester_name, r.database_name, r.query, r.row_count, "
+              "  r.requester_slack_id, r.requester_name, "
+              "  r.database_name, r.query, r.row_count, "
               "  r.required_tier, r.executed_at, r.completed_at, "
               "  ts.alias AS target_alias, "
               "  g.slack_user_id AS via_user, g.max_tier AS via_tier, "
@@ -3895,7 +3905,7 @@ def admin_audit_search(body: AuditSearchIn,
         d = r.get("details") if isinstance(r.get("details"), dict) else {}
         ids |= _slack_ids_in(d.get("user"), d.get("grantee"),
                              d.get("slack_user_id"), r.get("actor_slack_id"),
-                             r.get("via_user"))
+                             r.get("via_user"), r.get("requester_slack_id"))
     names = _resolve_slack_names(ids)
 
     out = [_audit_row(r, names) for r in rows]
@@ -3964,7 +3974,14 @@ def _audit_row(r: dict, names: dict) -> dict:
             dur = int((r["completed_at"] - r["executed_at"]).total_seconds() * 1000)
         req = {
             "id": r["request_id"],
-            "requester": r.get("requester_name") or "—",
+            # The roster name, not the one copied onto the request at submit
+            # time. That copy is a snapshot of whatever Slack said that day, so
+            # one person appeared under three spellings and, for 2,698 of 6,314
+            # requests, under a login handle rather than a name. The snapshot
+            # stays as the fallback for a requester the roster no longer holds.
+            "requester": (names.get(r.get("requester_slack_id") or "")
+                          or r.get("requester_name") or None),
+            "requesterId": r.get("requester_slack_id"),
             "connection": r.get("target_alias") or "—",
             "database": r.get("database_name") or "—",
             "tier": (r.get("required_tier") or "").upper() or None,

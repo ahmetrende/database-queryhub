@@ -18,12 +18,12 @@ from pathlib import Path
 
 import pytest
 
-from queryhub import pii
-from queryhub.web import routes_admin
+from dba_slack_bot import pii
+from dba_slack_bot.web import routes_admin
 
 ROOT = Path(__file__).resolve().parents[1]
 SCREEN = ROOT / "QueryHubWeb" / "qh-admin-mask.jsx"
-ROUTE = ROOT / "src" / "queryhub" / "web" / "routes_admin.py"
+ROUTE = ROOT / "src" / "dba_slack_bot" / "web" / "routes_admin.py"
 
 # `e` is the row in this screen's components AND the event in its handlers.
 # These are the event/error members, so a name arriving here that is not a row

@@ -1,5 +1,5 @@
 """pre_flight — plan analysis + human formatting (no live DB / EXPLAIN)."""
-from queryhub import pre_flight as pf
+from dba_slack_bot import pre_flight as pf
 
 
 def _plan(root):

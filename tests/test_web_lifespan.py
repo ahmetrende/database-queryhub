@@ -20,15 +20,15 @@ import logging
 import pytest
 from starlette.testclient import TestClient
 
-from queryhub import config as cfg
-from queryhub import db, executor, lifecycle
-from queryhub.web import app as web_app
+from dba_slack_bot import config as cfg
+from dba_slack_bot import db, executor, lifecycle
+from dba_slack_bot.web import app as web_app
 
 
 @pytest.fixture(autouse=True)
 def _quiet(monkeypatch):
     logging.disable(logging.CRITICAL)
-    from queryhub.slack_app import notifications
+    from dba_slack_bot.slack_app import notifications
     monkeypatch.setattr(notifications, "dm_all_admins", lambda *a, **k: None)
     yield
     logging.disable(logging.NOTSET)
@@ -50,7 +50,7 @@ def test_unreachable_control_db_starts_degraded(monkeypatch):
     monkeypatch.setattr(db, "init_pool", boom)
     monkeypatch.setattr(cfg, "get_setting", boom)
     # ...including the alias the auth module already imported.
-    from queryhub.web import routes_auth
+    from dba_slack_bot.web import routes_auth
     monkeypatch.setattr(routes_auth.cfg, "get_setting", boom)
 
     # Reaching the body at all is the assertion: the app booted.

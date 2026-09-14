@@ -118,6 +118,18 @@ function AudActor({ actor, sm }) {
   return <span className={'qh-audactor is-id' + (sm ? ' sm' : '')} title="No named account — only a principal id was recorded">{actor.handle}</span>;
 }
 
+// Who the row is ABOUT. For 76% of the rows this screen shows by default that
+// is the person who asked for the query, not the admin who happened to press
+// Approve -- and the list had room for one name, which was the admin's. The actor is still one
+// click away in the rail, and it is what a row with no request shows here.
+function AudWho({ row, sm }) {
+  const who = row.request && row.request.requester;
+  if (!who) return <AudActor actor={row.actor} sm={sm} />;
+  const by = row.actor && (row.actor.kind === 'auto' ? 'the auto-approver'
+    : row.actor.name || row.actor.handle);
+  return <span className="qh-audactor" title={'Requester' + (by ? ' · this row was recorded by ' + by : '')}>{who}</span>;
+}
+
 // ---------- The detail rail ----------
 // Fixed width, sticky, its own scroll. The list never moves when this changes,
 // which is the requirement a row that expands in place cannot meet once a
@@ -173,7 +185,8 @@ function AudDetail({ row, onClose, pushToast }) {
           <>
             <div className="qh-auddetail-sec">Request #{row.request.id}</div>
             <div className="qh-audkv">
-              <div><dt>Requester</dt><dd>{row.request.requester}</dd></div>
+              <div><dt>Requester</dt><dd>{row.request.requester
+                || <span className="qh-audunknown" title={row.request.requesterId || 'No name was recorded'}>{row.request.requesterId || 'unknown'}</span>}</dd></div>
               <div><dt>Target</dt><dd>{row.request.connection}/{row.request.database}</dd></div>
               {row.request.tier && <div><dt>Tier</dt><dd><TierBadge tier={row.request.tier} sm /></dd></div>}
               {row.request.rows != null && <div><dt>Rows</dt><dd>{audNum(row.request.rows)}</dd></div>}
@@ -444,7 +457,7 @@ function AuditView({ st }) {
                     <span className="qh-audlabel">{r.actionLabel || r.action}</span>
                     {r.target && <span className="qh-audtarget">{r.target}</span>}
                   </span>
-                  <span className="qh-audby"><AudActor actor={r.actor} sm /></span>
+                  <span className="qh-audby"><AudWho row={r} sm /></span>
                   {/* Request-bound fields appear only on the third of rows that
                       have them. No dashes: an administrative row has no tier, and
                       printing "—" five times says nothing five times. */}

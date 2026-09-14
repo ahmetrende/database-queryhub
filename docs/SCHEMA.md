@@ -1,13 +1,13 @@
 # Bot metadata DB — schema reference
 
 This file describes every persistent object the bot reads/writes in its
-metadata database (the `queryhub` DB on the configured Postgres host). Schema is
+metadata database (the `slackbot` DB on the configured Postgres host). Schema is
 applied automatically via `scripts/apply_migrations.py`; descriptions here
 are also stored as `COMMENT ON ...` in the DB itself, so DataGrip / psql
 `\d+ <object>` shows the same prose.
 
-Connection: `queryhub` DB on the configured Postgres host
-(e.g. `<your-host>.<region>.rds.amazonaws.com`), owner `queryhub` (LOGIN,
+Connection: `slackbot` DB on the configured Postgres host
+(e.g. `<your-host>.<region>.rds.amazonaws.com`), owner `slackbot` (LOGIN,
 NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
 
 ---
@@ -189,10 +189,10 @@ Fernet-encrypted with the master key on disk and stored as ciphertext in
 |--------|-------|
 | `id` | SERIAL, referenced by `team_target_grants.target_server_id`. |
 | `alias` | Unique, shown in the `/sql` modal dropdown. |
-| `host`, `port`, `default_database`, `username` | Connection coords. `username` is the RO login (typically `queryhub_ro`). |
+| `host`, `port`, `default_database`, `username` | Connection coords. `username` is the RO login (typically `dba_slackbot_ro`). |
 | `password_encrypted` | Fernet ciphertext of the RO user's password. Generate via `scripts/encrypt_secret.py` then INSERT raw. |
-| `username_rw`, `password_rw_encrypted` | RW login (typically `queryhub_rw` with `pg_read_all_data` + `pg_write_all_data`). Used when the effective tier for (user, target) is `rw` or `ddl` and the query classifies as write. NULL = RW not configured; write queries on this target are rejected. |
-| `username_ddl`, `password_ddl_encrypted` | DDL login (typically `queryhub_ddl`). Used when the effective tier is `ddl` and the query classifies as DDL. NULL = DDL not configured; DDL on this target is rejected before execution. |
+| `username_rw`, `password_rw_encrypted` | RW login (typically `dba_slackbot_rw` with `pg_read_all_data` + `pg_write_all_data`). Used when the effective tier for (user, target) is `rw` or `ddl` and the query classifies as write. NULL = RW not configured; write queries on this target are rejected. |
+| `username_ddl`, `password_ddl_encrypted` | DDL login (typically `dba_slackbot_ddl`). Used when the effective tier is `ddl` and the query classifies as DDL. NULL = DDL not configured; DDL on this target is rejected before execution. |
 | `engine` | `postgres` (default) or `mssql`. Selects the driver and the engine spec (system schemas, tier classification, quoting). |
 | `super_ddl_role` | Name of a role a **super-admin's** session enters with `SET LOCAL ROLE` before the statement runs. NULL = no elevation on this target; the query runs as the login, exactly as for everyone else. See "Super-admin elevation" below. |
 | `tags` | JSONB object (CHECK enforces object shape) describing where the target actually runs. |
@@ -203,13 +203,13 @@ Fernet-encrypted with the master key on disk and stored as ciphertext in
 #### Super-admin elevation
 
 `super_ddl_role` exists because a super-admin needs authority the bot's
-own login must not carry. Giving `queryhub_ddl` standing privileges
+own login must not carry. Giving `dba_slackbot_ddl` standing privileges
 would put them in **every** session it opens, for every user. Instead:
 
 ```sql
-CREATE ROLE queryhub_superadmin NOLOGIN CREATEROLE CREATEDB;
-GRANT rds_superuser TO queryhub_superadmin;          -- or `root` on Huawei
-GRANT queryhub_superadmin TO queryhub_ddl
+CREATE ROLE dba_slackbot_superadmin NOLOGIN CREATEROLE CREATEDB;
+GRANT rds_superuser TO dba_slackbot_superadmin;          -- or `root` on Huawei
+GRANT dba_slackbot_superadmin TO dba_slackbot_ddl
       WITH INHERIT FALSE, SET TRUE;                      -- PostgreSQL 16+
 ```
 
@@ -330,7 +330,7 @@ targets; for a given target, the array narrows down which DBs and
 #### `target_role` flow
 
 1. **Once per (team, target cluster):** DBA runs `deploy/grant_team_role.sql`
-   on the target with `role_name=queryhub_team_<X>` and `bot_login=<bot's
+   on the target with `role_name=slackbot_team_<X>` and `bot_login=<bot's
    target user>`. Then GRANTs the schema/table privileges that role should
    have.
 2. **Once per (team, target):** DBA UPDATEs `team_target_grants.target_role`
@@ -404,7 +404,7 @@ Every `/sql` submission, regardless of outcome. The audit trail.
 | `executed_at`, `completed_at` | Execution timing. |
 | `row_count`, `truncated` | Result stats. |
 | `error_message` | Filled when status=`failed`. |
-| `csv_file_path` | Local CSV path (under `/var/lib/queryhub/results/`). NULL'd by cleanup. |
+| `csv_file_path` | Local CSV path (under `/var/lib/slackbot/results/`). NULL'd by cleanup. |
 | `slack_file_id` | Slack file ID from `files_upload_v2`. NULL'd by cleanup after `files.delete`. |
 | `scheduled_for` | When the user wants the query to run. NULL = run immediately on approval. If set, approval moves status to `scheduled` and the bot's scheduler thread picks it up at the right time. Capped by `bot_config.max_schedule_days`. |
 | `requester_dm_channel_id`, `requester_dm_message_ts` | Coordinates of the user's "approved + scheduled" DM that carries the [Cancel] button. Used by `chat.update` when the request is cancelled or starts executing. NULL for non-scheduled requests. |

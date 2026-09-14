@@ -33,9 +33,9 @@
 --   - Logins do NOT replicate: run the SERVER-scope block on EVERY replica
 --     instance, and create the login with the SAME SID on each so the mapped
 --     database user still resolves after a failover / on the secondary:
---         -- on primary: SELECT sid FROM sys.sql_logins WHERE name='queryhub_ro';
+--         -- on primary: SELECT sid FROM sys.sql_logins WHERE name='dba_slackbot_ro';
 --         -- on each secondary:
---         CREATE LOGIN queryhub_ro WITH PASSWORD='...', SID=0x<sid-from-primary>, CHECK_POLICY=ON;
+--         CREATE LOGIN dba_slackbot_ro WITH PASSWORD='...', SID=0x<sid-from-primary>, CHECK_POLICY=ON;
 --     The DATABASE-scope block runs once on the primary — the users + role
 --     memberships replicate with the database.
 
@@ -43,43 +43,43 @@
 -- Run this block connected to `master` as a sysadmin — on EVERY replica
 -- (matching SIDs, see the AG note above).
 
-IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'queryhub_ro')
-    CREATE LOGIN queryhub_ro  WITH PASSWORD = '<STRONG_PASSWORD_RO>',  CHECK_POLICY = ON;
-IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'queryhub_rw')
-    CREATE LOGIN queryhub_rw  WITH PASSWORD = '<STRONG_PASSWORD_RW>',  CHECK_POLICY = ON;
-IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'queryhub_ddl')
-    CREATE LOGIN queryhub_ddl WITH PASSWORD = '<STRONG_PASSWORD_DDL>', CHECK_POLICY = ON;
+IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'dba_slackbot_ro')
+    CREATE LOGIN dba_slackbot_ro  WITH PASSWORD = '<STRONG_PASSWORD_RO>',  CHECK_POLICY = ON;
+IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'dba_slackbot_rw')
+    CREATE LOGIN dba_slackbot_rw  WITH PASSWORD = '<STRONG_PASSWORD_RW>',  CHECK_POLICY = ON;
+IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'dba_slackbot_ddl')
+    CREATE LOGIN dba_slackbot_ddl WITH PASSWORD = '<STRONG_PASSWORD_DDL>', CHECK_POLICY = ON;
 
 -- Keep every tier off the shell / OLE-automation / advanced-config surface.
 -- xp_cmdshell + Ole Automation Procedures should already be disabled via
 -- sp_configure; this DENY is belt-and-suspenders at the principal level.
 DENY ALTER ANY LOGIN, ALTER ANY SERVER ROLE, ALTER ANY CREDENTIAL,
      ALTER ANY LINKED SERVER, CONTROL SERVER
-  TO queryhub_ro, queryhub_rw, queryhub_ddl;
+  TO dba_slackbot_ro, dba_slackbot_rw, dba_slackbot_ddl;
 
 /* ============================ DATABASE SCOPE (<TARGET_DB>) ================ */
 -- Run this block connected to the TARGET database.
 
-IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'queryhub_ro')
-    CREATE USER queryhub_ro  FOR LOGIN queryhub_ro;
-IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'queryhub_rw')
-    CREATE USER queryhub_rw  FOR LOGIN queryhub_rw;
-IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'queryhub_ddl')
-    CREATE USER queryhub_ddl FOR LOGIN queryhub_ddl;
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'dba_slackbot_ro')
+    CREATE USER dba_slackbot_ro  FOR LOGIN dba_slackbot_ro;
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'dba_slackbot_rw')
+    CREATE USER dba_slackbot_rw  FOR LOGIN dba_slackbot_rw;
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'dba_slackbot_ddl')
+    CREATE USER dba_slackbot_ddl FOR LOGIN dba_slackbot_ddl;
 
 -- RO: read only.
-ALTER ROLE db_datareader ADD MEMBER queryhub_ro;
+ALTER ROLE db_datareader ADD MEMBER dba_slackbot_ro;
 
 -- RW: read + write rows (no schema changes).
-ALTER ROLE db_datareader ADD MEMBER queryhub_rw;
-ALTER ROLE db_datawriter ADD MEMBER queryhub_rw;
+ALTER ROLE db_datareader ADD MEMBER dba_slackbot_rw;
+ALTER ROLE db_datawriter ADD MEMBER dba_slackbot_rw;
 
 -- DDL: read + write + schema objects (CREATE/ALTER/DROP), but NOT db_owner.
-ALTER ROLE db_datareader ADD MEMBER queryhub_ddl;
-ALTER ROLE db_datawriter ADD MEMBER queryhub_ddl;
-ALTER ROLE db_ddladmin   ADD MEMBER queryhub_ddl;
+ALTER ROLE db_datareader ADD MEMBER dba_slackbot_ddl;
+ALTER ROLE db_datawriter ADD MEMBER dba_slackbot_ddl;
+ALTER ROLE db_ddladmin   ADD MEMBER dba_slackbot_ddl;
 
 -- Defense in depth: never let the RO login write, even if a future role
 -- membership is added by mistake. (App-layer safety already blocks writes
 -- on the RO tier; this is the DB-layer backstop.)
-DENY INSERT, UPDATE, DELETE, EXECUTE TO queryhub_ro;
+DENY INSERT, UPDATE, DELETE, EXECUTE TO dba_slackbot_ro;

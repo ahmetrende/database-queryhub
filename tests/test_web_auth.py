@@ -7,8 +7,8 @@ os.environ.setdefault("WEB_SESSION_SECRET", "test-secret-not-for-prod")
 
 import pytest  # noqa: E402
 
-from queryhub import config as cfg  # noqa: E402
-from queryhub.web import auth_providers, sessions  # noqa: E402
+from dba_slack_bot import config as cfg  # noqa: E402
+from dba_slack_bot.web import auth_providers, sessions  # noqa: E402
 
 
 # ---- OAuth state ------------------------------------------------------------
@@ -131,21 +131,21 @@ def test_allowlist_fails_closed_when_empty(monkeypatch):
     """The critical regression guard: a non-admin whose id isn't in the
     requesters table is rejected even if the whole table is empty. (This used
     to return True — "empty allowlist == open mode" — a fail-open footgun.)"""
-    from queryhub import requesters
+    from dba_slack_bot import requesters
     monkeypatch.setattr(requesters.admins, "is_admin", lambda uid: False)
     monkeypatch.setattr(requesters.db, "fetch_one", lambda *a, **k: None)
     assert requesters.is_allowed("U_RANDOM") is False
 
 
 def test_allowlist_admin_always_allowed(monkeypatch):
-    from queryhub import requesters
+    from dba_slack_bot import requesters
     monkeypatch.setattr(requesters.admins, "is_admin", lambda uid: True)
     monkeypatch.setattr(requesters.db, "fetch_one", lambda *a, **k: None)
     assert requesters.is_allowed("U_ADMIN") is True
 
 
 def test_allowlist_enabled_requester_allowed(monkeypatch):
-    from queryhub import requesters
+    from dba_slack_bot import requesters
     monkeypatch.setattr(requesters.admins, "is_admin", lambda uid: False)
     monkeypatch.setattr(requesters.db, "fetch_one", lambda *a, **k: {"1": 1})
     assert requesters.is_allowed("U_REQ") is True

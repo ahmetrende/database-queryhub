@@ -52,7 +52,7 @@ KNOWN_KEYS = (
 
 
 def default_path() -> Path:
-    return Path(os.environ.get("SECRETS_ENC_PATH", "/etc/queryhub/secrets.enc"))
+    return Path(os.environ.get("SECRETS_ENC_PATH", "/etc/slackbot/secrets.enc"))
 
 
 def _fernet() -> MultiFernet:

@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 import jwt as pyjwt
 
-from queryhub.web import idp_assertion
+from dba_slack_bot.web import idp_assertion
 
 
 def _keypair():

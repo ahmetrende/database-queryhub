@@ -14,10 +14,10 @@
 """
 import pytest
 
-from queryhub import admins
-from queryhub import config as cfg
-from queryhub.web import routes_admin as ra
-from queryhub.web import sessions
+from dba_slack_bot import admins
+from dba_slack_bot import config as cfg
+from dba_slack_bot.web import routes_admin as ra
+from dba_slack_bot.web import sessions
 
 _REQ = {"required_tier": "ro", "target_server_id": 7, "requester_slack_id": "U0R"}
 

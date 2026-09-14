@@ -60,7 +60,7 @@ def _bot():
     would refuse to run in CI, on a laptop, or anywhere the answer is already
     in the files. Capture needs the database; comparing two captures does not.
     """
-    from queryhub import (admins, auto_approve, db, requesters,
+    from dba_slack_bot import (admins, auto_approve, db, requesters,
                                row_limits, teams)
     return admins, auto_approve, db, requesters, row_limits, teams
 
@@ -167,10 +167,10 @@ class NewBackend(LegacyBackend):
     def __init__(self):
         super().__init__()
         try:
-            from queryhub import access
+            from dba_slack_bot import access
         except ImportError as exc:  # pragma: no cover - until the module lands
             raise SystemExit(
-                "the new backend needs queryhub.access, which does not "
+                "the new backend needs dba_slack_bot.access, which does not "
                 "exist yet — capture with --backend legacy for now"
             ) from exc
         self.access = access

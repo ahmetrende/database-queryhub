@@ -13,7 +13,7 @@ import tempfile
 import pytest
 from starlette.testclient import TestClient
 
-from queryhub.web import app
+from dba_slack_bot.web import app
 
 
 @pytest.fixture
@@ -21,8 +21,8 @@ def client_without_build(monkeypatch):
     logging.disable(logging.CRITICAL)
     # An empty static dir stands in for "npm run build was never run".
     monkeypatch.setenv("QH_WEB_STATIC_DIR", tempfile.mkdtemp())
-    from queryhub import db
-    from queryhub.slack_app import notifications
+    from dba_slack_bot import db
+    from dba_slack_bot.slack_app import notifications
     monkeypatch.setattr(db, "init_pool", lambda: None)
     monkeypatch.setattr(notifications, "dm_all_admins", lambda *a, **k: None)
     with TestClient(app.create_app()) as c:

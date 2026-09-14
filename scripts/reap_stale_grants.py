@@ -13,7 +13,7 @@ Safety:
     harmlessly until an operator flips the switch after reviewing dry-runs.
 
 Usage:
-    set -a; source /etc/queryhub/env; set +a
+    set -a; source /etc/slackbot/env; set +a
     .venv/bin/python scripts/reap_stale_grants.py            # dry-run report
     .venv/bin/python scripts/reap_stale_grants.py --commit   # act (if enabled)
 """
@@ -26,9 +26,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from queryhub import audit, db  # noqa: E402
-from queryhub import config as cfg  # noqa: E402
-from queryhub.config import ENV  # noqa: E402
+from dba_slack_bot import audit, db  # noqa: E402
+from dba_slack_bot import config as cfg  # noqa: E402
+from dba_slack_bot.config import ENV  # noqa: E402
 
 log = logging.getLogger("grant-reaper")
 
@@ -85,7 +85,7 @@ def main() -> int:
 
     # Live revoke. DM the user per revoked grant so they know.
     from slack_sdk.web import WebClient
-    from queryhub.slack_app import notifications
+    from dba_slack_bot.slack_app import notifications
     client = WebClient(token=ENV.slack_bot_token)
     revoked = 0
     for g in stale:

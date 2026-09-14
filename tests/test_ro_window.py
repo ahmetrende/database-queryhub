@@ -1,5 +1,5 @@
 """ro_window request modal + CTA (pure block-builders, no Slack/DB)."""
-from queryhub.slack_app import ro_window
+from dba_slack_bot.slack_app import ro_window
 
 
 class _T:

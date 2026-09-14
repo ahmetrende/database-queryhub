@@ -46,7 +46,7 @@ def _remove_test_key():
 
 import pytest  # noqa: E402
 
-from queryhub import config as cfg  # noqa: E402
+from dba_slack_bot import config as cfg  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -113,7 +113,7 @@ def no_real_database(monkeypatch, request):
             "/ db.fetch_all / db.execute), or mark the test "
             "@pytest.mark.integration if it genuinely needs a database.")
 
-    from queryhub import db
+    from dba_slack_bot import db
     monkeypatch.setattr(db, "init_pool", _refuse)
     monkeypatch.setattr(db, "_pool", None, raising=False)
     yield

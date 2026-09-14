@@ -2,10 +2,10 @@
 -- QueryHub — read-only role bootstrap on a TARGET Postgres server.
 --
 -- WHAT THIS DOES
---   Creates (or updates) a `queryhub_ro` role with read-only access to
+--   Creates (or updates) a `dba_slackbot_ro` role with read-only access to
 --   the database it is run in. After running this in every database that
 --   should be queryable via /sql, register the server in `target_servers`
---   (see deploy/db_admin_templates.sql) using queryhub_ro + the
+--   (see deploy/db_admin_templates.sql) using dba_slackbot_ro + the
 --   password chosen here. The role lacks INSERT / UPDATE / DELETE / DDL —
 --   the only damage it could do is run an expensive SELECT.
 --
@@ -59,17 +59,17 @@
 \set ON_ERROR_STOP on
 
 -- 1. Role: create if missing.
-SELECT format('CREATE ROLE queryhub_ro LOGIN PASSWORD %L', :'ro_password')
-WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'queryhub_ro')\gexec
+SELECT format('CREATE ROLE dba_slackbot_ro LOGIN PASSWORD %L', :'ro_password')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'dba_slackbot_ro')\gexec
 
 -- 2. Always (re-)set the password (rotation path).
-SELECT format('ALTER ROLE queryhub_ro WITH LOGIN PASSWORD %L', :'ro_password')\gexec
+SELECT format('ALTER ROLE dba_slackbot_ro WITH LOGIN PASSWORD %L', :'ro_password')\gexec
 
 -- 3. Connection limit so a runaway bot can never starve other clients.
-ALTER ROLE queryhub_ro CONNECTION LIMIT 5;
+ALTER ROLE dba_slackbot_ro CONNECTION LIMIT 5;
 
 -- 4. CONNECT on the current database.
-SELECT format('GRANT CONNECT ON DATABASE %I TO queryhub_ro', current_database())\gexec
+SELECT format('GRANT CONNECT ON DATABASE %I TO dba_slackbot_ro', current_database())\gexec
 
 -- 4b. pg_read_all_stats: let the bot see pg_stat_statements query text (and the
 --     other pg_stat_* views) for statements run by OTHER roles. Without it a
@@ -80,7 +80,7 @@ SELECT format('GRANT CONNECT ON DATABASE %I TO queryhub_ro', current_database())
 --     running this must be a member of pg_read_all_stats WITH ADMIN OPTION —
 --     rds_superuser is. The text in pg_stat_statements is normalized (literals
 --     become $1/$2), so this exposes query shapes, not data values.
-SELECT 'GRANT pg_read_all_stats TO queryhub_ro'
+SELECT 'GRANT pg_read_all_stats TO dba_slackbot_ro'
 WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pg_read_all_stats')\gexec
 
 -- 4b. pg_read_all_data (PG 14+) — SELECT on every table in every schema,
@@ -91,7 +91,7 @@ WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pg_read_all_stats')\gexec
 --     was set for. Two targets provisioned without this role had 71 relations
 --     the RO user could not read while the catalog listed them all.
 --     Cluster-wide, idempotent, and a no-op on a server too old to have it.
-SELECT 'GRANT pg_read_all_data TO queryhub_ro'
+SELECT 'GRANT pg_read_all_data TO dba_slackbot_ro'
 WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pg_read_all_data')\gexec
 
 -- 5. For every non-system schema:
@@ -127,10 +127,10 @@ BEGIN
           AND nspname NOT LIKE 'pg\_temp\_%'
           AND nspname NOT LIKE 'pg\_toast\_%'
     LOOP
-        EXECUTE format('GRANT USAGE ON SCHEMA %I TO queryhub_ro', s);
-        EXECUTE format('GRANT SELECT ON ALL TABLES    IN SCHEMA %I TO queryhub_ro', s);
-        EXECUTE format('GRANT SELECT ON ALL SEQUENCES IN SCHEMA %I TO queryhub_ro', s);
-        EXECUTE format('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA %I TO queryhub_ro', s);
+        EXECUTE format('GRANT USAGE ON SCHEMA %I TO dba_slackbot_ro', s);
+        EXECUTE format('GRANT SELECT ON ALL TABLES    IN SCHEMA %I TO dba_slackbot_ro', s);
+        EXECUTE format('GRANT SELECT ON ALL SEQUENCES IN SCHEMA %I TO dba_slackbot_ro', s);
+        EXECUTE format('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA %I TO dba_slackbot_ro', s);
 
         -- Default privileges: future objects in this schema auto-grant SELECT.
         -- ALTER DEFAULT PRIVILEGES attaches to a CREATING ROLE, so setting it
@@ -156,13 +156,13 @@ BEGIN
             BEGIN
                 EXECUTE format(
                     'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I '
-                    'GRANT SELECT ON TABLES TO queryhub_ro', owner_role, s);
+                    'GRANT SELECT ON TABLES TO dba_slackbot_ro', owner_role, s);
                 EXECUTE format(
                     'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I '
-                    'GRANT SELECT ON SEQUENCES TO queryhub_ro', owner_role, s);
+                    'GRANT SELECT ON SEQUENCES TO dba_slackbot_ro', owner_role, s);
                 EXECUTE format(
                     'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I '
-                    'GRANT EXECUTE ON FUNCTIONS TO queryhub_ro', owner_role, s);
+                    'GRANT EXECUTE ON FUNCTIONS TO dba_slackbot_ro', owner_role, s);
             EXCEPTION WHEN insufficient_privilege OR undefined_object THEN
                 RAISE NOTICE 'default privileges skipped for role % in schema % (%)',
                     owner_role, s, SQLERRM;
@@ -174,14 +174,14 @@ $do$;
 
 -- 6. Sanity check — show what the role can see.
 \echo
-\echo '== queryhub_ro provisioned in:'
+\echo '== dba_slackbot_ro provisioned in:'
 SELECT current_database() AS database;
 
 \echo
 \echo '== schemas with USAGE granted:'
 SELECT nspname
 FROM pg_namespace n
-WHERE has_schema_privilege('queryhub_ro', n.nspname, 'USAGE')
+WHERE has_schema_privilege('dba_slackbot_ro', n.nspname, 'USAGE')
   AND nspname NOT IN ('pg_catalog','information_schema','pg_toast')
   AND nspname NOT LIKE 'pg\_temp\_%'
   AND nspname NOT LIKE 'pg\_toast\_%'
@@ -190,11 +190,11 @@ ORDER BY nspname;
 \echo
 \echo '== role attribute summary:'
 SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolconnlimit
-FROM pg_roles WHERE rolname = 'queryhub_ro';
+FROM pg_roles WHERE rolname = 'dba_slackbot_ro';
 
 \echo
 \echo 'Done. Register this server in the bot DB next:'
 \echo '  1. python scripts/encrypt_secret.py    (encrypt the password)'
-\echo '  2. INSERT INTO target_servers ... using queryhub_ro and'
+\echo '  2. INSERT INTO target_servers ... using dba_slackbot_ro and'
 \echo '     the ciphertext from step 1. See deploy/db_admin_templates.sql'
 \echo '     or docs/OPERATIONS.md section 5.'

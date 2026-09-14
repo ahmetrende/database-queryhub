@@ -668,7 +668,7 @@ def warn_if_access_model_v2() -> None:
 
 def _log_v2_warning() -> None:
     import logging
-    logging.getLogger("queryhub").warning(
+    logging.getLogger("dba_slack_bot").warning(
         "access_model_v2 is ON: authorization is READ from the new tables. "
         "Writes still go to the old ones and are projected across by the "
         "migration 109 mirror, so check bot_config.access_model_mirror is on "

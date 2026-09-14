@@ -13,7 +13,7 @@ warned about somewhere downstream where the enable path could route around it.
 """
 import pytest
 
-from queryhub import targets
+from dba_slack_bot import targets
 
 
 class _FakeCur:

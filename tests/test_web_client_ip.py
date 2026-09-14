@@ -1,8 +1,8 @@
 """X-Forwarded-For is client-spoofable without a trusted proxy, so
 the login throttle and audit trail must key on the real peer address unless
 web_trusted_proxy is explicitly enabled."""
-from queryhub import config as cfg
-from queryhub.web import deps
+from dba_slack_bot import config as cfg
+from dba_slack_bot.web import deps
 
 
 def _req(xff=None, peer="127.0.0.1"):

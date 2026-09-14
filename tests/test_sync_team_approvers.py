@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = (ROOT / "scripts" / "sync_team_approvers.py").read_text(encoding="utf-8")
 MIG = (ROOT / "migrations"
        / "114_role_assignment_source.sql").read_text(encoding="utf-8")
-ADMIN_API = (ROOT / "src" / "queryhub" / "web"
+ADMIN_API = (ROOT / "src" / "dba_slack_bot" / "web"
              / "routes_admin.py").read_text(encoding="utf-8")
 
 

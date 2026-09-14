@@ -13,7 +13,7 @@ most common (target, database) pair, which was the drafts' (NULL, ''), and
 Measured on the real rows: two drafts a minute before the request that
 triggered the nudge.
 """
-from queryhub.slack_app import modal
+from dba_slack_bot.slack_app import modal
 
 
 def _rows(monkeypatch, rows):

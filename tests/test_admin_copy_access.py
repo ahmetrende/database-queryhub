@@ -9,7 +9,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from queryhub.web import routes_admin as ra
+from dba_slack_bot.web import routes_admin as ra
 
 
 class _Cur:

@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="240" height="48" viewBox="0 0 240 48" font-family="&#39;Manrope&#39;,&#39;Inter&#39;,system-ui,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="48" viewBox="0 0 240 48" font-family="&#39;ParibuSans&#39;,&#39;Inter&#39;,system-ui,sans-serif">
   <g transform="translate(0,4) scale(0.4)">
-    <rect x="0.5" y="0.5" width="99" height="99" rx="28" fill="#C4603F"></rect>
+    <rect x="0.5" y="0.5" width="99" height="99" rx="28" fill="#9BBA3C"></rect>
     <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
       <ellipse cx="50" cy="33" rx="24" ry="8" stroke-width="6"></ellipse>
       <path d="M26 33 V67 C26 71.4 36.7 75 50 75 C63.3 75 74 71.4 74 67 V33" stroke-width="6"></path>
@@ -8,6 +8,6 @@
       <path d="M52 62 L60 62" stroke-width="5.5"></path>
     </g></g>
   <text x="56" y="32" font-size="26" font-weight="600" letter-spacing="-0.6">
-    <tspan fill="#ffffff">Query</tspan><tspan fill="#C4603F">Hub</tspan>
+    <tspan fill="#ffffff">Query</tspan><tspan fill="#9BBA3C">Hub</tspan>
   </text>
 </svg>

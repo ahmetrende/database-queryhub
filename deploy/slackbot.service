@@ -1,13 +1,13 @@
 ## Template — replace __USER__ and __INSTALL_PATH__ before installing.
-##   sudo cp deploy/queryhub.service /etc/systemd/system/queryhub.service
+##   sudo cp deploy/slackbot.service /etc/systemd/system/slackbot.service
 ##   sudo sed -i "s|__USER__|$USER|g;        s|__INSTALL_PATH__|$(pwd)|g" \
-##        /etc/systemd/system/queryhub.service
+##        /etc/systemd/system/slackbot.service
 ##   sudo systemctl daemon-reload
-##   sudo systemctl enable --now queryhub
+##   sudo systemctl enable --now slackbot
 ##
 ## __INSTALL_PATH__ is the absolute path to the cloned repo. The bot runs
 ## as __USER__ — typically a normal login user that owns the repo and the
-## /etc/queryhub directory. /etc/queryhub/{env,master.key,secrets.enc}
+## /etc/slackbot directory. /etc/slackbot/{env,master.key,secrets.enc}
 ## must be readable by __USER__ (mode 0600, owned by __USER__).
 
 [Unit]
@@ -20,8 +20,8 @@ Type=simple
 User=__USER__
 Group=__USER__
 WorkingDirectory=__INSTALL_PATH__
-EnvironmentFile=/etc/queryhub/env
-ExecStart=__INSTALL_PATH__/.venv/bin/python -m queryhub.main
+EnvironmentFile=/etc/slackbot/env
+ExecStart=__INSTALL_PATH__/.venv/bin/python -m dba_slack_bot.main
 Restart=on-failure
 RestartSec=5
 # Graceful restart: on SIGTERM the bot enters drain (refuses NEW submissions)
@@ -39,7 +39,7 @@ StandardError=journal
 # need write access to the dirs systemd doesn't lock by default.
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/queryhub /var/log/queryhub
+ReadWritePaths=/var/lib/slackbot /var/log/slackbot
 PrivateTmp=true
 
 [Install]

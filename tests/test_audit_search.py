@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from queryhub.web import routes_admin as ra
+from dba_slack_bot.web import routes_admin as ra
 
 ROOT = Path(__file__).resolve().parents[1]
 SCREEN = (ROOT / "QueryHubWeb" / "qh-admin-audit.jsx").read_text(encoding="utf-8")
@@ -131,6 +131,51 @@ def test_the_row_never_invents_a_display_name():
     assert row["classified"] is True
 
 
+def _req_row(**kw):
+    row = {"id": 3, "created_at": None, "action": "approved",
+           "actor_slack_id": "U9", "actor_name": "An Admin", "details": {},
+           "actor_kind": "person", "category": "requests", "effect": "decided",
+           "request_id": 7745, "target_alias": "alias", "database_name": "db",
+           "requester_slack_id": "U1", "requester_name": "a.person"}
+    row.update(kw)
+    return row
+
+
+def test_the_requester_is_the_roster_name_not_the_submit_time_copy():
+    """`requests.requester_name` is whatever Slack said the day it was
+    submitted, so one person appears under several spellings and often under a
+    login handle. The roster row is kept fresh for everybody, so it answers."""
+    row = ra._audit_row(_req_row(), {"U1": "A Person"})
+    assert row["request"]["requester"] == "A Person"
+    assert row["request"]["requesterId"] == "U1"
+
+
+def test_a_requester_the_roster_no_longer_holds_keeps_the_copy():
+    """Somebody who left is not on the roster any more. The snapshot is the
+    only name that row will ever have, and losing it loses the answer to who
+    asked."""
+    row = ra._audit_row(_req_row(), {})
+    assert row["request"]["requester"] == "a.person"
+
+
+def test_no_requester_at_all_is_null_not_a_dash():
+    """The list falls back to the actor when there is no requester, so it has
+    to be able to tell. A "—" string is truthy and would print itself."""
+    row = ra._audit_row(_req_row(requester_slack_id=None,
+                                 requester_name=None), {})
+    assert row["request"]["requester"] is None
+
+
+def test_the_list_column_reads_the_requester_before_the_actor():
+    """The screen's left column is design-owned; this is the one thing about it
+    the endpoint depends on — that it prefers `request.requester`, which is why
+    the field is resolved rather than copied."""
+    block = SCREEN.split("function AudWho", 1)[1].split("\n}", 1)[0]
+    assert "row.request && row.request.requester" in block
+    assert "<AudActor actor={row.actor}" in block, \
+        "a row with no request must still name who acted"
+
+
 def test_a_row_nothing_claims_is_marked_unclassified():
     row = ra._audit_row(
         {"id": 2, "created_at": None, "action": "captains_notified",
@@ -185,7 +230,7 @@ def test_the_exclusion_list_covers_the_kind_it_hides():
 @pytest.mark.skipif(not os.getenv("QH_RUN_INTEGRATION"),
                     reason="needs the control database")
 def test_the_counts_agree_with_each_other_on_real_data():
-    from queryhub.web import admin
+    from dba_slack_bot.web import admin
     orig = admin.require_admin
     admin.require_admin = lambda claims, need="review", **kw: "TEST"
     try:

@@ -23,11 +23,11 @@ import inspect
 
 import pytest
 
-from queryhub import access_requests
+from dba_slack_bot import access_requests
 
 
 def test_creating_a_request_for_the_control_plane_is_refused(monkeypatch):
-    monkeypatch.setattr("queryhub.grants.control_plane_target_ids",
+    monkeypatch.setattr("dba_slack_bot.grants.control_plane_target_ids",
                         lambda: {1})
     with pytest.raises(access_requests.ControlPlaneRefused):
         access_requests.create(
@@ -37,7 +37,7 @@ def test_creating_a_request_for_the_control_plane_is_refused(monkeypatch):
 
 def test_an_ordinary_target_is_not_refused(monkeypatch):
     """The guard must not become a gate on everything."""
-    monkeypatch.setattr("queryhub.grants.control_plane_target_ids",
+    monkeypatch.setattr("dba_slack_bot.grants.control_plane_target_ids",
                         lambda: {1})
     access_requests._refuse_control_plane(52)      # does not raise
     access_requests._refuse_control_plane(None)    # nor on a target-less ask
@@ -70,7 +70,7 @@ def test_the_refusal_is_asked_of_grants_not_hardcoded():
 def test_the_approve_card_names_the_refusal():
     """An admin who presses Approve and sees nothing happen will press it
     again. The card already explains tier_conflict and no_target the same way."""
-    from queryhub.slack_app import handlers
+    from dba_slack_bot.slack_app import handlers
     src = inspect.getsource(handlers)
     assert 'ag.get("reason") == "control_plane"' in src
     assert "control-plane database" in src
@@ -80,6 +80,6 @@ def test_the_slack_modal_tells_the_person_instead_of_crashing():
     """The picker deliberately offers every enabled target, so the refusal is
     the only place the person learns; an exception into Bolt would show them
     nothing at all."""
-    from queryhub.slack_app import handlers
+    from dba_slack_bot.slack_app import handlers
     src = inspect.getsource(handlers)
     assert "except access_requests.ControlPlaneRefused" in src

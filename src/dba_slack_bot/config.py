@@ -14,7 +14,7 @@ load_dotenv()
 
 
 def _maybe_load_encrypted_secrets() -> None:
-    """If `/etc/queryhub/secrets.enc` exists, decrypt it with the master
+    """If `/etc/slackbot/secrets.enc` exists, decrypt it with the master
     key and push its contents into os.environ — but only for keys that
     are not already set (so an explicit env var still wins, useful for
     testing). Silent no-op if the file doesn't exist (backward compat
@@ -79,10 +79,10 @@ class EnvConfig:
             bot_db_name=need("BOT_DB_NAME"),
             bot_db_user=need("BOT_DB_USER"),
             bot_db_password=need("BOT_DB_PASSWORD"),
-            master_key_path=Path(os.environ.get("MASTER_KEY_PATH", "/etc/queryhub/master.key")),
+            master_key_path=Path(os.environ.get("MASTER_KEY_PATH", "/etc/slackbot/master.key")),
             # LOG_LEVEL is read from env at startup (logging is configured
             # before the DB pool is open). All OTHER tunables live in
-            # bot_config — see migration 007 and `queryhub.config.get_setting`.
+            # bot_config — see migration 007 and `dba_slack_bot.config.get_setting`.
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
         )
 

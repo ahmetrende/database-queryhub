@@ -11,8 +11,8 @@
 -- HOW TO RUN
 --   read -s -p 'admin password: ' PGPASSWORD; echo; export PGPASSWORD
 --   psql -h <target-host> -U <admin-user> -d <any-db> \
---        -v role_name=queryhub_team_payment \
---        -v bot_login=queryhub_rw \
+--        -v role_name=slackbot_team_payment \
+--        -v bot_login=dba_slackbot_rw \
 --        -f deploy/grant_team_role.sql
 --   unset PGPASSWORD
 --

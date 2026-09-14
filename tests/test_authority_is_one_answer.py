@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src" / "queryhub"
+SRC = ROOT / "src" / "dba_slack_bot"
 
 
 def _src(rel: str) -> str:
