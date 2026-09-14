@@ -1295,7 +1295,7 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onE
         {tab === 'results' && <ResultsView key={'st' + stN} result={result} status={status} onToast={onToast} colMeta={colMeta} unmasked={unmasked} />}
         {tab === 'plan' && <PlanView plan={plan} />}
         {tab === 'messages' && <MessagesView messages={messages} />}
-        {tab === 'audit' && <AuditView audit={audit} />}
+        {tab === 'audit' && <RunAuditView audit={audit} />}
       </div>
     </div>
   );
@@ -1854,7 +1854,16 @@ function MessagesView({ messages }) {
   </div>;
 }
 
-function AuditView({ audit }) {
+// A RUN's audit trail — the events of the one request in this results panel.
+// NOT the admin Audit screen, which `qh-admin-audit.jsx` also called
+// `AuditView`. In the raw prototype every top-level function is a global and
+// the later script wins, so this component rendered the ADMIN screen with no
+// `st` prop: the developer view's Audit tab threw `Cannot read properties of
+// undefined (reading 'pushToast')` and took the page to the error boundary.
+// The bundle never showed it — main.jsx imports each file as a module, so the
+// two stayed in separate scopes — which is the whole reason to rename rather
+// than rely on that.
+function RunAuditView({ audit }) {
   if (!audit.length) return <div className="qh-empty"><div>Audit entries appear after you submit a query.</div></div>;
   return <div className="qh-audit">
     {audit.map((a, i) => (

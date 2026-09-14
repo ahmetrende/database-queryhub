@@ -136,7 +136,14 @@ def _catalog_functions(target_id: int, database: str) -> list[dict]:
 # Relations the browser lists. Views belong here: a view is as queryable as a
 # table, so autocomplete and the tree both want it. What it is NOT is a table,
 # and the ref carries `k` so the reader can be told which one it is looking at.
-_LISTED_RELKINDS = ("table", "partitioned", "view", "matview")
+#
+# `foreign` is listed for the same reason -- a foreign table is selected from
+# like any other, and a kind left out of this tuple does not fall back to
+# "table": it is dropped from the list entirely and the relation becomes
+# invisible in the tree, in autocomplete and in fleet search. There are none in
+# this fleet today, which is exactly why it had to be decided now rather than
+# the day one appears.
+_LISTED_RELKINDS = ("table", "partitioned", "view", "matview", "foreign")
 
 
 def _catalog_table_refs(target_id: int, database: str) -> list[dict]:

@@ -124,6 +124,24 @@ def test_a_view_is_listed_but_marked_as_one(monkeypatch):
         ("daily_totals", "matview")]
 
 
+def test_a_kind_left_off_the_list_disappears_rather_than_defaulting(monkeypatch):
+    """The client reads a ref with no `k` as a table. A kind missing from
+    `_LISTED_RELKINDS` never gets that far: the SQL drops it, so the relation is
+    absent from the tree, from autocomplete and from search -- silently, and in
+    the same shape as the bug this list was added to fix."""
+    rows = [_tbl(1, "a", "public", "orders"),
+            _tbl(1, "a", "public", "remote_ledger", "foreign"),
+            _tbl(1, "a", "public", "an_index", "index")]
+    monkeypatch.setattr(routes_data.db, "fetch_all",
+                        lambda *a, **k: [r for r in rows
+                                         if r["relkind"] in routes_data._LISTED_RELKINDS])
+    got = routes_data._catalog_table_refs_map([(1, "a")])[(1, "a")]
+    assert [r["n"] for r in got] == ["orders", "remote_ledger"], (
+        "a foreign table is selected from like any other and must be listed")
+    assert "foreign" in routes_data._LISTED_RELKINDS
+    assert "index" not in routes_data._LISTED_RELKINDS
+
+
 def test_the_single_read_and_the_batched_one_agree_on_shape(monkeypatch):
     """The tree renders from whichever of the two answered. A ref missing `k`
     from one of them is a view drawn as a table on that path only."""
