@@ -19,6 +19,17 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOK = ROOT / "scripts" / "hooks" / "commit-msg"
+SCANNER = ROOT / "scripts" / "check_repo_clean.py"
+
+# The scanner is operator-only and is not published: its denylist is pulled
+# from this deployment's own database, and shipping it would ship the shape of
+# that list. The hook beside it IS published, because a fork wants the gate.
+# So in the published tree this file has nothing to exercise -- skip rather
+# than fail, and say why, instead of adding an export rule that rots the day
+# somebody renames the file.
+pytestmark = pytest.mark.skipif(
+    not SCANNER.exists(),
+    reason="check_repo_clean.py is not part of the published tree")
 
 
 def _scanner():
