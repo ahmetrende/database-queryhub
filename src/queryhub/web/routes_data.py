@@ -133,26 +133,41 @@ def _catalog_functions(target_id: int, database: str) -> list[dict]:
         return []
 
 
+# Relations the browser lists. Views belong here: a view is as queryable as a
+# table, so autocomplete and the tree both want it. What it is NOT is a table,
+# and the ref carries `k` so the reader can be told which one it is looking at.
+_LISTED_RELKINDS = ("table", "partitioned", "view", "matview")
+
+
 def _catalog_table_refs(target_id: int, database: str) -> list[dict]:
-    """Tables as {s: schema, n: name}. The catalog has always recorded
-    `schema_name` (schema_tables is UNIQUE on target+db+schema+table), but the
-    API used to drop it, so the browser had to GUESS a schema — 'public' for
-    Postgres, 'dbo' for SQL Server. That is wrong for most of this fleet: only
-    a fifth of catalogued tables live in `public`, and two same-named tables in
-    different schemas collapsed into one indistinguishable entry."""
+    """Relations as {s: schema, n: name, k: kind}. The catalog has always
+    recorded `schema_name` (schema_tables is UNIQUE on target+db+schema+table),
+    but the API used to drop it, so the browser had to GUESS a schema —
+    'public' for Postgres, 'dbo' for SQL Server. That is wrong for most of this
+    fleet: only a fifth of catalogued tables live in `public`, and two
+    same-named tables in different schemas collapsed into one indistinguishable
+    entry.
+
+    `k` was dropped the same way, and the tree had no way to tell a view from a
+    table: it rendered every ref under "Tables" and then listed the views a
+    SECOND time under "Views" once the lazy schema load answered. One real
+    database read "Tables 41" for 2 tables and 39 monitoring views; 77 of the
+    84 catalogued databases were mixed that way.
+    """
     cap = _max_tables_per_db()
     rows = db.fetch_all(
-        "SELECT schema_name, table_name FROM schema_tables "
+        "SELECT schema_name, table_name, relkind FROM schema_tables "
         "WHERE target_server_id = %s AND database_name = %s "
-        "  AND relkind IN ('table','partitioned','view','matview') "
+        "  AND relkind = ANY(%s) "
         "ORDER BY schema_name, table_name LIMIT %s",
-        (target_id, database, cap + 1),   # +1 so we can tell we hit the cap
-    )
+        (target_id, database, list(_LISTED_RELKINDS), cap + 1),
+    )                                  # +1 so we can tell we hit the cap
     if len(rows) > cap:
-        log.info("connections: %s/%s has more than %d tables — list truncated",
+        log.info("connections: %s/%s has more than %d relations — list truncated",
                  target_id, database, cap)
         rows = rows[:cap]
-    return [{"s": r["schema_name"], "n": r["table_name"]} for r in rows]
+    return [{"s": r["schema_name"], "n": r["table_name"], "k": r["relkind"]}
+            for r in rows]
 
 
 def _catalog_tables(target_id: int, database: str) -> list[str]:
@@ -190,12 +205,12 @@ def _catalog_table_refs_map(pairs: list[tuple]) -> dict[tuple, list[dict]]:
     over: set[tuple] = set()
     for r in db.fetch_all(
             "SELECT target_server_id AS t, database_name AS d, "
-            "       schema_name, table_name "
+            "       schema_name, table_name, relkind "
             "  FROM schema_tables "
             " WHERE target_server_id = ANY(%s) AND database_name = ANY(%s) "
-            "   AND relkind IN ('table','partitioned','view','matview') "
+            "   AND relkind = ANY(%s) "
             " ORDER BY target_server_id, database_name, schema_name, table_name",
-            (tids, dbs)):
+            (tids, dbs, list(_LISTED_RELKINDS))):
         key = (r["t"], r["d"])
         if key not in wanted:
             continue                      # cross product of the two ANY lists
@@ -203,9 +218,10 @@ def _catalog_table_refs_map(pairs: list[tuple]) -> dict[tuple, list[dict]]:
         if len(bucket) >= cap:
             over.add(key)
             continue
-        bucket.append({"s": r["schema_name"], "n": r["table_name"]})
+        bucket.append({"s": r["schema_name"], "n": r["table_name"],
+                       "k": r["relkind"]})
     for key in sorted(over):
-        log.info("connections: %s/%s has more than %d tables — list truncated",
+        log.info("connections: %s/%s has more than %d relations — list truncated",
                  key[0], key[1], cap)
     return out
 
@@ -296,10 +312,12 @@ def connections(claims: dict = Depends(deps.current_user)):
                 "id": d,
                 "name": d,
                 "tier": grant["mode"].upper(),
-                # `tables` stays a bare-name list (autocomplete matches on it);
+                # `tables` stays a bare-name list (autocomplete matches on
+                # it, and a view is just as selectable as a table);
                 # `tableRefs` carries the real schema so the tree can group by
                 # it and every generated reference is properly qualified
-                # instead of guessing public/dbo.
+                # instead of guessing public/dbo, plus the relation kind so a
+                # view is not counted and drawn as a table.
                 "tables": [r["n"] for r in refs],
                 "tableRefs": refs,
                 # Truthy when the list above is not the whole database, so the

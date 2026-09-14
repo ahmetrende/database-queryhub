@@ -708,6 +708,31 @@ function qhSchemaOf(conn, db, name) {
   if (refs) { for (let i = 0; i < refs.length; i++) if (refs[i].n === name) return refs[i].s; }
   return qhSchemaFor(conn, db);
 }
+// A view is queryable exactly like a table, so it travels in the same ref list
+// and autocomplete offers it — but it is NOT a table, and the tree and the
+// fleet search must not count or draw it as one. `k` is the catalog's relation
+// kind, carried on every entry of `tableRefs`.
+const QH_VIEW_KINDS = ['view', 'matview'];
+function qhIsViewRef(ref) {
+  return !!ref && QH_VIEW_KINDS.indexOf(ref.k) !== -1;
+}
+// Split one database's relations into the two branches the tree draws, in the
+// order they arrived. `viewNames` are the bare names the lazy /schema load
+// reports as views: they decide a ref that carries no `k` (an older payload,
+// or the prototype's mock, neither of which sends one), and any of them that
+// matched no ref at all is appended — the mock keeps its views in a separate
+// generator, so they reach the tree only this way.
+function qhSplitRelations(refs, viewNames) {
+  const known = new Set(viewNames || []);
+  const tables = [], views = [], matched = new Set();
+  (refs || []).forEach(r => {
+    const isView = ('k' in r && r.k != null) ? qhIsViewRef(r) : known.has(r.n);
+    (isView ? views : tables).push(r);
+    if (isView) matched.add(r.n);
+  });
+  known.forEach(n => { if (!matched.has(n)) views.push({ s: null, n }); });
+  return { tables, views };
+}
 function qhQualify(conn, db, name, schema) {
   const eng = qhEngineId(conn && conn.engine);
   const s = schema || qhSchemaOf(conn, db, name);
@@ -926,5 +951,5 @@ Object.assign(window, {
   QH_ENGINES, qhEngineId, qhEngine, qhEngineBadge, qhEngineLogo, qhQuoteIdentFor, qhServerRoles,
   QH_PROVIDERS, QH_TAG_KEYS, QH_TAG_RESERVED, qhProviderLogo, qhProvider, qhTags, qhHosting, qhHostingFull,
   qhCustomTags, qhParseTagQuery, qhTagMatch, qhProviderGroups, qhTagVocab, qhTokenSuggest, qhApplyToken,
-  qhAutoApproveRO, qhSchemaFor, qhSchemaOf, qhQualify, qhSelectSql,
+  qhAutoApproveRO, qhSchemaFor, qhSchemaOf, qhQualify, qhSelectSql, qhIsViewRef, qhSplitRelations,
 });

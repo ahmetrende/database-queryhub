@@ -68,8 +68,9 @@ def test_no_targets_asks_nothing(monkeypatch):
 # tables per (target, database)
 # ---------------------------------------------------------------------------
 
-def _tbl(t, d, schema, name):
-    return {"t": t, "d": d, "schema_name": schema, "table_name": name}
+def _tbl(t, d, schema, name, kind="table"):
+    return {"t": t, "d": d, "schema_name": schema, "table_name": name,
+            "relkind": kind}
 
 
 def test_the_cross_product_of_two_any_lists_is_discarded(monkeypatch):
@@ -82,8 +83,8 @@ def test_the_cross_product_of_two_any_lists_is_discarded(monkeypatch):
             _tbl(2, "nova", "public", "b")]
     monkeypatch.setattr(routes_data.db, "fetch_all", lambda *a, **k: rows)
     got = routes_data._catalog_table_refs_map([(1, "ledger"), (2, "nova")])
-    assert got == {(1, "ledger"): [{"s": "public", "n": "a"}],
-                   (2, "nova"): [{"s": "public", "n": "b"}]}
+    assert got == {(1, "ledger"): [{"s": "public", "n": "a", "k": "table"}],
+                   (2, "nova"): [{"s": "public", "n": "b", "k": "table"}]}
 
 
 def test_the_cap_is_per_database_not_per_result(monkeypatch):
@@ -105,6 +106,37 @@ def test_over_the_cap_truncates_that_database_only(monkeypatch):
     got = routes_data._catalog_table_refs_map([(1, "a"), (1, "b")])
     assert [r["n"] for r in got[(1, "a")]] == ["t0", "t1"]
     assert [r["n"] for r in got[(1, "b")]] == ["only"]
+
+
+def test_a_view_is_listed_but_marked_as_one(monkeypatch):
+    """Views stay in the list — a view is as queryable as a table, and
+    autocomplete wants it. What the payload must also say is WHICH it is: the
+    kind was dropped, so the tree drew all 41 relations of one real database
+    under "Tables" (2 tables, 39 monitoring views) and then listed the views a
+    second time under "Views"."""
+    rows = [_tbl(1, "a", "public", "orders"),
+            _tbl(1, "a", "dba", "blocking_sessions", "view"),
+            _tbl(1, "a", "public", "daily_totals", "matview")]
+    monkeypatch.setattr(routes_data.db, "fetch_all", lambda *a, **k: rows)
+    got = routes_data._catalog_table_refs_map([(1, "a")])[(1, "a")]
+    assert [(r["n"], r["k"]) for r in got] == [
+        ("orders", "table"), ("blocking_sessions", "view"),
+        ("daily_totals", "matview")]
+
+
+def test_the_single_read_and_the_batched_one_agree_on_shape(monkeypatch):
+    """The tree renders from whichever of the two answered. A ref missing `k`
+    from one of them is a view drawn as a table on that path only."""
+    rows = [_tbl(1, "a", "dba", "index_info", "view")]
+    monkeypatch.setattr(
+        routes_data.db, "fetch_all",
+        lambda *a, **k: [{"schema_name": r["schema_name"],
+                          "table_name": r["table_name"],
+                          "relkind": r["relkind"]} for r in rows])
+    single = routes_data._catalog_table_refs(1, "a")
+    monkeypatch.setattr(routes_data.db, "fetch_all", lambda *a, **k: rows)
+    batched = routes_data._catalog_table_refs_map([(1, "a")])[(1, "a")]
+    assert single == batched == [{"s": "dba", "n": "index_info", "k": "view"}]
 
 
 def test_the_functions_map_fails_open(monkeypatch):
