@@ -22,8 +22,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from dba_slack_bot import auto_approve
-from dba_slack_bot.web import routes_data
+from queryhub import auto_approve
+from queryhub.web import routes_data
 
 
 # ---------------------------------------------------------------------------

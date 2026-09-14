@@ -9,7 +9,7 @@ import pytest
 
 from fastapi import HTTPException
 
-from dba_slack_bot.web import routes_requests as rr
+from queryhub.web import routes_requests as rr
 
 
 class _T:
@@ -47,10 +47,10 @@ def wired(monkeypatch):
         monkeypatch.setattr(rr.access_requests, "create", _create)
         monkeypatch.setattr(rr.access_requests, "open_count_for", lambda u: 0)
         monkeypatch.setattr(rr, "_bot_client", lambda: None)
-        import dba_slack_bot.admins as admins_mod
+        import queryhub.admins as admins_mod
         monkeypatch.setattr(admins_mod, "is_admin", lambda u: False)
         monkeypatch.setattr(admins_mod, "list_active", lambda: [{"id": "UA"}])
-        from dba_slack_bot.slack_app import access
+        from queryhub.slack_app import access
         monkeypatch.setattr(access, "fan_out_admin_dms",
                             lambda *a, **k: "1787.000")
         return state

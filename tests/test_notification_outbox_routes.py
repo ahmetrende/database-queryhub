@@ -27,9 +27,9 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from dba_slack_bot import admins, db, requesters
-from dba_slack_bot.web import app as web_app
-from dba_slack_bot.web import routes_admin, sessions
+from queryhub import admins, db, requesters
+from queryhub.web import app as web_app
+from queryhub.web import routes_admin, sessions
 
 ADMIN = "U0ADMIN"
 
@@ -322,7 +322,7 @@ def http_client(monkeypatch):
                                   else None)
     monkeypatch.setattr(sessions, "session_alive", lambda sid, principal=None: True)
     monkeypatch.setattr(requesters, "is_allowed", lambda uid: True)
-    from dba_slack_bot.web import admin as web_admin
+    from queryhub.web import admin as web_admin
     monkeypatch.setattr(web_admin.admins, "is_admin", lambda uid: uid == ADMIN)
     monkeypatch.setattr(web_admin.admins, "is_super_admin", lambda uid: False)
 

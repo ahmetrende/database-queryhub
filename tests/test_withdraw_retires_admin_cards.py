@@ -18,8 +18,8 @@ because the next reader stops looking.
 """
 import inspect
 
-from dba_slack_bot import cancellation
-from dba_slack_bot.web import routes_queries
+from queryhub import cancellation
+from queryhub.web import routes_queries
 
 
 def test_the_web_withdraw_retires_the_cards():

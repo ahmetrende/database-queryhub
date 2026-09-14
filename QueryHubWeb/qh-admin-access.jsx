@@ -154,7 +154,7 @@ function PersonPick({ people, value, onChange, resolve, autoFocus }) {
   const list = (people || []).filter(p => !term || (p.name + ' ' + p.handle).toLowerCase().includes(term)).slice(0, 8);
   const raw = (q || '').trim();
   // The typed text is offered as an id only when it is not already someone in
-  // the list — "use Elif Şahin" as a principal id is not a thing anyone wants.
+  // the list — "use Elena Silva" as a principal id is not a thing anyone wants.
   const asId = raw && !(people || []).some(p => p.handle === raw) && /^[A-Za-z0-9._@-]{3,}$/.test(raw) ? raw : null;
   const n = list.length + (asId ? 1 : 0);
   const pickPerson = (h) => { onChange(h); setRes(null); setQ(null); };

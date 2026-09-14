@@ -16,10 +16,10 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from dba_slack_bot import origins
-from dba_slack_bot.web.routes_queries import _origin_for
+from queryhub import origins
+from queryhub.web.routes_queries import _origin_for
 
-_ROUTES = Path(__file__).resolve().parents[1] / "src" / "dba_slack_bot" / "web" / "routes_queries.py"
+_ROUTES = Path(__file__).resolve().parents[1] / "src" / "queryhub" / "web" / "routes_queries.py"
 
 
 def test_an_idp_proxied_request_is_recorded_as_idp():

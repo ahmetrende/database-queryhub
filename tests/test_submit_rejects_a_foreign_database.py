@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import pytest
 
-from dba_slack_bot import pre_flight
+from queryhub import pre_flight
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ def test_the_sqlstate_is_still_honoured_if_a_later_psycopg_sets_it():
 @pytest.mark.parametrize("msg", [
     "connection timed out",
     "could not translate host name to address",
-    'FATAL:  password authentication failed for user "dba_slackbot_ro"',
+    'FATAL:  password authentication failed for user "queryhub_ro"',
     "server closed the connection unexpectedly",
     "FATAL:  too many connections for role",
 ])

@@ -24,7 +24,7 @@ default. Visible action types went from 37 to 123.
 """
 import inspect
 
-from dba_slack_bot.web import mapping, routes_admin
+from queryhub.web import mapping, routes_admin
 
 
 def test_the_filter_excludes_rather_than_admits():

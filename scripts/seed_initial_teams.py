@@ -19,7 +19,7 @@ inventory bulk-import, leads see the targets in the modal but get a
 "Target X is not ready yet" error on submit until real creds are filled.
 
 Usage:
-    set -a; source /etc/slackbot/env; set +a
+    set -a; source /etc/queryhub/env; set +a
     .venv/bin/python scripts/seed_initial_teams.py
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from dba_slack_bot import db  # noqa: E402
+from queryhub import db  # noqa: E402
 
 log = logging.getLogger("seed-teams")
 

@@ -13,8 +13,8 @@ endpoint already had, so the same set of names comes back -- computed once.
 """
 import inspect
 
-from dba_slack_bot import pii
-from dba_slack_bot.web import routes_data
+from queryhub import pii
+from queryhub.web import routes_data
 
 
 def _code(mod) -> str:

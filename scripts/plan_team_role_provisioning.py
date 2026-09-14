@@ -12,7 +12,7 @@ Read-only: this script does not modify either the bot DB or the targets.
 It just generates a step-by-step runbook tailored to your current data.
 
 Usage:
-    set -a; source /etc/slackbot/env; set +a
+    set -a; source /etc/queryhub/env; set +a
     .venv/bin/python scripts/plan_team_role_provisioning.py
 """
 from __future__ import annotations
@@ -22,11 +22,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from dba_slack_bot import db  # noqa: E402
+from queryhub import db  # noqa: E402
 
 
 def _role_name(team_name: str) -> str:
-    return f"slackbot_team_{team_name.replace('-', '_')}"
+    return f"queryhub_team_{team_name.replace('-', '_')}"
 
 
 def main() -> int:
@@ -71,7 +71,7 @@ def main() -> int:
             print(f"read -s -p 'admin password: ' PGPASSWORD; echo")
             print(f"export PGPASSWORD")
             # Pick the bot login user matching the grant mode. RO/RW grants
-            # both need the role granted to slackbot_ro (and rw if exists).
+            # both need the role granted to queryhub_ro (and rw if exists).
             bot_logins = [r["ro_login"]]
             if r["rw_login"]:
                 bot_logins.append(r["rw_login"])

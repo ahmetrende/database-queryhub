@@ -535,7 +535,7 @@ def main(argv: list[str] | None = None) -> int:
                          "omitted, the script names itself")
     args = ap.parse_args(argv)
 
-    from dba_slack_bot import audit, db
+    from queryhub import audit, db
 
     if args.verify:
         with db.connection() as conn:

@@ -2,7 +2,7 @@
 -- QueryHub — read-write role bootstrap on a TARGET Postgres server.
 --
 -- WHAT THIS DOES
---   Creates (or updates) a `dba_slackbot_rw` role with read + write access
+--   Creates (or updates) a `queryhub_rw` role with read + write access
 --   (SELECT / INSERT / UPDATE / DELETE) across the database it is run in,
 --   via the Postgres 14+ predefined roles pg_read_all_data and
 --   pg_write_all_data. No DDL — the role cannot CREATE / ALTER / DROP.
@@ -49,27 +49,27 @@
 \set ON_ERROR_STOP on
 
 -- 1. Role: create if missing.
-SELECT format('CREATE ROLE dba_slackbot_rw LOGIN PASSWORD %L', :'rw_password')
-WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'dba_slackbot_rw')\gexec
+SELECT format('CREATE ROLE queryhub_rw LOGIN PASSWORD %L', :'rw_password')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'queryhub_rw')\gexec
 
 -- 2. Always (re-)set the password (rotation path).
-SELECT format('ALTER ROLE dba_slackbot_rw WITH LOGIN PASSWORD %L', :'rw_password')\gexec
+SELECT format('ALTER ROLE queryhub_rw WITH LOGIN PASSWORD %L', :'rw_password')\gexec
 
 -- 3. Connection limit so a runaway bot can never starve other clients.
-ALTER ROLE dba_slackbot_rw CONNECTION LIMIT 5;
+ALTER ROLE queryhub_rw CONNECTION LIMIT 5;
 
 -- 4. CONNECT on the current database.
-SELECT format('GRANT CONNECT ON DATABASE %I TO dba_slackbot_rw', current_database())\gexec
+SELECT format('GRANT CONNECT ON DATABASE %I TO queryhub_rw', current_database())\gexec
 
 -- 5. Read + write everywhere via the predefined roles (PG 14+).
 --    These cover schema USAGE + read/write on existing AND future
 --    tables / views / sequences, cluster-wide.
-GRANT pg_read_all_data  TO dba_slackbot_rw;
-GRANT pg_write_all_data TO dba_slackbot_rw;
+GRANT pg_read_all_data  TO queryhub_rw;
+GRANT pg_write_all_data TO queryhub_rw;
 
 -- 6. Sanity check.
 \echo
-\echo '== dba_slackbot_rw provisioned in:'
+\echo '== queryhub_rw provisioned in:'
 SELECT current_database() AS database;
 
 \echo
@@ -77,13 +77,13 @@ SELECT current_database() AS database;
 SELECT r.rolname AS member_of
 FROM pg_auth_members m
 JOIN pg_roles r ON r.oid = m.roleid
-WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = 'dba_slackbot_rw')
+WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = 'queryhub_rw')
 ORDER BY r.rolname;
 
 \echo
 \echo '== role attribute summary:'
 SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolconnlimit
-FROM pg_roles WHERE rolname = 'dba_slackbot_rw';
+FROM pg_roles WHERE rolname = 'queryhub_rw';
 
 \echo
 \echo 'Done. Register the rw credential in the bot DB next:'

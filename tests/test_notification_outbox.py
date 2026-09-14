@@ -18,9 +18,9 @@ import json
 
 import pytest
 
-from dba_slack_bot import core_submit as cs
-from dba_slack_bot import targets
-from dba_slack_bot.slack_app import notifications as notifications_mod
+from queryhub import core_submit as cs
+from queryhub import targets
+from queryhub.slack_app import notifications as notifications_mod
 
 
 def _target():

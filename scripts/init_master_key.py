@@ -6,10 +6,10 @@ manually. Refusing to write the key until the operator types its fingerprint
 back is a small ritual that has saved real DBAs from real disasters.
 
 Usage:
-    .venv/bin/python scripts/init_master_key.py /etc/slackbot/master.key
+    .venv/bin/python scripts/init_master_key.py /etc/queryhub/master.key
 
 After it writes the key:
-    chmod 600 /etc/slackbot/master.key
+    chmod 600 /etc/queryhub/master.key
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def _fingerprint(key: bytes) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("path", help="Where to write the key (e.g. /etc/slackbot/master.key)")
+    ap.add_argument("path", help="Where to write the key (e.g. /etc/queryhub/master.key)")
     ap.add_argument(
         "--force",
         action="store_true",

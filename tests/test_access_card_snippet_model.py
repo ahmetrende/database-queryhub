@@ -15,7 +15,7 @@ matches the constraints it claims to.
 """
 import inspect
 
-from dba_slack_bot.slack_app import access
+from queryhub.slack_app import access
 
 
 def _src() -> str:

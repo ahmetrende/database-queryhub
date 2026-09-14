@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from dba_slack_bot import access_requests as ar
+from queryhub import access_requests as ar
 
 
 # ---- pure helpers -----------------------------------------------------------
@@ -48,7 +48,7 @@ def _ordinary_target(monkeypatch):
 
     Autouse and empty-set rather than per-test, so the next test added to this
     file gets the same answer instead of a confusing connection error."""
-    monkeypatch.setattr("dba_slack_bot.grants.control_plane_target_ids",
+    monkeypatch.setattr("queryhub.grants.control_plane_target_ids",
                         lambda: set())
 
 

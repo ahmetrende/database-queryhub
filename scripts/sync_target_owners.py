@@ -38,7 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from dba_slack_bot import audit, db  # noqa: E402
+from queryhub import audit, db  # noqa: E402
 
 
 def read_csv(path: Path) -> tuple[list[tuple[str, str]], list[str]]:

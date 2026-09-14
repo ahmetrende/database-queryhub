@@ -6,7 +6,7 @@ used to fall through to the DML branch and report the driver's rowcount —
 which is -1 for a streamed statement. Users saw a clean SELECT finish as
 "-1 rows affected" (seen live on request #1882).
 """
-from dba_slack_bot import executor as ex
+from queryhub import executor as ex
 
 
 class _EmptyStreamCur:

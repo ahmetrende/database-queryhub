@@ -12,7 +12,7 @@ import zipfile
 
 import pytest
 
-from dba_slack_bot.web.routes_queries import _open_statement, _statement_members
+from queryhub.web.routes_queries import _open_statement, _statement_members
 
 
 def _csv(path, header, *rows):

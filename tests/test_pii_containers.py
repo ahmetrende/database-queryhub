@@ -21,7 +21,7 @@ Two properties these tests exist to hold onto:
 """
 import pytest
 
-from dba_slack_bot import pii
+from queryhub import pii
 
 
 SECRETS = ("victim@example.com", "10000000146", "Ada Lovelace", "1 Main St")

@@ -9,7 +9,7 @@ twelve minutes before a human noticed the approvals still arriving by hand.
 """
 import pytest
 
-from dba_slack_bot import auto_approve as aa
+from queryhub import auto_approve as aa
 
 
 @pytest.mark.parametrize("typed", ["*", "", "   ", "all", "ANY", "Any"])

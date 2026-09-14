@@ -13,8 +13,8 @@ from fastapi import Request as FastAPIRequest
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from dba_slack_bot.web import app as web_app
-from dba_slack_bot.web import deps, idp_assertion
+from queryhub.web import app as web_app
+from queryhub.web import deps, idp_assertion
 
 
 def _conn(headers: dict, cookies: dict | None = None, *,

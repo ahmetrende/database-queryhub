@@ -22,7 +22,7 @@
 -- DDL provisioning (cluster-side) is the DBA's job — Postgres has no
 -- built-in pg_alter_all_tables role. Typical paths: schema-ownership
 -- transfer, per-schema GRANT CREATE/ALTER/DROP, or rds_superuser
--- membership for `dba_slackbot_ddl`.
+-- membership for `queryhub_ddl`.
 
 -- 1. Mode column on team grants (default 'ro')
 ALTER TABLE team_target_grants
@@ -66,13 +66,13 @@ ALTER TABLE target_servers
     ADD COLUMN IF NOT EXISTS password_ddl_encrypted TEXT;
 
 COMMENT ON COLUMN target_servers.username_rw IS
-$$RW user (typically dba_slackbot_rw with pg_read_all_data + pg_write_all_data). Used when the user submits a write query (UPDATE/DELETE/INSERT/MERGE/COPY) and has a grant with mode='rw' or 'ddl'. NULL = RW not configured for this target; write queries get rejected.$$;
+$$RW user (typically queryhub_rw with pg_read_all_data + pg_write_all_data). Used when the user submits a write query (UPDATE/DELETE/INSERT/MERGE/COPY) and has a grant with mode='rw' or 'ddl'. NULL = RW not configured for this target; write queries get rejected.$$;
 
 COMMENT ON COLUMN target_servers.password_rw_encrypted IS
 $$Fernet ciphertext of the RW user's password (use scripts/encrypt_secret.py).$$;
 
 COMMENT ON COLUMN target_servers.username_ddl IS
-$$DDL user (typically dba_slackbot_ddl with elevated privileges). Used when the user submits a schema/maintenance query (CREATE/ALTER/DROP/TRUNCATE/VACUUM/...) and has a grant with mode='ddl'. NULL = DDL not configured.$$;
+$$DDL user (typically queryhub_ddl with elevated privileges). Used when the user submits a schema/maintenance query (CREATE/ALTER/DROP/TRUNCATE/VACUUM/...) and has a grant with mode='ddl'. NULL = DDL not configured.$$;
 
 COMMENT ON COLUMN target_servers.password_ddl_encrypted IS
 $$Fernet ciphertext of the DDL user's password.$$;

@@ -1,5 +1,5 @@
 """Cloud-provider label derived from a target host (synthetic hosts only)."""
-from dba_slack_bot import targets
+from queryhub import targets
 
 
 def test_cloud_provider_from_host():

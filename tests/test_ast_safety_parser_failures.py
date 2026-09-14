@@ -15,7 +15,7 @@ the hole again.
 import pytest
 import sqlglot.errors
 
-from dba_slack_bot import ast_safety
+from queryhub import ast_safety
 
 
 UNTERMINATED = (

@@ -14,7 +14,7 @@ wider team grant.
 import re
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parent.parent / "src" / "dba_slack_bot" / "teams.py"
+SRC = Path(__file__).resolve().parent.parent / "src" / "queryhub" / "teams.py"
 
 
 def _src():

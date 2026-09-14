@@ -28,15 +28,15 @@ _spec.loader.exec_module(_mod)
 
 ROW = {"id": 3, "alias": "svc-prod-orders", "engine": "postgres", "enabled": True,
        "host": "db.example.internal", "port": 5432, "database": "postgres",
-       "super_ddl_role": "dba_slackbot_superadmin", "username": "dba_slackbot_ro",
-       "username_rw": "dba_slackbot_rw", "username_ddl": "dba_slackbot_ddl"}
+       "super_ddl_role": "queryhub_superadmin", "username": "queryhub_ro",
+       "username_rw": "queryhub_rw", "username_ddl": "queryhub_ddl"}
 
 
 class _Cur:
     """A cursor that records every statement and answers the two questions the
     script asks: does the role exist, and how many sessions does it have."""
-    def __init__(self, existing=("dba_slackbot_ro", "dba_slackbot_rw",
-                                 "dba_slackbot_ddl"), sessions=4):
+    def __init__(self, existing=("queryhub_ro", "queryhub_rw",
+                                 "queryhub_ddl"), sessions=4):
         self.sql = []
         self.existing = set(existing)
         self.sessions = sessions
@@ -99,7 +99,7 @@ def _positions(cur, needle):
 
 def test_the_door_is_shut_before_the_lock_is_changed(cur):
     _mod.lock_postgres(ROW, _args())
-    for name in ("dba_slackbot_ro", "dba_slackbot_rw", "dba_slackbot_ddl"):
+    for name in ("queryhub_ro", "queryhub_rw", "queryhub_ddl"):
         nologin = _positions(cur, f'"{name}" NOLOGIN')[0]
         passwd = _positions(cur, f'"{name}" PASSWORD')[0]
         assert nologin < passwd
@@ -122,8 +122,8 @@ def test_the_script_does_not_kill_itself(cur):
 
 def test_all_three_tiers_are_locked(cur):
     out = _mod.lock_postgres(ROW, _args())
-    assert out["locked"] == ["dba_slackbot_ro", "dba_slackbot_rw",
-                             "dba_slackbot_ddl"]
+    assert out["locked"] == ["queryhub_ro", "queryhub_rw",
+                             "queryhub_ddl"]
     assert out["terminated"] == 4
     assert out["error"] is None
 
@@ -131,25 +131,25 @@ def test_all_three_tiers_are_locked(cur):
 def test_a_login_absent_from_the_cluster_is_skipped(monkeypatch):
     # Not every target has all three. Locking a role that is not there is an
     # error that stops the rest of the target.
-    c = _Cur(existing=("dba_slackbot_ro",))
+    c = _Cur(existing=("queryhub_ro",))
     monkeypatch.setattr(_mod, "_connect", lambda row, args: _Conn(c))
     out = _mod.lock_postgres(ROW, _args())
-    assert out["locked"] == ["dba_slackbot_ro"]
-    assert not any("dba_slackbot_rw" in s for s in c.sql if "ALTER ROLE" in s)
+    assert out["locked"] == ["queryhub_ro"]
+    assert not any("queryhub_rw" in s for s in c.sql if "ALTER ROLE" in s)
 
 
 def test_only_the_logins_the_row_names_are_touched(monkeypatch):
     row = dict(ROW, username="app_reader", username_rw=None, username_ddl=None)
-    c = _Cur(existing=("app_reader", "dba_slackbot_rw"))
+    c = _Cur(existing=("app_reader", "queryhub_rw"))
     monkeypatch.setattr(_mod, "_connect", lambda r, a: _Conn(c))
     out = _mod.lock_postgres(row, _args())
     assert out["locked"] == ["app_reader"]
-    assert not any("dba_slackbot_rw" in s for s in c.sql)
+    assert not any("queryhub_rw" in s for s in c.sql)
 
 
 def test_the_elevated_role_is_assumed_when_the_target_has_one(cur):
     _mod.lock_postgres(ROW, _args())
-    assert cur.sql[0] == 'SET ROLE "dba_slackbot_superadmin"'
+    assert cur.sql[0] == 'SET ROLE "queryhub_superadmin"'
 
 
 def test_no_role_is_assumed_when_connecting_as_a_named_superuser(cur):
@@ -181,8 +181,8 @@ def test_a_dry_run_changes_nothing_but_still_counts_the_sessions(cur):
     out = _mod.lock_postgres(ROW, _args(apply=False))
     assert not any("ALTER ROLE" in s for s in cur.sql)
     assert not any("pg_terminate_backend" in s for s in cur.sql)
-    assert out["locked"] == ["dba_slackbot_ro", "dba_slackbot_rw",
-                             "dba_slackbot_ddl"]
+    assert out["locked"] == ["queryhub_ro", "queryhub_rw",
+                             "queryhub_ddl"]
     assert out["terminated"] == 4          # what --apply would have killed
 
 
@@ -234,7 +234,7 @@ def test_the_exported_plan_carries_no_credentials(tmp_path):
     assert "password" not in text.lower() and "secret" not in text.lower()
     plan = json.loads(text)
     assert plan["targets"][0]["host"] == "db.example.internal"
-    assert plan["targets"][0]["username"] == "dba_slackbot_ro"
+    assert plan["targets"][0]["username"] == "queryhub_ro"
     assert plan["ssl"] == {"sslmode": "verify-full"}
 
 

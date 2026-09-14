@@ -11,8 +11,8 @@ would disable everyone.
 import pytest
 from fastapi.testclient import TestClient
 
-from dba_slack_bot.web import app as web_app
-from dba_slack_bot.web import deps, routes_admin
+from queryhub.web import app as web_app
+from queryhub.web import deps, routes_admin
 
 SYNC = "U_SYNC_ACCOUNT"
 

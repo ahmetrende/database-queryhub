@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import pytest
 
-from dba_slack_bot import core_submit as cs
-from dba_slack_bot import executor as ex
-from dba_slack_bot import lifecycle, targets
+from queryhub import core_submit as cs
+from queryhub import executor as ex
+from queryhub import lifecycle, targets
 
 SQL = "SELECT id, email FROM customers WHERE id = 5"
 
@@ -179,7 +179,7 @@ def test_the_masking_switch_reads_the_verdict_not_the_row():
     for itself. Reading the row there would skip the live super-admin check."""
     import pathlib
     import re
-    src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "dba_slack_bot"
+    src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "queryhub"
            / "executor.py").read_text()
     body = src[src.index("def _execute_main_statement("):]
     body = body[:body.index("\ndef ")]

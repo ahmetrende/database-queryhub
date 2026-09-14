@@ -12,7 +12,7 @@ Postgres uses instead of `9999-12-31`, which means something else.
 """
 import datetime
 
-from dba_slack_bot import pg_types
+from queryhub import pg_types
 
 TSTZ_OID = 1184
 TS_OID = 1114

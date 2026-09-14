@@ -6,7 +6,7 @@ of freshly added / untouched items from the first item that has a target.
 A per-item override must never be overwritten, and query text / result
 format stay per-item.
 """
-from dba_slack_bot.slack_app import modal
+from queryhub.slack_app import modal
 
 
 def _block(view: dict, block_id: str) -> dict | None:

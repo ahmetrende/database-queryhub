@@ -189,7 +189,7 @@ const MOCK_PEOPLE = [
   { id: 'u_burak', handle: 'ben.donnelly', name: 'Ben Donnelly', initials: 'BD' },
   { id: 'u_can', handle: 'chen.yu', name: 'Chen Yu', initials: 'CY' },
   { id: 'u_deniz', handle: 'dana.kaur', name: 'Dana Kaur', initials: 'DK' },
-  { id: 'u_okan', handle: 'okan.kurt', name: 'Okan Kurt', initials: 'OK' },
+  { id: 'u_okan', handle: 'omar.kane', name: 'Omar Kane', initials: 'OK' },
   { id: 'u_merve', handle: 'maya.andersen', name: 'Maya Andersen', initials: 'MA' },
   { id: 'u_kaan', handle: 'kai.yamada', name: 'Kai Yamada', initials: 'KY' },
   { id: 'u_ceyda', handle: 'clara.alvarez', name: 'Clara Alvarez', initials: 'CA' },
@@ -200,7 +200,7 @@ const MOCK_PEOPLE = [
 
 // Teams do NOT nest — grants resolve through flat membership only.
 const MOCK_TEAMS = [
-  { id: 't_dataeng', name: 'data-eng', desc: 'Data engineering & analytics platform', members: ['amara.osei', 'chen.yu', 'okan.kurt', 'maya.andersen'] },
+  { id: 't_dataeng', name: 'data-eng', desc: 'Data engineering & analytics platform', members: ['amara.osei', 'chen.yu', 'omar.kane', 'maya.andersen'] },
   { id: 't_backend', name: 'backend', desc: 'Core backend services', members: ['ben.donnelly', 'kai.yamada', 'marco.young'] },
   { id: 't_payments', name: 'payments', desc: 'Payments & payouts', members: ['elena.silva', 'dana.kaur'] },
   { id: 't_compliance', name: 'compliance', desc: 'KYC, audit & regulatory', members: ['sofia.ahmed'] },
@@ -225,7 +225,7 @@ const MOCK_AUDIT = [
   { id: 'aa_2', time: isoAgo(1000 * 60 * 18), actor: 'dba.marco', event: 'Granted DDL', target: 'chen.yu → prod-main / analytics', kind: 'grant' },
   { id: 'aa_3', time: isoAgo(1000 * 60 * 42), actor: 'dba.marco', event: 'Rejected query', target: 'chen.yu · prod-main/analytics', kind: 'reject', requestId: '1981', tier: 'DDL', query: 'ALTER TABLE events ADD COLUMN device_fingerprint text;' },
   { id: 'aa_4', time: isoAgo(1000 * 60 * 66), actor: 'dba.amara', event: 'Created auto-approve grant', target: 'data-eng → prod-replica · RO', kind: 'auto' },
-  { id: 'aa_5', time: isoAgo(1000 * 60 * 120), actor: 'system', event: 'Auto-approved', target: 'okan.kurt · svc-prod-billing/billing_service', kind: 'auto', requestId: '1974', tier: 'RO', rows: 1, durationMs: 4100, query: 'SELECT * FROM billing_ledger WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1;' },
+  { id: 'aa_5', time: isoAgo(1000 * 60 * 120), actor: 'system', event: 'Auto-approved', target: 'omar.kane · svc-prod-billing/billing_service', kind: 'auto', requestId: '1974', tier: 'RO', rows: 1, durationMs: 4100, query: 'SELECT * FROM billing_ledger WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1;' },
   { id: 'aa_6', time: isoAgo(1000 * 60 * 168), actor: 'system', event: 'Auto-approved', target: 'ben.donnelly · prod-replica/users_ro', kind: 'auto', requestId: '1968', tier: 'RO', rows: 200, durationMs: 320, query: 'SELECT id, email, kyc_status FROM users WHERE kyc_status = $1 LIMIT 200;' },
   { id: 'aa_7', time: isoAgo(1000 * 60 * 60 * 4), actor: 'dba.amara', event: 'Requested changes', target: 'dana.kaur · prod-main/invoices', kind: 'changes', requestId: '1952', tier: 'RW', query: "DELETE FROM invoices WHERE status = 'draft' AND created_at < now() - interval '90 days';" },
 ];
@@ -267,7 +267,7 @@ const MOCK_METRICS = (function () {
     topUsers: [
       { name: 'elena.silva', count: 421 }, { name: 'amara.osei', count: 366 },
       { name: 'ben.donnelly', count: 318 }, { name: 'chen.yu', count: 274 },
-      { name: 'dana.kaur', count: 241 }, { name: 'okan.kurt', count: 205 },
+      { name: 'dana.kaur', count: 241 }, { name: 'omar.kane', count: 205 },
       { name: 'maya.andersen', count: 188 }, { name: 'kai.yamada', count: 152 },
     ],
     teamUsage: [

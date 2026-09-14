@@ -14,7 +14,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from dba_slack_bot import executor as ex
+from queryhub import executor as ex
 
 PLAN = [
     "Limit  (cost=0.00..1.23 rows=5000 width=8) (actual time=0.011..1.902 rows=5000 loops=1)",

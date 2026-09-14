@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Re-encrypt every stored secret with the current PRIMARY master key.
 
-Step 3 of the rotation described in src/dba_slack_bot/crypto.py and
+Step 3 of the rotation described in src/queryhub/crypto.py and
 docs/KEY_ROTATION.md. Prerequisite: the new key is already line 1 of the master
 key file and the OLD key is still present on a later line. This script does not
 generate or edit keys — it only moves ciphertext from the old key to the new one.
@@ -35,7 +35,7 @@ databases:
     line before this step rather than after it.
 
 Usage:
-    set -a; source /etc/slackbot/env; set +a
+    set -a; source /etc/queryhub/env; set +a
     .venv/bin/python scripts/rotate_master_key.py            # dry run
     .venv/bin/python scripts/rotate_master_key.py --apply
 """
@@ -50,7 +50,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from dba_slack_bot import crypto, db  # noqa: E402
+from queryhub import crypto, db  # noqa: E402
 
 PASSWORD_COLUMNS = (
     "password_encrypted",
@@ -96,7 +96,7 @@ def _rotate_secrets_file(path: Path, apply: bool) -> str:
     """Re-encrypt the env-secrets file. Returns a one-line status."""
     if not path.exists():
         return f"  secrets file {path}: not present, skipped"
-    from dba_slack_bot import secrets_store
+    from queryhub import secrets_store
 
     try:
         values = secrets_store.load(path)
@@ -215,7 +215,7 @@ def main() -> int:
 
 
 def _secrets_path() -> Path:
-    from dba_slack_bot import secrets_store
+    from queryhub import secrets_store
     return secrets_store.default_path()
 
 

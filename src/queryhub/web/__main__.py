@@ -1,4 +1,4 @@
-"""`python -m dba_slack_bot.web` — uvicorn runner for the web app.
+"""`python -m queryhub.web` — uvicorn runner for the web app.
 
 Port comes from WEB_PORT (default 8080 — the port queryhub-web.service
 owns and the operator's SSH tunnel forwards)."""

@@ -5,7 +5,7 @@ A request approved while the user held a grant can execute much later
 the meantime, the executor must fail the request closed instead of running
 it with a tier the user no longer holds.
 """
-from dba_slack_bot import executor as ex
+from queryhub import executor as ex
 
 
 def _fake_target():

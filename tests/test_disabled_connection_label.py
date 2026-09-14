@@ -30,7 +30,7 @@ def _read(name):
 def test_the_api_tells_the_ui_a_connection_is_disabled():
     """The label is impossible without this field, and it is easy to drop when
     the connections payload is next refactored."""
-    src = (Path(__file__).resolve().parent.parent / "src" / "dba_slack_bot"
+    src = (Path(__file__).resolve().parent.parent / "src" / "queryhub"
            / "web" / "routes_data.py").read_text(encoding="utf-8")
     assert '"disabled": not t.enabled' in src
 

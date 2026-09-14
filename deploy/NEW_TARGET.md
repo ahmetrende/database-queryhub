@@ -52,7 +52,7 @@ bash loop for many DBs at once).
 For each tier you created, turn the plaintext password into Fernet
 ciphertext (uses the bot's master.key):
 ```
-source .venv/bin/activate && set -a && source /etc/slackbot/env && set +a
+source .venv/bin/activate && set -a && source /etc/queryhub/env && set +a
 python3 scripts/encrypt_secret.py     # paste/enter the password, copy the ciphertext
 ```
 - [ ] RO ciphertext

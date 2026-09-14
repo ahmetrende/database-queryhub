@@ -13,7 +13,7 @@ import inspect
 
 import pytest
 
-from dba_slack_bot.mcp_server import caller, policy, server, tools
+from queryhub.mcp_server import caller, policy, server, tools
 
 
 # --- the door is shut until an operator opens it -----------------------------
@@ -241,7 +241,7 @@ def test_a_refusal_reaches_the_caller_as_words():
 
 
 def test_the_origin_says_which_door():
-    from dba_slack_bot import origins
+    from queryhub import origins
     assert origins.MCP == "mcp"
     assert origins.label("mcp") == "MCP"
     assert "origin=origins.MCP" in inspect.getsource(tools.submit_query)

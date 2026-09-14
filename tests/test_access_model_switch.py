@@ -19,9 +19,9 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-TEAMS = (ROOT / "src" / "dba_slack_bot" / "teams.py").read_text(encoding="utf-8")
-ADMINS = (ROOT / "src" / "dba_slack_bot" / "admins.py").read_text(encoding="utf-8")
-ACCESS = (ROOT / "src" / "dba_slack_bot" / "access.py").read_text(encoding="utf-8")
+TEAMS = (ROOT / "src" / "queryhub" / "teams.py").read_text(encoding="utf-8")
+ADMINS = (ROOT / "src" / "queryhub" / "admins.py").read_text(encoding="utf-8")
+ACCESS = (ROOT / "src" / "queryhub" / "access.py").read_text(encoding="utf-8")
 MIG = (ROOT / "migrations" / "107_access_model_v2_switch.sql").read_text(encoding="utf-8")
 
 
@@ -79,7 +79,7 @@ def test_the_switch_is_read_per_call_not_captured_at_import():
     """`bot_config` is runtime-effective everywhere else in this product, and
     the rollback for the whole cutover is turning this key back — which a value
     captured at import would ignore until a restart."""
-    from dba_slack_bot import teams
+    from queryhub import teams
     src = inspect.getsource(teams.use_v2)
     assert "get_setting" in src
     assert not re.search(r"^_USE_V2\s*=", TEAMS, re.M)
@@ -92,7 +92,7 @@ def test_the_key_is_seeded_off():
 
 def test_the_default_is_off_in_code_too():
     """If the row were ever missing, the absent case must be the old model."""
-    from dba_slack_bot import teams
+    from queryhub import teams
     assert '"off"' in inspect.getsource(teams.use_v2)
 
 
@@ -141,7 +141,7 @@ class _Spy:
 
 @pytest.fixture
 def v2(monkeypatch):
-    from dba_slack_bot import teams
+    from queryhub import teams
     monkeypatch.setattr(teams, "use_v2", lambda: True)
 
     def no_database(*a, **k):
@@ -163,7 +163,7 @@ RESOLVED = {"tier": "rw", "auto_tier": "ro", "source": "principal",
 
 
 def test_effective_grant_for_user_returns_the_old_shape(v2, monkeypatch):
-    from dba_slack_bot import access as real
+    from queryhub import access as real
     _spy(monkeypatch, v2, resolve_target=RESOLVED, legacy_shape=real.legacy_shape(RESOLVED))
     got = v2.effective_grant_for_user("U1", 5)
     assert got == {"mode": "rw", "allowed_databases": {"app"}, "source": "user"}
@@ -206,7 +206,7 @@ def test_the_simple_delegations_pass_through(v2, monkeypatch, fn, args,
 
 
 def test_the_batch_shapes_every_entry(v2, monkeypatch):
-    from dba_slack_bot import access as real
+    from queryhub import access as real
     spy = _Spy(resolve_many={5: RESOLVED, 6: None})
     spy.answers["legacy_shape"] = None
     monkeypatch.setattr(v2, "access", spy)
@@ -224,7 +224,7 @@ def test_unrestricted_asks_the_new_model_for_both_halves(v2, monkeypatch):
 
 
 def test_the_admin_module_delegates_too(monkeypatch):
-    from dba_slack_bot import admins
+    from queryhub import admins
     monkeypatch.setattr(admins, "_v2", lambda: True)
 
     def no_database(*a, **k):
@@ -267,7 +267,7 @@ def test_a_grant_reaches_whichever_model_owns_the_team():
     `mirrored_from`, so a row written here is invisible to it and cannot be
     revoked out from under an admin.
     """
-    src = (ROOT / "src" / "dba_slack_bot" / "web"
+    src = (ROOT / "src" / "queryhub" / "web"
            / "routes_admin.py").read_text(encoding="utf-8")
     i = src.index('if stype == "team":')
     body = src[i:i + 3200]
@@ -285,7 +285,7 @@ def test_a_grant_reaches_whichever_model_owns_the_team():
 def test_the_roles_endpoint_writes_rows_the_mirror_will_not_touch():
     """`mirrored_from` left NULL is what keeps the mirror's revoke-what-has-no-
     source pass away from a row a person wrote."""
-    routes = (ROOT / "src" / "dba_slack_bot" / "web"
+    routes = (ROOT / "src" / "queryhub" / "web"
               / "routes_admin.py").read_text(encoding="utf-8")
     i = routes.index("INSERT INTO role_assignment")
     stmt = routes[i:i + 900]
@@ -296,7 +296,7 @@ def test_the_mirror_is_what_keeps_the_two_models_together():
     """The startup warning said reads and writes were on different models.
     Migration 109 is the answer to it, so the warning has to stop claiming a
     grant will not take effect."""
-    from dba_slack_bot import access
+    from queryhub import access
     import inspect
     warning = inspect.getsource(access._log_v2_warning)
     assert "mirror" in warning.lower()
@@ -312,17 +312,17 @@ def test_the_copy_script_gates_the_flag_on_drift():
 
 
 def test_a_service_that_boots_with_the_flag_on_says_so():
-    from dba_slack_bot import access
+    from queryhub import access
     assert callable(access.warn_if_access_model_v2)
     for entry in ("main.py", "web/app.py"):
-        text = (ROOT / "src" / "dba_slack_bot" / entry).read_text(encoding="utf-8")
+        text = (ROOT / "src" / "queryhub" / entry).read_text(encoding="utf-8")
         assert "warn_if_access_model_v2()" in text, entry
 
 
 def test_the_warning_never_stops_a_service_booting(monkeypatch):
     """A config read that raises must not be the reason the bot will not
     start. The warning is scaffolding; the service is not."""
-    from dba_slack_bot import access, config
+    from queryhub import access, config
 
     def boom(*a, **k):
         raise RuntimeError("no database")
@@ -332,7 +332,7 @@ def test_the_warning_never_stops_a_service_booting(monkeypatch):
 
 
 def test_the_warning_is_silent_when_the_flag_is_off(monkeypatch):
-    from dba_slack_bot import access, config
+    from queryhub import access, config
     said = []
     monkeypatch.setattr(config, "get_setting", lambda *a, **k: "off")
     monkeypatch.setattr(access, "_log_v2_warning", lambda: said.append(1))
@@ -341,7 +341,7 @@ def test_the_warning_is_silent_when_the_flag_is_off(monkeypatch):
 
 
 def test_the_warning_fires_when_the_flag_is_on(monkeypatch):
-    from dba_slack_bot import access, config
+    from queryhub import access, config
     said = []
     monkeypatch.setattr(config, "get_setting", lambda *a, **k: "on")
     monkeypatch.setattr(access, "_log_v2_warning", lambda: said.append(1))
@@ -356,8 +356,8 @@ def test_the_warning_fires_when_the_flag_is_on(monkeypatch):
 # it writes, and `_scope_admits` is only ever reached from `can_approve`'s
 # legacy body. Three were not.
 
-EXECUTOR = (ROOT / "src" / "dba_slack_bot" / "executor.py").read_text(encoding="utf-8")
-SUBCMD = (ROOT / "src" / "dba_slack_bot" / "slack_app"
+EXECUTOR = (ROOT / "src" / "queryhub" / "executor.py").read_text(encoding="utf-8")
+SUBCMD = (ROOT / "src" / "queryhub" / "slack_app"
           / "subcommands.py").read_text(encoding="utf-8")
 MIG112 = (ROOT / "migrations"
           / "112_team_summary_excludes_revoked.sql").read_text(encoding="utf-8")
@@ -442,7 +442,7 @@ def test_the_request_fan_out_asks_a_different_question_than_list_active():
     and the other four are untouched."""
     assert "def notify_list(request: dict)" in ADMINS
     assert "admins.notify_list(row)" in (
-        ROOT / "src" / "dba_slack_bot" / "core_submit.py").read_text(encoding="utf-8")
+        ROOT / "src" / "queryhub" / "core_submit.py").read_text(encoding="utf-8")
 
 
 def test_a_scoped_approver_was_never_told_a_request_was_waiting():
@@ -468,7 +468,7 @@ def test_the_scope_test_happens_once_so_both_consumers_agree():
     notification_outbox row. If the scope test ran in each, the two could name
     different people — the exact failure the single capture exists to stop."""
     assert "def notify_list(request: dict)" in ADMINS
-    src = (ROOT / "src" / "dba_slack_bot" / "core_submit.py").read_text(encoding="utf-8")
+    src = (ROOT / "src" / "queryhub" / "core_submit.py").read_text(encoding="utf-8")
     assert src.count("admins.notify_list(") == 1
     assert "admins.list_active()" not in src
 
@@ -485,7 +485,7 @@ def test_the_bundle_fan_out_is_deliberately_left_alone():
     every item in the bundle. Listing a scoped approver there would hand them
     a button that approves items outside their scope, so widening it needs a
     per-item scope model first. Left as admins-only, on purpose."""
-    notif = (ROOT / "src" / "dba_slack_bot" / "slack_app"
+    notif = (ROOT / "src" / "queryhub" / "slack_app"
              / "notifications.py").read_text(encoding="utf-8")
     i = notif.index("def notify_admins_bundle")
     assert "admins.list_active()" in notif[i:i + 1200]
@@ -500,7 +500,7 @@ def test_the_web_teams_screen_follows_the_switch_too():
     teams to NONE while `/sql teams` showed thirteen. Two surfaces, one
     question, opposite answers — and the empty one is the screen an admin
     manages access from."""
-    src = (ROOT / "src" / "dba_slack_bot" / "web"
+    src = (ROOT / "src" / "queryhub" / "web"
            / "routes_admin.py").read_text(encoding="utf-8")
     i = src.index("def _teams_payload()")
     body = src[i:i + 2600]
@@ -511,7 +511,7 @@ def test_the_web_teams_screen_follows_the_switch_too():
 def test_a_synced_team_is_marked_on_that_screen():
     """Renaming one there would be undone by the next sync run, so the screen
     has to be able to say which ones it does not own."""
-    src = (ROOT / "src" / "dba_slack_bot" / "web"
+    src = (ROOT / "src" / "queryhub" / "web"
            / "routes_admin.py").read_text(encoding="utf-8")
     assert '"syncedFrom"' in src
 
@@ -522,7 +522,7 @@ def test_a_team_grant_can_reach_the_new_model():
     cutover that table is empty, so this branch could not grant a team
     anything at all — the 27 grants the cutover wrote went straight to
     `access_grant` and there was no supported path to the 28th."""
-    src = (ROOT / "src" / "dba_slack_bot" / "web"
+    src = (ROOT / "src" / "queryhub" / "web"
            / "routes_admin.py").read_text(encoding="utf-8")
     i = src.index('if stype == "team":')
     body = src[i:i + 3200]
@@ -535,7 +535,7 @@ def test_changing_a_team_grants_tier_is_revoke_then_insert():
     """A row is immutable, and `access_grant_live_uq` would otherwise hold the
     old tier and the new one at once — the resolver takes the more permissive
     of the two, so an admin narrowing a grant would have widened it."""
-    src = (ROOT / "src" / "dba_slack_bot" / "web"
+    src = (ROOT / "src" / "queryhub" / "web"
            / "routes_admin.py").read_text(encoding="utf-8")
     i = src.index('if stype == "team":')
     body = src[i:i + 3200]
@@ -546,7 +546,7 @@ def test_changing_a_team_grants_tier_is_revoke_then_insert():
 def test_a_team_is_findable_by_the_name_the_screen_shows():
     """A pod's code is `team-a` and what everyone calls it is `Team A`.
     An admin typing what the screen shows should not get "no such team"."""
-    src = (ROOT / "src" / "dba_slack_bot" / "web"
+    src = (ROOT / "src" / "queryhub" / "web"
            / "routes_admin.py").read_text(encoding="utf-8")
     i = src.index("def _resolve_team(")
     body = src[i:i + 1200]

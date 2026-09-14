@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from dba_slack_bot import schema_catalog
+from queryhub import schema_catalog
 
 
 class RecordingCursor:

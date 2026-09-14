@@ -5,9 +5,9 @@ The old bug: admins._scope_admits called query_safety.required_mode()
 with no engine, so a non-Postgres query was classified with the
 Postgres parser and could be admitted below its true tier.
 """
-import dba_slack_bot.query_safety as qs
-import dba_slack_bot.targets as targets
-from dba_slack_bot import admins
+import queryhub.query_safety as qs
+import queryhub.targets as targets
+from queryhub import admins
 
 
 def test_persisted_tier_is_preferred_over_reparsing(monkeypatch):

@@ -1,6 +1,6 @@
 """Pure tests for auth_events.build_notifications — the outbox-row →
 DM-text mapping. No DB: alias/team lookups are injected."""
-from dba_slack_bot import auth_events
+from queryhub import auth_events
 
 
 ALIAS = {52: "alpha-prod", 7: "beta-prod"}
@@ -251,12 +251,12 @@ def _ev(i, uid, target):
 def test_a_single_change_keeps_its_exact_wording():
     """The common case must not gain a wrapper — this is the message people
     already recognise."""
-    from dba_slack_bot.auth_events import combine_notes
+    from queryhub.auth_events import combine_notes
     assert combine_notes([":zap: Auto-approve active"]) == ":zap: Auto-approve active"
 
 
 def test_several_changes_become_one_bulleted_message():
-    from dba_slack_bot.auth_events import combine_notes
+    from queryhub.auth_events import combine_notes
     out = combine_notes(["first", "second", "third"])
     assert out.startswith("*3 access changes*")
     assert out.count("•") == 3
@@ -265,11 +265,11 @@ def test_several_changes_become_one_bulleted_message():
 
 def test_thirteen_rows_send_one_dm(monkeypatch):
     """The regression: thirteen grants for one person used to be thirteen DMs."""
-    from dba_slack_bot import auth_events as ae
+    from queryhub import auth_events as ae
     sent = []
     monkeypatch.setattr(ae, "_alias_of", lambda tid: f"conn-{tid}")
     monkeypatch.setattr(ae, "_team_info", lambda tid: (None, []))
-    from dba_slack_bot.slack_app import notifications
+    from queryhub.slack_app import notifications
     monkeypatch.setattr(notifications, "dm_requester",
                         lambda c, uid, text: sent.append((uid, text)))
     events = [_ev(i, "U0AB12CD34", i) for i in range(1, 14)]
@@ -287,11 +287,11 @@ def test_thirteen_rows_send_one_dm(monkeypatch):
 
 
 def test_two_people_get_one_dm_each(monkeypatch):
-    from dba_slack_bot import auth_events as ae
+    from queryhub import auth_events as ae
     sent = []
     monkeypatch.setattr(ae, "_alias_of", lambda tid: f"conn-{tid}")
     monkeypatch.setattr(ae, "_team_info", lambda tid: (None, []))
-    from dba_slack_bot.slack_app import notifications
+    from queryhub.slack_app import notifications
     monkeypatch.setattr(notifications, "dm_requester",
                         lambda c, uid, text: sent.append((uid, text)))
     events = [_ev(1, "U0AB12CD34", 1), _ev(2, "U0AB12CD34", 2),
@@ -310,14 +310,14 @@ def test_two_people_get_one_dm_each(monkeypatch):
 
 def test_a_failed_send_leaves_only_its_own_events_unprocessed(monkeypatch):
     """One unreachable recipient must not hold back everyone else's."""
-    from dba_slack_bot import auth_events as ae
+    from queryhub import auth_events as ae
     monkeypatch.setattr(ae, "_alias_of", lambda tid: f"conn-{tid}")
     monkeypatch.setattr(ae, "_team_info", lambda tid: (None, []))
 
     def dm(c, uid, text):
         if uid == "U0BAD00000":
             raise RuntimeError("channel_not_found")
-    from dba_slack_bot.slack_app import notifications
+    from queryhub.slack_app import notifications
     monkeypatch.setattr(notifications, "dm_requester", dm)
 
     events = [_ev(1, "U0AB12CD34", 1), _ev(2, "U0BAD00000", 2)]

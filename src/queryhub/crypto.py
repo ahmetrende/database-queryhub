@@ -1,6 +1,6 @@
 """Fernet encryption using master keys stored on disk.
 
-The master key file (default: /etc/slackbot/master.key) holds one url-safe
+The master key file (default: /etc/queryhub/master.key) holds one url-safe
 base64-encoded 32-byte key PER LINE. To migrate the bot to a new host, copy
 this file plus set BOT_DB_* env vars. All encrypted secrets live in the DB and
 become immediately decryptable on the new host.
@@ -46,7 +46,7 @@ def _master_key_path() -> Path:
     require the full bot env (`SLACK_BOT_TOKEN`, BOT_DB_*) to be set. The
     encryption helper used at admin time only needs this single path.
     """
-    return Path(os.environ.get("MASTER_KEY_PATH", "/etc/slackbot/master.key"))
+    return Path(os.environ.get("MASTER_KEY_PATH", "/etc/queryhub/master.key"))
 
 
 def _read_key(path: Path) -> bytes:

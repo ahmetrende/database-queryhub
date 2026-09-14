@@ -1,5 +1,5 @@
 """FastAPI app: auth flow + /me now; API_CONTRACT endpoints arrive in
-later phases. Run with `python -m dba_slack_bot.web`."""
+later phases. Run with `python -m queryhub.web`."""
 from __future__ import annotations
 
 import json

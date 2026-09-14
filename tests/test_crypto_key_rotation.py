@@ -23,7 +23,7 @@ the WINDOW, because that is where a rotation goes wrong:
 import pytest
 from cryptography.fernet import Fernet
 
-from dba_slack_bot import crypto
+from queryhub import crypto
 
 
 @pytest.fixture
@@ -201,7 +201,7 @@ def test_the_secrets_file_stays_readable_after_prepending_a_key(keyfile, tmp_pat
     itself with a single Fernet built from the primary, so at step 2 the bot
     would have failed to boot: the rotation meant to be non-disruptive would
     have taken the service down before anything was re-encrypted."""
-    from dba_slack_bot import secrets_store
+    from queryhub import secrets_store
 
     secrets_path = tmp_path / "secrets.enc"
     monkeypatch.setenv("SECRETS_ENC_PATH", str(secrets_path))
@@ -217,7 +217,7 @@ def test_rewriting_the_secrets_file_moves_it_to_the_primary_key(keyfile, tmp_pat
                                                                monkeypatch):
     """Step 3 for the file half: after a save it must be readable by the new key
     alone, so step 4 is safe."""
-    from dba_slack_bot import secrets_store
+    from queryhub import secrets_store
 
     secrets_path = tmp_path / "secrets.enc"
     monkeypatch.setenv("SECRETS_ENC_PATH", str(secrets_path))

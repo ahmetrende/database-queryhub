@@ -2,7 +2,7 @@
   "mcpServers": {
     "queryhub": {
       "command": ".venv/bin/python",
-      "args": ["-m", "dba_slack_bot.mcp_server"]
+      "args": ["-m", "queryhub.mcp_server"]
     }
   }
 }

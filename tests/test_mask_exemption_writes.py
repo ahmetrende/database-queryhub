@@ -18,18 +18,18 @@ from __future__ import annotations
 
 import pytest
 
-from dba_slack_bot.web import routes_admin
-from dba_slack_bot.web.routes_admin import MaskExemptionIn
+from queryhub.web import routes_admin
+from queryhub.web.routes_admin import MaskExemptionIn
 
 
 @pytest.fixture(autouse=True)
 def _known_connection(monkeypatch):
     monkeypatch.setattr(routes_admin, "_target_id_of",
-                        lambda alias: 7 if alias == "exc-prod-x" else None)
+                        lambda alias: 7 if alias == "svc-prod-x" else None)
 
 
 def _body(**kw):
-    base = {"connectionId": "exc-prod-x", "databaseId": "app",
+    base = {"connectionId": "svc-prod-x", "databaseId": "app",
             "schema": "public", "table": "users", "column": "email",
             "reason": "holds a wallet address, not a postal one"}
     base.update(kw)
@@ -159,7 +159,7 @@ def test_an_unknown_switch_value_is_refused_not_defaulted(kw):
 # hold it to that: the change must be confined to what the exemption names,
 # and a SOFT exemption must still catch a real email in the column it frees.
 
-from dba_slack_bot import pii  # noqa: E402
+from queryhub import pii  # noqa: E402
 
 
 def _pair(monkeypatch, *, stored=(), strength="full",

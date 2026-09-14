@@ -7,7 +7,7 @@ apart: two produced a real-looking alias the sidebar simply did not contain,
 and the third produced the numeric id as a string, which looks like an alias
 too. The UI could only render a dash.
 """
-from dba_slack_bot.web import mapping
+from queryhub.web import mapping
 
 
 def _hist(tid=3):

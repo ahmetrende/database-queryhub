@@ -9,8 +9,8 @@ exists for.
 implied by the array. The (c) round found the same trap in `bundlePosition`:
 "item 3 of 5" means nothing if 3 is a list index.
 """
-from dba_slack_bot import executor as ex
-from dba_slack_bot.web import routes_queries as rq
+from queryhub import executor as ex
+from queryhub.web import routes_queries as rq
 
 
 def test_labels_come_from_what_was_executed():

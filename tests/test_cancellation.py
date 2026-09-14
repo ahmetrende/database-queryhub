@@ -23,8 +23,8 @@ still running this request's query.
 """
 import pytest
 
-from dba_slack_bot import cancellation
-from dba_slack_bot.cancellation import CancelOutcome
+from queryhub import cancellation
+from queryhub.cancellation import CancelOutcome
 
 
 class FakeTargetCursor:
@@ -276,7 +276,7 @@ class _ProbeCur:
 
 
 def test_the_probe_identifies_the_session_not_the_statement(monkeypatch):
-    from dba_slack_bot import cancellation as c
+    from queryhub import cancellation as c
     monkeypatch.setattr(c.db, "fetch_one",
                         lambda *a, **k: {"query": "SELECT * FROM big_table"})
     cur = _ProbeCur()
@@ -292,7 +292,7 @@ def test_the_probe_identifies_the_session_not_the_statement(monkeypatch):
 def test_the_query_text_survives_only_as_a_fallback(monkeypatch):
     """A session with no application_name — a pre-084 execution, or a connection
     something other than the executor opened."""
-    from dba_slack_bot import cancellation as c
+    from queryhub import cancellation as c
     monkeypatch.setattr(c.db, "fetch_one",
                         lambda *a, **k: {"query": "SELECT 1"})
     cur = _ProbeCur()
@@ -303,7 +303,7 @@ def test_the_query_text_survives_only_as_a_fallback(monkeypatch):
 
 
 def test_a_request_with_no_query_matches_nothing(monkeypatch):
-    from dba_slack_bot import cancellation as c
+    from queryhub import cancellation as c
     monkeypatch.setattr(c.db, "fetch_one", lambda *a, **k: None)
     assert c._matches_this_request(_ProbeCur(), 1, 2) is False
 
@@ -324,7 +324,7 @@ class _TxnCur:
 
 def _fake_txn(monkeypatch, cur):
     import contextlib
-    from dba_slack_bot import cancellation as c
+    from queryhub import cancellation as c
 
     @contextlib.contextmanager
     def txn():
@@ -334,7 +334,7 @@ def _fake_txn(monkeypatch, cur):
 
 
 def test_withdrawing_closes_the_row_and_says_who(monkeypatch):
-    from dba_slack_bot import cancellation as c
+    from queryhub import cancellation as c
     cur = _TxnCur(rowcount=1)
     _fake_txn(monkeypatch, cur)
     assert c.withdraw(1990, "U1", "Ada") is True
@@ -347,7 +347,7 @@ def test_withdrawing_is_conditional_on_the_status_it_was_read_at(monkeypatch):
     """The race that matters: the executor claiming the row between the read and
     the UPDATE. Losing it must be a no-op, not a request marked cancelled while a
     query runs against production."""
-    from dba_slack_bot import cancellation as c
+    from queryhub import cancellation as c
     cur = _TxnCur(rowcount=0)
     _fake_txn(monkeypatch, cur)
     assert c.withdraw(1990, "U1", "Ada") is False
@@ -358,6 +358,6 @@ def test_withdrawing_is_conditional_on_the_status_it_was_read_at(monkeypatch):
 
 
 def test_the_withdrawable_states_are_the_pre_execution_ones():
-    from dba_slack_bot import cancellation as c
+    from queryhub import cancellation as c
     assert set(c.WITHDRAWABLE) == {"pending", "changes_requested",
                                    "approved", "scheduled"}

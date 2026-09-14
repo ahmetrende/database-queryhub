@@ -1,7 +1,7 @@
 # QueryHub — operations cheatsheet
 
 All CLI commands, DB configs, and admin SQL snippets in one place.
-Copy-paste ready. Most commands assume `set -a; source /etc/slackbot/env; set +a`
+Copy-paste ready. Most commands assume `set -a; source /etc/queryhub/env; set +a`
 (needed by anything that connects to the bot DB). Each section is
 self-contained — read what you need, skip the rest.
 
@@ -44,36 +44,36 @@ self-contained — read what you need, skip the rest.
 
 ```bash
 # Status / health
-systemctl is-active slackbot
-systemctl status slackbot --no-pager | head -15
+systemctl is-active queryhub
+systemctl status queryhub --no-pager | head -15
 
 # Restart (after any code or env change)
-sudo systemctl restart slackbot
+sudo systemctl restart queryhub
 
 # Live logs
-sudo journalctl -u slackbot -f
+sudo journalctl -u queryhub -f
 
 # Last 50 lines
-sudo journalctl -u slackbot -n 50 --no-pager
+sudo journalctl -u queryhub -n 50 --no-pager
 
 # Errors only, last hour
-sudo journalctl -u slackbot --since "1 hour ago" --no-pager | grep -iE "ERROR|WARN"
+sudo journalctl -u queryhub --since "1 hour ago" --no-pager | grep -iE "ERROR|WARN"
 ```
 
-**Service file**: `/etc/systemd/system/slackbot.service` →
-`WorkingDirectory=<repo-path>`, `EnvironmentFile=/etc/slackbot/env`,
+**Service file**: `/etc/systemd/system/queryhub.service` →
+`WorkingDirectory=<repo-path>`, `EnvironmentFile=/etc/queryhub/env`,
 runs as the user the repo is owned by (whoever you chose at install
 time). See `deploy/INSTALL.md` for the placeholder substitution.
 
-**Update flow**: `cd <repo-path> && git pull && sudo systemctl restart slackbot`.
+**Update flow**: `cd <repo-path> && git pull && sudo systemctl restart queryhub`.
 
 ---
 
 ## 2. Encrypted secrets
 
 The 3 secrets (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `BOT_DB_PASSWORD`) live
-encrypted in `/etc/slackbot/secrets.enc` (Fernet via `master.key`). The
-plaintext `/etc/slackbot/env` no longer contains any secrets.
+encrypted in `/etc/queryhub/secrets.enc` (Fernet via `master.key`). The
+plaintext `/etc/queryhub/env` no longer contains any secrets.
 
 ```bash
 # Show metadata (which keys are present, mode, mtime — never values)
@@ -91,7 +91,7 @@ sudo .venv/bin/python scripts/manage_env_secrets.py set BOT_DB_PASSWORD
 sudo .venv/bin/python scripts/manage_env_secrets.py remove
 
 # Always restart after changes
-sudo systemctl restart slackbot
+sudo systemctl restart queryhub
 ```
 
 File format: line 1 is `SLBOT_SECRETS_v1` (signature for human
@@ -230,7 +230,7 @@ VALUES
      'acme-prod-orders.<aws-id>.<region>.rds.amazonaws.com',
      5432,
      'orders',
-     'dba_slackbot_ro',
+     'queryhub_ro',
      '<paste Fernet ciphertext from encrypt_secret.py>',
      TRUE,
      'orders cluster, prod');
@@ -240,7 +240,7 @@ VALUES
 
 ```sql
 UPDATE target_servers
-   SET username_rw         = 'dba_slackbot_rw',
+   SET username_rw         = 'queryhub_rw',
        password_rw_encrypted = '<paste Fernet ciphertext>'
  WHERE alias = 'acme-prod-orders';
 ```
@@ -249,7 +249,7 @@ UPDATE target_servers
 
 ```sql
 UPDATE target_servers
-   SET username_ddl         = 'dba_slackbot_ddl',
+   SET username_ddl         = 'queryhub_ddl',
        password_ddl_encrypted = '<paste Fernet ciphertext>'
  WHERE alias = 'acme-prod-orders';
 ```
@@ -600,10 +600,10 @@ SELECT id, requester_slack_id,
 
 ```bash
 # Where it lives
-ls -la /etc/slackbot/master.key   # mode 600 ubuntu:ubuntu, 44 bytes
+ls -la /etc/queryhub/master.key   # mode 600 ubuntu:ubuntu, 44 bytes
 
 # Fingerprint sidecar (optional sanity check)
-cat /etc/slackbot/master.key.fingerprint
+cat /etc/queryhub/master.key.fingerprint
 
 # First-time generation (one-shot, with backup ritual)
 sudo .venv/bin/python scripts/init_master_key.py
@@ -615,7 +615,7 @@ sudo .venv/bin/python scripts/init_master_key.py
 The same key:
 - Decrypts `target_servers.password_encrypted` (and `_rw_encrypted`,
   `_ddl_encrypted`)
-- Decrypts `/etc/slackbot/secrets.enc` (Slack tokens + bot DB password)
+- Decrypts `/etc/queryhub/secrets.enc` (Slack tokens + bot DB password)
 
 **If you rotate this key, you must also re-encrypt every dependent
 secret with the new key.** No tooling for that today; do not rotate
@@ -639,15 +639,15 @@ casually.
 ### Disk usage
 
 ```bash
-du -sh /var/lib/slackbot/results /var/log/slackbot 2>/dev/null
+du -sh /var/lib/queryhub/results /var/log/queryhub 2>/dev/null
 ```
 
 ### Forced shutdown if systemctl restart hangs
 
 ```bash
-sudo systemctl stop slackbot           # waits up to 90s
-sudo systemctl kill --signal=SIGKILL slackbot
-sudo systemctl start slackbot
+sudo systemctl stop queryhub           # waits up to 90s
+sudo systemctl kill --signal=SIGKILL queryhub
+sudo systemctl start queryhub
 ```
 
 ### Quick health snapshot (one query)
@@ -1299,7 +1299,7 @@ UPDATE temp_admin_grants
 If you prefer Python over raw SQL:
 
 ```python
-from dba_slack_bot import admins
+from queryhub import admins
 from datetime import datetime, timedelta, timezone
 
 # Returns the new grant_id; raises admins.NotASuperAdmin if the
@@ -1427,16 +1427,16 @@ in the repo):
 
 ```bash
 # 1. Bucket name + key (key is optional; default is dba-metrics/index.html).
-sudo tee /etc/slackbot/dashboard.env >/dev/null <<EOC
+sudo tee /etc/queryhub/dashboard.env >/dev/null <<EOC
 METRICS_DASHBOARD_BUCKET=<the-bucket-name>
 METRICS_DASHBOARD_KEY=dba-metrics/index.html
 AWS_REGION=eu-central-1
 EOC
-sudo chown __USER__:__USER__ /etc/slackbot/dashboard.env
-sudo chmod 600 /etc/slackbot/dashboard.env
+sudo chown __USER__:__USER__ /etc/queryhub/dashboard.env
+sudo chmod 600 /etc/queryhub/dashboard.env
 
 # 2. Drop the systemd unit + timer in place with placeholders
-#    substituted (same pattern as slackbot.service in INSTALL.md).
+#    substituted (same pattern as queryhub.service in INSTALL.md).
 sudo cp deploy/dba-metrics-publish.service /etc/systemd/system/
 sudo cp deploy/dba-metrics-publish.timer   /etc/systemd/system/
 sudo sed -i "s|__USER__|$BOT_USER|g; s|__INSTALL_PATH__|$REPO_DIR|g" \
@@ -1546,7 +1546,7 @@ scrape_configs:
 
 **The values come from SQL at scrape time, not from in-process counters.** That
 is deliberate: counters in memory reset on restart, and the two processes
-(`slackbot` and `queryhub-web`) each see only part of the traffic, so neither
+(`queryhub` and `queryhub-web`) each see only part of the traffic, so neither
 would have the whole picture. Counters here are cumulative over all history,
 which is what `rate()` expects.
 
@@ -1591,7 +1591,7 @@ case and JSON is worse for that. Both this and `LOG_LEVEL` are read once at
 process start, so a change needs a restart:
 
 ```bash
-sudo systemctl restart slackbot queryhub-web
+sudo systemctl restart queryhub queryhub-web
 ```
 
 ---
@@ -1619,15 +1619,15 @@ BEGIN
     RAISE EXCEPTION 'pre-16 server (%): WITH INHERIT FALSE is unavailable',
                     current_setting('server_version');
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'dba_slackbot_superadmin') THEN
-    CREATE ROLE dba_slackbot_superadmin NOLOGIN CREATEROLE CREATEDB;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'queryhub_superadmin') THEN
+    CREATE ROLE queryhub_superadmin NOLOGIN CREATEROLE CREATEDB;
   END IF;
   EXECUTE 'GRANT ' || (SELECT rolname FROM pg_roles
                         WHERE rolname IN ('rds_superuser','root')
                         ORDER BY 1 LIMIT 1)
-                   || ' TO dba_slackbot_superadmin';
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'dba_slackbot_ddl') THEN
-    EXECUTE 'GRANT dba_slackbot_superadmin TO dba_slackbot_ddl '
+                   || ' TO queryhub_superadmin';
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'queryhub_ddl') THEN
+    EXECUTE 'GRANT queryhub_superadmin TO queryhub_ddl '
             'WITH INHERIT FALSE, SET TRUE';
   END IF;
 END $$;
@@ -1646,7 +1646,7 @@ statement working on both clouds.
 
 ```sql
 UPDATE target_servers
-   SET super_ddl_role = 'dba_slackbot_superadmin'
+   SET super_ddl_role = 'queryhub_superadmin'
  WHERE alias = '<target>';
 ```
 
@@ -1655,12 +1655,12 @@ Runtime-effective — the executor reads it per request, no restart.
 ### Verify from the catalog, not from the absence of errors
 
 ```sql
-SELECT CASE WHEN pg_has_role('dba_slackbot_superadmin','rds_superuser','USAGE')
+SELECT CASE WHEN pg_has_role('queryhub_superadmin','rds_superuser','USAGE')
              AND EXISTS (SELECT 1 FROM pg_auth_members m
                            JOIN pg_roles r ON r.oid = m.roleid
                            JOIN pg_roles u ON u.oid = m.member
-                          WHERE r.rolname = 'dba_slackbot_superadmin'
-                            AND u.rolname = 'dba_slackbot_ddl'
+                          WHERE r.rolname = 'queryhub_superadmin'
+                            AND u.rolname = 'queryhub_ddl'
                             AND m.inherit_option = false
                             AND m.set_option    = true)
             THEN 'VERIFIED' ELSE 'INCOMPLETE' END;
@@ -1671,7 +1671,7 @@ And prove the property end to end by logging in as the DDL user:
 ```sql
 SELECT pg_has_role(current_user,'rds_superuser','USAGE');  -- must be false
 BEGIN;
-  SET LOCAL ROLE dba_slackbot_superadmin;
+  SET LOCAL ROLE queryhub_superadmin;
   SELECT pg_has_role(current_user,'rds_superuser','USAGE'); -- true, inside only
 COMMIT;
 SELECT current_user;                                        -- back to the login

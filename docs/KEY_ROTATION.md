@@ -62,7 +62,7 @@ python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 ### 3. Restart both services
 
 ```bash
-sudo systemctl restart slackbot queryhub-web
+sudo systemctl restart queryhub queryhub-web
 ```
 
 From here, anything newly encrypted uses the new key. Everything already
@@ -72,7 +72,7 @@ real query — if this step is wrong, you want to know before step 4.
 ### 4. Re-encrypt what is already stored
 
 ```bash
-set -a; source /etc/slackbot/env; set +a
+set -a; source /etc/queryhub/env; set +a
 .venv/bin/python scripts/rotate_master_key.py            # dry run first
 .venv/bin/python scripts/rotate_master_key.py --apply
 ```
@@ -99,7 +99,7 @@ Run a real query against a target. Then delete every line after line 1 and
 restart again:
 
 ```bash
-sudo systemctl restart slackbot queryhub-web
+sudo systemctl restart queryhub queryhub-web
 ```
 
 Until you do this, the old key still works — there is no deadline. Store the

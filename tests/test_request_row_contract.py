@@ -17,9 +17,9 @@ import ast
 import re
 from pathlib import Path
 
-from dba_slack_bot import core_submit
+from queryhub import core_submit
 
-SRC = Path(__file__).resolve().parents[1] / "src" / "dba_slack_bot"
+SRC = Path(__file__).resolve().parents[1] / "src" / "queryhub"
 
 
 def _returned_columns() -> set[str]:

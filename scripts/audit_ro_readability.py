@@ -31,12 +31,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import psycopg  # noqa: E402
 
-from dba_slack_bot import schema_catalog, targets  # noqa: E402
+from queryhub import schema_catalog, targets  # noqa: E402
 
 log = logging.getLogger("audit-ro")
 
 WALLET_USER = "ahmet_rende"     # resolved from ~/.pgpass; override with --user
-RO_ROLE = "dba_slackbot_ro"
+RO_ROLE = "queryhub_ro"
 
 _UNREADABLE_SQL = """
 SELECT n.nspname AS schema_name, c.relname AS rel,

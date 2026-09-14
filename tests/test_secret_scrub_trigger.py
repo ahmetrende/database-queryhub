@@ -74,14 +74,14 @@ def test_the_keyword_is_what_anchors_the_match():
 @pytest.mark.skipif(not os.environ.get("QH_RUN_INTEGRATION"),
                     reason="set QH_RUN_INTEGRATION=1 with a reachable control DB")
 def test_the_trigger_masks_on_completion_and_not_before():
-    from dba_slack_bot import db
+    from queryhub import db
 
     secret = "CREATE ROLE t_probe LOGIN PASSWORD 'Sup3rSecret-not-real-42';"
     with db.transaction() as cur:
         cur.execute("""INSERT INTO requests
             (requester_slack_id, requester_name, target_server_id, database_name,
              query, wants_result, status, required_tier)
-            VALUES ('U_TEST_PROBE', 'trigger probe', 1, 'slackbot', %s, false,
+            VALUES ('U_TEST_PROBE', 'trigger probe', 1, 'queryhub', %s, false,
                     'approved', 'ddl') RETURNING id""", (secret,))
         rid = cur.fetchone()["id"]
     try:

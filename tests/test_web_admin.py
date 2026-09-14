@@ -1,5 +1,5 @@
 """Pure tests for web/routes_admin.py helpers."""
-from dba_slack_bot.web import routes_admin
+from queryhub.web import routes_admin
 
 
 def test_parse_grant_id_user():

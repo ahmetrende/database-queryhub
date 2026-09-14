@@ -165,7 +165,7 @@ def test_the_two_words_the_models_spell_differently_are_translated_once():
     disagree with itself. Pin the single copy.
     """
     import inspect
-    src = (Path(snap.__file__).parent.parent / "src" / "dba_slack_bot"
+    src = (Path(snap.__file__).parent.parent / "src" / "queryhub"
            / "access.py").read_text(encoding="utf-8")
     assert src.count('source = "admin_or_bypass"') == 1     # the code, once
     assert "def legacy_shape(" in src

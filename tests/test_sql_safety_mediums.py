@@ -13,9 +13,9 @@
 """
 import pytest
 
-from dba_slack_bot import ast_safety
-from dba_slack_bot import config as cfg
-from dba_slack_bot import query_safety as qs
+from queryhub import ast_safety
+from queryhub import config as cfg
+from queryhub import query_safety as qs
 
 
 @pytest.mark.parametrize("sql", [

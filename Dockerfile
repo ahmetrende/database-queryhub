@@ -5,7 +5,7 @@
 # `npm run build` used to serve nothing, so the build cannot be optional.
 #
 # The image runs the web app only — the vanilla profile, which is the whole
-# product without Slack. Add `[slack]` and run `python -m dba_slack_bot.main`
+# product without Slack. Add `[slack]` and run `python -m queryhub.main`
 # alongside it if you want the Slack surface.
 
 # ---------------------------------------------------------------- frontend
@@ -77,4 +77,4 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=40s --retries=6 \
         sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).status == 200 else 1)"
 
 ENTRYPOINT ["queryhub-entrypoint"]
-CMD ["python", "-m", "dba_slack_bot.web"]
+CMD ["python", "-m", "queryhub.web"]

@@ -82,7 +82,7 @@ ALTER TABLE web_sessions ADD  CONSTRAINT web_sessions_slack_user_id_check
 -- 2) local_users — credentials only. Authorization still lives in requesters
 --    / admins (keyed on the local:<username> principal id), exactly like a
 --    Slack user. Passwords are stored as a salted, iterated PBKDF2 hash
---    (see src/dba_slack_bot/passwords.py) — NEVER cleartext.
+--    (see src/queryhub/passwords.py) — NEVER cleartext.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS local_users (
     username       TEXT PRIMARY KEY

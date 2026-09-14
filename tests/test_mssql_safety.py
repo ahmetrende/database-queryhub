@@ -8,8 +8,8 @@ set or, for the rowset-function cases, the AST fn-check.
 """
 import pytest
 
-from dba_slack_bot import ast_safety
-from dba_slack_bot import query_safety as qs
+from queryhub import ast_safety
+from queryhub import query_safety as qs
 
 
 def _tier(sql):

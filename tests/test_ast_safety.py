@@ -1,5 +1,5 @@
 """ast_safety — sqlglot second-pass checks + the approval-cache fingerprint."""
-from dba_slack_bot import ast_safety as ast
+from queryhub import ast_safety as ast
 
 
 # --- dangerous function / COPY PROGRAM / pg_sleep --------------------------
@@ -40,14 +40,14 @@ def test_unparseable_blocked():
 # --- is_explainable ---------------------------------------------------------
 
 def test_explainable_select():
-    from dba_slack_bot import pre_flight as pf
+    from queryhub import pre_flight as pf
     assert pf.is_explainable("SELECT 1")
     assert pf.is_explainable("UPDATE t SET a=1 WHERE id=1")
     assert pf.is_explainable("WITH c AS (SELECT 1) SELECT * FROM c")
 
 
 def test_not_explainable_ddl():
-    from dba_slack_bot import pre_flight as pf
+    from queryhub import pre_flight as pf
     assert not pf.is_explainable("ALTER TABLE t ADD COLUMN x int")
     assert not pf.is_explainable("CREATE TABLE t (id int)")
     assert not pf.is_explainable("TRUNCATE t")

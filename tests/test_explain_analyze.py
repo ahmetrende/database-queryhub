@@ -1,8 +1,8 @@
 """EXPLAIN ANALYZE gating: config toggle + read-only + no write / no
 dangerous-function escape. EXPLAIN ANALYZE executes the wrapped statement,
 so the rules are load-bearing."""
-from dba_slack_bot import config as cfg
-from dba_slack_bot import query_safety as qs
+from queryhub import config as cfg
+from queryhub import query_safety as qs
 
 
 def _toggle_on(monkeypatch):

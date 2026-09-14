@@ -1,6 +1,6 @@
 """The new resolver's rules, each one pinned to the case that would break it.
 
-`dba_slack_bot.access` answers what `teams.py` answers, from the nine-table
+`queryhub.access` answers what `teams.py` answers, from the nine-table
 model. Equivalence over the whole fleet is proved elsewhere, by capturing every
 (principal, target, database) answer from both and diffing them — that is the
 evidence, and it is empty. What it cannot do is say WHY each answer is what it
@@ -13,7 +13,7 @@ found by running it against real rows rather than by reading it.
 """
 import pytest
 
-from dba_slack_bot import access
+from queryhub import access
 
 RANK = {"ro": 10, "rw": 20, "ddl": 30}
 

@@ -26,7 +26,7 @@ the shape matters:
 """
 import pytest
 
-from dba_slack_bot import core_submit
+from queryhub import core_submit
 
 
 class FakeCur:
@@ -191,17 +191,17 @@ def test_the_reaper_runs_from_the_scheduler_loop():
     that never reaps grows a draft per abandoned tab for ever."""
     import inspect
 
-    from dba_slack_bot import executor
+    from queryhub import executor
     src = inspect.getsource(executor.scheduler_loop)
     assert "reap_stale_drafts()" in src
 
 
 @pytest.mark.parametrize("module,needle", [
-    ("dba_slack_bot.web.routes_data", "status <> 'draft'"),
-    ("dba_slack_bot.web.routes_queries", "r.status <> 'draft'"),
-    ("dba_slack_bot.web.ops_metrics", "status <> 'draft'"),
-    ("dba_slack_bot.slack_app.subcommands", "r.status <> 'draft'"),
-    ("dba_slack_bot.slack_app.handlers", "r.status <> 'draft'"),
+    ("queryhub.web.routes_data", "status <> 'draft'"),
+    ("queryhub.web.routes_queries", "r.status <> 'draft'"),
+    ("queryhub.web.ops_metrics", "status <> 'draft'"),
+    ("queryhub.slack_app.subcommands", "r.status <> 'draft'"),
+    ("queryhub.slack_app.handlers", "r.status <> 'draft'"),
 ])
 def test_every_listing_surface_filters_drafts_out(module, needle):
     """A reserved id has no SQL and no target, so showing one in history, in the

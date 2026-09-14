@@ -3,7 +3,7 @@ result delivery / finalization must be recorded as completed-with-a-warning,
 never 'failed' — which would tell the user nothing happened while the change
 is in fact applied, and could prompt a duplicate re-run.
 """
-from dba_slack_bot import executor as ex
+from queryhub import executor as ex
 
 
 def test_on_committed_fires_right_after_execute():

@@ -21,8 +21,8 @@ guard is removed; that property is asserted at the bottom of the file.
 """
 import pytest
 
-from dba_slack_bot import core_submit as cs
-from dba_slack_bot import query_safety
+from queryhub import core_submit as cs
+from queryhub import query_safety
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ def submit_env(monkeypatch):
                             "enabled": True, "host": "h", "port": 5432})()
     monkeypatch.setattr(cs.targets, "get", lambda tid: target)
 
-    from dba_slack_bot import lifecycle
+    from queryhub import lifecycle
     monkeypatch.setattr(lifecycle, "is_draining", lambda: False)
 
     # Anything reached only AFTER the gate must blow up if it is reached, so a
@@ -128,7 +128,7 @@ def test_a_blocked_query_is_never_executed(monkeypatch):
     The connection factory raises: reaching the database at all is the failure
     this test is looking for, and the request must be failed instead.
     """
-    from dba_slack_bot import executor
+    from queryhub import executor
 
     target = type("T", (), {"id": 7, "engine": "postgres", "alias": "t",
                             "host": "h", "port": 5432, "enabled": True})()
@@ -169,7 +169,7 @@ def test_the_execution_gate_reads_the_stored_query_not_the_submitted_one():
     import pathlib
     import re
     src = (pathlib.Path(__file__).resolve().parent.parent / "src"
-           / "dba_slack_bot" / "executor.py").read_text(encoding="utf-8")
+           / "queryhub" / "executor.py").read_text(encoding="utf-8")
     # Matched on the first ARGUMENT rather than the whole call text: the call
     # gained `unrestricted=` (re-derived from the requester's current super-admin
     # standing) and wrapped onto three lines, which broke an exact-string
@@ -191,7 +191,7 @@ def test_both_enforcement_points_are_still_present_in_the_source():
     should someone also weaken the behavioural tests above.
     """
     import pathlib
-    root = pathlib.Path(__file__).resolve().parent.parent / "src" / "dba_slack_bot"
+    root = pathlib.Path(__file__).resolve().parent.parent / "src" / "queryhub"
     submit = (root / "core_submit.py").read_text(encoding="utf-8")
     execute = (root / "executor.py").read_text(encoding="utf-8")
     assert "if safety.blocked:" in submit

@@ -9,8 +9,8 @@ between "Role created" and "Role already exists" never reached anyone.
 """
 import json
 
-from dba_slack_bot import executor as ex
-from dba_slack_bot.web import mapping
+from queryhub import executor as ex
+from queryhub.web import mapping
 
 
 class _Diag:

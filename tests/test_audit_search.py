@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from dba_slack_bot.web import routes_admin as ra
+from queryhub.web import routes_admin as ra
 
 ROOT = Path(__file__).resolve().parents[1]
 SCREEN = (ROOT / "QueryHubWeb" / "qh-admin-audit.jsx").read_text(encoding="utf-8")
@@ -230,7 +230,7 @@ def test_the_exclusion_list_covers_the_kind_it_hides():
 @pytest.mark.skipif(not os.getenv("QH_RUN_INTEGRATION"),
                     reason="needs the control database")
 def test_the_counts_agree_with_each_other_on_real_data():
-    from dba_slack_bot.web import admin
+    from queryhub.web import admin
     orig = admin.require_admin
     admin.require_admin = lambda claims, need="review", **kw: "TEST"
     try:

@@ -35,7 +35,7 @@ def scan(tmp_path, monkeypatch):
     mod = _scanner()
     monkeypatch.setattr(
         mod, "_dynamic_terms_from_db",
-        lambda: [(r"exc-prod-secret", "real target alias", True)])
+        lambda: [(r"svc-prod-secret", "real target alias", True)])
 
     def run(text: str) -> int:
         p = tmp_path / "COMMIT_EDITMSG"
@@ -45,7 +45,7 @@ def scan(tmp_path, monkeypatch):
 
 
 def test_a_message_naming_a_real_alias_is_refused(scan):
-    assert scan("fix it\n\nbroken on exc-prod-secret today\n") == 1
+    assert scan("fix it\n\nbroken on svc-prod-secret today\n") == 1
 
 
 def test_a_message_that_names_nothing_passes(scan):
@@ -56,7 +56,7 @@ def test_gits_own_comment_lines_are_not_scanned(scan):
     """`git commit` fills the file with commented scaffolding — including the
     branch and the file list. Scanning those would refuse commits for text the
     author never wrote and that never ships."""
-    assert scan("fix it\n\n# On branch exc-prod-secret\n") == 0
+    assert scan("fix it\n\n# On branch svc-prod-secret\n") == 0
 
 
 def test_the_attribution_trailers_are_exempt_here_too(scan, monkeypatch):

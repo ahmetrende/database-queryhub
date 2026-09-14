@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from dba_slack_bot import grant_expiry as ge
+from queryhub import grant_expiry as ge
 
 NOW = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
 
@@ -98,7 +98,7 @@ def swept(monkeypatch):
             if uid in fail_for:
                 raise RuntimeError("channel_not_found")
             r.sent.append((uid, text))
-        from dba_slack_bot.slack_app import notifications
+        from queryhub.slack_app import notifications
         monkeypatch.setattr(notifications, "dm_requester", dm)
         r.warned = ge.sweep(object())
         return r

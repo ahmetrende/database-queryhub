@@ -18,7 +18,7 @@ one that is refused.
 """
 import inspect
 
-from dba_slack_bot.web import routes_admin
+from queryhub.web import routes_admin
 
 
 def _code(fn) -> str:

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import pytest
 
-from dba_slack_bot import executor as ex
+from queryhub import executor as ex
 
 WHERELESS = "UPDATE rewards SET flag = 1"
 

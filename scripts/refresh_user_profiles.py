@@ -25,7 +25,7 @@ import time
 
 sys.path.insert(0, "src")
 
-from dba_slack_bot import audit, config as cfg, db  # noqa: E402
+from queryhub import audit, config as cfg, db  # noqa: E402
 
 cfg._maybe_load_encrypted_secrets()
 

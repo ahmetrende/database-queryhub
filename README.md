@@ -132,7 +132,7 @@ PostgreSQL rules could be a write under the target's. Refusing an engine it can
 parse but cannot execute is the same discipline as refusing SQL whose meaning is
 ambiguous: **if the guarantee cannot be made, the query does not run.**
 
-Adding an engine is a spec in [`engines.py`](src/dba_slack_bot/engines.py) —
+Adding an engine is a spec in [`engines.py`](src/queryhub/engines.py) —
 sqlglot dialect, banned leading keywords, driver — plus a resolver in the
 lineage and statement-count seams. It is not a fork.
 
@@ -261,11 +261,11 @@ Before installing, you need:
 | | |
 |---|---|
 | **(Optional) Slack workspace** | Only for the Slack surface (`/sql` + Slack approvals/DMs): admin access to create / install a custom Slack app with Socket Mode + Bot Token + App Token. Without it, QueryHub runs **web-only** with built-in local accounts — the *vanilla profile* (see below) |
-| **PostgreSQL — bot metadata DB** | A Postgres instance the bot can dedicate one DB to (`slackbot` by default). Hosting agnostic: RDS, self-managed, or local for dev |
-| **At least one target DB** | The cluster(s) developers query — **PostgreSQL or SQL Server**. Per-tier login roles: `dba_slackbot_ro` / `_rw` / `_ddl` on Postgres, matching logins on SQL Server |
+| **PostgreSQL — bot metadata DB** | A Postgres instance the bot can dedicate one DB to (`queryhub` by default). Hosting agnostic: RDS, self-managed, or local for dev |
+| **At least one target DB** | The cluster(s) developers query — **PostgreSQL or SQL Server**. Per-tier login roles: `queryhub_ro` / `_rw` / `_ddl` on Postgres, matching logins on SQL Server |
 | **Linux host** | A small VM or container that can run Python 3.11+ continuously and reach Slack + your DBs. Install path documented for systemd; a different supervisor works fine |
 | **Python 3.11+** | Plus `python3.11-venv`, `libpq-dev`, `git` |
-| **(Optional) Web UI** | To expose the web surface: run `python -m dba_slack_bot.web` (FastAPI/uvicorn) behind TLS and serve the `QueryHubWeb/` bundle. Web login is either **Slack OIDC** (a Slack app's client id/secret) or **built-in local accounts** (username/password, no Slack) |
+| **(Optional) Web UI** | To expose the web surface: run `python -m queryhub.web` (FastAPI/uvicorn) behind TLS and serve the `QueryHubWeb/` bundle. Web login is either **Slack OIDC** (a Slack app's client id/secret) or **built-in local accounts** (username/password, no Slack) |
 | **(Optional) SQL Server driver** | For SQL Server targets: Microsoft ODBC driver (`msodbcsql18`) + the `mssql` extra — `pip install '.[mssql]'` (pulls `pyodbc`) |
 | **A Postgres superuser (or rds_superuser) for bootstrap** | Used **once** by `deploy/setup_db.sql` to create the bot's metadata DB and login role |
 
@@ -359,7 +359,7 @@ and Slack accounts are distinct principals and can coexist.
 - **Shared core, two surfaces** — a transport-agnostic
   submit → decide → execute core (`core_submit.py`, `core_decide.py`,
   `executor.py`) is driven by both the **Slack** app (Bolt + Socket Mode, no
-  public endpoint) and **QueryHub Web** (FastAPI, `python -m dba_slack_bot.web`).
+  public endpoint) and **QueryHub Web** (FastAPI, `python -m queryhub.web`).
   Approvals happen in Slack *or* the web admin panel — the same decision core
   either way. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **Pluggable engines** — `engines.py` carries one spec per engine (sqlglot
@@ -374,7 +374,7 @@ and Slack accounts are distinct principals and can coexist.
   queries with `statement_timeout`, streams rows into a capped CSV.
 - **Encrypted at rest** — Fernet (symmetric) ciphertext for target
   credentials, Slack tokens, and the bot DB password. The single
-  master key file (`/etc/slackbot/master.key`) is the only on-disk
+  master key file (`/etc/queryhub/master.key`) is the only on-disk
   secret. To migrate hosts, copy that one file.
 
 Full adapter/port model: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -382,7 +382,7 @@ Every `bot_config` knob: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 Web session/auth design: [docs/AUTH.md](docs/AUTH.md).
 
 ```
-src/dba_slack_bot/
+src/queryhub/
 ├── main.py             # entry point: Slack Bolt + Socket Mode
 ├── config.py           # env vars + bot_config table reads
 ├── db.py               # metadata DB pool + db.transaction() helper
@@ -430,8 +430,8 @@ There are no long-running admin CLIs — see
 [docs/OPERATIONS.md](docs/OPERATIONS.md) for copy-paste snippets.
 Quick links:
 
-- **Bot lifecycle** — `systemctl restart slackbot`,
-  `journalctl -u slackbot -f`
+- **Bot lifecycle** — `systemctl restart queryhub`,
+  `journalctl -u queryhub -f`
 - **Encrypted secrets** —
   `scripts/manage_env_secrets.py {init,list,set,remove}`
 - **Targets** — `scripts/encrypt_secret.py` then INSERT via
