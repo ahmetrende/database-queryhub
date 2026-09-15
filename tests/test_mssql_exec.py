@@ -119,10 +119,10 @@ class _FakeConn:
 
 def test_catalog_databases_lists_names(monkeypatch):
     desc = [("name",)]
-    rows = [("DBA",), ("gtpbrdb",), ("XHCP",)]
+    rows = [("DBA",), ("sampledb",), ("XHCP",)]
     conn = _FakeConn(_FakeCursor([("sys.databases", desc, rows)]))
     monkeypatch.setattr(mx, "connect", lambda *a, **k: conn)
-    assert mx.catalog_databases("h", 1433, "DBA", "u", "p") == ["DBA", "gtpbrdb", "XHCP"]
+    assert mx.catalog_databases("h", 1433, "DBA", "u", "p") == ["DBA", "sampledb", "XHCP"]
     assert conn.closed  # connection always closed
 
 
@@ -148,7 +148,7 @@ def test_catalog_snapshot_normalizes_shape(monkeypatch):
     ]))
     monkeypatch.setattr(mx, "connect", lambda *a, **k: conn)
 
-    tables, columns = mx.catalog_snapshot("h", 1433, "gtpbrdb", "u", "p")
+    tables, columns = mx.catalog_snapshot("h", 1433, "sampledb", "u", "p")
     assert conn.closed
     # tables: relkind passthrough + partition fields None
     assert [t["relkind"] for t in tables] == ["table", "view"]

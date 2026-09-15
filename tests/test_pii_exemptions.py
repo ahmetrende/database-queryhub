@@ -20,7 +20,7 @@ def _patch(monkeypatch, rows):
 
 def decide(sql, columns, rows, monkeypatch):
     _patch(monkeypatch, rows)
-    return pii.exemption_decision(29, "sanctions_service", sql, columns)
+    return pii.exemption_decision(29, "catalog_service", sql, columns)
 
 
 # --- _tables_in --------------------------------------------------------------
@@ -49,7 +49,7 @@ def test_tables_in_unparseable_is_none():
 # --- DB-wide exemption -------------------------------------------------------
 
 def test_db_wide_row_lifts_all(monkeypatch):
-    rows = [{"database_name": "sanctions_service", "table_name": None, "column_name": None}]
+    rows = [{"database_name": "catalog_service", "table_name": None, "column_name": None}]
     skip_all, cols = decide("SELECT name FROM anything", ["name"], rows, monkeypatch)
     assert skip_all is True and cols == set()
 
@@ -61,7 +61,7 @@ def test_no_rows_no_exemption(monkeypatch):
 
 # --- table-level -------------------------------------------------------------
 
-TBL = [{"database_name": "sanctions_service", "table_name": "sanctions", "column_name": None}]
+TBL = [{"database_name": "catalog_service", "table_name": "sanctions", "column_name": None}]
 
 
 def test_table_exempt_single_table(monkeypatch):
@@ -93,7 +93,7 @@ def test_table_exempt_cte_over_exempt_table(monkeypatch):
 # --- column-level ------------------------------------------------------------
 
 def test_column_exempt_unscoped(monkeypatch):
-    rows = [{"database_name": "sanctions_service", "table_name": None, "column_name": "name"}]
+    rows = [{"database_name": "catalog_service", "table_name": None, "column_name": "name"}]
     skip_all, cols = decide("SELECT uid, name FROM sanctions",
                             ["uid", "name"], rows, monkeypatch)
     assert skip_all is False
@@ -101,14 +101,14 @@ def test_column_exempt_unscoped(monkeypatch):
 
 
 def test_column_exempt_table_scoped_matches_single_table(monkeypatch):
-    rows = [{"database_name": "sanctions_service", "table_name": "sanctions", "column_name": "name"}]
+    rows = [{"database_name": "catalog_service", "table_name": "sanctions", "column_name": "name"}]
     skip_all, cols = decide("SELECT uid, name FROM sanctions",
                             ["uid", "name"], rows, monkeypatch)
     assert cols == {1}
 
 
 def test_column_exempt_table_scoped_blocked_on_join(monkeypatch):
-    rows = [{"database_name": "sanctions_service", "table_name": "sanctions", "column_name": "name"}]
+    rows = [{"database_name": "catalog_service", "table_name": "sanctions", "column_name": "name"}]
     skip_all, cols = decide(
         "SELECT u.name FROM sanctions s JOIN users u ON u.id = s.uid",
         ["name"], rows, monkeypatch)

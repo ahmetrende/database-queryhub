@@ -70,6 +70,24 @@ def test_gits_own_comment_lines_are_not_scanned(scan):
     assert scan("fix it\n\n# On branch svc-prod-secret\n") == 0
 
 
+def test_a_database_name_is_refused_like_an_alias(tmp_path, monkeypatch):
+    """A server and the database beside it are the same fact about the fleet --
+    `<server> / <database>` names a service twice -- and only the alias half was
+    ever on the denylist. The export rewrites the alias PREFIX on the way out;
+    a database name has no prefix to rewrite, so it travelled all the way."""
+    mod = _scanner()
+    monkeypatch.setattr(mod, "_dynamic_terms_from_db", lambda: [
+        (r"widget_service", "real database name (widget_service)", True)])
+
+    def run(text: str) -> int:
+        f = tmp_path / "COMMIT_EDITMSG"
+        f.write_text(text, encoding="utf-8")
+        return mod.scan_message_file(str(f))
+
+    assert run("fix it\n\nseen on widget_service this morning\n") == 1
+    assert run("fix it\n\nseen on one production database today\n") == 0
+
+
 def test_the_attribution_trailers_are_exempt_here_too(scan, monkeypatch):
     """A squash merge appends Co-authored-by with the owner's own name, which
     is legitimately on the denylist. The committed-message scan already exempts

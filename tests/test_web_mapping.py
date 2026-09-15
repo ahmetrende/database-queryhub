@@ -340,7 +340,7 @@ def _audit_row(**over):
     row = {"id": 8459, "request_id": 2019, "action": "completed",
            "actor_slack_id": "U1", "actor_name": "Ada", "details": {},
            "created_at": None,
-           "req_target_server_id": 21, "req_database_name": "notify_service",
+           "req_target_server_id": 21, "req_database_name": "shipping_service",
            "req_requester_name": "Ada", "req_query": "select * from t",
            "req_row_count": 5000, "req_executed_at": None,
            "req_completed_at": None}

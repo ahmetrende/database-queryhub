@@ -21,7 +21,7 @@ from queryhub import core_submit as cs
 from queryhub import lifecycle, targets
 
 WHERELESS = "UPDATE rewards SET flag = 1"
-KILLS_AUDIT = "ALTER DATABASE reward_service SET log_statement = 'none'"
+KILLS_AUDIT = "ALTER DATABASE ledger_service SET log_statement = 'none'"
 
 
 @pytest.fixture

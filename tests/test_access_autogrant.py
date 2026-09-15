@@ -71,7 +71,7 @@ class FakeConn:
 
 ROW = {
     "id": 13, "requester_slack_id": "U0EXAMPLE01", "requester_name": "Dev One",
-    "target_server_id": 21, "database_name": "notify_service",
+    "target_server_id": 21, "database_name": "shipping_service",
     "attempted_query": None, "reason": "[requested tier: RO] delivery debugging",
     "requested_tier": "ro", "status": "approved",
     "decided_by_slack_id": "U0EXAMPLE99", "decided_by_name": "admin",
@@ -102,7 +102,7 @@ def test_approve_creates_grant_fresh(monkeypatch, audit_calls):
     out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
     ag = out["auto_grant"]
     assert ag == {"applied": True, "reason": "granted",
-                  "mode": "ro", "databases": ["notify_service"]}
+                  "mode": "ro", "databases": ["shipping_service"]}
     assert conn.sql_containing("INSERT INTO user_target_grants")
     assert conn.sql_containing("INSERT INTO requesters")     # whitelist net
     assert audit_calls and audit_calls[0][0] == "access_request_auto_grant"
@@ -114,7 +114,9 @@ def test_approve_merges_same_tier(monkeypatch, audit_calls):
     _wire(monkeypatch, conn)
     out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
     assert out["auto_grant"]["applied"] is True
-    assert out["auto_grant"]["databases"] == ["notify_service", "other_db"]
+    # `sorted(set(existing) | set(new))` -- the union is sorted, so the order
+    # here follows the names, not the order they arrived in.
+    assert out["auto_grant"]["databases"] == ["other_db", "shipping_service"]
 
 
 def test_approve_skips_on_tier_conflict(monkeypatch, audit_calls):
@@ -136,7 +138,7 @@ def test_approve_revoked_grant_treated_as_fresh(monkeypatch, audit_calls):
     out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
     # revoked rw row is dead — the new ro grant replaces it at the asked tier
     assert out["auto_grant"] == {"applied": True, "reason": "granted",
-                                 "mode": "ro", "databases": ["notify_service"]}
+                                 "mode": "ro", "databases": ["shipping_service"]}
 
 
 def test_approve_no_target_skips(monkeypatch, audit_calls):

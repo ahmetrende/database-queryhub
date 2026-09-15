@@ -28,13 +28,13 @@ from queryhub import query_safety as qs
 # ---------------------------------------------------------------------------
 
 AUDIT_KILLERS = [
-    "ALTER DATABASE reward_service SET log_statement = 'none'",
+    "ALTER DATABASE ledger_service SET log_statement = 'none'",
     "ALTER SYSTEM SET log_min_duration_statement = -1",
     "ALTER SYSTEM SET log_destination = 'stderr'",
     "ALTER ROLE app_user SET pgaudit.log = 'none'",
     "ALTER USER app_user IN DATABASE x SET log_statement = 'none'",
     "ALTER SYSTEM RESET ALL",
-    "ALTER DATABASE reward_service RESET ALL",
+    "ALTER DATABASE ledger_service RESET ALL",
 ]
 
 
@@ -52,7 +52,7 @@ def test_a_normal_alter_is_not_mistaken_for_one(unrestricted):
     """The guard reads raw text, so over-matching is the risk to pin."""
     for sql in ("ALTER TABLE logs ADD COLUMN note text",
                 "ALTER TABLE rewards SET (fillfactor = 70)",
-                "ALTER DATABASE reward_service SET work_mem = '64MB'",
+                "ALTER DATABASE ledger_service SET work_mem = '64MB'",
                 "SELECT * FROM login_attempts"):
         r = qs.analyze(sql, unrestricted=unrestricted)
         assert not any("logging" in b for b in r.blockers), sql
@@ -88,7 +88,7 @@ def test_unrestricted_asks_instead_of_refusing(sql):
 
 
 IRREVERSIBLE = ["DROP TABLE rewards", "TRUNCATE rewards",
-                "DROP SCHEMA public CASCADE", "DROP DATABASE reward_service",
+                "DROP SCHEMA public CASCADE", "DROP DATABASE ledger_service",
                 "ALTER TABLE rewards DROP COLUMN note",
                 "ALTER TABLE rewards DROP CONSTRAINT rewards_pkey"]
 

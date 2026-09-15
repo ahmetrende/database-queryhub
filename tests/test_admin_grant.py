@@ -10,14 +10,14 @@ def test_db_options_read_targets_from_private_metadata(monkeypatch):
     monkeypatch.setattr(handlers.grants, "authz",
                         lambda uid: {"super": True, "max_tier": None})
     monkeypatch.setattr(handlers.schema_catalog, "list_snapshot_databases",
-                        lambda tid: {15: ["crm", "kyc"], 9: ["config_service"]}.get(tid, []))
+                        lambda tid: {15: ["crm", "kyc"], 9: ["widget_service"]}.get(tid, []))
     captured = {}
     body = {"user": {"id": "UADMIN"},
             "view": {"private_metadata": '{"targets": [15, 9]}',
                      "state": {"values": {}}}}   # state deliberately empty
     handlers.handle_grant_db_options(lambda p: captured.update(p), {"value": ""}, body)
     vals = sorted(o["value"] for o in captured["options"])
-    assert vals == ["config_service", "crm", "kyc"]   # union across both targets
+    assert vals == ["crm", "kyc", "widget_service"]   # union across both targets
 
 
 # --- grants.allowed_tiers ---------------------------------------------------

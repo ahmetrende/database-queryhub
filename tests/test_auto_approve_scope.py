@@ -22,7 +22,7 @@ def test_none_stays_none():
 
 
 @pytest.mark.parametrize("typed,stored", [
-    ("notify_service", "notify_service"),
+    ("shipping_service", "shipping_service"),
     ("  nova  ", "nova"),
 ])
 def test_a_real_name_is_kept_and_trimmed(typed, stored):
@@ -32,17 +32,17 @@ def test_a_real_name_is_kept_and_trimmed(typed, stored):
 def test_the_star_grant_would_not_have_matched():
     """The bug itself, stated as the matcher sees it."""
     star = {"max_tier": "ro", "target_server_id": 21, "database_name": "*"}
-    assert not aa.grant_covers(star, "ro", 21, "notify_service")
+    assert not aa.grant_covers(star, "ro", 21, "shipping_service")
 
     fixed = dict(star, database_name=aa.normalise_scope(star["database_name"]))
-    assert aa.grant_covers(fixed, "ro", 21, "notify_service")
+    assert aa.grant_covers(fixed, "ro", 21, "shipping_service")
 
 
 def test_a_named_scope_still_narrows():
     """Folding `*` must not turn every scoped grant into a fleet-wide one."""
     scoped = {"max_tier": "ro", "target_server_id": 21,
-              "database_name": "notify_service"}
-    assert aa.grant_covers(scoped, "ro", 21, "notify_service")
+              "database_name": "shipping_service"}
+    assert aa.grant_covers(scoped, "ro", 21, "shipping_service")
     assert not aa.grant_covers(scoped, "ro", 21, "some_other_db")
 
 
@@ -62,7 +62,7 @@ def test_validate_scope_rejects_a_database_that_is_not_there(monkeypatch):
 
 def test_validate_scope_accepts_a_database_that_is_there(monkeypatch):
     monkeypatch.setattr(aa.db, "fetch_one", lambda *a, **k: {"hit": 1, "total": 7})
-    aa.validate_scope(21, "notify_service")     # must not raise
+    aa.validate_scope(21, "shipping_service")     # must not raise
 
 
 def test_validate_scope_skips_the_any_database_grant(monkeypatch):

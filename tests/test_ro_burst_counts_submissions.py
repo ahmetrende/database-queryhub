@@ -26,7 +26,7 @@ def _rows(monkeypatch, rows):
     return captured
 
 
-def _req(tid=15, db="gopanel_service", q="SELECT 1"):
+def _req(tid=15, db="demo_service", q="SELECT 1"):
     return {"target_server_id": tid, "database_name": db, "query": q}
 
 
@@ -44,7 +44,7 @@ def test_three_real_reads_are_a_burst(monkeypatch):
     _rows(monkeypatch, [_req(), _req(), _req()])
     burst = modal._recent_ro_burst("U1")
     assert burst == {"count": 3, "target_server_id": 15,
-                     "database_name": "gopanel_service"}
+                     "database_name": "demo_service"}
 
 
 def test_the_draft_filter_is_in_the_sql(monkeypatch):

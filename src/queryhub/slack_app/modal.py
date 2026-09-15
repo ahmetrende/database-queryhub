@@ -1416,7 +1416,7 @@ def build_import_modal() -> dict:
             {"type": "input", "block_id": B_IMPORT_DATABASE, "optional": True,
              "label": {"type": "plain_text", "text": "Database (blank = target default)"},
              "element": {"type": "plain_text_input", "action_id": A_IMPORT_DATABASE,
-                         "placeholder": {"type": "plain_text", "text": "e.g. balance_service"}}},
+                         "placeholder": {"type": "plain_text", "text": "e.g. billing_service"}}},
             {"type": "input", "block_id": B_IMPORT_FILE,
              "label": {"type": "plain_text", "text": "CSV file (UTF-8, with header row)"},
              "element": {"type": "file_input", "action_id": A_IMPORT_FILE,
