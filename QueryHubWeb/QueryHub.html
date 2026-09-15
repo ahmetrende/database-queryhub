@@ -1363,14 +1363,19 @@
   @media (max-width: 1180px) { .qh-audsplit { grid-template-columns: minmax(0, 1fr); } .qh-auddetail { position: static; max-height: none; } .qh-auddetail.is-idle { display: none; } }
 
   /* ---------- Masking exemptions (design 2026-09-09) ---------- */
-  .qh-mxlist { display: flex; flex-direction: column; gap: 8px; }
-  .qh-mxgroup { margin-bottom: 14px; }
-  .qh-mxgroup-h { display: flex; align-items: center; gap: 8px; margin: 12px 0 7px; font-size: 12.5px; font-weight: 600; color: var(--fg-secondary); }
-  .qh-mxgroup-n { padding: 1px 7px; border-radius: 999px; background: var(--adaptive-light); font-size: 11px; color: var(--fg-tertiary); }
-  /* A row is ONE LINE, because the list is scanned thirty times and read once.
-     The whole story sits in the detail below it, one click away — the same
-     principle as the audit rail: a detail needs a place that does not make the
-     list heavy. */
+  .qh-mxlist { display: flex; flex-direction: column; gap: 6px; }
+  .qh-mxgroup + .qh-mxgroup { margin-top: 15px; }
+  /* One label per server/database rather than the same two identifiers repeated
+     down every row of the group — a header that REPLACES text is not furniture.
+     It also carries the `+` that starts the next exemption in that database. */
+  .qh-mxgroup-h { display: flex; align-items: center; gap: 8px; margin: 0 2px 5px; }
+  .qh-mxgroup-n { font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-secondary); }
+  .qh-mxgroup-c { padding: 0 5px; border-radius: 999px; background: var(--adaptive-light); font-size: 10px; font-weight: 700; color: var(--fg-tertiary); }
+  .qh-mxadd { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; padding: 2px 9px 2px 7px; background: none; border: 1px solid var(--stroke-medium); border-radius: 999px; font: inherit; font-size: 11px; color: var(--fg-secondary); cursor: pointer; }
+  .qh-mxadd:hover { border-color: var(--brand-green); color: var(--fg-accent); }
+  /* Two lines: what is exempt, and why. The list is scanned thirty times and
+     read once, so the detail below carries the rest — the same principle as the
+     audit rail: a detail needs a place that does not make the list heavy. */
   .qh-mxitem { background: var(--bg-white); border: 1px solid var(--stroke-light); border-radius: var(--r-md); }
   /* A wide exemption LOOKS wide. Tonal ground + a stronger border, no stripe and
      no per-row warning banner: hierarchy carries the weight so an ordinary
@@ -1380,21 +1385,24 @@
      disabled account on the Roles screen, where the row still stands). */
   .qh-mxitem.is-off { background: var(--bg-light); }
   .qh-mxitem.is-off .qh-mxtitle, .qh-mxitem.is-moot .qh-mxtitle { color: var(--fg-tertiary); }
-  .qh-mxlist { gap: 6px; }
   .qh-mxitem.is-off .qh-mxsent, .qh-mxitem.is-off .qh-mxlines, .qh-mxitem.is-moot .qh-mxsent { color: var(--fg-tertiary); }
   .qh-mxitem.is-off .qh-mxsent b { color: var(--fg-secondary); }
   .qh-mxitem.is-open { border-color: var(--stroke-strong); }
-  .qh-mxitem-top { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 12px; background: none; border: 0; border-radius: var(--r-md); font: inherit; text-align: left; cursor: pointer; }
+  .qh-mxitem-top { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 9px 12px; background: none; border: 0; border-radius: var(--r-md); font: inherit; text-align: left; cursor: pointer; }
   .qh-mxitem-top:hover { background: var(--adaptive-light); }
-  .qh-mxcaret { flex-shrink: 0; display: inline-flex; color: var(--fg-tertiary); transition: transform .15s ease; }
+  .qh-mxcaret { flex-shrink: 0; display: inline-flex; margin-top: 3px; color: var(--fg-tertiary); transition: transform .15s ease; }
   .qh-mxitem.is-open .qh-mxcaret { transform: rotate(90deg); }
-  .qh-mxwhere { flex-shrink: 0; font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-tertiary); }
-  .qh-mxtitle { flex-shrink: 0; font-family: var(--qh-mono); font-size: 12px; color: var(--fg-primary); }
-  /* The reason shares the row's one line: it is the most useful sentence on the
-     row and the thing the search matches, so it is worth the width left over
-     and no more. The full text is two lines down, in the detail. */
-  .qh-mxsaid { flex: 1 1 auto; min-width: 40px; font-size: 12px; color: var(--fg-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .qh-mxwhen { flex-shrink: 0; margin-left: auto; font-size: 11px; color: var(--fg-tertiary); }
+  /* A heading and a caption, not a paragraph on one line. The first cut put
+     target, chips, a 200-character reason and a timestamp in one row, so the
+     reason — the most useful sentence on the row — was what got truncated. */
+  .qh-mxbody { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .qh-mxline1 { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+  .qh-mxtitle { font-family: var(--qh-mono); font-size: 12.5px; color: var(--fg-primary); }
+  /* One line, quieter, and the full text is one click below. */
+  .qh-mxsaid { font-size: 12px; line-height: 1.45; color: var(--fg-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qh-mxwhen { flex-shrink: 0; margin-top: 2px; font-size: 11px; color: var(--fg-tertiary); }
+  .qh-mxnorm { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: 7px; font-size: 11.5px; color: var(--fg-tertiary); text-wrap: pretty; }
+  .qh-mxnorm-k { padding: 1px 7px; border-radius: 999px; background: var(--adaptive-light); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--fg-secondary); }
   .qh-mxdetail { display: flex; flex-direction: column; gap: 5px; padding: 2px 14px 13px 33px; }
   .qh-mxrowacts { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; margin-top: 7px; }
   /* The one fact the list cannot show about itself, said once above it rather
@@ -1411,10 +1419,18 @@
   .qh-mxchip.is-off { color: var(--fg-tertiary); background: var(--adaptive-medium); }
   .qh-mxchip.is-gone { color: var(--fg-warning); background: var(--warning-adaptive-light); }
   .qh-mxchip.is-aud { color: var(--fg-accent); background: var(--brand-adaptive-light); }
-  /* Only what differs from the default that 27 of the 30 live rows use. A chip
-     on every row would make every row read the same. */
+  /* Only what differs from the norm the list itself reports. The first cut
+     hardcoded "soft" as the default and the real fleet is mostly `full`, so
+     `NO MASKING` printed in red on nearly every row — a chip on every row is
+     not a chip. */
   .qh-mxchip.is-full { color: var(--fg-danger); background: var(--danger-adaptive-light); }
-  .qh-mxchip.is-join { color: var(--fg-warning); background: var(--warning-adaptive-light); }
+  .qh-mxchip.is-soft, .qh-mxchip.is-join { color: var(--fg-warning); background: var(--warning-adaptive-light); }
+  /* Several columns of one table, added one click each. */
+  .qh-mxcols { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .qh-mxcolsel { max-width: 300px; }
+  .qh-mxcolchip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 5px 3px 9px; border-radius: 999px; background: var(--brand-adaptive-light); font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-accent); }
+  .qh-mxcolchip button { display: inline-flex; padding: 1px; background: none; border: 0; border-radius: 999px; color: inherit; cursor: pointer; opacity: .65; }
+  .qh-mxcolchip button:hover { opacity: 1; background: var(--brand-adaptive-medium); }
   .qh-mxsent { font-size: 13px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
   .qh-mxsent b { font-weight: 600; color: var(--fg-primary); }
   .qh-mxlines { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); }

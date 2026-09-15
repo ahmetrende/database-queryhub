@@ -63,10 +63,19 @@ const mxTarget = (e) => (e.schema ? e.schema + '.' : '') + (e.table ? e.table + 
 // says the schema, a fleet-wide row says nothing here because the line already
 // opens with "every server". `dba.` was a path with its own tail cut off.
 const mxWhat = (e) => {
-  if (e.scope === 'fleet') return '';
+  // The group label above the row already says which server and database, so the
+  // row says what is exempt INSIDE it — and every rung has an answer, computed
+  // from the scope rather than from whether a field happens to be set. A
+  // caller-side fallback for the no-target rungs is how the `database` rung
+  // printed "every server", the widest claim on the screen, on a row whose own
+  // sentence said otherwise: the widest reach must never be what an empty field
+  // produces (2026-09-07 §3), and that holds for the LABEL too.
+  if (e.scope === 'fleet') return e.schema ? 'schema ' + e.schema : 'every schema';
+  if (e.scope === 'server') return 'every database';
+  if (e.scope === 'database') return 'every table';
   if (e.column) return (e.schema ? e.schema + '.' : '') + (e.table ? e.table + '.' : '') + e.column;
   if (e.table) return (e.schema ? e.schema + '.' : '') + e.table;
-  return e.schema ? 'schema ' + e.schema : '';
+  return e.schema ? 'schema ' + e.schema : 'every table';
 };
 // The default an exemption is written with, and the reason a row can be one
 // line: everything below is what 27 of the 30 live rows say, so saying it is
@@ -115,19 +124,50 @@ function mxSummary(e) {
   ].join(' · ');
 }
 
-// What differs from the default, and nothing else. A chip on every row would
-// make every row read the same, which is how a server-wide exemption ended up
-// scanning like one of twenty-seven single columns. Short words, because three
-// chips that wrap turn the one-line row back into three lines — each carries
-// its full meaning on hover, and the row's detail spells all of them out.
-function MxFlags({ e }) {
+// The default a row is measured against is READ FROM THE ROWS, not assumed. The
+// first cut hardcoded "soft, re-masked, everyone" from a 27-of-30 count, and on
+// the real fleet most rows are `full` — so `NO MASKING` printed in red on nearly
+// every row, which is how a chip stops being information and becomes noise. The
+// majority answer per field is stated once above the list; a row chips only
+// where it disagrees, so the rule holds whatever the fleet's mix turns out to be.
+function mxNorms(rows) {
+  const most = (key, fallback) => {
+    const tally = new Map();
+    rows.forEach(r => { const v = r[key]; tally.set(v, (tally.get(v) || 0) + 1); });
+    let best = fallback, n = -1;
+    tally.forEach((c, v) => { if (c > n) { n = c; best = v; } });
+    return best;
+  };
+  if (!rows || rows.length < 4) return { strength: 'soft', survivesJoin: false, audience: 'everyone' };
+  return { strength: most('strength', 'soft'), survivesJoin: !!most('survivesJoin', false), audience: most('audience', 'everyone') };
+}
+function mxNormLine(n) {
+  return [
+    n.strength === 'full' ? 'masking off entirely' : 'soft — values still checked',
+    n.survivesJoin ? 'still exempt in joins' : 're-masked on joins',
+    n.audience === 'super' ? 'super-admins only' : 'everyone who can read it',
+  ].join(' · ');
+}
+
+// What differs from the norm, and nothing else. Absence of a chip is
+// information. Short words and `nowrap`, because chips that wrap put the stacked
+// lines straight back — each carries its full meaning on hover, and the row's
+// detail spells all of them out in sentences.
+function MxFlags({ e, norms }) {
+  const n = norms || { strength: 'soft', survivesJoin: false, audience: 'everyone' };
   const wide = mxWide(e.scope);
   return <>
     {wide && <span className={'qh-mxchip is-' + e.scope}>{e.scope === 'fleet' ? 'every server' : e.scope === 'server' ? 'whole server' : e.scope === 'database' ? 'whole database' : 'whole schema'}</span>}
     {e.scope === 'table' && <span className="qh-mxchip">whole table</span>}
-    {e.strength === 'full' && <span className="qh-mxchip is-full" title="No masking at all — the name rule AND the value detectors are off here">no masking</span>}
-    {e.survivesJoin && <span className="qh-mxchip is-join" title="Stays exempt when the query joins a masked table">in joins</span>}
-    {e.audience === 'super' && <span className="qh-mxchip is-aud" title="Only super-admins see it unmasked; everyone else still gets the mask">super only</span>}
+    {e.strength !== n.strength && (e.strength === 'full'
+      ? <span className="qh-mxchip is-full" title="No masking at all — the name rule AND the value detectors are off here">no masking</span>
+      : <span className="qh-mxchip is-soft" title="Soft — the name rule is off, but values are still checked for emails, card numbers and national ids">soft</span>)}
+    {e.survivesJoin !== n.survivesJoin && (e.survivesJoin
+      ? <span className="qh-mxchip is-join" title="Stays exempt when the query joins a masked table">in joins</span>
+      : <span className="qh-mxchip" title="Re-masked when the query joins a masked table">not in joins</span>)}
+    {e.audience !== n.audience && (e.audience === 'super'
+      ? <span className="qh-mxchip is-aud" title="Only super-admins see it unmasked; everyone else still gets the mask">super only</span>
+      : <span className="qh-mxchip" title="Everyone who can read the table sees it unmasked">everyone</span>)}
     {!e.enabled && <span className="qh-mxchip is-off" title="Turned off — this column is masked again, and the record is kept">off</span>}
     {e.missing && <span className="qh-mxchip is-gone" title="Still enforced, but that table or column is not in the catalog any more">matches nothing</span>}
   </>;
@@ -212,24 +252,29 @@ function MxEdit({ e, st, onDone, onReplace }) {
 }
 
 // ---------- One row ----------
-// One line closed, the whole story open. The list is what gets scanned thirty
-// times and the detail is what gets read once, so they are not the same object.
-function MxItem({ e, canWrite, moot, open, onToggleOpen, st, onReplace, onAlso, onRemove }) {
+// TWO lines, not one and not eight. The one-line version fixed the eight-line
+// version and created its own problem: target, chips, a 200-character reason and
+// a timestamp on one line, so the reason — the most useful sentence on the row
+// — was the thing that got truncated, and the line was too long to scan.
+//
+// Now the row is a heading and a caption: what is exempt (mono, the column the
+// eye runs down) with its exceptions, and the reason underneath in quieter type,
+// one line, full text one click away. The server and database are NOT repeated
+// here — the list is sorted by them and `MxGroup` prints each one once.
+function MxItem({ e, canWrite, moot, norms, open, onToggleOpen, st, onReplace, onAlso, onRemove, onAddHere }) {
   const [editing, setEditing] = useMx(false);
   const wide = mxWide(e.scope);
-  const path = e.scope === 'fleet' ? 'every server' + (e.schema ? ' · schema ' + e.schema : '')
-    : (e.connectionName || e.connectionId) + (e.scope === 'server' ? ' · all databases' : ' / ' + (e.databaseName || e.databaseId));
   return (
     <div className={'qh-mxitem' + (wide ? ' is-wide' : '') + (e.enabled ? '' : ' is-off') + (open ? ' is-open' : '') + (moot ? ' is-moot' : '')}>
       <button className="qh-mxitem-top" onClick={() => { setEditing(false); onToggleOpen(); }} aria-expanded={open}>
         <span className="qh-mxcaret"><MxIcon.caret /></span>
-        {/* Where, then what: the server and database repeat down the list and
-            read as a column, and the eye scans the target — which is the thing
-            that differs row to row and the thing people arrive holding. */}
-        <span className="qh-mxwhere">{path}</span>
-        {mxWhat(e) && <span className="qh-mxtitle">{mxWhat(e)}</span>}
-        <MxFlags e={e} />
-        {e.reason && <span className="qh-mxsaid">{e.reason}</span>}
+        <span className="qh-mxbody">
+          <span className="qh-mxline1">
+            <span className="qh-mxtitle">{mxWhat(e)}</span>
+            <MxFlags e={e} norms={norms} />
+          </span>
+          {e.reason && <span className="qh-mxsaid">{e.reason}</span>}
+        </span>
         <span className="qh-mxwhen">{e.createdAt ? qhAgo(e.createdAt) : ''}</span>
       </button>
       {open && (
@@ -270,6 +315,12 @@ function MxItem({ e, canWrite, moot, open, onToggleOpen, st, onReplace, onAlso, 
                       itself a fact worth keeping. */}
                   <button className="qh-btn qh-btn-sm" onClick={() => st.setMaskExemptionEnabled(e.id, !e.enabled)}>{e.enabled ? 'Turn off' : 'Turn back on'}</button>
                   <button className="qh-btn qh-btn-sm" onClick={() => setEditing(true)}>Edit</button>
+                  {/* Standing at a table is the moment the next exemption gets
+                      written — four of the live rows are sibling columns of one
+                      table, each of which cost a walk back through five
+                      pickers. This lands in the form with everything but the
+                      column already answered. */}
+                  {e.table && <button className="qh-linkbtn" onClick={() => onAddHere(e)}>+ another column in {e.table}</button>}
                   <button className="qh-linkbtn" onClick={() => onReplace(e)}>Replace</button>
                   <button className="qh-mxdel" onClick={() => onRemove(e)}>Remove</button>
                 </> : <span className="qh-rolelock"><MxIcon.lock />read-only</span>}
@@ -291,7 +342,8 @@ function MxForm({ st, seed, onDone }) {
   const conns = (st.connections || []).filter(c => c.enabled !== false);
   const [f, setF] = useMx(() => ({
     connectionId: (seed && seed.connectionId) || '', databaseId: (seed && seed.databaseId) || '',
-    scope: (seed && seed.scope) || 'column', schema: (seed && seed.schema) || '', table: (seed && seed.table) || '', column: (seed && seed.column) || '',
+    scope: (seed && seed.scope) || 'column', schema: (seed && seed.schema) || '', table: (seed && seed.table) || '', column: '',
+    columns: (seed && seed.column) ? [seed.column] : [],
     strength: (seed && seed.strength) || 'soft', survivesJoin: !!(seed && seed.survivesJoin),
     audience: 'everyone', reason: '', confirmed: false, typed: '',
   }));
@@ -326,7 +378,16 @@ function MxForm({ st, seed, onDone }) {
   const tables = schema ? schema.tables : [];
   const table = tables.find(t => t.name === f.table) || null;
   const columns = table ? table.columns : [];
-  const col = columns.find(c => c.name === f.column) || null;
+  const col = columns.find(c => c.name === (f.columns && f.columns.length === 1 ? f.columns[0] : f.column)) || null;
+  // Several columns of ONE table, in one pass. Four of the live rows are sibling
+  // columns of the same table with the same reason, each of which cost a walk
+  // back through five pickers; `crypto_transactions.from_address` and `.to_address`
+  // are the same decision typed twice. This is NOT bulk edit across rows — it is
+  // one target, one reason, one set of consequences, written once per column,
+  // and the reach is still picked explicitly at every level above it.
+  const picked = f.scope === 'column' ? (f.columns || []) : [];
+  const addCol = (name) => { if (name && picked.indexOf(name) < 0) set({ columns: picked.concat([name]), column: '' }); };
+  const dropCol = (name) => set({ columns: picked.filter(c => c !== name) });
 
   const wide = mxWide(f.scope);
   const needsConfirm = f.scope === 'database' || f.scope === 'server';
@@ -341,16 +402,20 @@ function MxForm({ st, seed, onDone }) {
   // name a column the catalog snapshot does not have. "Picked from the catalog,
   // never typed" has to hold on the prefill path too, or the rule is only true
   // of the paths nobody worries about.
-  const colGone = f.scope === 'column' && !!f.column && !!cat && !!table && !col;
+  // A prefilled column (Add it there, from a sibling server) can name something
+  // the snapshot does not have. "Picked, never typed" has to hold on the prefill
+  // path too, or the rule is only true of the paths nobody worries about.
+  const gonePicked = f.scope === 'column' && !!cat && !!table ? picked.filter(c => !columns.some(x => x.name === c)) : [];
+  const colGone = gonePicked.length > 0;
   const ready = !!f.connectionId
     && (f.scope === 'server' || !!f.databaseId)
     && (f.scope !== 'schema' || !!f.schema)
     && (f.scope !== 'table' || (!!f.schema && !!f.table))
-    && (f.scope !== 'column' || (!!f.schema && !!f.table && !!f.column));
+    && (f.scope !== 'column' || (!!f.schema && !!f.table && picked.length > 0));
   const readyAll = f.scope === 'fleet' ? true : ready;
   const bad = !readyAll || colGone || !f.reason.trim() || (needsConfirm && !f.confirmed) || !typedOk;
 
-  const preview = { connectionId: f.connectionId, databaseId: f.databaseId, scope: f.scope, schema: f.schema, table: f.table, column: f.column };
+  const preview = { connectionId: f.connectionId, databaseId: f.databaseId, scope: f.scope, schema: f.schema, table: f.table, column: picked[0] || f.column };
   const runPreview = () => {
     if (!readyAll || prevBusy) return;
     setPrevBusy(true);
@@ -360,7 +425,17 @@ function MxForm({ st, seed, onDone }) {
   const save = () => {
     if (bad || busy) return;
     setBusy(true); setErr(null);
-    st.addMaskExemption({ ...preview, strength: f.strength, survivesJoin: f.survivesJoin, audience: f.audience, reason: f.reason.trim() })
+    const settings = { strength: f.strength, survivesJoin: f.survivesJoin, audience: f.audience, reason: f.reason.trim() };
+    const bodies = f.scope === 'column'
+      ? picked.map(c => ({ ...preview, column: c, ...settings }))
+      : [{ ...preview, ...settings }];
+    // One at a time, and it stops at the first refusal rather than firing the
+    // rest: these are writes that reduce protection, so a partial result has to
+    // say exactly which ones landed instead of leaving the operator to guess.
+    bodies.reduce((chain, b, i) => chain.then(() => st.addMaskExemption(b).catch(e => {
+      const done = i > 0 ? ' The first ' + i + ' were written.' : '';
+      throw { message: ((e && e.message) || 'Could not add the exemption.') + (f.scope === 'column' && picked.length > 1 ? ' Stopped at ' + b.column + '.' + done : ''), code: e && e.code };
+    })), Promise.resolve())
       .then(() => { setBusy(false); onDone(); })
       .catch(e => { setBusy(false); setErr({ msg: (e && e.message) || 'Could not add the exemption.', code: e && e.code }); });
   };
@@ -374,7 +449,8 @@ function MxForm({ st, seed, onDone }) {
         : f.scope === 'database' ? 'Turn masking off for ' + (db ? db.name : '')
           : f.scope === 'schema' ? 'Unmask every column in ' + f.schema
             : f.scope === 'table' ? 'Unmask every column in ' + f.table
-              : 'Unmask ' + f.table + '.' + f.column;
+              : picked.length > 1 ? 'Unmask ' + picked.length + ' columns in ' + f.table
+                : 'Unmask ' + f.table + '.' + (picked[0] || f.column);
 
   const asRow = { ...preview, connectionName: conn ? conn.name : '', databaseName: db ? db.name : '',
     strength: f.strength, survivesJoin: f.survivesJoin };
@@ -396,7 +472,7 @@ function MxForm({ st, seed, onDone }) {
             <button key={k} type="button" className={'qh-seg-opt' + (f.scope === k ? ' is-active' : '') + (mxWide(k) ? ' is-wide' : '')}
                     onClick={() => set({ scope: k, confirmed: false, typed: '', audience: f.audience === 'super' && f.scope === 'fleet' ? 'everyone' : f.audience,
                       table: (k === 'column' || k === 'table') ? f.table : '',
-                      column: k === 'column' ? f.column : '',
+                      columns: k === 'column' ? (f.columns || []) : [], column: '',
                       schema: (k === 'column' || k === 'table' || k === 'schema') ? f.schema : '' })}>{QH_MX_RUNGS[k].label}</button>
           ))}
         </div>
@@ -448,14 +524,26 @@ function MxForm({ st, seed, onDone }) {
             <option value="">Pick a table…</option>
             {tables.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
           </select></label>}
-        {f.scope === 'column' && !!table && <label className="qh-rolefield qh-mxcolfield"><span className="qh-rolefield-l">Column</span>
-          <select className="qh-select" value={f.column} onChange={e => set({ column: e.target.value })}>
-            <option value="">Pick a column…</option>
-            {columns.map(c => <option key={c.name} value={c.name}>{c.name}{c.rule ? ' — masked as ' + c.rule.label : ' — not masked'}</option>)}
-          </select></label>}
+        {f.scope === 'column' && !!table && <div className="qh-rolefield qh-mxcolfield"><span className="qh-rolefield-l">Columns{picked.length > 1 && <span className="qh-accedit-hint"> — one exemption each, same reason</span>}</span>
+          {/* Picked from the catalog and never typed — 156,000 known columns, and
+              a typo writes an exemption that silently matches nothing. Each
+              option says what masks it today, which is the question that brought
+              most people here. Picking ADDS: standing at a table, the next
+              sibling column is one more click, not another walk down the form. */}
+          <div className="qh-mxcols">
+            {picked.map(c => (
+              <span key={c} className="qh-mxcolchip">{c}
+                <button type="button" title={'Remove ' + c} onClick={() => dropCol(c)}><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
+              </span>
+            ))}
+            <select className="qh-select qh-mxcolsel" value="" onChange={e => addCol(e.target.value)}>
+              <option value="">{picked.length ? '+ add another column…' : 'Pick a column…'}</option>
+              {columns.filter(c => picked.indexOf(c.name) < 0).map(c => <option key={c.name} value={c.name}>{c.name}{c.rule ? ' — masked as ' + c.rule.label : ' — not masked'}</option>)}
+            </select>
+          </div></div>}
       </div>
       {catErr && <div className="qh-roleform-err">{catErr} Pick another database, or ask for a catalog snapshot to be taken.</div>}
-      {colGone && <div className="qh-roleform-err"><code>{f.column}</code> is not in {conn ? conn.name : 'this server'}’s catalog snapshot for {f.schema}.{f.table} — pick a column from the list, or have the snapshot refreshed if you know it is there.</div>}
+      {colGone && <div className="qh-roleform-err"><code>{gonePicked.join(', ')}</code> {gonePicked.length > 1 ? 'are' : 'is'} not in {conn ? conn.name : 'this server'}’s catalog snapshot for {f.schema}.{f.table} — pick a column from the list, or have the snapshot refreshed if you know it is there.</div>}
       {/* Exempting a column nothing masks is not an error, but it is almost
           always a mis-pick, so it is said before Save rather than discovered
           when the [REDACTED] does not go away. */}
@@ -509,13 +597,14 @@ function MxForm({ st, seed, onDone }) {
           {prev.wide && <div className="qh-mxprev-idle">This reaches <b>{prev.tables}</b> tables and <b>{prev.maskedColumns}</b> columns that are masked today. Too wide for a single sample row — that count is the preview.</div>}
           {prev.seen && (
             <div className="qh-mxdiffwrap">
+              {picked.length > 1 && <div className="qh-mxnote">Shown for <code>{preview.column}</code>; the other {picked.length - 1} change the same way.</div>}
               <div className="qh-mxprev-q"><code>{prev.sql}</code><span className="qh-mxprev-by">{prev.by} · {qhAgo(prev.at)}</span></div>
               <div className="qh-tablewrap">
                 <table className="qh-mxdiff">
-                  <thead><tr><th />{prev.columns.map(c => <th key={c} className={c === f.column ? 'is-t' : ''}>{c}</th>)}</tr></thead>
+                  <thead><tr><th />{prev.columns.map(c => <th key={c} className={c === preview.column ? 'is-t' : ''}>{c}</th>)}</tr></thead>
                   <tbody>
-                    <tr><td className="qh-mxdiff-k">Today</td>{prev.columns.map(c => <td key={c} className={c === f.column ? 'is-t is-masked' : ''}>{prev.before[c]}</td>)}</tr>
-                    <tr><td className="qh-mxdiff-k">After</td>{prev.columns.map(c => <td key={c} className={c === f.column ? 'is-t is-clear' : ''}>{prev.after[c]}</td>)}</tr>
+                    <tr><td className="qh-mxdiff-k">Today</td>{prev.columns.map(c => <td key={c} className={c === preview.column ? 'is-t is-masked' : ''}>{prev.before[c]}</td>)}</tr>
+                    <tr><td className="qh-mxdiff-k">After</td>{prev.columns.map(c => <td key={c} className={c === preview.column ? 'is-t is-clear' : ''}>{prev.after[c]}</td>)}</tr>
                   </tbody>
                 </table>
               </div>
@@ -580,20 +669,31 @@ function MaskingView({ st, user }) {
   const rows = all.filter(keep).filter(match);
   const wideCount = all.filter(e => mxWide(e.scope)).length;
 
-  // ONE flat list, no sections. Thirty rows sit on eighteen servers, so grouping
-  // by server produced eighteen headers for thirty rows — more furniture than
-  // content, which is the complaint this round is about. Sorted by server
-  // instead, so a server's rows are adjacent and read as a group without a
-  // header, with the wide ones first inside it and the tonal ground doing what
-  // a second section used to.
-  const sorted = rows.slice().sort((x, y) => {
-    const kx = x.scope === 'fleet' ? '' : (x.connectionName || x.connectionId || '');
-    const ky = y.scope === 'fleet' ? '' : (y.connectionName || y.connectionId || '');
-    if (kx !== ky) return kx > ky ? 1 : -1;
-    const wx = mxWide(x.scope) ? 0 : 1, wy = mxWide(y.scope) ? 0 : 1;
-    if (wx !== wy) return wx - wy;
-    return mxTarget(x) > mxTarget(y) ? 1 : -1;
-  });
+  // Sorted by server and database, then grouped under ONE label each. The first
+  // cut printed the same `<server> / <database>` pair on four consecutive
+  // rows, so the widest text on the row was the part that was identical to its
+  // neighbours — which is what made the list tiring to read. A header is not
+  // furniture when it REPLACES text: eighteen labels here delete sixty repeats
+  // of the same two identifiers, and each one carries the `+` that starts the
+  // next exemption in that database.
+  const groups = (() => {
+    const m = new Map();
+    rows.slice()
+      .sort((x, y) => {
+        const k = (r) => (r.scope === 'fleet' ? '' : (r.connectionName || r.connectionId || '') + '\u0000' + (r.scope === 'server' ? '' : (r.databaseName || r.databaseId || '')));
+        if (k(x) !== k(y)) return k(x) > k(y) ? 1 : -1;
+        const w = (r) => (mxWide(r.scope) ? 0 : 1);
+        if (w(x) !== w(y)) return w(x) - w(y);
+        return mxWhat(x) > mxWhat(y) ? 1 : -1;
+      })
+      .forEach(e => {
+        const key = e.scope === 'fleet' ? 'every server'
+          : (e.connectionName || e.connectionId) + (e.scope === 'server' ? '' : ' / ' + (e.databaseName || e.databaseId));
+        if (!m.has(key)) m.set(key, { key, rows: [], seed: e });
+        m.get(key).rows.push(e);
+      });
+    return [...m.values()];
+  })();
 
   const start = (s) => { setSeed(s || null); setAdding(true); setOpenId(null); };
   const remove = (e) => {
@@ -604,12 +704,25 @@ function MaskingView({ st, user }) {
   // honest way: a new row with its own reason, and the old one turned off by
   // whoever is sure the new one is right.
   const replace = (e) => start({ connectionId: e.connectionId, databaseId: e.databaseId, scope: e.scope, schema: e.schema, table: e.table, column: e.column, strength: e.strength, survivesJoin: e.survivesJoin });
+  // The two shortcuts the operator asked for, and they are the same gesture at
+  // two depths: standing at a table, add another of its columns; standing at a
+  // database, add anything in it. Both land in the form with everything above
+  // the missing field already answered.
+  const addHere = (e) => start({ connectionId: e.connectionId, databaseId: e.databaseId, scope: 'column', schema: e.schema, table: e.table, strength: e.strength, survivesJoin: e.survivesJoin });
+  const addInGroup = (g) => start(g.seed.scope === 'fleet' ? null
+    : { connectionId: g.seed.connectionId, databaseId: g.seed.databaseId, scope: 'column' });
+  const norms = mxNorms(all);
 
   return (
     <div className="qh-apad">
       <div className="qh-aview-head">
         <div><div className="qh-aview-title">Masking exemptions</div>
-          <div className="qh-aview-sub">Where masking is deliberately switched off, and why. {all.length} row{all.length === 1 ? '' : 's'} · {meta.nameRules || 0} name rules and {(meta.valueDetectors || []).length} value detectors are what they correct.</div></div>
+          <div className="qh-aview-sub">Where masking is deliberately switched off, and why. {all.length} row{all.length === 1 ? '' : 's'} · {meta.nameRules || 0} name rules and {(meta.valueDetectors || []).length} value detectors are what they correct.</div>
+          {/* The norm, read from the rows and stated once, so a row can stay
+              quiet about the three settings it shares with everything else. A
+              labelled line rather than a sentence: unlabelled it read as a
+              wrapped continuation of the subtitle above it. */}
+          {all.length >= 4 && <div className="qh-mxnorm"><span className="qh-mxnorm-k">Unless a row says otherwise</span>{mxNormLine(norms)}</div>}</div>
         {canWrite && !adding && all.length > 0 && <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => start(null)}><MxIcon.plus />Add an exemption</button>}
       </div>
 
@@ -648,12 +761,25 @@ function MaskingView({ st, user }) {
             </div>
           )}
 
-          <div className="qh-mxlist">{sorted.map(e => (
-            <MxItem key={e.id} e={e} canWrite={canWrite} moot={moot} st={st}
-                    open={openId === e.id} onToggleOpen={() => setOpenId(x => (x === e.id ? null : e.id))}
-                    onRemove={remove} onReplace={replace}
-                    onAlso={(row, a) => start({ connectionId: a.connectionId, databaseId: a.databaseId, scope: 'column', schema: row.schema, table: row.table, column: row.column, strength: row.strength, survivesJoin: row.survivesJoin })} />
-          ))}</div>
+          {groups.map(g => (
+            <div key={g.key} className="qh-mxgroup">
+              <div className="qh-mxgroup-h">
+                <span className="qh-mxgroup-n">{g.key}</span>
+                {/* A count beside a single row says nothing — the row is right
+                    there. It only informs once there is more than one. */}
+                {g.rows.length > 1 && <span className="qh-mxgroup-c">{g.rows.length}</span>}
+                {canWrite && g.seed.scope !== 'fleet' && (
+                  <button className="qh-mxadd" title={'Add an exemption in ' + g.key} onClick={() => addInGroup(g)}><MxIcon.plus />add</button>
+                )}
+              </div>
+              <div className="qh-mxlist">{g.rows.map(e => (
+                <MxItem key={e.id} e={e} canWrite={canWrite} moot={moot} norms={norms} st={st}
+                        open={openId === e.id} onToggleOpen={() => setOpenId(x => (x === e.id ? null : e.id))}
+                        onRemove={remove} onReplace={replace} onAddHere={addHere}
+                        onAlso={(row, a) => start({ connectionId: a.connectionId, databaseId: a.databaseId, scope: 'column', schema: row.schema, table: row.table, column: row.column, strength: row.strength, survivesJoin: row.survivesJoin })} />
+              ))}</div>
+            </div>
+          ))}
           {rows.length === 0 && <div className="qh-conn-empty">No exemptions match your filter.</div>}
         </>
       )}
