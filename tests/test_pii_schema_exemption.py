@@ -320,3 +320,62 @@ def test_both_schemas_at_once_still_fires_and_that_is_documented():
         VENUE_ROW,
         "SELECT v.description FROM other.venues v JOIN venue.venues w ON 1=1"
     ) is True
+
+
+# ---------------------------------------------------------------------------
+# the TABLE rung: the last one that still matched a bare name
+# ---------------------------------------------------------------------------
+#
+# A table row (column_name NULL) turns masking fully off when the statement
+# reads only exempt tables. That branch compared bare names, so a row written
+# for `organizer.organizer_tenants` also covered an `organizer_tenants` in any
+# other schema -- and this rung switches masking off ENTIRELY, not one column.
+# It is the same fault the column rung had, on the louder of the two rungs.
+#
+# Replayed before the change over every completed request that recorded its
+# result columns: 3,545 requests, 911 resolver invocations, 0 answers changed.
+# No live row carried a schema on this rung, so nothing was standing on it.
+
+TENANTS_ROW = {"database_name": "nova", "schema_name": "organizer",
+               "table_name": "organizer_tenants", "column_name": None,
+               "apply_in_joins": False, "keep_value_scan": False,
+               "super_admin_only": False}
+
+
+def _skips_all(row, sql, monkeypatch):
+    monkeypatch.setattr(pii, "_load_exemptions", _load([row]))
+    skip_all, _cols = pii.exemption_decision(1, "nova", sql, ["name"])
+    return skip_all
+
+
+def test_a_table_row_does_not_free_the_same_name_in_another_schema(monkeypatch):
+    """The leak, on the rung that lifts masking for the whole result."""
+    assert _skips_all(
+        TENANTS_ROW, "SELECT name FROM other.organizer_tenants", monkeypatch) is False
+
+
+def test_the_named_schema_still_lifts_masking(monkeypatch):
+    assert _skips_all(
+        TENANTS_ROW, "SELECT name FROM organizer.organizer_tenants", monkeypatch) is True
+
+
+def test_an_unqualified_read_is_unchanged(monkeypatch):
+    """Same reasoning as the column rung: the schema is unknowable from the
+    text, and refusing here would start masking what comes back unmasked."""
+    assert _skips_all(
+        TENANTS_ROW, "SELECT name FROM organizer_tenants", monkeypatch) is True
+
+
+def test_a_table_row_without_a_schema_matches_any(monkeypatch):
+    """Every live table row is written this way; none may start refusing."""
+    assert _skips_all({**TENANTS_ROW, "schema_name": None},
+                      "SELECT name FROM other.organizer_tenants", monkeypatch) is True
+
+
+def test_a_join_outside_the_exempt_table_keeps_masking_on(monkeypatch):
+    """Unchanged by this, and the reason a table row is safe to grant: it only
+    fires when the statement reads nothing else."""
+    assert _skips_all(
+        TENANTS_ROW,
+        "SELECT t.name, u.name FROM organizer.organizer_tenants t "
+        "JOIN user_mgmt.users u ON u.tenant_id = t.id", monkeypatch) is False

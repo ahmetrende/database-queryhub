@@ -978,9 +978,18 @@ def exemption_decision(target_id: int, database: str, sql: str,
         return True, set()
 
     tables = _tables_in(sql, engine=engine)
+    refs = _table_refs_in(sql, engine=engine)
+    # A table row is held to its schema the same way a column row is. This
+    # rung matched the BARE name, so `organizer.organizer_tenants` would also
+    # have exempted an `organizer_tenants` in any other schema -- the collision
+    # the schema dimension exists to prevent, arriving through the one rung
+    # that was still not checking it. `_schema_admits` can only ever REFUSE: a
+    # row with no schema, an unqualified statement, or SQL that will not parse
+    # is admitted exactly as before.
     exempt_tables = {r["table_name"].lower()
                      for r in rows
-                     if r["table_name"] and r["column_name"] is None}
+                     if r["table_name"] and r["column_name"] is None
+                     and _schema_admits(r, refs)}
     only_exempt_tables = bool(tables) and tables <= exempt_tables
     if only_exempt_tables and exempt_tables:
         return True, set()
@@ -990,7 +999,6 @@ def exemption_decision(target_id: int, database: str, sql: str,
     # exemption_namescan, NOT here, so they never fully pass through.
     col_rows = [r for r in rows
                 if r["column_name"] and not r.get("keep_value_scan")]
-    refs = _table_refs_in(sql, engine=engine)
     return False, _column_skips(col_rows, tables, columns, refs)
 
 
