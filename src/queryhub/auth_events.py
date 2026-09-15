@@ -475,6 +475,12 @@ def build_notifications(
                     for uid in admin_ids()]
         # Reach or strength edited on a row that is already live. Anything else
         # (reason typo) is not worth fifteen DMs.
+        #
+        # The RECORD and the NOTIFICATION are deliberately different widths: the
+        # audit row is written for every edit, including a reason corrected to
+        # itself, so the trail is complete. Only a change to what the exemption
+        # DOES reaches people's DMs. Anybody who later wants the two to match
+        # should widen this, not narrow the audit.
         if any(old.get(k) != new.get(k) for k in
                ("target_server_id", "database_name", "schema_name",
                 "table_name", "column_name", "keep_value_scan",

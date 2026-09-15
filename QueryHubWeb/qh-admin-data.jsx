@@ -300,8 +300,15 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const removeMaskExemption = (id) => qhApi.adminDelMaskExemption(id)
     .then(() => { loadMask(); loadAudit(); pushToast && pushToast('Exemption removed.'); })
     .catch(e => fail(e, 'Remove failed.'));
+  // `changed: false` is the server saying it wrote nothing — the submitted
+  // values already matched the row. Announcing "updated" there would be this
+  // screen claiming an edit that did not happen, which is the one thing a
+  // screen about reducing protection must never do.
   const updateMaskExemption = (id, patch) => qhApi.adminUpdateMaskExemption(id, patch)
-    .then(res => { loadMask(); loadAudit(); pushToast && pushToast('Exemption updated.'); return res; });
+    .then(res => {
+      if (res && res.changed === false) { pushToast && pushToast('Nothing to change.'); return res; }
+      loadMask(); loadAudit(); pushToast && pushToast('Exemption updated.'); return res;
+    });
   const maskCatalog = (connectionId, databaseId) => qhApi.adminMaskCatalog(connectionId, databaseId);
   const maskPreview = (b) => qhApi.adminMaskPreview(b);
 
