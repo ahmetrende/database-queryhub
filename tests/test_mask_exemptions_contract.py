@@ -40,13 +40,26 @@ def _screen_row_fields() -> set[str]:
         - _NOT_ROW_FIELDS
 
 
+def _dict_keys_in(src: str, start: str, end: str) -> set[str]:
+    i = src.index(start)
+    return set(re.findall(r'"([a-zA-Z]+)":', src[i:src.index(end, i)]))
+
+
 def _route_row_keys() -> set[str]:
-    """The keys of the dict `admin_mask_exemptions` appends per row."""
+    """Every key one exemption carries on the wire.
+
+    Two sources, because the row is built in two places on purpose: the fields
+    that come from the row itself live in `_mask_row_core`, which the edit
+    endpoint returns as well, and the listing adds the three that each cost a
+    catalog read. A test that read only the listing would go quiet the moment
+    the shared half moved — which is exactly what it did when it moved.
+    """
     src = ROUTE.read_text(encoding="utf-8")
+    core = _dict_keys_in(src, "def _mask_row_core(", "\n@router")
     i = src.index("def admin_mask_exemptions(")
     body = src[i:src.index("\n@router", i)]
     j = body.index("out.append({")
-    return set(re.findall(r'"([a-zA-Z]+)":', body[j:body.index("})", j)]))
+    return core | set(re.findall(r'"([a-zA-Z]+)":', body[j:body.index("})", j)]))
 
 
 def test_route_sends_every_field_the_screen_reads():
@@ -68,15 +81,19 @@ def test_meta_fields_the_screen_reads_are_sent():
 
 @pytest.mark.parametrize(("row", "want"), [
     ({"column_name": "address", "table_name": "t", "schema_name": "s",
-      "database_name": "d"}, "column"),
+      "database_name": "d", "target_server_id": 7}, "column"),
     ({"column_name": None, "table_name": "t", "schema_name": "s",
-      "database_name": "d"}, "table"),
+      "database_name": "d", "target_server_id": 7}, "table"),
     ({"column_name": None, "table_name": None, "schema_name": "s",
-      "database_name": "d"}, "schema"),
+      "database_name": "d", "target_server_id": 7}, "schema"),
     ({"column_name": None, "table_name": None, "schema_name": None,
-      "database_name": "d"}, "database"),
+      "database_name": "d", "target_server_id": 7}, "database"),
     ({"column_name": None, "table_name": None, "schema_name": None,
-      "database_name": None}, "server"),
+      "database_name": None, "target_server_id": 7}, "server"),
+    # The top rung, which the POST can write and this reported as "server"
+    # beside a connectionName that said "every server".
+    ({"column_name": None, "table_name": None, "schema_name": None,
+      "database_name": None, "target_server_id": None}, "fleet"),
 ])
 def test_scope_is_the_narrowest_field_named(row, want):
     assert routes_admin._mask_scope(row) == want

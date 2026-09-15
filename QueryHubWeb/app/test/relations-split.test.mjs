@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import { bareWindow, loadInto } from './_load.mjs';
 
 const win = loadInto(bareWindow(), 'qh-data.jsx');
-const { qhSplitRelations, qhIsViewRef } = win;
+const { qhSplitRelations } = win;
 
 const REFS = [
   { s: 'public', n: 'orders', k: 'table' },
@@ -27,7 +27,6 @@ const REFS = [
 
 test('the split is exported, so tree and search share one rule', () => {
   assert.equal(typeof qhSplitRelations, 'function');
-  assert.equal(typeof qhIsViewRef, 'function');
 });
 
 test('a view goes to Views and nothing goes to both', () => {
@@ -38,10 +37,15 @@ test('a view goes to Views and nothing goes to both', () => {
   for (const v of views) assert.ok(!seen.has(v.n), v.n + ' is listed twice');
 });
 
-test('a materialized view is a view', () => {
-  assert.ok(qhIsViewRef({ n: 'daily_totals', k: 'matview' }));
-  assert.ok(!qhIsViewRef({ n: 'orders', k: 'table' }));
-  assert.ok(!qhIsViewRef({ n: 'x', k: 'foreign' }));
+test('a materialized view is a view, and everything else is a table', () => {
+  const { tables, views } = qhSplitRelations(
+    [{ n: 'daily_totals', k: 'matview' }, { n: 'orders', k: 'table' },
+     { n: 'remote', k: 'foreign' }, { n: 'next_year', k: 'something_new' }], []);
+  assert.deepEqual(views.map(r => r.n), ['daily_totals']);
+  // The safe default for a query tool, and design's stated decision: a relation
+  // drawn in the wrong branch is cosmetic; one the tree cannot draw at all is
+  // invisible to the tree, autocomplete and fleet search alike.
+  assert.deepEqual(tables.map(r => r.n), ['orders', 'remote', 'next_year']);
 });
 
 test('the order the catalog sent survives the split', () => {
@@ -68,8 +72,18 @@ test('before the schema loads, an unkinded ref stays a table', () => {
 
 test('a view that matched no ref is still listed', () => {
   // The mock keeps views in a separate generator, so they are never in `tables`.
+  // `s: null` means "ask the loaded schema", not "no schema".
   const { views } = qhSplitRelations([{ n: 'orders', k: 'table' }], ['v_daily']);
-  assert.deepEqual(views, [{ s: null, n: 'v_daily' }]);
+  assert.deepEqual(views, [{ s: null, n: 'v_daily', k: 'view' }]);
+});
+
+test('every returned ref carries a kind, even one that arrived without', () => {
+  // The branch is decided once, here, and written onto the ref — so a caller
+  // reading `k` later cannot reach a different answer than the split did.
+  const { tables, views } = qhSplitRelations(
+    [{ n: 'orders' }, { n: 'index_info' }], ['index_info']);
+  assert.deepEqual(tables, [{ n: 'orders', k: 'table' }]);
+  assert.deepEqual(views, [{ n: 'index_info', k: 'view' }]);
 });
 
 test('an empty database splits into two empty branches', () => {

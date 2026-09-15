@@ -28,12 +28,11 @@ const SRC = resolve(HERE, '..', 'src');
 // or the other, never both — so they are meant to define the same names.
 const ALTERNATIVES = new Set(['qh-api.jsx', 'qh-api-mock.jsx']);
 
-// Known and reported to design, not blessed: `qhAgo` exists twice with
-// DIFFERENT signatures (qh-panels takes an epoch number, qh-admin-data an ISO
-// string). It is their file and their call, so it is named here rather than
-// renamed unilaterally — and naming it keeps this test able to fail for
-// anything new. See CODE_TO_DESIGN_BRIEF.md, 2026-09-15.
-const KNOWN = new Set(['qhAgo']);
+// Empty, and meant to stay that way. It briefly held `qhAgo`, which existed
+// twice with DIFFERENT signatures; design removed both copies and put one in
+// qh-data.jsx that takes either. An entry here is a known duplicate somebody
+// decided to live with — not a place to park a new one.
+const KNOWN = new Set();
 
 function topLevelNames(src) {
   const out = new Set();

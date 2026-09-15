@@ -1294,6 +1294,12 @@
   .qh-chip.is-machine { border-style: dashed; }
   .qh-audnoreq { margin-top: 12px; font-size: 11.5px; color: var(--fg-tertiary); }
   .qh-audexp { display: block; margin-top: 4px; }
+  /* The default state's own biggest fact. Reads as a finding, not as a warning:
+     nothing is wrong, this is simply how the fleet works and an auditor should
+     know it before they scroll. */
+  .qh-audfinding { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 9px 12px; margin-bottom: 10px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); }
+  .qh-audfinding > span { flex: 1 1 260px; min-width: 0; text-wrap: pretty; }
+  .qh-audfinding b { font-weight: 600; color: var(--fg-primary); }
   .qh-audsplit { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; align-items: start; }
   .qh-audlist { min-width: 0; border: 1px solid var(--stroke-light); border-radius: var(--r-md); overflow: hidden; background: var(--bg-white); }
   .qh-audday-h { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; padding: 6px 14px; background: var(--bg-light); border-bottom: 1px solid var(--stroke-light); font-size: 11px; font-weight: 700; color: var(--fg-secondary); }
@@ -1352,27 +1358,54 @@
   .qh-mxgroup { margin-bottom: 14px; }
   .qh-mxgroup-h { display: flex; align-items: center; gap: 8px; margin: 12px 0 7px; font-size: 12.5px; font-weight: 600; color: var(--fg-secondary); }
   .qh-mxgroup-n { padding: 1px 7px; border-radius: 999px; background: var(--adaptive-light); font-size: 11px; color: var(--fg-tertiary); }
-  .qh-mxrow { display: flex; align-items: flex-start; gap: 14px; padding: 11px 13px; background: var(--bg-white); border: 1px solid var(--stroke-light); border-radius: var(--r-md); }
+  /* A row is ONE LINE, because the list is scanned thirty times and read once.
+     The whole story sits in the detail below it, one click away — the same
+     principle as the audit rail: a detail needs a place that does not make the
+     list heavy. */
+  .qh-mxitem { background: var(--bg-white); border: 1px solid var(--stroke-light); border-radius: var(--r-md); }
   /* A wide exemption LOOKS wide. Tonal ground + a stronger border, no stripe and
-     no per-row warning banner: the brief's ask is that hierarchy carries the
-     weight so an ordinary correct row is not shouted at. */
-  .qh-mxrow.is-wide { background: var(--warning-adaptive-light); border-color: var(--stroke-strong); }
-  /* Turned off genuinely does nothing, so dimming the sentence is honest here
-     (unlike a disabled account on the Roles screen, where the row still stands). */
-  .qh-mxrow.is-off { background: var(--bg-light); }
-  .qh-mxrow.is-off .qh-mxsent, .qh-mxrow.is-off .qh-mxlines, .qh-mxrow.is-moot .qh-mxsent { color: var(--fg-tertiary); }
-  .qh-mxrow.is-off .qh-mxsent b { color: var(--fg-secondary); }
-  .qh-mxrow-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-  .qh-mxrow-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+     no per-row warning banner: hierarchy carries the weight so an ordinary
+     correct row is not shouted at. */
+  .qh-mxitem.is-wide { background: var(--warning-adaptive-light); border-color: var(--stroke-strong); }
+  /* Turned off genuinely does nothing, so dimming is honest here (unlike a
+     disabled account on the Roles screen, where the row still stands). */
+  .qh-mxitem.is-off { background: var(--bg-light); }
+  .qh-mxitem.is-off .qh-mxtitle, .qh-mxitem.is-moot .qh-mxtitle { color: var(--fg-tertiary); }
+  .qh-mxlist { gap: 6px; }
+  .qh-mxitem.is-off .qh-mxsent, .qh-mxitem.is-off .qh-mxlines, .qh-mxitem.is-moot .qh-mxsent { color: var(--fg-tertiary); }
+  .qh-mxitem.is-off .qh-mxsent b { color: var(--fg-secondary); }
+  .qh-mxitem.is-open { border-color: var(--stroke-strong); }
+  .qh-mxitem-top { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 12px; background: none; border: 0; border-radius: var(--r-md); font: inherit; text-align: left; cursor: pointer; }
+  .qh-mxitem-top:hover { background: var(--adaptive-light); }
+  .qh-mxcaret { flex-shrink: 0; display: inline-flex; color: var(--fg-tertiary); transition: transform .15s ease; }
+  .qh-mxitem.is-open .qh-mxcaret { transform: rotate(90deg); }
+  .qh-mxwhere { flex-shrink: 0; font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-tertiary); }
+  .qh-mxtitle { flex-shrink: 0; font-family: var(--qh-mono); font-size: 12px; color: var(--fg-primary); }
+  /* The reason shares the row's one line: it is the most useful sentence on the
+     row and the thing the search matches, so it is worth the width left over
+     and no more. The full text is two lines down, in the detail. */
+  .qh-mxsaid { flex: 1 1 auto; min-width: 40px; font-size: 12px; color: var(--fg-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qh-mxwhen { flex-shrink: 0; margin-left: auto; font-size: 11px; color: var(--fg-tertiary); }
+  .qh-mxdetail { display: flex; flex-direction: column; gap: 5px; padding: 2px 14px 13px 33px; }
+  .qh-mxrowacts { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; margin-top: 7px; }
+  /* The one fact the list cannot show about itself, said once above it rather
+     than as a second section with its own explanatory paragraph. */
+  .qh-mxbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; font-size: 12.5px; color: var(--fg-secondary); }
+  .qh-mxbar svg { flex-shrink: 0; color: var(--fg-warning); }
+  .qh-mxbar b { color: var(--fg-primary); }
   .qh-mxpath { font-family: var(--qh-mono); font-size: 12px; line-height: 1.55; color: var(--fg-primary); overflow-wrap: break-word; min-width: 0; }
   .qh-mxsep { margin: 0 5px; color: var(--fg-tertiary); }
   .qh-mxall { color: var(--fg-warning); }
-  .qh-mxchip { padding: 2px 8px; border-radius: var(--r-2xs); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-secondary); background: var(--adaptive-strong); }
+  .qh-mxchip { white-space: nowrap; padding: 2px 8px; border-radius: var(--r-2xs); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-secondary); background: var(--adaptive-strong); }
   .qh-mxchip.is-server, .qh-mxchip.is-database { color: var(--fg-danger); background: var(--danger-adaptive-light); }
   .qh-mxchip.is-schema { color: var(--fg-warning); background: var(--warning-adaptive-light); }
   .qh-mxchip.is-off { color: var(--fg-tertiary); background: var(--adaptive-medium); }
   .qh-mxchip.is-gone { color: var(--fg-warning); background: var(--warning-adaptive-light); }
   .qh-mxchip.is-aud { color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  /* Only what differs from the default that 27 of the 30 live rows use. A chip
+     on every row would make every row read the same. */
+  .qh-mxchip.is-full { color: var(--fg-danger); background: var(--danger-adaptive-light); }
+  .qh-mxchip.is-join { color: var(--fg-warning); background: var(--warning-adaptive-light); }
   .qh-mxsent { font-size: 13px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
   .qh-mxsent b { font-weight: 600; color: var(--fg-primary); }
   .qh-mxlines { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); }
@@ -1382,35 +1415,52 @@
   .qh-mxreason { margin-top: 2px; font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
   .qh-mxmeta { font-size: 11px; font-family: var(--qh-mono); color: var(--fg-tertiary); }
   .qh-mxsug { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 5px; padding: 6px 9px; border-radius: var(--r-xs); background: var(--adaptive-light); font-size: 11.5px; color: var(--fg-secondary); }
-  .qh-mxacts { flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+  /* The app's quiet text action — used wherever a control has to sit inside a
+     sentence or a section header without becoming a button. Bare, tokened and
+     accent-coloured so it reads as actionable beside body text; qh-mxdel below
+     is the same idiom with a danger hover. */
+  .qh-linkbtn { padding: 0; background: none; border: 0; font: inherit; font-size: 11.5px; font-weight: 500; color: var(--fg-accent); cursor: pointer; }
+  .qh-linkbtn:hover { text-decoration: underline; }
+  .qh-linkbtn:focus-visible { outline: none; border-radius: var(--r-2xs); box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
   .qh-mxdel { padding: 0; background: none; border: 0; font: inherit; font-size: 12px; color: var(--fg-tertiary); cursor: pointer; }
   .qh-mxdel:hover { color: var(--fg-danger); }
-  .qh-mxcount { margin-left: auto; font-size: 11.5px; color: var(--fg-tertiary); }
   /* --- the add flow --- */
   .qh-mxform { margin: 0 0 16px; padding: 16px 18px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-lg); }
   .qh-mxfields { display: flex; gap: 12px; flex-wrap: wrap; }
   .qh-mxfields .qh-select { min-width: 190px; }
   .qh-mxcolfield .qh-select { min-width: 300px; }
-  .qh-mxrungs { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
-  .qh-mxrung { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); font: inherit; text-align: left; cursor: pointer; }
-  .qh-mxrung:hover { border-color: var(--stroke-accent); }
-  .qh-mxrung.is-on { background: var(--brand-adaptive-light); border-color: var(--brand-green); }
-  /* The two wide rungs are picked deliberately or not at all, so selecting one
-     changes the colour of the choice itself — not just of a warning beside it. */
-  .qh-mxrung.is-wide.is-on { background: var(--danger-adaptive-light); border-color: var(--fg-danger); }
-  .qh-mxrung-l { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--fg-primary); }
-  .qh-mxrung.is-on .qh-mxrung-l { color: var(--fg-accent); }
-  .qh-mxrung.is-wide.is-on .qh-mxrung-l { color: var(--fg-danger); }
-  .qh-mxrung-w { font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); text-wrap: pretty; }
-  /* Off the top of the ladder, not a sixth peer card: it is wider than the top
-     rung of a ladder built to make width feel wide, and it should not sit in
-     the same row as "one column". */
-  .qh-mxfleet { display: flex; align-items: flex-start; gap: 9px; width: 100%; margin-top: 8px; padding: 10px 12px; background: none; border: 1px dashed var(--stroke-strong); border-radius: var(--r-sm); font: inherit; text-align: left; color: var(--fg-secondary); cursor: pointer; }
-  .qh-mxfleet:hover { border-color: var(--fg-danger); color: var(--fg-danger); }
-  .qh-mxfleet.is-on { border-style: solid; background: var(--danger-adaptive-light); border-color: var(--fg-danger); color: var(--fg-danger); }
-  .qh-mxfleet-t { flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; font-size: 13px; font-weight: 600; }
-  .qh-mxfleet-w { font-size: 11.5px; font-weight: 400; line-height: 1.45; color: var(--fg-tertiary); text-wrap: pretty; }
-  .qh-mxfleet.is-on .qh-mxfleet-w { color: var(--fg-danger); }
+  /* The ladder as ONE row, widest last. Five cards printing five widths at once
+     made the reader compare all five before picking one; the sentence under the
+     row states the width of the rung they actually picked, which is the only
+     one they are deciding about. */
+  .qh-mxscope { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  /* Picking a wide rung colours the CHOICE, not a warning beside it. */
+  .qh-mxscope .qh-seg-opt.is-wide.is-active { color: var(--fg-danger); background: var(--danger-adaptive-light); }
+  .qh-mxfleetlink { font-size: 12px; }
+  .qh-mxwidth { margin: 9px 0 14px; font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
+  /* Off the ladder rather than a sixth segment: it is wider than the top rung of
+     a ladder built to make width feel wide, and it should not sit in the same
+     row as "one column". */
+  .qh-mxfleetbox { display: flex; align-items: flex-start; gap: 9px; margin-top: 10px; padding: 10px 12px; background: var(--danger-adaptive-light); border: 1px solid var(--fg-danger); border-radius: var(--r-sm); font-size: 12.5px; line-height: 1.5; color: var(--fg-danger); text-wrap: pretty; }
+  .qh-mxfleetbox svg { flex-shrink: 0; margin-top: 2px; }
+  /* Numbered steps, so the form reads as three things instead of nine. */
+  .qh-mxstep { display: flex; align-items: baseline; gap: 9px; margin: 18px 0 9px; }
+  .qh-mxstep:first-child { margin-top: 0; }
+  .qh-mxstep-n { flex-shrink: 0; width: 19px; height: 19px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: var(--adaptive-light); font-size: 11px; font-weight: 700; color: var(--fg-secondary); }
+  .qh-mxstep-t { display: flex; flex-direction: column; gap: 3px; font-size: 13px; font-weight: 600; color: var(--fg-primary); }
+  .qh-mxstep-t .qh-accedit-hint { font-weight: 400; }
+  /* The defaults, STATED. Two questions whose answer is right 27 times out of 30
+     are not questions on the way past — but reading this line has to be faster
+     than opening it, or it is just a closed form. */
+  .qh-mxsum { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; max-width: 620px; padding: 9px 12px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); font: inherit; text-align: left; cursor: pointer; }
+  .qh-mxsum:hover { border-color: var(--stroke-accent); }
+  .qh-mxsum-t { font-size: 12.5px; color: var(--fg-secondary); }
+  .qh-mxsettings { margin-top: 2px; }
+  /* Editing in place: the consequences and the reason, never the reach. */
+  .qh-mxeditbox { display: flex; flex-direction: column; gap: 11px; margin-top: 2px; padding: 12px 14px; background: var(--bg-light); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); }
+  .qh-mxeditwhat { display: flex; flex-direction: column; gap: 3px; }
+  .qh-mxfixed { font-size: 11.5px; color: var(--fg-tertiary); }
+  .qh-mxprevbtn { margin-right: auto; }
   /* The typed confirmation is a separate step, separated by whitespace that
      clears the reach sentence's own line-height (19.5px). A 14px gap let a
      wrapped sentence run into it; a rule read as an underline on the last line
@@ -1436,7 +1486,6 @@
   .qh-mxevidence { margin-top: 8px; font-size: 12px; line-height: 1.5; color: var(--fg-secondary); }
   .qh-mxreason-in { display: block; width: 100%; max-width: 620px; height: auto; padding: 9px 11px; line-height: 1.5; resize: vertical; }
   .qh-mxprev { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--stroke-light); }
-  .qh-mxprev-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
   .qh-mxprev-idle { font-size: 12.5px; line-height: 1.5; color: var(--fg-tertiary); text-wrap: pretty; }
   .qh-mxprev-q { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 9px 11px; background: var(--bg-light); border-radius: var(--r-xs); }
   .qh-mxprev-q code { font-family: var(--qh-mono); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; color: var(--fg-secondary); }

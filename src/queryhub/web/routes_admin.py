@@ -2757,6 +2757,14 @@ def _mask_scope(r: dict) -> str:
         return "schema"
     if r["database_name"]:
         return "database"
+    # Nothing named at all, not even a server: the widest rung there is. The
+    # POST can write one (`scope: "fleet"`) and this reported it as "server",
+    # so the screen showed the ladder's top rung one notch down from where it
+    # is -- beside a `connectionName` that correctly said "every server". No
+    # such row exists today, which is the only reason the contradiction has
+    # never been on screen.
+    if r["target_server_id"] is None:
+        return "fleet"
     return "server"
 
 
@@ -2802,8 +2810,9 @@ def admin_mask_exemptions(claims: dict = Depends(deps.current_user)):
     rows = db.fetch_all(
         "SELECT e.id, e.target_server_id, e.database_name, e.schema_name, "
         "       e.table_name, e.column_name, e.reason, e.enabled, "
-        "       e.created_by, e.created_at, e.apply_in_joins, "
-        "       e.keep_value_scan, e.super_admin_only, ts.alias "
+        "       e.created_by, e.created_at, e.updated_by, e.updated_at, "
+        "       e.apply_in_joins, e.keep_value_scan, e.super_admin_only, "
+        "       ts.alias "
         "  FROM pii_masking_exemptions e "
         "  LEFT JOIN target_servers ts ON ts.id = e.target_server_id "
         " ORDER BY e.enabled DESC, e.id")
@@ -2857,31 +2866,17 @@ def admin_mask_exemptions(claims: dict = Depends(deps.current_user)):
                     continue
                 also.append({"connectionId": alias, "connectionName": alias})
 
+        # The row's own fields come from the one builder the edit endpoint also
+        # uses -- `connectionId` is the ALIAS there, like every other
+        # connectionId in this API (`_connection_entry` gives a connection
+        # `id = alias`). This once served the raw integer, so "Add it there",
+        # the control that seeds the form from a sibling server, handed the
+        # form a number no connection matched and the server picker came up
+        # blank on the one path where it was prefilled.
         out.append({
-            "id": r["id"],
-            "scope": scope,
-            # The ALIAS, like every other connectionId in this API
-            # (`_connection_entry` gives a connection `id = alias`). This
-            # served the raw integer, so the one control that consumes it --
-            # "Add it there", which seeds the form from a sibling server --
-            # handed the form a number no connection matched, and the server
-            # picker came up blank on the one path where it was prefilled.
-            "connectionId": aliases.get(tid) or r["alias"],
-            # NULL is a wildcard, so it is named as one. A row that reaches
-            # every server must not read as a row with a blank server.
-            "connectionName": r["alias"] or "every server",
-            "databaseId": dbname,
-            "databaseName": dbname or "every database",
-            "schema": r["schema_name"],
-            "table": r["table_name"],
-            "column": r["column_name"],
-            "strength": "soft" if r["keep_value_scan"] else "full",
-            "survivesJoin": bool(r["apply_in_joins"]),
-            "audience": "super" if r["super_admin_only"] else "everyone",
-            "reason": r["reason"],
-            "createdBy": r["created_by"],
-            "createdAt": mapping.iso(r["created_at"]),
-            "enabled": bool(r["enabled"]),
+            **_mask_row_core(r, aliases),
+            # Listing-only, and each costs a catalog read across every
+            # exemption in the table.
             "missing": missing,
             "maskedBy": explained.get(r["column_name"] or ""),
             "alsoOn": also,
@@ -2936,7 +2931,117 @@ class MaskExemptionIn(BaseModel):
 
 
 class MaskPatchIn(BaseModel):
-    enabled: bool
+    """What an exemption can be edited into.
+
+    Everything here is optional and unset means untouched, so a client that
+    only flips the switch sends what it always sent.
+
+    The scope fields are DECLARED and then REFUSED. They are not here to be
+    written -- they are here so that sending one is an error instead of being
+    quietly dropped: a client that believes it just narrowed a row's reach,
+    against a server that ignored the field, is worse than no edit path at all.
+    Reach stays immutable; narrowing is still turn-off-and-create, which leaves
+    two rows whose reasons each describe their own row.
+    """
+    enabled: bool | None = None
+    strength: str | None = None
+    survivesJoin: bool | None = None
+    audience: str | None = None
+    reason: str | None = None
+
+    # Refused, never applied — see above.
+    scope: str | None = None
+    connectionId: str | None = None
+    databaseId: str | None = None
+    schema_name: str | None = Field(None, alias="schema")
+    table: str | None = None
+    column: str | None = None
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+
+_MASK_REACH_FIELDS = ("scope", "connectionId", "databaseId", "schema_name",
+                      "table", "column")
+
+
+def _mask_edit_fields(body: MaskPatchIn) -> dict:
+    """Column -> value for the fields this PATCH actually writes.
+
+    Refuses on reach, and on a reason edited to nothing. Returns {} when the
+    body asks for no change at all, which the caller answers without a write.
+    """
+    named = [f for f in _MASK_REACH_FIELDS if getattr(body, f) is not None]
+    if named:
+        raise deps._error(
+            400, "reach_immutable",
+            "What an exemption reaches cannot be edited — "
+            f"{', '.join(named)} {'are' if len(named) > 1 else 'is'} fixed once "
+            "the row exists. Switch this one off and create the narrower one, "
+            "so each reason describes its own row.")
+
+    out: dict = {}
+    if body.enabled is not None:
+        out["enabled"] = body.enabled
+    if body.strength is not None:
+        strength = body.strength.strip().lower()
+        if strength not in ("soft", "full"):
+            raise deps._error(400, "bad_request",
+                              "strength must be 'soft' or 'full'.")
+        out["keep_value_scan"] = strength == "soft"
+    if body.survivesJoin is not None:
+        out["apply_in_joins"] = body.survivesJoin
+    if body.audience is not None:
+        audience = body.audience.strip().lower()
+        if audience not in ("everyone", "super"):
+            raise deps._error(400, "bad_request",
+                              "audience must be 'everyone' or 'super'.")
+        out["super_admin_only"] = audience == "super"
+    if body.reason is not None:
+        # The same rule the POST applies, for the same reason and in the same
+        # words. Editing exists largely so a reason can be corrected; a reason
+        # that can be edited to nothing would make this the one endpoint that
+        # can destroy the field it was built to repair.
+        reason = body.reason.strip()
+        if not reason:
+            raise deps._error(400, "reason_required",
+                              "A reason is required — an exemption without one "
+                              "is unreadable to whoever finds it next.")
+        out["reason"] = reason
+    return out
+
+
+def _mask_row_core(r: dict, alias_of: dict | None = None) -> dict:
+    """The fields of one exemption that come from the row itself.
+
+    The listing adds three more (`maskedBy`, `missing`, `alsoOn`) that each
+    cost a catalog read across every exemption in the table; an edit answers
+    about one row and does not pay for them. Everything that IS here is built
+    here, so the two shapes cannot drift on the fields they share.
+    """
+    tid = r["target_server_id"]
+    alias = (alias_of or {}).get(tid) or r.get("alias")
+    return {
+        "id": str(r["id"]),
+        "scope": _mask_scope(r),
+        "connectionId": alias,
+        "connectionName": alias or "every server",
+        "databaseId": r["database_name"],
+        "databaseName": r["database_name"] or "every database",
+        "schema": r["schema_name"],
+        "table": r["table_name"],
+        "column": r["column_name"],
+        "strength": "soft" if r["keep_value_scan"] else "full",
+        "survivesJoin": bool(r["apply_in_joins"]),
+        "audience": "super" if r["super_admin_only"] else "everyone",
+        "reason": r["reason"],
+        "enabled": bool(r["enabled"]),
+        "createdBy": r["created_by"],
+        "createdAt": mapping.iso(r["created_at"]),
+        # NULL until somebody edits the row, and the screen says nothing at all
+        # rather than repeating the creation as though it were an edit.
+        "updatedBy": r.get("updated_by"),
+        "updatedAt": mapping.iso(r["updated_at"]) if r.get("updated_at") else None,
+    }
 
 
 def _mask_fields(body: MaskExemptionIn) -> tuple[int | None, dict]:
@@ -3111,33 +3216,67 @@ def admin_add_mask_exemption(body: MaskExemptionIn,
 @router.patch("/mask-exemptions/{exemption_id}")
 def admin_set_mask_exemption(exemption_id: int, body: MaskPatchIn,
                              claims: dict = Depends(deps.current_user)):
-    """Switch one exemption on or off. Off is the safe direction — the column
-    goes back to being masked — so it is the only edit the screen offers."""
+    """Edit one exemption in place: the switch, how strong it is, whether it
+    survives a join, who it is for, and why.
+
+    NOT its reach. Every field that decides which columns the row touches is
+    refused with `reach_immutable` rather than ignored — see `MaskPatchIn`.
+    Narrowing stays turn-off-and-create.
+
+    The response is the row as stored, not the body as sent, so a screen that
+    renders the answer cannot show an edit the database declined.
+    """
     uid = admin.require_admin(claims, "access")
+    fields = _mask_edit_fields(body)
     with db.transaction() as cur:
         cur.execute(
-            "UPDATE pii_masking_exemptions SET enabled = %s "
-            " WHERE id = %s AND enabled IS DISTINCT FROM %s "
-            "RETURNING target_server_id, database_name, schema_name, "
-            "          table_name, column_name",
-            (body.enabled, exemption_id, body.enabled))
-        row = cur.fetchone()
-        if row is None:
-            # Either it is gone or it is already in that state. Both are worth
-            # different words: a no-op that reports success is how a screen
-            # ends up showing a switch the database never moved.
-            if not db.fetch_one("SELECT 1 AS x FROM pii_masking_exemptions "
-                                " WHERE id = %s", (exemption_id,)):
-                raise deps._error(404, "not_found", "No such exemption.")
-            return {"id": str(exemption_id), "enabled": body.enabled,
-                    "changed": False}
+            "SELECT id, target_server_id, database_name, schema_name, "
+            "       table_name, column_name, reason, enabled, created_by, "
+            "       created_at, updated_by, updated_at, apply_in_joins, "
+            "       keep_value_scan, super_admin_only "
+            "  FROM pii_masking_exemptions WHERE id = %s FOR UPDATE",
+            (exemption_id,))
+        before = cur.fetchone()
+        if before is None:
+            raise deps._error(404, "not_found", "No such exemption.")
+
+        # Only what actually differs. An edit that changes nothing must not
+        # stamp `updated_by`, or every visit to the form rewrites the row's
+        # history with an edit nobody made.
+        changes = {k: v for k, v in fields.items() if before[k] != v}
+        if not changes:
+            return {**_mask_row_core(before, _mask_aliases()), "changed": False}
+
+        sets = ", ".join(f"{k} = %({k})s" for k in changes)
+        cur.execute(
+            f"UPDATE pii_masking_exemptions SET {sets}, "
+            "    updated_by = %(by)s, updated_at = now() "
+            " WHERE id = %(id)s "
+            "RETURNING id, target_server_id, database_name, schema_name, "
+            "          table_name, column_name, reason, enabled, created_by, "
+            "          created_at, updated_by, updated_at, apply_in_joins, "
+            "          keep_value_scan, super_admin_only",
+            {**changes, "by": uid, "id": exemption_id})
+        after = cur.fetchone()
         audit.log_in(cur, None, uid, claims.get("name"), "pii_exemption_changed",
-                     {"exemption_id": exemption_id, "enabled": body.enabled,
-                      "target_id": row["target_server_id"],
-                      "database": row["database_name"],
-                      "schema": row["schema_name"], "table": row["table_name"],
-                      "column": row["column_name"]})
-    return {"id": str(exemption_id), "enabled": body.enabled, "changed": True}
+                     {"exemption_id": exemption_id,
+                      "target_id": before["target_server_id"],
+                      "database": before["database_name"],
+                      "schema": before["schema_name"],
+                      "table": before["table_name"],
+                      "column": before["column_name"],
+                      # Both sides of every field that moved. "changed" with no
+                      # values is the audit row that sends the next reader to
+                      # the table to find out what it was.
+                      "changed": {k: {"from": before[k], "to": v}
+                                  for k, v in changes.items()}})
+    return {**_mask_row_core(after, _mask_aliases()), "changed": True}
+
+
+def _mask_aliases() -> dict:
+    """target id -> alias, for the connection id every other route reports."""
+    return {r["id"]: r["alias"] for r in db.fetch_all(
+        "SELECT id, alias FROM target_servers")}
 
 
 @router.delete("/mask-exemptions/{exemption_id}", status_code=204)
@@ -3309,6 +3448,42 @@ def _mask_preview_evidence(tid: int, database: str, table: str) -> dict | None:
     return None
 
 
+def _mask_join_stats(tid: int, database: str, table: str) -> dict | None:
+    """How this table is REALLY queried: how many statements touched it in the
+    window, and how many of those read a second table.
+
+    `survivesJoin` is the one setting on this screen a person cannot answer from
+    the schema. It asks whether re-masking on a join makes the exemption useless
+    in practice, and the only honest answer is how the table is actually used --
+    the same count that decided the five nova exemptions by hand. The parser is
+    the authority and the ILIKE is a prefilter, exactly as the evidence lookup
+    does it, so a table named inside a string literal is not a query against it.
+
+    None when nothing queried it: "0 of 0" is not evidence, and the screen says
+    nothing rather than printing a sentence with no content.
+    """
+    rows = db.fetch_all(
+        "SELECT query, engine FROM requests "
+        " WHERE target_server_id = %s AND database_name = %s "
+        "   AND status = 'completed' "
+        "   AND created_at >= NOW() - make_interval(days => %s) "
+        "   AND query ILIKE %s "
+        " ORDER BY id DESC LIMIT 500",
+        (tid, database, _MASK_PREVIEW_DAYS, f"%{table}%"))
+    total = joined = 0
+    for r in rows:
+        try:
+            names = pii._tables_in(r["query"], engine=r["engine"] or "postgres")
+        except Exception:
+            continue
+        if not names or table.lower() not in names:
+            continue
+        total += 1
+        if len(names) > 1:
+            joined += 1
+    return {"total": total, "joined": joined} if total else None
+
+
 def _mask_preview_columns(tid: int, database: str, schema: str | None,
                           table: str, column: str | None) -> list[str]:
     """Which columns the sample row shows: the one being exempted, plus enough
@@ -3401,9 +3576,13 @@ def admin_mask_preview(body: MaskPreviewIn,
     if not database or not table:
         raise deps._error(400, "bad_request", "Pick a database and a table.")
 
+    joins = _mask_join_stats(tid, database, table)
     evidence = _mask_preview_evidence(tid, database, table)
     if evidence is None:
-        return {"seen": False, "days": _MASK_PREVIEW_DAYS}
+        # No sample row to show, but the join count can still exist: a statement
+        # can be unreadable as evidence (another engine, an unparseable shape)
+        # and still be countable.
+        return {"seen": False, "days": _MASK_PREVIEW_DAYS, "joinStats": joins}
 
     target = targets.get(tid)
     if target is None or (target.engine or "postgres") != "postgres":
@@ -3452,7 +3631,8 @@ def admin_mask_preview(body: MaskPreviewIn,
     if row is None:
         # An empty table is not "nobody queried it"; it is a table with nothing
         # to show. Both leave the operator with the sentence and no sample.
-        return {"seen": False, "days": _MASK_PREVIEW_DAYS, "empty": True}
+        return {"seen": False, "days": _MASK_PREVIEW_DAYS, "empty": True,
+                "joinStats": joins}
 
     before, after = _mask_preview_pair(
         tid, database, schema, table, column, columns, list(row),
@@ -3469,6 +3649,9 @@ def admin_mask_preview(body: MaskPreviewIn,
     return {
         "seen": True,
         "days": _MASK_PREVIEW_DAYS,
+        # Evidence for the OTHER decision on the form -- whether the exemption
+        # should survive a join. Null when nothing queried the table.
+        "joinStats": joins,
         # What QueryHub ran, not what the evidence query was: an audit reader
         # who sees this string must be able to trust it is the statement that
         # touched the database.

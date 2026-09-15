@@ -226,6 +226,12 @@ const qhApi = {
   adminMaskExemptions:()  => qhFetch('/admin/mask-exemptions'),
   adminAddMaskExemption:(b) => qhFetch('/admin/mask-exemptions', { method: 'POST', body: JSON.stringify(b) }),
   adminSetMaskExemption:(id, enabled) => qhFetch('/admin/mask-exemptions/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ enabled: !!enabled }) }),
+  // Edit one in place: { strength, survivesJoin, audience, reason }, any subset.
+  // Same endpoint as the switch above and deliberately a separate method — the
+  // server REFUSES anything that would move what the row reaches
+  // (`400 reach_immutable`) rather than ignoring it, so these are two different
+  // questions and only one of them is "turn this off".
+  adminUpdateMaskExemption:(id, patch) => qhFetch('/admin/mask-exemptions/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify(patch || {}) }),
   adminDelMaskExemption:(id) => qhFetch('/admin/mask-exemptions/' + encodeURIComponent(id), { method: 'DELETE' }),
   adminMaskCatalog:(connectionId, databaseId) => qhFetch('/admin/mask-exemptions/catalog?connection=' + encodeURIComponent(connectionId) + (databaseId ? '&database=' + encodeURIComponent(databaseId) : '')),
   adminMaskPreview:(b) => qhFetch('/admin/mask-exemptions/preview', { method: 'POST', body: JSON.stringify(b) }),

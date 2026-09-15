@@ -151,6 +151,116 @@ def test_an_unknown_switch_value_is_refused_not_defaulted(kw):
 
 
 # ---------------------------------------------------------------------------
+# editing a row in place
+# ---------------------------------------------------------------------------
+#
+# An exemption can be edited for everything EXCEPT what it reaches. That line
+# is the whole design: a row's reason describes the row's reach, so a row whose
+# reach moved is a row whose reason is now a lie about production data.
+# Narrowing stays turn-off-and-create, which leaves two rows each describing
+# itself.
+#
+# The dangerous failure is not refusing an edit -- it is accepting one and not
+# applying it. A client that believes it narrowed a row, against a server that
+# dropped the field, shows an operator a protection they do not have.
+
+from queryhub.web.routes_admin import MaskPatchIn  # noqa: E402
+
+
+def _patch(**kw):
+    return routes_admin._mask_edit_fields(MaskPatchIn(**kw))
+
+
+def _patch_err(**kw):
+    with pytest.raises(Exception) as e:
+        _patch(**kw)
+    return e.value
+
+
+@pytest.mark.parametrize("field,value", [
+    ("scope", "database"), ("connectionId", "svc-prod-x"),
+    ("databaseId", "app"), ("schema", "public"),
+    ("table", "users"), ("column", "email"),
+])
+def test_a_field_that_moves_the_reach_is_refused_not_ignored(field, value):
+    err = _patch_err(**{field: value})
+    assert getattr(err, "status_code", None) == 400
+    assert getattr(err, "code", None) == "reach_immutable" or \
+        "reach_immutable" in str(getattr(err, "detail", ""))
+
+
+def test_the_refusal_names_which_field_it_refused():
+    """An operator who sent two fields and gets "something is fixed" has to
+    guess which; the message says both."""
+    err = _patch_err(scope="database", table="users")
+    text = str(getattr(err, "detail", err))
+    assert "scope" in text and "table" in text
+
+
+def test_an_unknown_field_is_refused_by_the_model():
+    """`extra: forbid`. A field this endpoint has never heard of is far more
+    likely a client meaning something than a client sending noise."""
+    with pytest.raises(Exception):
+        MaskPatchIn(enabled=True, reach="everything")
+
+
+def test_each_switch_maps_to_its_column():
+    assert _patch(strength="soft")["keep_value_scan"] is True
+    assert _patch(strength="full")["keep_value_scan"] is False
+    assert _patch(survivesJoin=True)["apply_in_joins"] is True
+    assert _patch(audience="super")["super_admin_only"] is True
+    assert _patch(audience="everyone")["super_admin_only"] is False
+    assert _patch(enabled=False)["enabled"] is False
+
+
+def test_an_unset_field_is_untouched_not_defaulted():
+    """The difference between "leave it alone" and "set it to the default" is
+    a protection switched off by a form that never showed the field."""
+    assert _patch(reason="still true, checked again") == {
+        "reason": "still true, checked again"}
+    assert _patch(enabled=True) == {"enabled": True}
+    assert _patch() == {}
+
+
+def test_a_reason_edited_to_nothing_is_refused():
+    """Editing exists largely so a reason can be corrected. A reason that can
+    be cleared would make this the one endpoint able to destroy the field it
+    was built to repair."""
+    err = _patch_err(reason="   ")
+    assert getattr(err, "status_code", None) == 400
+    assert getattr(err, "code", None) == "reason_required" or \
+        "reason_required" in str(getattr(err, "detail", ""))
+
+
+def test_a_reason_is_stored_trimmed():
+    assert _patch(reason="  leading and trailing  ") == {
+        "reason": "leading and trailing"}
+
+
+@pytest.mark.parametrize("kw", [{"strength": "medium"}, {"audience": "some"}])
+def test_an_unknown_switch_value_is_refused_on_the_edit_path_too(kw):
+    assert getattr(_patch_err(**kw), "status_code", None) == 400
+
+
+def test_the_row_builder_names_a_wildcard_rather_than_leaving_it_blank():
+    """A row that reaches every server must not read as a row with a blank
+    server -- on the edit response as much as in the listing, which is why both
+    are built here."""
+    row = routes_admin._mask_row_core(
+        {"id": 1, "target_server_id": None, "database_name": None,
+         "schema_name": None, "table_name": None, "column_name": None,
+         "reason": "r", "enabled": True, "created_by": "U1",
+         "created_at": None, "updated_by": None, "updated_at": None,
+         "apply_in_joins": False, "keep_value_scan": False,
+         "super_admin_only": False, "alias": None}, {})
+    assert row["connectionName"] == "every server"
+    assert row["databaseName"] == "every database"
+    assert row["scope"] == "fleet"
+    assert row["updatedBy"] is None and row["updatedAt"] is None
+    assert row["id"] == "1", "ids are strings on this API"
+
+
+# ---------------------------------------------------------------------------
 # the preview's promise
 # ---------------------------------------------------------------------------
 #
@@ -216,3 +326,54 @@ def test_null_is_named_rather_than_shown_as_a_blank_cell():
 def test_a_long_cell_is_truncated_not_dropped():
     out = routes_admin._preview_cell("x" * 500)
     assert len(out) <= 120 and out.endswith("…")
+
+
+# ---------------------------------------------------------------------------
+# the join evidence
+# ---------------------------------------------------------------------------
+#
+# `survivesJoin` is the one setting on the form nobody can answer from the
+# schema: it asks whether re-masking on a join makes the exemption useless in
+# practice. The answer is how the table is actually queried, and the server is
+# the only side that can count it.
+
+def _req(query, engine="postgres"):
+    return {"query": query, "engine": engine}
+
+
+def _stats(monkeypatch, rows, table="orders"):
+    monkeypatch.setattr(routes_admin.db, "fetch_all", lambda *a, **k: rows)
+    return routes_admin._mask_join_stats(1, "app", table)
+
+
+def test_a_join_is_counted_by_the_parser_not_by_the_word(monkeypatch):
+    """`JOIN` inside a string literal is not a join, and a comma join has no
+    JOIN in it at all. Both answers come from the same parser the masker uses
+    to decide the exemption, so the evidence and the enforcement cannot
+    disagree."""
+    got = _stats(monkeypatch, [
+        _req("SELECT * FROM orders"),
+        _req("SELECT * FROM orders, customers WHERE orders.cid = customers.id"),
+        _req("SELECT note FROM orders WHERE note = 'inner join pending'"),
+    ])
+    assert got == {"total": 3, "joined": 1}
+
+
+def test_the_table_name_in_a_literal_is_not_a_query_against_it(monkeypatch):
+    """The ILIKE is a prefilter, exactly as the evidence lookup treats it."""
+    assert _stats(monkeypatch, [
+        _req("SELECT * FROM audit WHERE msg = 'see orders'")]) is None
+
+
+def test_nothing_queried_it_says_nothing(monkeypatch):
+    """"0 of 0" is not evidence. None, so the screen prints no sentence rather
+    than a sentence with no content in it."""
+    assert _stats(monkeypatch, []) is None
+
+
+def test_a_statement_that_will_not_parse_is_skipped_not_counted(monkeypatch):
+    """A denominator that silently includes rows the numerator cannot reach is
+    worse than a smaller honest one."""
+    got = _stats(monkeypatch, [_req("SELECT * FROM orders"),
+                               _req("!! not sql at all")])
+    assert got == {"total": 1, "joined": 0}

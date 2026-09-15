@@ -241,87 +241,77 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
     // same-named tables from different schemas into a single node (and a
     // duplicate React key) — real here: `crm` has 37 tables in `dba` and 35
     // in `public`.
-    const allRefs = db.tableRefs || (db.tables || []).map(n => ({ s: qhSchemaFor(c, db), n }));
-    // A view is queryable, so it belongs in the tree — but ONCE, under Views.
-    // Every ref used to land under "Tables", and then the same views were
-    // listed again under "Views" as soon as the lazy schema load answered:
-    // `order_service` read "Tables 41" for 2 tables and 39 dba.* views.
-    const split = qhSplitRelations(allRefs, sch ? sch.views : []);
-    const refs = split.tables;
-    // A view the split knew only by name has no schema of its own; take it
-    // from the loaded schema, and fall back to the engine default.
-    const vrefs = split.views.map(r => (r.s ? r : { ...r,
-      s: (sch && sch.tables[r.n] && sch.tables[r.n].schema) || qhSchemaFor(c, db) }));
+    const refs = db.tableRefs || (db.tables || []).map(n => ({ s: qhSchemaFor(c, db), n }));
+    // The catalog list holds tables AND views. `Views` used to be drawn from
+    // /schema on TOP of it, so every view appeared twice and the Tables count
+    // was a lie — 77 of 84 live databases were mixed, one reading "Tables 41"
+    // for 2 tables and 39 views. `k` on the ref decides the branch, through the
+    // one rule in qh-data so the tree and fleet search cannot disagree.
+    const rel = qhSplitRelations(refs, sch ? sch.views : []);
     const qq = (name, s) => qhQualify(c, db, name, s);
+    // Tables and views render identically — a view has columns, opens on
+    // double-click and drags into the editor exactly like a table, which it
+    // already did while it sat under Tables. Moving it must not cost it that,
+    // so this is one renderer parameterised by branch, not a second one.
+    const relNode = (branch, ref) => {
+      const tb = ref.n;
+      const tsch = ref.s || (sch && sch.tables[tb] && sch.tables[tb].schema) || qhSchemaFor(c, db);
+      const tid = did + branch + '/' + tsch + '.' + tb;
+      const td = sch && (sch.tables[tsch + '.' + tb] || sch.tables[tb]) ? (sch.tables[tsch + '.' + tb] || sch.tables[tb]) : null;
+      const cols = td ? td.columns : [];
+      const idxs = td ? td.indexes : [];
+      const approx = td ? td.approxRows : null;
+      const isView = branch === '/v';
+      return (
+        <div key={tid}>
+          <TreeRow depth={base + 2} expandable open={isOpen(tid)} onToggle={() => tog(tid)} icon={isView ? TICN.view() : TICN.table()} label={tsch + '.' + tb} drag={qq(tb, tsch)} nodeId={tid}
+            onDbl={() => onOpenTable(c, db, tb)} onCtx={(e) => openMenu(e, c, db, tb)}
+            right={<>{approx != null && <span className="qh-tr-rows" title={approx.toLocaleString() + ' rows (est.)'}>{qhFmtRows(approx)}</span>}<button className="qh-tr-run" title="Open SELECT" onClick={(e) => { e.stopPropagation(); onOpenTable(c, db, tb); }}>{TICN.run()}</button></>} />
+          {isOpen(tid) && (
+            <>
+              <TreeRow depth={base + 3} expandable open={isOpen(tid + '/c')} onToggle={() => tog(tid + '/c')} muted drag={qhQuoteList(cols.map(cc => cc.name))} icon={TICN.folder(isOpen(tid + '/c'))} label="Columns" right={<span className="qh-tr-count">{loaded ? cols.length : '…'}</span>} />
+              {isOpen(tid + '/c') && cols.map(col => {
+                const cpii = !!col.pii;
+                return <TreeRow key={col.name} depth={base + 4} pii={cpii} muted drag={qhQuoteIdent(col.name)} nodeId={tid + '/c/' + col.name} icon={TICN.col(col, cpii)} label={col.name}
+                  right={<span className="qh-col-type">{col.type}{col.nullable ? '' : ' ·nn'}</span>} />;
+              })}
+              {/* Dropped when there is nothing in it, rather than when the
+                  relation is a view: a matview HAS indexes in the engine, but
+                  `/schema` does not send them for anything in the views array
+                  (CODE, 2026-09-15), so a kind-based rule would draw an empty
+                  folder on every matview. Length-based, so the folder appears
+                  by itself the day the payload carries them. */}
+              {(!isView || idxs.length > 0) && (
+                <>
+                  <TreeRow depth={base + 3} expandable open={isOpen(tid + '/i')} onToggle={() => tog(tid + '/i')} muted icon={TICN.folder(isOpen(tid + '/i'))} label="Indexes" right={<span className="qh-tr-count">{loaded ? idxs.length : '…'}</span>} />
+                  {isOpen(tid + '/i') && idxs.map(ix => (
+                    <TreeRow key={ix.name} depth={base + 4} muted drag={qhQuoteIdent(ix.name)} icon={TICN.index(ix.unique)} label={ix.name}
+                      right={<span className="qh-col-type">{(ix.cols || []).join(', ')}{ix.unique ? ' ·uniq' : ''}</span>} />
+                  ))}
+                </>
+              )}
+            </>
+          )}
+        </div>
+      );
+    };
     return (
       <div key={did}>
         <TreeRow depth={base} expandable open={isOpen(did)} onToggle={() => { tog(did); onLoadSchema && onLoadSchema(c.id, db.id); }}
           icon={rightExtra !== undefined ? <img className="qh-engine-logo" src={qhEngineLogo(c)} alt={qhEngine(c).label} draggable={false} /> : TICN.db()}
           label={db.name} sub={sub} tier={db.tier} active={act} drag={qhQuoteIdent(db.name)} dbDrag={dbDragKey} nodeId={did}
-          title={rightExtra !== undefined ? [db.name, c.name + ' · ' + c.engine, c.host ? c.host + (c.port ? ':' + c.port : '') : '', qhHostingFull(c)].filter(Boolean).join('\n') : undefined}
+          title={rightExtra !== undefined ? [db.name, c.name + ' · ' + c.engine, c.host ? c.host + (c.port ? ':' + c.port : '') : '', qhHosting(c)].filter(Boolean).join('\n') : undefined}
           right={rightExtra}
           onCtx={(e) => openMenu(e, c, db)} onDbl={() => newQ(c, db)} />
         {isOpen(did) && (
           <>
-            <TreeRow depth={base + 1} expandable open={isOpen(did + '/t')} onToggle={() => tog(did + '/t')} muted drag={refs.map(r => qq(r.n, r.s)).join(', ')}
-              icon={TICN.folder(isOpen(did + '/t'))} label="Tables" right={<span className="qh-tr-count">{refs.length}</span>} />
-            {isOpen(did + '/t') && refs.map(({ s: tsch, n: tb }) => {
-              const tid = did + '/t/' + tsch + '.' + tb;
-              const td = sch && (sch.tables[tsch + '.' + tb] || sch.tables[tb]) ? (sch.tables[tsch + '.' + tb] || sch.tables[tb]) : null;
-              const cols = td ? td.columns : [];
-              const idxs = td ? td.indexes : [];
-              const approx = td ? td.approxRows : null;
-              return (
-                <div key={tid}>
-                  <TreeRow depth={base + 2} expandable open={isOpen(tid)} onToggle={() => tog(tid)} icon={TICN.table()} label={tsch + '.' + tb} drag={qq(tb, tsch)} nodeId={tid}
-                    onDbl={() => onOpenTable(c, db, tb)} onCtx={(e) => openMenu(e, c, db, tb)}
-                    right={<>{approx != null && <span className="qh-tr-rows" title={approx.toLocaleString() + ' rows (est.)'}>{qhFmtRows(approx)}</span>}<button className="qh-tr-run" title="Open SELECT" onClick={(e) => { e.stopPropagation(); onOpenTable(c, db, tb); }}>{TICN.run()}</button></>} />
-                  {isOpen(tid) && (
-                    <>
-                      <TreeRow depth={base + 3} expandable open={isOpen(tid + '/c')} onToggle={() => tog(tid + '/c')} muted drag={qhQuoteList(cols.map(cc => cc.name))} icon={TICN.folder(isOpen(tid + '/c'))} label="Columns" right={<span className="qh-tr-count">{loaded ? cols.length : '…'}</span>} />
-                      {isOpen(tid + '/c') && cols.map(col => {
-                        const cpii = !!col.pii;
-                        return <TreeRow key={col.name} depth={base + 4} pii={cpii} muted drag={qhQuoteIdent(col.name)} nodeId={tid + '/c/' + col.name} icon={TICN.col(col, cpii)} label={col.name}
-                          right={<span className="qh-col-type">{col.type}{col.nullable ? '' : ' ·nn'}</span>} />;
-                      })}
-                      <TreeRow depth={base + 3} expandable open={isOpen(tid + '/i')} onToggle={() => tog(tid + '/i')} muted icon={TICN.folder(isOpen(tid + '/i'))} label="Indexes" right={<span className="qh-tr-count">{loaded ? idxs.length : '…'}</span>} />
-                      {isOpen(tid + '/i') && idxs.map(ix => (
-                        <TreeRow key={ix.name} depth={base + 4} muted drag={qhQuoteIdent(ix.name)} icon={TICN.index(ix.unique)} label={ix.name}
-                          right={<span className="qh-col-type">{(ix.cols || []).join(', ')}{ix.unique ? ' ·uniq' : ''}</span>} />
-                      ))}
-                    </>
-                  )}
-                </div>
-              );
-            })}
-            {vrefs.length > 0 && (
+            <TreeRow depth={base + 1} expandable open={isOpen(did + '/t')} onToggle={() => tog(did + '/t')} muted drag={rel.tables.map(r => qq(r.n, r.s)).join(', ')}
+              icon={TICN.folder(isOpen(did + '/t'))} label="Tables" right={<span className="qh-tr-count">{rel.tables.length}</span>} />
+            {isOpen(did + '/t') && rel.tables.map(r => relNode('/t', r))}
+            {rel.views.length > 0 && (
               <>
-                <TreeRow depth={base + 1} expandable open={isOpen(did + '/v')} onToggle={() => tog(did + '/v')} muted drag={vrefs.map(r => qq(r.n, r.s)).join(', ')} icon={TICN.folder(isOpen(did + '/v'))} label="Views" right={<span className="qh-tr-count">{vrefs.length}</span>} />
-                {/* Views expand to their columns, like tables. They reached the
-                    tree through the Tables branch before, so they already had
-                    this; moving them must not cost it. */}
-                {isOpen(did + '/v') && vrefs.map(({ s: vsch, n: vn }) => {
-                  const vid = did + '/v/' + vsch + '.' + vn;
-                  const vd = sch && (sch.tables[vsch + '.' + vn] || sch.tables[vn]) ? (sch.tables[vsch + '.' + vn] || sch.tables[vn]) : null;
-                  const vcols = vd ? vd.columns : [];
-                  return (
-                    <div key={vid}>
-                      <TreeRow depth={base + 2} expandable open={isOpen(vid)} onToggle={() => tog(vid)} icon={TICN.view()} label={vsch + '.' + vn} drag={qq(vn, vsch)} nodeId={vid}
-                        onDbl={() => onOpenTable(c, db, vn)} onCtx={(e) => openMenu(e, c, db, vn)}
-                        right={<button className="qh-tr-run" title="Open SELECT" onClick={(e) => { e.stopPropagation(); onOpenTable(c, db, vn); }}>{TICN.run()}</button>} />
-                      {isOpen(vid) && (
-                        <>
-                          <TreeRow depth={base + 3} expandable open={isOpen(vid + '/c')} onToggle={() => tog(vid + '/c')} muted drag={qhQuoteList(vcols.map(cc => cc.name))} icon={TICN.folder(isOpen(vid + '/c'))} label="Columns" right={<span className="qh-tr-count">{loaded ? vcols.length : '…'}</span>} />
-                          {isOpen(vid + '/c') && vcols.map(col => {
-                            const cpii = !!col.pii;
-                            return <TreeRow key={col.name} depth={base + 4} pii={cpii} muted drag={qhQuoteIdent(col.name)} nodeId={vid + '/c/' + col.name} icon={TICN.col(col, cpii)} label={col.name}
-                              right={<span className="qh-col-type">{col.type}{col.nullable ? '' : ' ·nn'}</span>} />;
-                          })}
-                        </>
-                      )}
-                    </div>
-                  );
-                })}
+                <TreeRow depth={base + 1} expandable open={isOpen(did + '/v')} onToggle={() => tog(did + '/v')} muted drag={rel.views.map(r => qq(r.n, r.s)).join(', ')} icon={TICN.folder(isOpen(did + '/v'))} label="Views" right={<span className="qh-tr-count">{rel.views.length}</span>} />
+                {isOpen(did + '/v') && rel.views.map(r => relNode('/v', r))}
               </>
             )}
             {isSuper && (
@@ -640,14 +630,8 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
 }
 
 // ---------- Sidebar ----------
-function qhAgo(ts) {
-  if (!ts) return 'just now';
-  const s = Math.floor((Date.now() - ts) / 1000);
-  if (s < 60) return 'just now';
-  const m = Math.floor(s / 60); if (m < 60) return m + 'm ago';
-  const h = Math.floor(m / 60); if (h < 24) return h + 'h ago';
-  return Math.floor(h / 24) + 'd ago';
-}
+// `qhAgo` lives in qh-data.jsx — it was defined here too, with a different
+// signature, and the later load won for both callers (see the note there).
 const ICN_TRASH = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6M10 11v6M14 11v6"/></svg>;
 function OriginBadge({ dest }) {
   const local = dest === 'local';
@@ -695,29 +679,37 @@ function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, can
         out.push({ kind: 'db', c, db });
     }
     if (term.length >= 2 && !isTierTerm) {
-      // Read the same refs the tree reads, so a hit carries its real schema and
-      // its kind: a view says "view", and the id below is the node the tree
-      // will actually reveal.
+      // The same split as the tree, from the same rule in qh-data: a view found
+      // here has to reveal under Views, not under a Tables branch it is no
+      // longer in — the reveal would silently point at a node that isn't there.
       for (const { c, db } of pool) {
+        const sch = schemaCache && schemaCache[c.id + '/' + db.id];
         const refs = db.tableRefs || (db.tables || []).map(n => ({ s: qhSchemaFor(c, db), n }));
-        for (const r of refs) { if (r.n.toLowerCase().includes(term)) out.push({ kind: 'table', c, db, table: r.n, schema: r.s, view: qhIsViewRef(r) }); if (out.length > 40) break; }
+        const rel = qhSplitRelations(refs, sch ? sch.views : []);
+        const hit = (branch, r) => {
+          const tsch = r.s || (sch && sch.tables[r.n] && sch.tables[r.n].schema) || qhSchemaFor(c, db);
+          out.push({ kind: 'table', c, db, table: r.n, view: branch === '/v', branch, tsch,
+            tid: c.id + '/' + db.id + branch + '/' + tsch + '.' + r.n });
+        };
+        rel.tables.forEach(r => { if (r.n.toLowerCase().includes(term)) hit('/t', r); });
+        rel.views.forEach(r => { if (r.n.toLowerCase().includes(term)) hit('/v', r); });
+        if (out.length > 40) break;
       }
       for (const { c, db } of pool) {
         const sch = schemaCache && schemaCache[c.id + '/' + db.id];
         if (!sch) continue;
-        const vset = new Set(sch.views || []);
-        // `sch.tables` holds every relation under TWO keys — "schema.table" and
-        // the bare name — pointing at one object, so walking the keys reported
-        // every matching column twice. Walk the objects instead; the qualified
-        // key is written first, so that is the one kept.
+        const vn = new Set(sch.views || []);
         const seen = new Set();
         for (const key of Object.keys(sch.tables)) {
           const entry = sch.tables[key];
-          if (seen.has(entry)) continue;
-          seen.add(entry);
-          const bare = (entry.schema && key.indexOf(entry.schema + '.') === 0)
-            ? key.slice(entry.schema.length + 1) : key;
-          for (const col of (entry.columns || [])) if (col.name.toLowerCase().includes(term)) out.push({ kind: 'column', c, db, table: bare, schema: entry.schema, view: vset.has(bare), col: col.name, pii: !!col.pii });
+          const tb = key.indexOf('.') > 0 ? key.slice(key.indexOf('.') + 1) : key;
+          const branch = vn.has(tb) ? '/v' : '/t';
+          const tid = c.id + '/' + db.id + branch + '/' + (entry.schema || qhSchemaFor(c, db)) + '.' + tb;
+          // Every relation is keyed twice in the cache (schema.name AND the
+          // bare name), so walking the keys offered each column twice.
+          if (seen.has(tid)) continue;
+          seen.add(tid);
+          for (const col of (entry.columns || [])) if (col.name.toLowerCase().includes(term)) out.push({ kind: 'column', c, db, table: tb, view: branch === '/v', branch, tid, col: col.name, pii: !!col.pii });
           if (out.length > 60) break;
         }
         if (out.length > 60) break;
@@ -750,12 +742,9 @@ function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, can
       // a direct DB match opens a fresh query targeting that DB
       if (onNewQuery) onNewQuery(m.c, m.db);
     } else {
-      // Tables and views are separate branches, and a node is keyed by its
-      // qualified name — reveal has to build the same id or it scrolls to
-      // nothing.
-      const branch = m.view ? '/v' : '/t';
+      const branch = m.branch || '/t';
       exp[did] = true; exp[did + branch] = true;
-      const tid = did + branch + '/' + (m.schema ? m.schema + '.' : '') + m.table;
+      const tid = m.tid || (did + branch + '/' + m.table);
       if (m.kind === 'column') { exp[tid] = true; exp[tid + '/c'] = true; id = tid + '/c/' + m.col; }
       else id = tid;
       if (onOpenTable) onOpenTable(m.c, m.db, m.table);
@@ -839,12 +828,12 @@ function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, can
                   <span className="qh-ac-kind">tag</span>
                 </button>
               ) : (
-                <button key={m.kind + m.c.id + m.db.id + (m.schema || '') + (m.table || '') + (m.col || '')} className={'qh-ac-opt' + (i === hi ? ' is-hi' : '')}
+                <button key={m.kind + m.c.id + m.db.id + (m.table || '') + (m.col || '')} className={'qh-ac-opt' + (i === hi ? ' is-hi' : '')}
                   title={qhHosting(m.c) || undefined}
                   onMouseEnter={() => setHi(i)} onMouseDown={(e) => { e.preventDefault(); choose(m); }}>
                   {m.kind === 'db' && <><img className="qh-engine-logo qh-ac-logo" src={qhEngineLogo(m.c)} alt="" draggable={false} /><span className="qh-ac-text"><b>{m.c.name}</b><span className="qh-ac-slash">/</span>{m.db.name}</span>{m.c.disabled ? <span className="qh-conn-off">disabled</span> : (QH_SHOW_ENV_TAGS ? <span className={'qh-envtag-sm env-' + m.c.env}>{m.c.env === 'production' ? 'PROD' : m.c.env === 'staging' ? 'STG' : m.c.env}</span> : null)}<TierBadge tier={m.db.tier} sm /></>}
-                  {m.kind === 'table' && <><span className="qh-ac-ic">{m.view ? TICN.view() : TICN.table()}</span><span className="qh-ac-text">{(m.schema || qhSchemaFor(m.c, m.db)) + '.' + m.table}<span className="qh-ac-loc">{m.c.name}/{m.db.name}</span></span><span className="qh-ac-kind">{m.view ? 'view' : 'table'}</span></>}
-                  {m.kind === 'column' && <><span className="qh-ac-ic">{TICN.col({}, !!m.pii)}</span><span className="qh-ac-text">{m.col}<span className="qh-ac-loc">{m.db.name}.{(m.schema ? m.schema + '.' : '') + m.table}</span></span><span className="qh-ac-kind">col</span></>}
+                  {m.kind === 'table' && <><span className="qh-ac-ic">{m.view ? TICN.view() : TICN.table()}</span><span className="qh-ac-text">{(m.tsch || qhSchemaFor(m.c, m.db)) + '.' + m.table}<span className="qh-ac-loc">{m.c.name}/{m.db.name}</span></span><span className="qh-ac-kind">{m.view ? 'view' : 'table'}</span></>}
+                  {m.kind === 'column' && <><span className="qh-ac-ic">{TICN.col({}, !!m.pii)}</span><span className="qh-ac-text">{m.col}<span className="qh-ac-loc">{m.db.name}.{m.table}</span></span><span className="qh-ac-kind">col</span></>}
                 </button>
               )))}
             </div>
@@ -1854,15 +1843,11 @@ function MessagesView({ messages }) {
   </div>;
 }
 
-// A RUN's audit trail — the events of the one request in this results panel.
-// NOT the admin Audit screen, which `qh-admin-audit.jsx` also called
-// `AuditView`. In the raw prototype every top-level function is a global and
-// the later script wins, so this component rendered the ADMIN screen with no
-// `st` prop: the developer view's Audit tab threw `Cannot read properties of
-// undefined (reading 'pushToast')` and took the page to the error boundary.
-// The bundle never showed it — main.jsx imports each file as a module, so the
-// two stayed in separate scopes — which is the whole reason to rename rather
-// than rely on that.
+// The per-run audit trail of ONE query (submitted → approved → ran), shown in
+// the results panel. Named for the run, not for "audit": the admin panel's
+// Audit trail screen also declares a top-level `AuditView`, and a Babel script's
+// top-level function is a global — so the file that loads last won and this tab
+// rendered the ADMIN screen, which throws on the `st` prop it never gets.
 function RunAuditView({ audit }) {
   if (!audit.length) return <div className="qh-empty"><div>Audit entries appear after you submit a query.</div></div>;
   return <div className="qh-audit">
@@ -1887,4 +1872,4 @@ const DBIcons = {
   calendar: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>,
 };
 
-Object.assign(window, { Sidebar, ResultsPanel, ResultsView, TierBadge, StatusPill, DBIcons, RequestAccessModal, OriginBadge, qhAgo });
+Object.assign(window, { Sidebar, ResultsPanel, ResultsView, TierBadge, StatusPill, DBIcons, RequestAccessModal, OriginBadge });

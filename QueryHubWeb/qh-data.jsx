@@ -400,6 +400,11 @@ function qhHostingFull(conn) {
 //
 // `account` only reaches an admin (routes_data withholds it from the developer
 // payload), so for everyone else this is the endpoint line it always was.
+//
+// NOT in the design workspace, deliberately: neither this nor its caller in
+// `qh-admin-access.jsx` ever landed there, so an export of it would be an
+// export of an undefined name (design brief 2026-09-15 (d) §5). The two travel
+// together -- when `qh-admin-access.jsx` next ports, this file ports with it.
 function qhEndpointHover(conn) {
   if (!conn || !conn.host) return undefined;
   const lines = [conn.host + (conn.port ? ':' + conn.port : '')
@@ -708,30 +713,55 @@ function qhSchemaOf(conn, db, name) {
   if (refs) { for (let i = 0; i < refs.length; i++) if (refs[i].n === name) return refs[i].s; }
   return qhSchemaFor(conn, db);
 }
-// A view is queryable exactly like a table, so it travels in the same ref list
-// and autocomplete offers it — but it is NOT a table, and the tree and the
-// fleet search must not count or draw it as one. `k` is the catalog's relation
-// kind, carried on every entry of `tableRefs`.
-const QH_VIEW_KINDS = ['view', 'matview'];
-function qhIsViewRef(ref) {
-  return !!ref && QH_VIEW_KINDS.indexOf(ref.k) !== -1;
-}
-// Split one database's relations into the two branches the tree draws, in the
-// order they arrived. `viewNames` are the bare names the lazy /schema load
-// reports as views: they decide a ref that carries no `k` (an older payload,
-// or the prototype's mock, neither of which sends one), and any of them that
-// matched no ref at all is appended — the mock keeps its views in a separate
-// generator, so they reach the tree only this way.
+// The ONE rule for "is this relation a table or a view", read by the tree and by
+// fleet search so the two can never disagree about which branch a name sits on.
+// Catalog refs now carry `k` (table | partitioned | view | matview). A payload
+// without it — an older server, or this prototype's mock — falls back to the
+// names `/schema` called views, which is why the prototype keeps working
+// unchanged. Views STAY in the relation list: a view is queryable and
+// autocomplete wants it; `k` only decides which branch it is drawn under.
 function qhSplitRelations(refs, viewNames) {
-  const known = new Set(viewNames || []);
-  const tables = [], views = [], matched = new Set();
+  const vn = viewNames && viewNames.length ? new Set(viewNames) : null;
+  const tables = [], views = [], seen = new Set();
   (refs || []).forEach(r => {
-    const isView = ('k' in r && r.k != null) ? qhIsViewRef(r) : known.has(r.n);
-    (isView ? views : tables).push(r);
-    if (isView) matched.add(r.n);
+    const k = r.k || (vn && vn.has(r.n) ? 'view' : 'table');
+    seen.add(r.n);
+    // Only `view` and `matview` leave the Tables branch. Everything else — an
+    // unknown kind, a kind added next quarter — is a table, which is the safe
+    // default for a query tool: a relation drawn in the wrong branch is a
+    // cosmetic bug, and a relation the tree cannot draw at all is invisible to
+    // the tree, autocomplete and fleet search alike. CODE measured the same
+    // thing from the other side (2026-09-15: `foreign` was dropped by the
+    // catalog query, not by a branch rule).
+    (k === 'view' || k === 'matview' ? views : tables).push({ ...r, k });
   });
-  known.forEach(n => { if (!matched.has(n)) views.push({ s: null, n }); });
+  // Views the connections payload never listed still belong on the tree: this
+  // prototype's mock keeps views out of `tables` entirely, so they arrive only
+  // from `/schema`. `s: null` means "ask the loaded schema", not "no schema".
+  if (vn) vn.forEach(n => { if (!seen.has(n)) views.push({ s: null, n, k: 'view' }); });
   return { tables, views };
+}
+// "3m ago", from either an epoch number or an ISO string. ONE definition, here,
+// because this file loads first and every later file's top-level name is a
+// global: there used to be two — `qh-panels.jsx` took a number and said
+// `'just now'`, `qh-admin-data.jsx` took an ISO string and said `''` — and the
+// later load silently won for BOTH. Nothing crashed (`new Date(number)` is
+// valid), which is why it survived: the sidebar just quietly stopped saying
+// "just now".
+//
+// Where they disagreed, the ISO one was right on the point that matters: a
+// missing timestamp renders as NOTHING, not as "just now". An absent fact
+// printed as a friendly one is the same failure as the audit row inventing a
+// name. Sub-minute stays `Ns ago` — it is what everything on screen already
+// shows, and 59 seconds reading "just now" is a rounding an audit trail should
+// not do.
+function qhAgo(t) {
+  if (!t) return '';
+  const s = Math.max(1, Math.floor((Date.now() - new Date(t)) / 1000));
+  if (s < 60) return s + 's ago';
+  const m = Math.floor(s / 60); if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60); if (h < 24) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
 }
 function qhQualify(conn, db, name, schema) {
   const eng = qhEngineId(conn && conn.engine);
@@ -945,12 +975,12 @@ Object.assign(window, {
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,
   qhClassify, qhDetectPII, qhMockResult, qhMaskValue, qhStripComments, qhSplitStatements,
   qhConnState, QH_CONN_STATE,
-  qhColumnsFor, qhIndexesFor, qhViewsFor,
+  qhColumnsFor, qhIndexesFor, qhViewsFor, qhSplitRelations, qhAgo,
   qhRiskHints, qhExplainPlan, qhQuoteIdent, qhQuoteList, qhApproxRows, qhFmtRows,
   QH_SHOW_ENV_TAGS,
   QH_ENGINES, qhEngineId, qhEngine, qhEngineBadge, qhEngineLogo, qhQuoteIdentFor, qhServerRoles,
   QH_PROVIDERS, QH_TAG_KEYS, QH_TAG_RESERVED, qhProviderLogo, qhProvider, qhTags, qhHosting, qhHostingFull,
   qhCustomTags, qhParseTagQuery, qhTagMatch, qhProviderGroups, qhTagVocab, qhTokenSuggest, qhApplyToken,
-  qhAutoApproveRO, qhSchemaFor, qhSchemaOf, qhQualify, qhSelectSql, qhIsViewRef, qhSplitRelations,
-  qhEndpointHover,
+  qhAutoApproveRO, qhSchemaFor, qhSchemaOf, qhQualify, qhSelectSql,
+  qhEndpointHover,   // see the note above: kept here, absent upstream
 });

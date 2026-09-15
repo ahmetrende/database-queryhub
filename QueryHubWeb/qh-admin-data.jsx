@@ -18,14 +18,9 @@ const { useState: useAdminStateHook, useEffect: useAdminEffect, useCallback: use
 const QH_QUEUE_POLL_MS = 60000;
 
 function qhIso(d) { return d.toISOString(); }
-function qhAgo(iso) {
-  if (!iso) return '';
-  const s = Math.max(1, Math.floor((Date.now() - new Date(iso)) / 1000));
-  if (s < 60) return s + 's ago';
-  const m = Math.floor(s / 60); if (m < 60) return m + 'm ago';
-  const h = Math.floor(m / 60); if (h < 24) return h + 'h ago';
-  return Math.floor(h / 24) + 'd ago';
-}
+// `qhAgo` moved to qh-data.jsx (loads first, one signature, takes an ISO string
+// or an epoch number). This copy and the one in qh-panels.jsx were the same
+// name for two different functions.
 // Format a UTC ISO timestamp in the fleet's display timezone (window.QH_TZ,
 // set from GET /me; default Europe/Istanbul). DB stores UTC everywhere; every
 // shown time is converted here. Falls back to UTC if the zone is unusable.
@@ -305,6 +300,8 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const removeMaskExemption = (id) => qhApi.adminDelMaskExemption(id)
     .then(() => { loadMask(); loadAudit(); pushToast && pushToast('Exemption removed.'); })
     .catch(e => fail(e, 'Remove failed.'));
+  const updateMaskExemption = (id, patch) => qhApi.adminUpdateMaskExemption(id, patch)
+    .then(res => { loadMask(); loadAudit(); pushToast && pushToast('Exemption updated.'); return res; });
   const maskCatalog = (connectionId, databaseId) => qhApi.adminMaskCatalog(connectionId, databaseId);
   const maskPreview = (b) => qhApi.adminMaskPreview(b);
 
@@ -456,7 +453,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
     addAutoGrant, updateAutoGrant, revokeAutoGrant,
     saveScope, removeScope, decideEndpoint, saveConfig,
     addRole, removeRole,
-    addMaskExemption, setMaskExemptionEnabled, removeMaskExemption, maskCatalog, maskPreview,
+    addMaskExemption, setMaskExemptionEnabled, removeMaskExemption, updateMaskExemption, maskCatalog, maskPreview,
     addTeam, updateTeam, removeTeam, setPersonTeams,
     addConnection, updateConnection, removeConnection, setConnectionEnabled,
     reloadConnections: loadConnections,
