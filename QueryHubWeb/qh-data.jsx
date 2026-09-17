@@ -398,13 +398,8 @@ function qhHostingFull(conn) {
 // somebody is already asking "which one of these is this", and a fleet-wide
 // column of twelve-digit numbers is twelve digits of noise on every other row.
 //
-// `account` only reaches an admin (routes_data withholds it from the developer
-// payload), so for everyone else this is the endpoint line it always was.
-//
-// NOT in the design workspace, deliberately: neither this nor its caller in
-// `qh-admin-access.jsx` ever landed there, so an export of it would be an
-// export of an undefined name (design brief 2026-09-15 (d) §5). The two travel
-// together -- this is the third round they have been carried by hand.
+// `account` only reaches an admin (the developer payload withholds it), so for
+// everyone else this is the endpoint line it always was.
 function qhEndpointHover(conn) {
   if (!conn || !conn.host) return undefined;
   const lines = [conn.host + (conn.port ? ':' + conn.port : '')
@@ -1018,5 +1013,5 @@ Object.assign(window, {
   QH_PROVIDERS, QH_TAG_KEYS, QH_TAG_RESERVED, qhProviderLogo, qhProvider, qhTags, qhHosting, qhHostingFull,
   qhCustomTags, qhParseTagQuery, qhTagMatch, qhProviderGroups, qhTagVocab, qhTokenSuggest, qhApplyToken,
   qhAutoApproveRO, qhSchemaFor, qhSchemaOf, qhQualify, qhSelectSql,
-  qhEndpointHover,   // see the note above: kept here, absent upstream
+  qhEndpointHover,
 });
