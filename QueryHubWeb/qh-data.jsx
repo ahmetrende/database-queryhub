@@ -383,16 +383,6 @@ function qhHosting(conn) {
   if (!p) return '';
   return p.label + (t.service ? ' · ' + t.service : '');
 }
-// Everything the tags say, in one string. The developer-side placement is the
-// hover, so this has to be complete on its own — nothing else carries it.
-function qhHostingFull(conn) {
-  const t = qhTags(conn), parts = [];
-  const h = qhHosting(conn);
-  if (h) parts.push(h);
-  if (t.account) parts.push('account ' + t.account);
-  qhCustomTags(conn).forEach(([k, v]) => parts.push(k + ' ' + v));
-  return parts.join(' · ');
-}
 // The endpoint hover on a connection name, plus the account it lives in when
 // the registry knows. One line, not a column: an account id is looked up when
 // somebody is already asking "which one of these is this", and a fleet-wide
@@ -407,6 +397,16 @@ function qhEndpointHover(conn) {
   const acct = qhTags(conn).account;
   if (acct) lines.push('account ' + acct);
   return lines.join('\n');
+}
+// Everything the tags say, in one string. The developer-side placement is the
+// hover, so this has to be complete on its own — nothing else carries it.
+function qhHostingFull(conn) {
+  const t = qhTags(conn), parts = [];
+  const h = qhHosting(conn);
+  if (h) parts.push(h);
+  if (t.account) parts.push('account ' + t.account);
+  qhCustomTags(conn).forEach(([k, v]) => parts.push(k + ' ' + v));
+  return parts.join(' · ');
 }
 function qhCustomTags(conn) {
   const t = qhTags(conn);
@@ -1010,8 +1010,7 @@ Object.assign(window, {
   qhRiskHints, qhExplainPlan, qhQuoteIdent, qhQuoteList, qhApproxRows, qhFmtRows,
   QH_SHOW_ENV_TAGS,
   QH_ENGINES, qhEngineId, qhEngine, qhEngineBadge, qhEngineLogo, qhQuoteIdentFor, qhServerRoles,
-  QH_PROVIDERS, QH_TAG_KEYS, QH_TAG_RESERVED, qhProviderLogo, qhProvider, qhTags, qhHosting, qhHostingFull,
+  QH_PROVIDERS, QH_TAG_KEYS, QH_TAG_RESERVED, qhProviderLogo, qhProvider, qhTags, qhHosting, qhHostingFull, qhEndpointHover,
   qhCustomTags, qhParseTagQuery, qhTagMatch, qhProviderGroups, qhTagVocab, qhTokenSuggest, qhApplyToken,
   qhAutoApproveRO, qhSchemaFor, qhSchemaOf, qhQualify, qhSelectSql,
-  qhEndpointHover,
 });
