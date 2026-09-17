@@ -770,7 +770,9 @@ function qhAgo(t) {
 // the next. `qhPersonName` title-cases a HANDLE-SHAPED string only
 // (`ad.soyad` / `ad_soyad`: no spaces, ascii, at least one separator) and
 // returns everything else untouched, so a real name is never rewritten and a
-// raw Slack id (`U0EXAMPLE001`, no dot) stays an id.
+// raw Slack id (`U0EXAMPLE001`, no dot) stays an id. That id is invented:
+// an example in a comment is file content like any other, and a real one
+// names a colleague in every copy of this file.
 // Diacritics cannot be recovered from an ascii handle — `sahin` becomes
 // `Sahin`, never `\u015eahin`; inventing the missing letter would be the same
 // failure as inventing the name. Capitalisation is Turkish-locale, so `ilker`
@@ -1009,7 +1011,7 @@ Object.assign(window, {
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,
   qhClassify, qhDetectPII, qhMockResult, qhMaskValue, qhStripComments, qhSplitStatements,
   qhConnState, QH_CONN_STATE,
-  qhColumnsFor, qhIndexesFor, qhViewsFor, qhSplitRelations, qhAgo, qhPersonName, qhIsHandleName,
+  qhColumnsFor, qhIndexesFor, qhViewsFor, qhSplitRelations, qhAgo, qhPersonName, qhIsHandleName, QH_ROLE_PREFIXES,
   qhRiskHints, qhExplainPlan, qhQuoteIdent, qhQuoteList, qhApproxRows, qhFmtRows,
   QH_SHOW_ENV_TAGS,
   QH_ENGINES, qhEngineId, qhEngine, qhEngineBadge, qhEngineLogo, qhQuoteIdentFor, qhServerRoles,

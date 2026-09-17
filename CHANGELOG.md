@@ -9,6 +9,102 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.32] — 2026-09-17
+
+The panel names people instead of logins, the masking ladder's second rung is
+held to its schema, and two screens that were broken only in the built bundle
+work again. Patch bump: the `bot_config` keys and the audit contract are
+unchanged.
+
+### Security
+
+- **A table-level masking exemption is held to its schema.** The ladder's table
+  rung compared BARE table names, so a row written for one schema's table also
+  covered a same-named table in every other schema of that database — the fault
+  the column rung had, on the louder rung: this one returns `skip_all`, masking
+  off for the ENTIRE result rather than one column. The rung now runs through
+  the same `_schema_admits` check, which can only ever REFUSE: a row with no
+  schema, a statement that writes the table unqualified, and SQL that will not
+  parse are all admitted exactly as before. Measured the way the column rung
+  was — the resolver replayed over every completed request that recorded its
+  result columns, 3,545 requests and 911 invocations, with and without the
+  schema on table rows: no answer changed. **1.0.31's notes described this fix
+  a release early; the code is here.**
+
+### Added
+
+- **Masking exemptions can be edited from the panel.** `PATCH
+  /admin/mask-exemptions/{id}` now carries the reason, the strength, the join
+  behaviour and the audience, not just `enabled`. **Reach stays immutable** — a
+  row's reason describes that row's reach, so a row whose reach moved carries a
+  reason that is a lie about production data. Narrowing is still
+  turn-off-and-create. Scope fields are DECLARED and REFUSED (`400
+  reach_immutable`, naming which ones) rather than dropped, because a client
+  that believes it just narrowed a row, against a server that ignored the
+  field, shows an operator a protection they do not have. Migration 125 adds
+  `updated_by` / `updated_at`.
+- **A target whose schema catalog stops refreshing says so.** The hourly
+  refresh logged a warning and returned the same either way, so a target could
+  serve a stale snapshot for days — an expired credential, a host that moved —
+  and the first symptom was somebody asking why a new table is missing from the
+  picker. Migration 124 adds `schema_refresh_health`, one row per target,
+  overwritten each run. A target counts as failed only when NOTHING was
+  snapshotted.
+
+### Changed
+
+- **People are shown by name, not by login.** A person reached the API as three
+  different strings — a Slack id, a `first.last` login, and an ascii-folded
+  display name — and every screen printed whichever one it got. They are now
+  resolved once, from the two people tables: an id by id, a login by the local
+  part of the stored email, and a stored name by its ascii fold. Measured over
+  180 days of requests: 47 of 49 distinct principals resolve, 38 of them to a
+  different string than the screen printed — including the ranked lists, where
+  the folded and unfolded spellings of one colleague were two rows with the
+  count split between them. What cannot be resolved is returned unchanged: a
+  service principal belongs to no person, and the auto-approver is not sent
+  through the lookup at all.
+- **The audit trail names the requester, not the actor.** Its one name slot
+  held the admin who pressed Approve, which for a run of auto-approvals is the
+  same three words repeated; the person who asked for the query is what an
+  auditor scanning the trail is looking for, and 76% of the rows the screen
+  shows by default carry one. The actor is still in the rail, one click away.
+- **The Slack sign-in names the workspace.** The authorize request never sent
+  `team`, so Slack rendered the account picker — and because it had to ask, it
+  asked for consent too, on an app the workspace had already authorised. It is
+  the stricter flow as well as the quieter one: somebody in two workspaces
+  could previously pick the wrong one and learn it later from
+  `wrong_workspace`.
+- **The masking screen was redesigned.** Two lines per exemption grouped by
+  server, with the full story one click away; add another column without
+  walking the whole form again; several columns of one table at once under one
+  reason; and the form shows how that table is really queried before you decide
+  about joins.
+
+### Fixed
+
+- **A view is listed under Views, not under Tables as well.** `GET
+  /connections` dropped the relation kind, so the tree drew every relation
+  under "Tables" and then drew the views again once the lazy schema load
+  answered. One real database read "Tables 41" for 2 tables and 39 monitoring
+  views; 77 of 84 catalogued databases were mixed that way, 2,968 views in
+  total. The refs now carry the catalog's own relkind and one shared helper
+  decides the branch, so the tree and the fleet search cannot drift apart.
+- **The admin Connections screen stopped throwing.** `qhEndpointHover is not
+  defined`, every open since 2026-09-10: the helper was declared in one file,
+  called from another, and never put on `window`. The raw prototype hides that
+  completely — every top-level declaration is a global there — while the built
+  bundle gives each file its own module scope. Two guard tests now read the
+  shipped sources and fail on a name that is used but neither declared nor
+  exported, and on two files that declare the same top-level name.
+- **A foreign table is listed** alongside ordinary tables in the browser.
+- **An edit that changes nothing says so.** The endpoint answered
+  `changed: false`, writing and auditing nothing, while the screen announced
+  "Exemption updated." — which is a screen about reducing protection claiming
+  an edit that did not happen. The audit row is still written for every edit,
+  including a reason corrected to itself; only a change to what the exemption
+  reaches sends a notification.
+
 ## [1.0.31] — 2026-09-10
 
 Masking exemptions became writable from the panel, and two ways masking was
