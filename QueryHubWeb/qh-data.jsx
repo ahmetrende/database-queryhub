@@ -404,7 +404,7 @@ function qhHostingFull(conn) {
 // NOT in the design workspace, deliberately: neither this nor its caller in
 // `qh-admin-access.jsx` ever landed there, so an export of it would be an
 // export of an undefined name (design brief 2026-09-15 (d) §5). The two travel
-// together -- when `qh-admin-access.jsx` next ports, this file ports with it.
+// together -- this is the third round they have been carried by hand.
 function qhEndpointHover(conn) {
   if (!conn || !conn.host) return undefined;
   const lines = [conn.host + (conn.port ? ':' + conn.port : '')
@@ -763,6 +763,40 @@ function qhAgo(t) {
   const h = Math.floor(m / 60); if (h < 24) return h + 'h ago';
   return Math.floor(h / 24) + 'd ago';
 }
+// A person is printed as a NAME. `submitter.name` (and every other person
+// field) is whatever the identity source held: Slack's display name for most
+// people, but the bare `ad.soyad` handle wherever the profile carried no real
+// name — so the approval queue reads as a person on one row and as a login on
+// the next. `qhPersonName` title-cases a HANDLE-SHAPED string only
+// (`ad.soyad` / `ad_soyad`: no spaces, ascii, at least one separator) and
+// returns everything else untouched, so a real name is never rewritten and a
+// raw Slack id (`U0EXAMPLE001`, no dot) stays an id.
+// Diacritics cannot be recovered from an ascii handle — `sahin` becomes
+// `Sahin`, never `\u015eahin`; inventing the missing letter would be the same
+// failure as inventing the name. Capitalisation is Turkish-locale, so `ilker`
+// reads `\u0130lker`. The raw handle stays on `title` / beside the Slack id, so the
+// string people actually search Slack by is never lost.
+// NOT for actor fields: a service handle is handle-shaped too, so this would
+// print a machine as a person — the exact failure the audit screen's three
+// actor renderings exist to prevent. Person fields only.
+// A ROLE-PREFIXED handle is refused for the same reason: `dba.amara` names a
+// person but its first segment is a role, and `Dba Aylin` is a surname nobody
+// has. Those handles are resolved to a real name server-side (both people
+// tables) or left as the handle they are — either is honest, and inventing a
+// surname out of a prefix is not. The list is short and deliberate: extending
+// it is cheap, and guessing a name is not.
+const QH_ROLE_PREFIXES = ['dba', 'oncall', 'svc', 'service', 'bot', 'job', 'auto', 'admin', 'sys', 'ops', 'root'];
+function qhPersonName(n) {
+  if (typeof n !== 'string') return n;
+  const s = n.trim();
+  if (!s || /\s/.test(s) || !/[._]/.test(s) || !/^[a-z0-9._-]+$/i.test(s)) return n;
+  const parts = s.split(/[._]+/).filter(Boolean);
+  if (!parts.length || QH_ROLE_PREFIXES.indexOf(parts[0].toLowerCase()) !== -1) return n;
+  return parts.map(p => p.charAt(0).toLocaleUpperCase('tr') + p.slice(1)).join(' ');
+}
+// True when the display name above was DERIVED — i.e. the handle is still worth
+// showing somewhere, because it is not visible in the name any more.
+function qhIsHandleName(n) { return typeof n === 'string' && qhPersonName(n) !== n; }
 function qhQualify(conn, db, name, schema) {
   const eng = qhEngineId(conn && conn.engine);
   const s = schema || qhSchemaOf(conn, db, name);
@@ -975,7 +1009,7 @@ Object.assign(window, {
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,
   qhClassify, qhDetectPII, qhMockResult, qhMaskValue, qhStripComments, qhSplitStatements,
   qhConnState, QH_CONN_STATE,
-  qhColumnsFor, qhIndexesFor, qhViewsFor, qhSplitRelations, qhAgo,
+  qhColumnsFor, qhIndexesFor, qhViewsFor, qhSplitRelations, qhAgo, qhPersonName, qhIsHandleName,
   qhRiskHints, qhExplainPlan, qhQuoteIdent, qhQuoteList, qhApproxRows, qhFmtRows,
   QH_SHOW_ENV_TAGS,
   QH_ENGINES, qhEngineId, qhEngine, qhEngineBadge, qhEngineLogo, qhQuoteIdentFor, qhServerRoles,

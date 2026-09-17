@@ -1476,7 +1476,7 @@ function Avatar({ user, size = 34 }) {
   const [err, setErr] = useState(false);
   const px = size + 'px';
   if (user && user.avatar && !err) {
-    return <img className="qh-avatar-img" src={user.avatar} alt={user.name} style={{ width: px, height: px }} onError={() => setErr(true)} draggable={false} />;
+    return <img className="qh-avatar-img" src={user.avatar} alt={qhPersonName(user.name)} style={{ width: px, height: px }} onError={() => setErr(true)} draggable={false} />;
   }
   return <span className="qh-avatar-fallback" style={{ width: px, height: px, fontSize: Math.round(size * 0.36) + 'px' }}>{user ? user.initials : '?'}</span>;
 }
@@ -1621,7 +1621,7 @@ function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePas
         </button>
         <NotificationBell unseenNews={unseenNews} onOpenNews={onWhatsNew} onDismissNews={onDismissNews} />
         <div className="qh-user">
-          <button className="qh-avatar-btn" onClick={() => setMenu(m => !m)} onBlur={() => setTimeout(() => setMenu(false), 140)} title={user ? user.name : ''}>
+          <button className="qh-avatar-btn" onClick={() => setMenu(m => !m)} onBlur={() => setTimeout(() => setMenu(false), 140)} title={user ? qhPersonName(user.name) : ''}>
             <Avatar user={user} size={34} />
           </button>
           {menu && user && (
@@ -1630,7 +1630,7 @@ function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePas
                 <div className="qh-user-idrow">
                   <Avatar user={user} size={40} />
                   <div className="qh-user-idtext">
-                    <div className="qh-user-name">{user.name}</div>
+                    <div className="qh-user-name">{qhPersonName(user.name)}</div>
                     <div className="qh-user-mail">{user.email}</div>
                   </div>
                 </div>
@@ -2212,7 +2212,7 @@ function FeedbackModal({ user, view, onClose, onSubmit }) {
         </div>
         <div className="qh-fb-meta">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
-          Attached automatically: {view === 'admin' ? 'Admin panel' : 'Developer view'} · {(user && user.name) || 'you'} · browser &amp; app version
+          Attached automatically: {view === 'admin' ? 'Admin panel' : 'Developer view'} · {(user && qhPersonName(user.name)) || 'you'} · browser &amp; app version
         </div>
       </div>
       <div className="qh-modal-foot">

@@ -915,7 +915,7 @@ function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, can
               <span className="qh-hist-when">{h.when}</span>
             </div>
             <div className="qh-hist-sql">{h.sql}</div>
-            <div className="qh-hist-meta">{h.conn} · {h.db}{h.approver ? ' · ' + h.approver : ''}{cs && <span className="qh-conn-state" title={cs.why + ' The query still opens.'}>{cs.word}</span>}</div>
+            <div className="qh-hist-meta">{h.conn} · {h.db}{h.approver ? ' · ' + qhPersonName(h.approver) : ''}{cs && <span className="qh-conn-state" title={cs.why + ' The query still opens.'}>{cs.word}</span>}</div>
           </button>
           );
         })}

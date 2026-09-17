@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
+from .. import people
 from .. import admins, audit as audit_mod
 from .. import cancellation, core_submit, db, origins, pii, pre_flight, profile_sync, query_safety, requesters
 from .. import config as cfg
@@ -1018,7 +1019,8 @@ def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
         "status": mapping.status_to_web(row["status"]),
         "classification": mapping.classification_of(row["query"]),
         "approver": mapping.approver_label(row.get("decided_by_slack_id"),
-                                           row.get("decided_by_name")),
+                                           row.get("decided_by_name"),
+                                           people.display_name),
         "approvedAt": mapping.iso(row.get("decided_at")),
         "scheduledFor": mapping.iso(row.get("scheduled_for")),
         "runMs": mapping.run_ms(row),
@@ -1534,7 +1536,8 @@ async def query_stream(websocket: WebSocket, request_id: int):
                 await websocket.send_json({
                     "type": "status", "id": str(request_id), "status": web_status,
                     "approver": mapping.approver_label(
-                        r.get("decided_by_slack_id"), r.get("decided_by_name")),
+                        r.get("decided_by_slack_id"), r.get("decided_by_name"),
+                        people.display_name),
                 })
 
             arows = await asyncio.to_thread(

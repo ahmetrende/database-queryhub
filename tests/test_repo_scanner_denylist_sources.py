@@ -91,3 +91,63 @@ def test_a_bare_common_word_is_still_exempt():
     assert "generic_words" in SRC
     for word in ("platform", "data"):
         assert f'"{word}"' in SRC, word
+
+
+# ---------------------------------------------------------------------------
+#
+# The same argument, one rung down: which CATALOGUED DATABASE NAME is worth
+# denying. That was a hand-curated set of ordinary words until enabling three
+# endpoints catalogued databases called `status`, `people`, `example` and
+# `review`, and the next scan reported 2457 hits in 319 files. A gate that
+# cannot go green is a gate its reader learns to skip, so the shape decides now.
+
+def _scanner():
+    """The scanner as a module. Importing it does not touch the database --
+    every query in it is inside a function."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_check_repo_clean", _PATH)
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception:  # pragma: no cover - dependency missing in this env
+        pytest.skip("check_repo_clean.py needs the bot package to import")
+    return mod
+
+
+@upstream_only
+def test_a_bare_english_word_is_not_a_database_leak():
+    """`<server>/<database>` names a service twice, but only when the database
+    half names anything. On its own `status` is a word, and denying it fails
+    every sentence that contains it."""
+    is_distinctive = _scanner()._database_is_distinctive
+    for word in ("status", "people", "example", "review", "compliance",
+                 "terminal", "finance", "marketing", "inventory"):
+        assert not is_distinctive(word), word
+
+
+@upstream_only
+def test_a_service_database_is_still_denied():
+    """Every catalogued name that actually names a service is a compound --
+    measured over all 91 of them on 2026-09-17. The names here are invented for
+    the same reason this scan exists: a test that spelled the real ones would
+    be the leak it is testing for."""
+    is_distinctive = _scanner()._database_is_distinctive
+    for name in ("example_service", "alpha_integration_service", "betadb_log",
+                 "SomeAdminDb", "XPLACEHOLDER", "example_service_rollback"):
+        assert is_distinctive(name), name
+
+
+@upstream_only
+def test_the_two_hand_kept_lists_still_decide_their_own_cases():
+    """A bare word that is not English still names something, and a compound
+    can still be operator-internal -- `qh_pilot` is named in an applied
+    migration whose checksum makes it immutable. Both lists are read from the
+    scanner rather than spelled out here, for the reason above."""
+    mod = _scanner()
+    is_distinctive = mod._database_is_distinctive
+    assert mod._DISTINCTIVE_DATABASES and mod._INTERNAL_DATABASES
+    for name in mod._DISTINCTIVE_DATABASES:
+        assert is_distinctive(name), name
+    for name in mod._INTERNAL_DATABASES:
+        assert not is_distinctive(name), name
+    assert not is_distinctive("nova")  # under six characters

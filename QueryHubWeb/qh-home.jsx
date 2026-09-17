@@ -27,7 +27,7 @@ function HomeEmpty({ text }) {
 }
 
 function HomeScreen({ user, openTabs, slackEnabled, onFocusTab, onNewQuery, onSaveSession, sessions, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, saved, onLoadSaved, onDeleteSaved, onBrowse, onWhatsNew, unseenNews }) {
-  const first = (user && user.name ? user.name.split(' ')[0] : 'there');
+  const first = (user && user.name ? qhPersonName(user.name).split(' ')[0] : 'there');
   const nonEmpty = (openTabs || []).filter(t => t.sql && t.sql.trim());
 
   return (

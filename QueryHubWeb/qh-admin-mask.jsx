@@ -296,7 +296,7 @@ function MxItem({ e, canWrite, moot, norms, open, onToggleOpen, st, onReplace, o
                   nothing — a different thing from being turned off. */}
               {e.missing && <div className="qh-mxwhy is-gone">That table or column is not in the catalog any more. The exemption is still enforced; it matches nothing today.</div>}
               {e.reason && <div className="qh-mxreason">“{e.reason}”</div>}
-              <div className="qh-mxmeta">{e.createdBy}{e.createdAt ? ' · ' + qhAgo(e.createdAt) : ''}{e.updatedBy ? ' · edited by ' + e.updatedBy + (e.updatedAt ? ' ' + qhAgo(e.updatedAt) : '') : ''}</div>
+              <div className="qh-mxmeta">{qhPersonName(e.createdBy)}{e.createdAt ? ' · ' + qhAgo(e.createdAt) : ''}{e.updatedBy ? ' · edited by ' + qhPersonName(e.updatedBy) + (e.updatedAt ? ' ' + qhAgo(e.updatedAt) : '') : ''}</div>
               {/* The same database usually lives on more than one server, and an
                   exemption on one is routinely missing on the other. A
                   SUGGESTION: the operator may have meant exactly one of them. */}
@@ -670,8 +670,8 @@ function MaskingView({ st, user }) {
   const wideCount = all.filter(e => mxWide(e.scope)).length;
 
   // Sorted by server and database, then grouped under ONE label each. The first
-  // cut printed the same `<server> / <database>` pair on four consecutive
-  // rows, so the widest text on the row was the part that was identical to its
+  // cut printed the same `<server> / <database>` pair on four consecutive rows,
+  // so the widest text on the row was the part that was identical to its
   // neighbours — which is what made the list tiring to read. A header is not
   // furniture when it REPLACES text: eighteen labels here delete sixty repeats
   // of the same two identifiers, and each one carries the `+` that starts the

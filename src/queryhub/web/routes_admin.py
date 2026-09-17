@@ -28,6 +28,7 @@ from .. import (
     engines,
     errors,
     grants,
+    people,
     pii,
     requesters,
     schema_catalog,
@@ -123,11 +124,15 @@ def admin_queue(escalate: bool | None = None,
     rows = db.fetch_all(
         f"SELECT {_QUEUE_COLS} FROM requests WHERE status = 'pending' "
         f"ORDER BY id")
+    # One lookup for the page, not one per row: the queue is the screen that
+    # prints the most names and it prints them from a snapshot.
+    name_of = people.namer([r.get("requester_name") or r.get("requester_slack_id")
+                            for r in rows])
     out = []
     for r in rows:
         if not admins.can_approve(uid, r):
             continue
-        item = mapping.queue_item(r, _alias_of, _tags_of)
+        item = mapping.queue_item(r, _alias_of, _tags_of, name_of)
         if escalate is not None and item["escalate"] != escalate:
             continue
         out.append(item)
@@ -1065,7 +1070,10 @@ def admin_endpoint_requests(status: str | None = None,
     else:
         rows = db.fetch_all(
             f"SELECT {cols} FROM access_requests ORDER BY id DESC LIMIT 200")
-    return {"requests": [mapping.endpoint_request_entry(r, _alias_of) for r in rows]}
+    name_of = people.namer([r.get("requester_name") or r.get("requester_slack_id")
+                            for r in rows])
+    return {"requests": [mapping.endpoint_request_entry(r, _alias_of, name_of)
+                         for r in rows]}
 
 
 # ---- Access control (super-admin only): mutations ---------------------------
@@ -3035,11 +3043,14 @@ def _mask_row_core(r: dict, alias_of: dict | None = None) -> dict:
         "audience": "super" if r["super_admin_only"] else "everyone",
         "reason": r["reason"],
         "enabled": bool(r["enabled"]),
-        "createdBy": r["created_by"],
+        # Stored as a principal (a Slack id for anything written through the
+        # UI), which the row printed raw. Resolved here so the screen prints a
+        # person; an id nothing resolves comes back as itself.
+        "createdBy": people.display_name(r["created_by"]),
         "createdAt": mapping.iso(r["created_at"]),
         # NULL until somebody edits the row, and the screen says nothing at all
         # rather than repeating the creation as though it were an edit.
-        "updatedBy": r.get("updated_by"),
+        "updatedBy": people.display_name(r.get("updated_by")),
         "updatedAt": mapping.iso(r["updated_at"]) if r.get("updated_at") else None,
     }
 
@@ -4210,7 +4221,8 @@ def admin_feedback(claims: dict = Depends(deps.current_user)):
         "  r.rated_at, req.name FROM request_ratings_reportable r "
         "LEFT JOIN requesters req ON req.slack_user_id = r.slack_user_id "
         "ORDER BY r.rated_at DESC LIMIT 100")
-    return {"feedback": [mapping.feedback_entry(r) for r in rows]}
+    name_of = people.namer([r.get("name") or r.get("slack_user_id") for r in rows])
+    return {"feedback": [mapping.feedback_entry(r, name_of) for r in rows]}
 
 
 # ---------------------------------------------------------------------------

@@ -99,7 +99,9 @@ function RoleRow({ r, people, canWrite, enforced, onRevoke }) {
       <span className="qh-peravatar sm">{p ? p.initials : (r.name || r.subject || '?').slice(0, 1).toUpperCase()}</span>
       <div className="qh-rolerow-main">
         <div className="qh-rolerow-top">
-          <span className="qh-rolerow-name">{r.name || r.subject}</span>
+          {/* The handle stays on its own line below (`qh-rolerow-h`), so the
+              name is read as a name here (qh-data.jsx, 2026-09-17). */}
+          <span className="qh-rolerow-name">{qhPersonName(r.name || r.subject)}</span>
           <span className={'qh-rolechip is-' + r.role}>{(QH_ROLE_DEFS[r.role] || {}).label || r.role}</span>
           {mirrored && <span className="qh-rolechip is-src">mirrored</span>}
           {/* While the fleet is on the old code path a DIRECT row decides
@@ -150,7 +152,7 @@ function RoleForm({ st, onDone }) {
   const bad = !f.subject.trim() || expBad(f);
 
   const preview = {
-    subject: f.subject, name: (st.people || []).reduce((acc, p) => (p.handle === f.subject || p.id === f.subject ? p.name : acc), f.subject),
+    subject: f.subject, name: qhPersonName((st.people || []).reduce((acc, p) => (p.handle === f.subject || p.id === f.subject ? p.name : acc), f.subject)),
     role: f.role,
     scopeTeamName: fleetWide ? null : (teams.find(t => t.id === f.scopeTeamId) || {}).name || null,
     scopeTargetName: fleetWide ? null : (conns.find(c => c.id === f.scopeTargetId) || {}).name || null,

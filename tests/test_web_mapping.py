@@ -488,3 +488,106 @@ def test_a_team_grant_has_no_granter():
            "granted_by": None, "granted_at": None, "expires_at": None}
     e = mapping.grant_entry(row, lambda tid: "prod-main")
     assert e["grantedBy"] is None and e["grantedByName"] is None
+
+
+# ---------------------------------------------------------------------------
+# a principal is resolved to a person, in every payload that prints one
+# ---------------------------------------------------------------------------
+#
+# `requester_name`, `decided_by_name` and the rest are SNAPSHOTS of whatever the
+# identity source held at the time, so a third of the queue arrives as a
+# `first.last` login. The design side title-cases those so a screen reads as
+# people; this is the half that can actually look the person up, and where it
+# answers the other one has nothing left to do.
+
+from queryhub import people as people_mod  # noqa: E402
+from queryhub import pii as _pii_mod  # noqa: E402
+
+
+def _namer(mapping_dict):
+    def name_of(key):
+        if not isinstance(key, str) or not key.strip():
+            return key
+        return mapping_dict.get(key.strip(), key)
+    return name_of
+
+
+def test_the_queue_prefers_the_resolved_name_over_the_snapshot(monkeypatch):
+    monkeypatch.setattr(_pii_mod, "column_pii_map", lambda cols: {})
+    row = {"id": 1, "query": "SELECT 1", "requester_name": "ilker.sahin",
+           "requester_slack_id": "U1", "target_server_id": None,
+           "database_name": "db", "created_at": None}
+    got = mapping.queue_item(row, lambda t: None, None,
+                             _namer({"ilker.sahin": "\u0130lker \u015eahin"}))
+    assert got["submitter"]["name"] == "\u0130lker \u015eahin"
+
+
+def test_an_unresolvable_principal_keeps_what_it_had(monkeypatch):
+    monkeypatch.setattr(_pii_mod, "column_pii_map", lambda cols: {})
+    """A `dba.*` service handle belongs to no person, and a departed colleague
+    is not in the roster any more. Both keep the string they arrived with —
+    substituting anything would be inventing an identity."""
+    row = {"id": 1, "query": "SELECT 1", "requester_name": "dba.ops",
+           "requester_slack_id": "U1", "target_server_id": None,
+           "database_name": "db", "created_at": None}
+    got = mapping.queue_item(row, lambda t: None, None, _namer({}))
+    assert got["submitter"]["name"] == "dba.ops"
+
+
+def test_the_auto_approver_is_not_a_person_to_resolve():
+    """It has no principal to look up, and running it through the resolver
+    would ask the roster who `AUTO` is on every history page."""
+    assert mapping.approver_label(mapping.AUTO_DECIDED_BY, None,
+                                  _namer({"AUTO": "should not be used"})) \
+        == "auto-approve"
+
+
+def test_the_approver_falls_back_to_the_id_when_no_name_was_stored():
+    assert mapping.approver_label("U9", None, _namer({"U9": "A Person"})) \
+        == "A Person"
+    assert mapping.approver_label("U9", "u.nine", _namer({"u.nine": "A Person"})) \
+        == "A Person"
+
+
+def test_without_a_resolver_every_payload_behaves_as_before(monkeypatch):
+    monkeypatch.setattr(_pii_mod, "column_pii_map", lambda cols: {})
+    """`name_of` is optional on all four builders, so a caller that has not been
+    wired yet is unchanged rather than broken."""
+    row = {"id": 1, "query": "SELECT 1", "requester_name": "ilker.sahin",
+           "requester_slack_id": "U1", "target_server_id": None,
+           "database_name": "db", "created_at": None}
+    assert mapping.queue_item(row, lambda t: None)["submitter"]["name"] == "ilker.sahin"
+    assert mapping.feedback_entry(
+        {"id": 1, "name": "ilker.sahin", "slack_user_id": "U1",
+         "rating": 5, "feedback_text": "", "request_id": None,
+         "rated_at": None})["user"] == "ilker.sahin"
+
+
+def test_the_resolver_only_claims_the_shapes_it_can_answer():
+    """Pure: which strings it will even look up, and by which route. A bare
+    word is not a handle and not a name, so it never reaches the database."""
+    assert people_mod._kind("U0EXAMPLE001") == "id"
+    assert people_mod._kind("ilker.sahin") == "handle"
+    assert people_mod._kind("dba.ops") == "handle"      # looked up, then unresolved
+    assert people_mod._kind("Alex Kim") == "name"
+    assert people_mod._kind("auto-approve") == "other"
+
+
+def test_the_fold_is_the_one_slack_stored():
+    """`real_name_normalized` is the ASCII fold of `real_name`, and both
+    spellings are in the request history. Folding both sides is what lets one
+    colleague stop being two rows in a ranked list."""
+    assert people_mod.fold("Hayati \u0130bi\u015f") == people_mod.fold("Hayati Ibis")
+    assert people_mod.fold("Mehmet Gen\u00e7") == "mehmet genc"
+    # \u0131 decomposes to nothing under NFKD — it is a letter, not an i with a
+    # mark removed — so it is the one that has to be mapped by hand.
+    assert people_mod.fold("Ka\u011fan \u015e\u0131k") == "kagan sik"
+
+
+def test_a_fold_two_colleagues_share_resolves_to_neither(monkeypatch):
+    """The fold is lossy. Guessing between two people is worse than printing
+    the spelling that arrived, which is at least what the source recorded."""
+    monkeypatch.setattr(people_mod.db, "fetch_all",
+                        lambda *a, **k: [{"name": "Ali \u015eah\u0131n"},
+                                         {"name": "Ali \u015eahin"}])
+    assert people_mod.display_names(["Ali Sahin"]) == {}

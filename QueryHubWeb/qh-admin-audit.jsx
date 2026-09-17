@@ -1,4 +1,4 @@
-// QueryHub Admin — Audit trail (design brief 2026-09-09 (b)).
+// QueryHub Admin — Audit trail (design brief 2026-09-09 (c)).
 //
 // Why this screen was rebuilt: it filtered `audit_log` through a hand-written
 // list of 37 action names while the table held 132. 110 action types were
@@ -11,17 +11,18 @@
 //
 // Three commitments follow from that, and they are the whole design:
 //
-//   1. CATEGORY IS DERIVED, NEVER LISTED. The category comes from the action
-//      name's own shape (`<area>.<object>.<verb>`), computed server-side. A new
-//      action type inherits a category for free. Adding one chip per new action
-//      is what already failed, so this file contains no list of action names —
-//      only six categories and five effects, both of which a name lands in.
-//   2. A SLICE IS ALWAYS VISIBLE AS A SLICE. Every count on the screen carries
-//      its denominator, unclassified actions are counted rather than absorbed,
-//      and the one deliberate exclusion (per-request lifecycle) is stated on
-//      screen with a control to include it. The failure was silence.
+//   1. CLASSIFICATION IS DERIVED, NEVER LISTED. Kind and effect are computed
+//      server-side by an ordered pattern table read by one function, first match
+//      wins — 47 patterns cover 121 of 132 real action types, and the rest land
+//      in `unclassified` by construction. Adding one chip per new action is what
+//      already failed, so this file contains no list of action names: seven
+//      kinds, six effects and three actor kinds, all of which any name lands in.
+//   2. A SLICE IS ALWAYS VISIBLE AS A SLICE. Every count carries its
+//      denominator, unclassified actions are counted rather than absorbed, and
+//      the deliberate exclusions are listed on screen with their size and a
+//      control to include each. The failure was silence.
 //   3. THE PAYLOAD HAS A PLACE THAT DOES NOT MOVE THE LIST. A detail rail, not
-//      an expanding row: some payloads are one field and some are a paragraph,
+//      an expanding row: some payloads are one field and some are ten kilobytes,
 //      and a list that reflows under the cursor is unusable for the thing this
 //      screen is for — finding one specific event under time pressure.
 const { useState: useAud, useEffect: useAudEf, useRef: useAudRef } = React;
@@ -112,22 +113,33 @@ function AudActor({ actor, sm }) {
   if (actor.kind === 'job') {
     return <span className="qh-audactor is-job" title="A background job or migration, not a person">{actor.handle}</span>;
   }
-  if (actor.name) return <span className="qh-audactor">{actor.name}</span>;
+  // A person's name, read as a name (`qhPersonName`, qh-data.jsx 2026-09-17).
+  // Only this branch: the job branch above is a machine (`dba.marco` is a service
+  // handle, not Mert), and the id branch below is an id.
+  if (actor.name) return <span className="qh-audactor" title={qhIsHandleName(actor.name) ? actor.name : null}>{qhPersonName(actor.name)}</span>;
   // Bare ids are resolved to names where a name exists, so what is left is a
   // principal nobody ever named. Never blank, never a fabricated name.
   return <span className={'qh-audactor is-id' + (sm ? ' sm' : '')} title="No named account — only a principal id was recorded">{actor.handle}</span>;
 }
 
-// Who the row is ABOUT. For 76% of the rows this screen shows by default that
-// is the person who asked for the query, not the admin who happened to press
-// Approve -- and the list had room for one name, which was the admin's. The actor is still one
-// click away in the rail, and it is what a row with no request shows here.
+// ---------- Who the row is about ----------
+// The row has room for ONE name, and it used to hold the ACTOR — the admin who
+// pressed Approve. Down a run of auto-approvals that is the same three words
+// over and over, while the person actually being looked for is the one who
+// ASKED: 76% of the rows the default screen shows are bound to a request. So
+// the requester is what the row says, falling back to the actor on the rows
+// that have no request. Nothing is lost — the actor stays in the rail, and the
+// row's own label already separates "Approved" from "Auto approved".
 function AudWho({ row, sm }) {
-  const who = row.request && row.request.requester;
-  if (!who) return <AudActor actor={row.actor} sm={sm} />;
-  const by = row.actor && (row.actor.kind === 'auto' ? 'the auto-approver'
-    : row.actor.name || row.actor.handle);
-  return <span className="qh-audactor" title={'Requester' + (by ? ' · this row was recorded by ' + by : '')}>{who}</span>;
+  const rq = row && row.request;
+  if (rq) {
+    if (rq.requester) return <span className="qh-audactor" title={qhIsHandleName(rq.requester) ? rq.requester : null}>{qhPersonName(rq.requester)}</span>;
+    // `requester` is null when no name was recorded (it used to arrive as "—",
+    // a string this column could not have fallen back from). The raw principal
+    // id is the honest substitute; the dash belongs to the rail, not here.
+    if (rq.requesterId) return <span className={'qh-audactor is-id' + (sm ? ' sm' : '')} title="No named account — only a principal id was recorded">{rq.requesterId}</span>;
+  }
+  return <AudActor actor={row && row.actor} sm={sm} />;
 }
 
 // ---------- The detail rail ----------
@@ -185,8 +197,10 @@ function AudDetail({ row, onClose, pushToast }) {
           <>
             <div className="qh-auddetail-sec">Request #{row.request.id}</div>
             <div className="qh-audkv">
-              <div><dt>Requester</dt><dd>{row.request.requester
-                || <span className="qh-audunknown" title={row.request.requesterId || 'No name was recorded'}>{row.request.requesterId || 'unknown'}</span>}</dd></div>
+              <div><dt>Requester</dt><dd>{(row.request.requester ? qhPersonName(row.request.requester) : null)
+                || (row.request.requesterId
+                  ? <code className="qh-audcode">{row.request.requesterId}</code>
+                  : <span className="qh-audnull">—</span>)}</dd></div>
               <div><dt>Target</dt><dd>{row.request.connection}/{row.request.database}</dd></div>
               {row.request.tier && <div><dt>Tier</dt><dd><TierBadge tier={row.request.tier} sm /></dd></div>}
               {row.request.rows != null && <div><dt>Rows</dt><dd>{audNum(row.request.rows)}</dd></div>}
@@ -294,6 +308,15 @@ function AuditView({ st }) {
   const excl = (res && res.exclusions) || [];
   const hiddenNow = excl.filter(x => !x.included);
   const clearAll = () => { setCats([]); setEffs([]); setActs([]); setQ(''); setTerm(''); setDays(0); };
+  // Computed from the facets rather than hardcoded to the auto-approver: if the
+  // shape of the fleet changes and jobs become the majority, the sentence
+  // follows the data instead of asserting last quarter's fact.
+  const machineShare = (() => {
+    if (!res || !res.matched) return null;
+    const top = ['auto', 'job'].map(k => ({ kind: k, rows: facetsA[k] || 0 })).sort((a, b) => b.rows - a.rows)[0];
+    if (!top || top.rows / res.matched < 0.5) return null;
+    return { ...top, pct: Math.round(top.rows / res.matched * 100) };
+  })();
 
   // Day headers give the list a spine. Most sessions are somebody looking for
   // one event, and "which day am I in" is the orientation a flat 8,000-row list
@@ -425,6 +448,30 @@ function AuditView({ st }) {
         </div>
       )}
 
+      {/* THE DEFAULT STATE'S OWN BIGGEST FACT, said rather than hidden.
+          The auto-approver is 66% of what an auditor sees on opening — not 66%
+          of Requests, 66% of everything. CODE asked whether it should become a
+          third declared exclusion; it should not. The two existing exclusions
+          share a property this does not: NEITHER IS AN EXERCISE OF AUTHORITY.
+          Lifecycle is the same event shown request by request elsewhere, and
+          usage changed nobody's access. An auto-approval granted somebody
+          production data because a rule said yes, and hiding authorisation by
+          default is the exact silence this rebuild was about. If the criterion
+          became "high-volume and boring", next quarter one DBA's approvals
+          qualify too.
+          Volume is not a reason to hide an authorisation event. It is a reason
+          to state it and make the split one click — which also turns the
+          monotonous default list into the most useful sentence on the screen. */}
+      {res && !filtered && !term && machineShare && (
+        <div className="qh-audfinding">
+          <span><b>{machineShare.pct}%</b> of this — {audNum(machineShare.rows)} rows — {machineShare.kind === 'auto'
+            ? <>was approved by the <b>auto-approver</b>, with nobody looking.</>
+            : <>was written by a <b>background job</b>, not a person.</>}</span>
+          <button className="qh-linkbtn" onClick={() => setActs([machineShare.kind])}>See just those</button>
+          <button className="qh-linkbtn" onClick={() => setActs(['person'])}>See what a person did</button>
+        </div>
+      )}
+
       <div className="qh-audsplit">
         <div className="qh-audlist">
           {err && <div className="qh-aempty"><div>Could not load the trail.</div><button className="qh-btn qh-btn-sm" onClick={() => setDays(d => d)}>Retry</button></div>}
@@ -458,9 +505,10 @@ function AuditView({ st }) {
                     {r.target && <span className="qh-audtarget">{r.target}</span>}
                   </span>
                   <span className="qh-audby"><AudWho row={r} sm /></span>
-                  {/* Request-bound fields appear only on the third of rows that
-                      have them. No dashes: an administrative row has no tier, and
-                      printing "—" five times says nothing five times. */}
+                  {/* Request-bound fields appear only on rows that have them —
+                      77% do. No dashes on the other 23%: an administrative row
+                      has no tier, and printing "—" five times says nothing five
+                      times. */}
                   <span className="qh-audreq">{r.request ? '#' + r.request.id : ''}</span>
                 </button>
               ))}

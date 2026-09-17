@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from zoneinfo import ZoneInfo
 
-from .. import db, metrics_defs
+from .. import db, metrics_defs, people
 
 # Definitions live in metrics_defs so the static S3 dashboard and this module
 # cannot drift apart; see that module's docstring.
@@ -186,10 +186,32 @@ def build_metrics() -> dict:
             items = items[:limit]
         return [{"name": k or "—", "count": v} for k, v in items]
 
+    # Every person this payload prints, resolved in one lookup. The fact rows
+    # carry a handle wherever the identity source had no display name, and the
+    # ranked lists are keyed on that spelling — so resolve BEFORE counting, or
+    # one person ranks twice, once per spelling. The two detail tables are
+    # fetched here for the same reason: one batch, not three.
+    low_rows = db.fetch_all(
+        "SELECT * FROM p_metrics_rating_low_with_feedback ORDER BY rated_at DESC")
+    imports = db.fetch_all(
+        "SELECT id, created_at, requester_slack_id, requester_name, target_alias, "
+        "       database_name, table_name, is_new_table, status, row_count, "
+        "       inserted_rows, byte_size, load_seconds "
+        "  FROM p_metrics_csv_imports ORDER BY created_at DESC")
+
+    def _who(r, name_col="requester_name", id_col="requester_slack_id"):
+        return r.get(name_col) or r.get(id_col)
+
+    name_of = people.namer(
+        [_who(r) for r in rows]
+        + [_who(r, "decided_by_name", "decided_by_slack_id") for r in rows]
+        + [_who(r) for r in low_rows]
+        + [_who(i) for i in imports])
+
     team_usage = _rank(Counter(r["team"] for r in rows if r["team"]))
-    top_users = _rank(Counter(r["requester_name"] or r["requester_slack_id"] for r in rows), 10)
+    top_users = _rank(Counter(name_of(_who(r)) for r in rows), 10)
     admin_workload = _rank(Counter(
-        r["decided_by_name"] or r["decided_by_slack_id"]
+        name_of(_who(r, "decided_by_name", "decided_by_slack_id"))
         for r in rows if r["decided_by_slack_id"] and r["decided_by_slack_id"] != "AUTO"))
     target_usage = _rank(Counter(r["target_alias"] for r in rows if r["target_alias"]))
 
@@ -211,18 +233,12 @@ def build_metrics() -> dict:
     rating_response = [{"period": k, "rated": resp[k]["rated"], "completed": resp[k]["completed"],
                         "pct": round(100 * resp[k]["rated"] / resp[k]["completed"], 1) if resp[k]["completed"] else 0}
                        for k in sorted(resp)]
-    rating_low = [{"user": r.get("requester_name") or r.get("requester_slack_id"),
+    rating_low = [{"user": name_of(_who(r)),
                    "rating": r.get("rating"), "feedback": r.get("feedback_text"),
                    "when": r["rated_at"].isoformat() if r.get("rated_at") else None}
-                  for r in db.fetch_all(
-                      "SELECT * FROM p_metrics_rating_low_with_feedback ORDER BY rated_at DESC")]
+                  for r in low_rows]
 
     # ---- CSV bulk imports ----
-    imports = db.fetch_all(
-        "SELECT id, created_at, requester_slack_id, requester_name, target_alias, "
-        "       database_name, table_name, is_new_table, status, row_count, "
-        "       inserted_rows, byte_size, load_seconds "
-        "  FROM p_metrics_csv_imports ORDER BY created_at DESC")
     imp_done = [i for i in imports if i["status"] == "completed"]
     imp_fail = [i for i in imports if i["status"] in ("failed", "rejected")]
     csv_summary = {
@@ -234,7 +250,7 @@ def build_metrics() -> dict:
         if (imp_done or imp_fail) else None,
     }
     csv_rows = [{"id": i["id"], "when": i["created_at"].isoformat() if i["created_at"] else None,
-                 "user": i["requester_name"] or i["requester_slack_id"],
+                 "user": name_of(_who(i)),
                  "target": i["target_alias"], "db": i["database_name"], "table": i["table_name"],
                  "isNew": i["is_new_table"], "status": i["status"],
                  "rows": i["inserted_rows"] if i["inserted_rows"] is not None else i["row_count"],

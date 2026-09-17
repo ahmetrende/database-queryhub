@@ -94,8 +94,12 @@ function DbMultiPick({ conns, connectionId, databases, onChange }) {
 // written before a target is enabled — so the label has to say which is which,
 // or a grant that silently does nothing looks like a grant that works.
 function connLabel(c) { return c.enabled === false ? c.name + ' (disabled)' : c.name; }
+// A PERSON is printed as a name (`qhPersonName`, qh-data.jsx 2026-09-17): the
+// directory's `name` is a handle wherever the profile carried none, and the
+// fallback here is the handle itself. A TEAM goes through untouched — a team id
+// is not a person's name, and rewriting it would invent words.
 function subjLabel(people, subjectType, subject) {
-  if (subjectType === 'user') { const p = (people || []).find(x => x.handle === subject); return p ? p.name : subject; }
+  if (subjectType === 'user') { const p = (people || []).find(x => x.handle === subject); return qhPersonName(p ? p.name : subject); }
   return subject;
 }
 // GET /admin/grants resolves the display name server-side as `subjectName`,
@@ -106,7 +110,10 @@ function subjLabel(people, subjectType, subject) {
 // built locally and has not reloaded yet.
 // For a team `subjectName` is the TEAM NAME rather than null, so the handle line
 // below is suppressed by `subjectType`, never by a missing name.
-function grantName(g, people) { return g.subjectName || subjLabel(people, g.subjectType, g.subject); }
+function grantName(g, people) {
+  if (g.subjectName) return g.subjectType === 'user' ? qhPersonName(g.subjectName) : g.subjectName;
+  return subjLabel(people, g.subjectType, g.subject);
+}
 
 // Shared controls: search box + group-by segmented.
 function AccSearch({ q, setQ, placeholder }) {
@@ -178,7 +185,7 @@ function PersonPick({ people, value, onChange, resolve, autoFocus }) {
   return (
     <div className={'qh-pcombo' + (open ? ' is-open' : '')} ref={wrapRef}>
       <input className="qh-input qh-pcombo-in" autoFocus={autoFocus} placeholder="Search people, or paste a principal id…"
-        value={open ? q : (known ? known.name + ' · ' + known.handle : (value || ''))}
+        value={open ? q : (known ? qhPersonName(known.name) + ' · ' + known.handle : (value || ''))}
         onFocus={() => { setQ(''); setHi(0); }}
         onChange={e => { setQ(e.target.value); setHi(0); }}
         onKeyDown={e => {
@@ -193,7 +200,7 @@ function PersonPick({ people, value, onChange, resolve, autoFocus }) {
             <button key={p.handle} className={'qh-pcombo-opt' + (i === hi ? ' is-hi' : '')} onMouseEnter={() => setHi(i)}
               onMouseDown={e => { e.preventDefault(); pickPerson(p.handle); }}>
               <span className="qh-peravatar sm">{p.initials}</span>
-              <span className="qh-pcombo-name">{p.name}</span>
+              <span className="qh-pcombo-name">{qhPersonName(p.name)}</span>
               <span className="qh-pcombo-h">{p.handle}</span>
             </button>
           ))}
@@ -258,7 +265,7 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
           {['user', 'team'].map(v => <button key={v} disabled={lockSubject} className={'qh-seg-opt' + (subjectType === v ? ' is-active' : '')} onClick={() => pickType(v)}>{v}</button>)}
         </div>
         {lockSubject
-          ? <span className="qh-accedit-subjname"><span className={'qh-subj-type ' + subjectType}>{subjectType}</span> <b>{name0 || subjLabel(people, subjectType, subject)}</b></span>
+          ? <span className="qh-accedit-subjname"><span className={'qh-subj-type ' + subjectType}>{subjectType}</span> <b>{(subjectType === 'user' ? qhPersonName(name0) : name0) || subjLabel(people, subjectType, subject)}</b></span>
           : subjectType === 'user'
             ? <PersonPick people={people} value={subject} onChange={pickSubject} resolve={st.resolvePerson} autoFocus />
             : <select className="qh-select" value={subject} onChange={e => pickSubject(e.target.value)}><option value="">Select team…</option>{teams.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}</select>}
@@ -329,7 +336,7 @@ function GrantForm({ init, actor, st, people, teams, onDone }) {
 //     used the column as a comment field; for those it is the only record of why
 //     the grant exists, so it is shown rather than blanked — clamped to one line
 //     with the full text on hover, or a sentence would stretch the column.
-function grantByLabel(g) { return g.grantedByName || g.grantedBy || '—'; }
+function grantByLabel(g) { return qhPersonName(g.grantedByName || g.grantedBy) || '—'; }
 
 function GrantsView({ st, user }) {
   const actor = 'dba.' + user.name.split(' ')[0].toLowerCase();
@@ -537,11 +544,11 @@ function AutoView({ st, user }) {
             differ — the handle is still how this row is correlated with Slack,
             and a team is in neither people table, so `userName` is null there
             and the id IS the name. */}
-        <td><b>{a.userName || a.user}</b>{a.userName && a.userName !== a.user && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{a.user}</div>}</td>
+        <td><b>{qhPersonName(a.userName || a.user)}</b>{a.userName && a.userName !== a.user && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{a.user}</div>}</td>
         <td className="qh-mono">{a.connectionId}{autoAllDbs(a.databaseId) ? <span className="qh-muted"> · all databases</span> : '/' + a.databaseId}</td>
         <td><TierBadge tier={a.tier} sm /></td>
         <td><span className={'qh-expiry ' + ex.cls}>{ex.text}</span></td>
-        <td className="qh-muted">{a.createdByName || a.createdBy || '—'}</td>
+        <td className="qh-muted">{qhPersonName(a.createdByName || a.createdBy) || '—'}</td>
         <td className="qh-tright"><div className="qh-rowacts"><button className="qh-rowbtn" onClick={() => { setEditId(a.id); setAdding(false); }}><AIcon.edit />Edit</button><button className="qh-revoke" onClick={() => st.revokeAutoGrant(a.id, actor)}>Revoke</button></div></td>
       </tr>
     );
@@ -774,7 +781,7 @@ function TeamsView({ st, user }) {
             {pRows.map(p => editPerson === p.handle ? (
               <tr key={p.handle} className="qh-editrow"><td colSpan={4}>
                 <div className="qh-personedit">
-                  <div className="qh-personedit-top"><span className="qh-mini-avatar">{p.initials}</span><b>{p.name}</b><span className="qh-muted">— assign to teams (none, one, or several)</span></div>
+                  <div className="qh-personedit-top"><span className="qh-mini-avatar">{p.initials}</span><b>{qhPersonName(p.name)}</b><span className="qh-muted">— assign to teams (none, one, or several)</span></div>
                   <div className="qh-memberpick">
                     {teams.map(t => { const on = pdraft.includes(t.id); return <button key={t.id} type="button" className={'qh-memberchip' + (on ? ' is-on' : '')} onClick={() => togglePdraft(t.id)}><span className="qh-team-badge">team</span><span className="qh-memberchip-name">{t.name}</span>{on && <span className="qh-memberchip-ck"><AIcon.check /></span>}</button>; })}
                   </div>
@@ -783,7 +790,7 @@ function TeamsView({ st, user }) {
               </td></tr>
             ) : (
               <tr key={p.handle}>
-                <td><div className="qh-person-cell"><span className="qh-mini-avatar">{p.initials}</span><b>{p.name}</b></div></td>
+                <td><div className="qh-person-cell"><span className="qh-mini-avatar">{p.initials}</span><b>{qhPersonName(p.name)}</b></div></td>
                 <td className="qh-mono">{p.handle}</td>
                 <td><div className="qh-person-teams">{teamsOf(p.handle).length === 0 ? <span className="qh-team-none">No team</span> : teamsOf(p.handle).map(t => <span key={t.id} className="qh-teamtag">{t.name}</span>)}</div></td>
                 <td className="qh-tright"><button className="qh-rowbtn" onClick={() => startEditPerson(p)}><AIcon.edit />Edit teams</button></td>
@@ -1147,7 +1154,10 @@ function ConnectionsView({ st, user }) {
             <div className="qh-ercard-main">
               <div className="qh-ercard-top"><span className="qh-mono qh-ertarget">{er.server}/{er.database}</span><TierBadge tier={er.tier} sm /><span className="qh-qcard-when">{qhAgo(er.requestedAt)}</span></div>
               <div className="qh-ercard-reason">{er.reason}</div>
-              <div className="qh-ercard-by">requested by <b>{er.requester}</b></div>
+              {/* The requester arrives as a principal id here (there is no name
+                  on the endpoint-request row), so it is read as a name and the
+                  handle stays on `title`. */}
+              <div className="qh-ercard-by">requested by <b title={qhIsHandleName(er.requester) ? er.requester : null}>{qhPersonName(er.requester)}</b></div>
             </div>
             <div className="qh-ercard-actions">
               <button className="qh-btn qh-btn-danger qh-btn-sm" onClick={() => st.decideEndpoint(er.id, false, act)}>Reject</button>

@@ -1797,7 +1797,11 @@
   .qh-fbcard { border: 1px solid var(--stroke-light); border-radius: var(--r-md); padding: 14px 16px; }
   .qh-fbcard.is-low { border-color: var(--danger-solid-light); background: var(--danger-adaptive-light); }
   .qh-fbtop { display: flex; align-items: center; gap: 10px; }
-  .qh-fbuser { font-size: 13px; font-weight: 600; color: var(--fg-primary); font-family: var(--qh-mono); flex: 1; }
+  /* Mono was right while this printed `elena.silva`: mono is this app's signal for "identifier"
+     (qh-audactor.is-id, qh-audcode, qh-rolerow-h, the qh-mono handle sub-lines). It now prints a
+     NAME, so it takes the same treatment as .qh-qname on the approval-queue card — the same thing
+     on the same kind of card. 2026-09-17. */
+  .qh-fbuser { font-size: 13px; font-weight: 600; color: var(--fg-primary); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .qh-stars { display: inline-flex; gap: 1px; color: var(--brand-green); }
   .qh-fbcard.is-low .qh-stars { color: var(--fg-danger); }
   .qh-fbcomment { font-size: 13.5px; color: var(--fg-secondary); margin-top: 8px; line-height: 1.5; }

@@ -95,9 +95,16 @@ def engine_label(engine: str | None) -> str:
 
 
 def approver_label(decided_by_slack_id: str | None,
-                   decided_by_name: str | None) -> str | None:
+                   decided_by_name: str | None,
+                   name_of: "callable" = None) -> str | None:
+    """Who decided it, as a name. The auto-approver is not a person and keeps
+    its own label; everybody else goes through `name_of` when the caller has
+    one, because `decided_by_name` is a snapshot like every other."""
     if decided_by_slack_id == AUTO_DECIDED_BY:
         return "auto-approve"
+    if name_of:
+        return name_of(decided_by_name) if decided_by_name \
+            else name_of(decided_by_slack_id)
     return decided_by_name
 
 
@@ -123,7 +130,7 @@ def web_text(s: str | None) -> str | None:
 
 
 def history_entry(row: dict, alias_of: "callable",
-                  state_of: "callable" = None) -> dict:
+                  state_of: "callable" = None, name_of: "callable" = None) -> dict:
     """One requests row → the /history shape.
 
     `state_of` says whether the caller can still reach that connection, and
@@ -145,7 +152,7 @@ def history_entry(row: dict, alias_of: "callable",
         "rowCount": row.get("row_count"),
         "createdAt": iso(row.get("created_at")),
         "approver": approver_label(row.get("decided_by_slack_id"),
-                                   row.get("decided_by_name")),
+                                   row.get("decided_by_name"), name_of),
     }
 
 
@@ -210,7 +217,8 @@ def _initials(name: str | None) -> str:
     return (parts[0][0] + parts[-1][0]).upper()
 
 
-def queue_item(row: dict, alias_of: "callable", tags_of=None) -> dict:
+def queue_item(row: dict, alias_of: "callable", tags_of=None,
+               name_of: "callable" = None) -> dict:
     """One pending `requests` row → the ADMIN_API GET /admin/queue item.
 
     `trust` has no backend model yet (None); `estRows`/`estTables` aren't
@@ -225,7 +233,13 @@ def queue_item(row: dict, alias_of: "callable", tags_of=None) -> dict:
     alias = alias_of(tid) if tid else None
     query = row.get("query") or ""
     tier = query_safety.required_mode(query).upper()
+    # The stored name is a SNAPSHOT of whatever the identity source held at
+    # submit time, so for a third of the queue it is a `first.last` login. The
+    # roster is kept fresh for everybody, so it answers first and the snapshot
+    # is the fallback -- the same order the audit trail resolves in.
     name = row.get("requester_name")
+    if name_of:
+        name = name_of(name) if name else name_of(row.get("requester_slack_id"))
     return {
         "id": str(row["id"]),
         "submitter": {
@@ -591,11 +605,16 @@ def admin_audit_entry(row: dict, kind: str, alias_of: "callable",
             "info": info, "kind": kind}
 
 
-def feedback_entry(row: dict) -> dict:
-    """request_ratings_reportable row -> {id, user, score, comment, queryId, when}."""
+def feedback_entry(row: dict, name_of: "callable" = None) -> dict:
+    """request_ratings_reportable row -> {id, user, score, comment, queryId, when}.
+
+    `name_of` resolves a principal to a display name; without it the row is
+    whatever the join found, which is a handle for anybody whose profile never
+    carried a name."""
+    who = row.get("name") or row.get("slack_user_id")
     return {
         "id": str(row["id"]),
-        "user": row.get("name") or row.get("slack_user_id"),
+        "user": name_of(who) if name_of else who,
         "score": row.get("rating"),
         "comment": row.get("feedback_text"),
         "queryId": str(row["request_id"]) if row.get("request_id") else None,
@@ -603,12 +622,14 @@ def feedback_entry(row: dict) -> dict:
     }
 
 
-def endpoint_request_entry(row: dict, alias_of: "callable") -> dict:
+def endpoint_request_entry(row: dict, alias_of: "callable",
+                           name_of: "callable" = None) -> dict:
     """One access_requests row → admin endpoint-request shape. `tier` is
     not stored on the row, so it is omitted."""
     return {
         "id": f"er_{row['id']}",
-        "requester": row.get("requester_name") or row.get("requester_slack_id"),
+        "requester": (lambda w: name_of(w) if name_of else w)(
+            row.get("requester_name") or row.get("requester_slack_id")),
         "requesterId": row.get("requester_slack_id"),
         "server": alias_of(row.get("target_server_id"))
         or (str(row["target_server_id"]) if row.get("target_server_id") else None),

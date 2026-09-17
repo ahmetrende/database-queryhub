@@ -14,7 +14,7 @@ import psycopg
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from .. import admins, auto_approve, db, errors, favorites, schema_catalog, targets, teams
+from .. import admins, auto_approve, db, errors, favorites, people, schema_catalog, targets, teams
 from .. import config as cfg
 from . import deps, mapping
 
@@ -522,7 +522,13 @@ def history(limit: int = 50, claims: dict = Depends(deps.current_user)):
         (claims["sub"], limit),
     )
     state_of = _conn_state_resolver(claims["sub"])
-    return {"history": [mapping.history_entry(r, _alias_of, state_of) for r in rows]}
+    # One lookup for the page. `decided_by_name` is a snapshot like every other
+    # person field, so the approver column showed a login for anybody whose
+    # profile had no display name when they decided.
+    name_of = people.namer([r.get("decided_by_name") or r.get("decided_by_slack_id")
+                            for r in rows])
+    return {"history": [mapping.history_entry(r, _alias_of, state_of, name_of)
+                        for r in rows]}
 
 
 # ---- schema tree + fleet search (v2 new features) ---------------------------

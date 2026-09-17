@@ -149,14 +149,16 @@ function MetricsView({ st }) {
         <div className="qh-mcard"><div className="qh-mcard-title">Approval latency percentiles</div>
           <BarList items={['p50', 'p75', 'p90', 'p95', 'p99'].map(p => ({ label: p, value: sla[p] || 0 }))} fmt={_fmtSec} /></div>
         <div className="qh-mcard"><div className="qh-mcard-title">Top users</div>
-          <BarList items={(m.topUsers || []).map(u => ({ label: u.name, value: u.count }))} /></div>
+          <BarList items={(m.topUsers || []).map(u => ({ label: qhPersonName(u.name), value: u.count }))} /></div>
       </div>
 
       <div className="qh-mcards">
         <div className="qh-mcard"><div className="qh-mcard-title">Per-team usage</div>
           <BarList items={(m.teamUsage || []).slice(0, 10).map(u => ({ label: u.name, value: u.count }))} /></div>
+        {/* Per-team and per-target rows are NOT people, so they are left alone
+            — a database called `core.events` is not a name to title-case. */}
         <div className="qh-mcard"><div className="qh-mcard-title">Admin workload (decisions)</div>
-          <BarList items={(m.adminWorkload || []).map(u => ({ label: u.name, value: u.count }))} /></div>
+          <BarList items={(m.adminWorkload || []).map(u => ({ label: qhPersonName(u.name), value: u.count }))} /></div>
       </div>
 
       <div className="qh-mcards">
@@ -190,7 +192,7 @@ function MetricsView({ st }) {
       {low.length > 0 && (
         <div className="qh-mcard"><div className="qh-mcard-title">Low ratings (≤2) with feedback</div>
           <div className="qh-tablewrap"><table className="qh-atable"><thead><tr><th>User</th><th>Rating</th><th>Feedback</th><th>When</th></tr></thead>
-            <tbody>{low.map((r, i) => <tr key={i}><td><b>{r.user}</b></td><td>{r.rating}★</td><td>{r.feedback || '—'}</td><td className="qh-muted">{r.when ? qhFmt(r.when) : '—'}</td></tr>)}</tbody></table></div>
+            <tbody>{low.map((r, i) => <tr key={i}><td><b title={qhIsHandleName(r.user) ? r.user : null}>{qhPersonName(r.user)}</b></td><td>{r.rating}★</td><td>{r.feedback || '—'}</td><td className="qh-muted">{r.when ? qhFmt(r.when) : '—'}</td></tr>)}</tbody></table></div>
         </div>
       )}
 
@@ -205,7 +207,7 @@ function MetricsView({ st }) {
         </div>
         {imports.length > 0 && (
           <div className="qh-tablewrap"><table className="qh-atable"><thead><tr><th>When</th><th>User</th><th>Target / DB</th><th>Table</th><th>Status</th><th>Rows</th><th>Size</th></tr></thead>
-            <tbody>{imports.slice(0, 20).map(r => <tr key={r.id}><td className="qh-muted">{r.when ? qhFmt(r.when) : '—'}</td><td>{r.user}</td><td className="qh-mono">{(r.target || '?') + ' / ' + (r.db || '')}</td><td className="qh-mono">{r.table}{r.isNew ? ' (new)' : ''}</td><td className={'qh-csv-st is-' + (r.status || '')}>{r.status}</td><td className="qh-mono">{_fmtNum(r.rows)}</td><td className="qh-mono">{_fmtBytes(r.bytes)}</td></tr>)}</tbody></table></div>
+            <tbody>{imports.slice(0, 20).map(r => <tr key={r.id}><td className="qh-muted">{r.when ? qhFmt(r.when) : '—'}</td><td title={qhIsHandleName(r.user) ? r.user : null}>{qhPersonName(r.user)}</td><td className="qh-mono">{(r.target || '?') + ' / ' + (r.db || '')}</td><td className="qh-mono">{r.table}{r.isNew ? ' (new)' : ''}</td><td className={'qh-csv-st is-' + (r.status || '')}>{r.status}</td><td className="qh-mono">{_fmtNum(r.rows)}</td><td className="qh-mono">{_fmtBytes(r.bytes)}</td></tr>)}</tbody></table></div>
         )}
       </div>
 
@@ -234,7 +236,10 @@ function FeedbackView({ st }) {
         {fb.map(f => (
           <div key={f.id} className={'qh-fbcard' + (f.score <= 2 ? ' is-low' : '')}>
             <div className="qh-fbtop">
-              <span className="qh-fbuser">{f.user}</span>
+              {/* `user` is a display name from the identity source, so it is a
+                  handle wherever no profile name existed — printed as a name,
+                  with the raw handle on `title` (qh-data.jsx, 2026-09-17). */}
+              <span className="qh-fbuser" title={qhIsHandleName(f.user) ? f.user : null}>{qhPersonName(f.user)}</span>
               <Stars n={f.score} />
               <span className="qh-qcard-when">{qhAgo(f.when)}</span>
             </div>

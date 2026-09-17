@@ -168,12 +168,21 @@ def test_no_requester_at_all_is_null_not_a_dash():
 
 def test_the_list_column_reads_the_requester_before_the_actor():
     """The screen's left column is design-owned; this is the one thing about it
-    the endpoint depends on — that it prefers `request.requester`, which is why
-    the field is resolved rather than copied."""
-    block = SCREEN.split("function AudWho", 1)[1].split("\n}", 1)[0]
-    assert "row.request && row.request.requester" in block
-    assert "<AudActor actor={row.actor}" in block, \
-        "a row with no request must still name who acted"
+    the endpoint depends on — the ORDER it reads fields in, which is why they
+    are resolved server-side rather than copied.
+
+    Asserted by order of appearance rather than by one spelling: the block was
+    rewritten on 2026-09-17 (it gained the `requesterId` rung and a local for
+    `row.request`) and a test pinned to the old text would have failed for a
+    change that did exactly what it asks for.
+    """
+    block = SCREEN.split("function AudWho", 1)[1].split("\n}\n", 1)[0]
+    at = {k: block.find(k) for k in
+          (".requester", ".requesterId", "<AudActor")}
+    assert all(v >= 0 for v in at.values()), at
+    assert at[".requester"] < at[".requesterId"] < at["<AudActor"], (
+        "the requester's name comes first, their id second, and the actor is "
+        "the fallback for a row with no request at all")
 
 
 def test_a_row_nothing_claims_is_marked_unclassified():

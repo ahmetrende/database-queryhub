@@ -190,7 +190,7 @@ function AdminPanel({ st, adminRole, setAdminRole, user }) {
 // content instead of as part of the name.
 const QCHK = <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>;
 function QueueCard({ it, selected, onSelect, checked, onCheck }) {
-  const who = it.submitter.name + ', ' + it.tier + ' on '
+  const who = qhPersonName(it.submitter.name) + ', ' + it.tier + ' on '
     + it.connectionId + '/' + it.databaseId + ', ' + qhAgo(it.submittedAt);
   return (
     <div className={'qh-qcard' + (selected ? ' is-active' : '')}>
@@ -203,7 +203,7 @@ function QueueCard({ it, selected, onSelect, checked, onCheck }) {
               aria-label={'Review request from ' + who} aria-pressed={!!selected}>
         <div className="qh-qcard-top">
           <span className="qh-qavatar">{it.submitter.initials}</span>
-          <span className="qh-qname">{it.submitter.name}</span>
+          <span className="qh-qname" title={qhIsHandleName(it.submitter.name) ? it.submitter.name : null}>{qhPersonName(it.submitter.name)}</span>
           <TierBadge tier={it.tier} sm />
           <span className={'qh-origin-chip o-' + qhOriginKey(it.origin)} title={'Submitted via ' + qhOriginWhere(it.origin)}>{qhOriginKey(it.origin)}</span>
           {/* Inside a batch the chip says WHICH one — `bundlePosition` /
@@ -340,8 +340,9 @@ function ApprovalsView({ st, user, role }) {
               <div className="qh-adetail-who">
                 <span className="qh-qavatar lg">{cur.submitter.initials}</span>
                 <div>
-                  <div className="qh-adetail-name">{cur.submitter.name}</div>
-                  <div className="qh-adetail-slack"><SlackMark size={12} />{cur.submitter.slackId}{cur.submitter.trust != null ? ' · trust ' + cur.submitter.trust : ''}</div>
+                  <div className="qh-adetail-name">{qhPersonName(cur.submitter.name)}</div>
+                  {/* The handle is appended only when the name above was derived from it — it is what an approver types into Slack, so it must stay readable somewhere. */}
+                  <div className="qh-adetail-slack"><SlackMark size={12} />{qhIsHandleName(cur.submitter.name) ? cur.submitter.name + ' · ' : ''}{cur.submitter.slackId}{cur.submitter.trust != null ? ' · trust ' + cur.submitter.trust : ''}</div>
                 </div>
               </div>
               <div className="qh-adetail-target">
@@ -435,7 +436,7 @@ function DdlView({ st, user }) {
             <div key={it.id} className="qh-ddl-card">
               <div className="qh-ddl-top">
                 <span className="qh-qavatar">{it.submitter.initials}</span>
-                <span className="qh-qname">{it.submitter.name}</span>
+                <span className="qh-qname" title={qhIsHandleName(it.submitter.name) ? it.submitter.name : null}>{qhPersonName(it.submitter.name)}</span>
                 <TierBadge tier="DDL" />
                 <span className={'qh-origin-chip o-' + qhOriginKey(it.origin)} title={'Submitted via ' + qhOriginWhere(it.origin)}>{qhOriginKey(it.origin)}</span>
                 <span className="qh-ddl-target">{it.connectionId}/{it.databaseId}</span>
