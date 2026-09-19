@@ -55,6 +55,11 @@ class TargetServer:
     # see migration 095. Defaults to an empty bag so every existing caller and
     # every untagged row behaves exactly as before.
     tags: dict = field(default_factory=dict)
+    # How to reach an engine that is not a host/port server (migration 127).
+    # athena: {region, workgroup, catalog, database, role_arn}. Empty for
+    # postgres and mssql, which carry everything they need in the columns
+    # above — so a reader that does not know about this engine sees no change.
+    engine_config: dict = field(default_factory=dict)
 
 
 def _row_to_target(row: dict) -> TargetServer:
@@ -67,6 +72,7 @@ def _row_to_target(row: dict) -> TargetServer:
         username=row["username"],
         enabled=row["enabled"],
         tags=row.get("tags") or {},
+        engine_config=row.get("engine_config") or {},
         notes=row.get("notes"),
         # Default to postgres if a SELECT forgot the column — a missing
         # engine must read as the safe legacy default, never crash.
@@ -96,7 +102,8 @@ def list_enabled() -> list[TargetServer]:
     rows = db.fetch_all(
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
-        "       COALESCE(tags, '{}'::jsonb) AS tags "
+        "       COALESCE(tags, '{}'::jsonb) AS tags, "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config "
         "FROM target_servers WHERE enabled = TRUE ORDER BY alias"
     )
     return [_row_to_target(r) for r in rows]
@@ -110,7 +117,8 @@ def list_all() -> list[TargetServer]:
     rows = db.fetch_all(
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
-        "       COALESCE(tags, '{}'::jsonb) AS tags "
+        "       COALESCE(tags, '{}'::jsonb) AS tags, "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config "
         # Disabled targets sort last. They are unusable, so alphabetical
         # placement buries a working connection between two that are not —
         # `prod-archive` sitting between `beta` and `gamma` is noise in
@@ -124,7 +132,8 @@ def search(prefix: str, limit: int = 100) -> list[TargetServer]:
     rows = db.fetch_all(
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
-        "       COALESCE(tags, '{}'::jsonb) AS tags "
+        "       COALESCE(tags, '{}'::jsonb) AS tags, "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config "
         "FROM target_servers "
         "WHERE enabled = TRUE AND alias ILIKE %s "
         "ORDER BY alias LIMIT %s",
@@ -137,7 +146,8 @@ def get(target_id: int) -> TargetServer | None:
     row = db.fetch_one(
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
-        "       COALESCE(tags, '{}'::jsonb) AS tags "
+        "       COALESCE(tags, '{}'::jsonb) AS tags, "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config "
         "FROM target_servers WHERE id = %s",
         (target_id,),
     )
@@ -155,7 +165,8 @@ def by_alias(alias: str) -> TargetServer | None:
     row = db.fetch_one(
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
-        "       COALESCE(tags, '{}'::jsonb) AS tags "
+        "       COALESCE(tags, '{}'::jsonb) AS tags, "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config "
         "FROM target_servers WHERE alias = %s",
         (alias,),
     )
@@ -297,7 +308,8 @@ _ADMIN_COLS = (
     "       COALESCE(secrets_provider, 'local') AS secrets_provider, "
     "       username, username_rw, username_ddl, "
     "       password_encrypted, password_rw_encrypted, password_ddl_encrypted, "
-    "       COALESCE(tags, '{}'::jsonb) AS tags "
+    "       COALESCE(tags, '{}'::jsonb) AS tags, "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config "
     "FROM target_servers"
 )
 

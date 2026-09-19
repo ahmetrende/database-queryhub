@@ -287,6 +287,18 @@ def _check_stmt(stmt: exp.Expression, blocked_funcs: frozenset = _DANGEROUS_FUNC
                     f"server outside the approved target. Reference only "
                     f"objects in the target database as schema.object."
                 )
+            elif dialect == "athena":
+                # Same rule, different thing named. Athena's first part is a
+                # CATALOG, and the Athena console writes queries in exactly
+                # this form (`awsdatacatalog.db.table`), so a reader who
+                # copies one in deserves to be told what to drop rather than
+                # to read about a "server" that does not exist here.
+                out.append(
+                    f"Catalog reference `{ref}` is blocked — a 3-part name "
+                    f"(catalog.database.table) can reach a federated catalog "
+                    f"outside the approved target. Drop the catalog prefix "
+                    f"and use database.table."
+                )
             else:
                 out.append(
                     f"Cross-database reference `{ref}` is blocked — a 3-part "

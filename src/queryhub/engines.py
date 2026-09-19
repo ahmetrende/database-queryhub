@@ -27,6 +27,18 @@ Three engines carry a spec today:
     SSRF / file read / RCE is blocked. Kept here as a spec (safety data)
     for a future wiring; it has no execution path yet.
 
+  - **athena** — read-only, and the first engine with no host to connect
+    to: a query is an API call against a workgroup, and the identity is a
+    role the gateway assumes rather than a password it stores. Only
+    SELECT/WITH are accepted, which is what refuses the statements that
+    would WRITE through a read-only warehouse — `CREATE TABLE AS`,
+    `INSERT INTO`, `UNLOAD`, `MSCK REPAIR`, and `USING EXTERNAL FUNCTION`,
+    whose Lambda call is a statement PREFIX rather than something buried
+    in a SELECT (measured against the parser, 2026-09-19). A federated
+    catalog is reached by naming it, so the cross-catalog rule written for
+    SQL Server does that job here unchanged. Spec only; no execution path
+    yet.
+
 `WIRED_ENGINES` gates execution: an engine can carry a spec (so its
 safety profile is enforced the moment a target is tagged with it) before
 its driver + execution dispatch exist. A known-but-unwired engine FAILS
@@ -121,6 +133,12 @@ class EngineSpec:
     # driver. Read-only spec-only engines can leave the default.
     driver: str = "psycopg"
     default_port: int = 5432
+    # Whether a connection needs a username/password at all. False for an
+    # engine whose identity is an assumed role (Athena): there is no secret to
+    # store, so `targets.get_credentials` has nothing to return and callers
+    # must not treat its absence as "this target is not provisioned yet".
+    # Read by the schema refresh and by the execution dispatch -- not a label.
+    requires_credentials: bool = True
 
 
 # Routines a Postgres RO login may call. pg_proc rather than
@@ -320,7 +338,50 @@ CLICKHOUSE = EngineSpec(
 )
 
 
-_ENGINES = {e.name: e for e in (POSTGRES, MSSQL, CLICKHOUSE)}
+# ---------------------------------------------------------------------------
+# Amazon Athena — read-only (spec only; no execution path yet).
+# ---------------------------------------------------------------------------
+#
+# Athena is Trino, so `blocked_functions` is EMPTY on purpose rather than by
+# omission. The functions that make a read-only engine dangerous elsewhere are
+# the ones that reach outside the engine — ClickHouse's `url`/`s3`/`file`, SQL
+# Server's `openrowset` — and Athena engine v3 has no equivalent: data comes
+# from the catalog, and the one way to call out (a Lambda, via `USING EXTERNAL
+# FUNCTION`) is a statement prefix, so the read-only leading-word gate refuses
+# it before any of this is consulted. Padding the list with harmless Trino
+# builtins would look like defence and teach the next reader nothing.
+#
+# `default_schema` is deliberately left at its default and MUST NOT be set to a
+# Glue database name. A spec is per ENGINE; the Glue catalog and database are
+# per TARGET (a second archive — a second service is already planned — arrives
+# with its own database), so a default here would be a lie on the second one.
+#
+# `block_catalog_refs` is the SQL Server rule, doing the same job for a
+# different reason: there, a 3-part name reaches another database on the
+# instance; here, the first part names a CATALOG, which is how a federated
+# connector (`"lambda:fn".db.tbl`) is addressed. One approved target means one
+# catalog, so a reference that names its own is refused with the rest.
+
+ATHENA = EngineSpec(
+    name="athena",
+    sqlglot_dialect="athena",
+    read_only=True,
+    blocked_schemas=frozenset({"information_schema"}),
+    system_schemas=frozenset({"information_schema"}),
+    # Athena's system objects are always schema-qualified; a bare `tables` is
+    # somebody's table, so a prefix rule here would exempt user data.
+    system_table_prefixes=frozenset(),
+    block_catalog_refs=True,
+    set_local_supported=False,   # no session prelude on this engine
+    supports_explain=False,      # Athena has EXPLAIN, but not PG's FORMAT JSON
+    routines_sql=None,           # the catalog is Glue, and it holds no routines
+    driver="athena",
+    default_port=443,            # HTTPS to the regional Athena endpoint
+    requires_credentials=False,  # the gateway assumes a role; nothing is stored
+)
+
+
+_ENGINES = {e.name: e for e in (POSTGRES, MSSQL, CLICKHOUSE, ATHENA)}
 
 
 def spec(engine: str | None) -> EngineSpec:

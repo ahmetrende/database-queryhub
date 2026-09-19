@@ -130,7 +130,13 @@ ORDER BY datname
 
 def list_target_databases(target, password: str) -> list[str]:
     """Databases on the target instance, read via its default database."""
-    if (getattr(target, "engine", None) or "postgres") == "mssql":
+    engine = getattr(target, "engine", None) or "postgres"
+    if engine == "athena":
+        # No connection and no password: the catalog is Glue, reached under
+        # the role this target names.
+        from . import athena_exec
+        return athena_exec.catalog_databases(athena_exec.config_of(target))
+    if engine == "mssql":
         from . import mssql_exec
         return mssql_exec.catalog_databases(
             target.host, target.port, target.default_database,
@@ -208,7 +214,12 @@ def snapshot_database(target, password: str, database: str) -> tuple[int, int]:
       * anything the source no longer has is deleted by KEY, not by clearing
         the table first. Dropping a table still cascades to its columns.
     """
-    if (getattr(target, "engine", None) or "postgres") == "mssql":
+    engine = getattr(target, "engine", None) or "postgres"
+    if engine == "athena":
+        from . import athena_exec
+        tables, columns = athena_exec.catalog_snapshot(
+            athena_exec.config_of(target), database)
+    elif engine == "mssql":
         from . import mssql_exec
         tables, columns = mssql_exec.catalog_snapshot(
             target.host, target.port, database, target.username, password)

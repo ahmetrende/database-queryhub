@@ -55,3 +55,34 @@ def test_is_executable_fail_closed():
     assert engines.is_executable("clickhouse") is False
     # spec still resolves for a not-yet-executable engine.
     assert engines.spec("clickhouse").read_only is True
+
+
+def test_athena_spec():
+    """Athena is the first engine with nothing to connect to: no host, no
+    password, an API call against a workgroup. The spec carries only what the
+    safety layer reads, and two of its fields are deliberate omissions."""
+    a = engines.spec("athena")
+    assert a.sqlglot_dialect == "athena"     # Trino family
+    assert a.read_only is True
+    assert a.driver == "athena"
+    assert a.default_port == 443
+    assert a.set_local_supported is False
+    assert a.supports_explain is False       # Athena's EXPLAIN is not PG's
+    assert a.routines_sql is None            # the catalog is Glue; no routines
+    # A 3-part name in Athena names a CATALOG, which is how a federated
+    # connector is reached. One approved target means one catalog.
+    assert a.block_catalog_refs is True
+    # Empty ON PURPOSE, not by omission: Athena engine v3 has no function that
+    # reaches outside the catalog, and the one way to call a Lambda is a
+    # statement prefix the read-only gate already refuses.
+    assert a.blocked_functions == frozenset()
+    # MUST stay the default. A spec is per engine; the Glue database is per
+    # target, and a second archive arrives with its own.
+    assert a.default_schema == "public"
+
+
+def test_athena_is_not_executable_yet():
+    """Spec now, execution later — the same order mssql went through. A tagged
+    target must refuse rather than fall back to the Postgres path."""
+    assert engines.is_executable("athena") is False
+    assert engines.spec("athena").read_only is True

@@ -26,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from queryhub import admins, crypto, db, schema_catalog  # noqa: E402
+from queryhub import admins, crypto, db, engines, schema_catalog  # noqa: E402
 from queryhub import config as cfg  # noqa: E402
 from queryhub import targets as targets_mod  # noqa: E402
 
@@ -50,7 +50,10 @@ def refresh_target(target, only_database: str | None = None) -> dict:
     """Snapshot every database on one target. Returns a per-DB summary."""
     summary: dict[str, str] = {}
     password = _ro_password(target.id)
-    if password is None:
+    # An engine whose identity is an assumed role has no credential to be
+    # missing. Without this the Athena target would report "skipped: no RO
+    # credential" forever -- a true sentence about the wrong engine.
+    if password is None and engines.spec(target.engine).requires_credentials:
         return {"*": "skipped: no RO credential"}
     try:
         databases = schema_catalog.list_target_databases(target, password)
