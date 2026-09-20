@@ -391,3 +391,219 @@ def _type_label(col: dict) -> str:
         if precision is not None and scale is not None:
             return f"decimal({precision},{scale})"
     return name
+
+
+# ---------------------------------------------------------------------------
+# What a query can cost, before anybody approves it.
+# ---------------------------------------------------------------------------
+#
+# Athena bills for bytes scanned and cannot tell you how many before it runs:
+# there is no dry run, and its EXPLAIN returns a plan, not a size. So the
+# approver gets an UPPER BOUND, computed from the only ground truth available
+# without running anything -- the size of the objects the query could read.
+#
+# It is deliberately NOT computed from the catalog's statistics. Those are
+# table-level parameters written by a crawler, not live counters: measured
+# 2026-09-20, they were five weeks stale and understated this archive by 8x
+# (93 GB against 770 GB). A bound built on them would have told an approver
+# "at most 93 GB" for a query that reads 363 GB in a single partition -- a
+# number that is not merely wrong but wrong in the reassuring direction, which
+# is the one that gets a screen ignored.
+#
+# Two rules, and the second one exists because the first alone is useless on
+# the most common cheap query:
+#
+#   1. A query that touches no data column -- `count(*)`, or anything whose
+#      columns are all partition keys -- reads Parquet footers. Measured on the
+#      real archive: `SELECT count(*)` over 24 billion rows scanned 0.00 MB.
+#      Reporting "at most 770 GB" there would train an approver to stop reading
+#      the line.
+#   2. Everything else: the sum of the partitions the query names, or the whole
+#      table when it names none. Worst case, stated as worst case. No attempt
+#      to discount for column pruning -- Parquet reads only the columns asked
+#      for, so the real figure is usually well under this, but column sizes are
+#      far too uneven for a fraction to be honest.
+
+_LIST_PAGE = 1000
+
+
+def _partition_prefixes(cfg: dict, database: str, table: str) -> tuple[str, str, list[str]]:
+    """(bucket, key prefix, partition key names) for one table, from Glue."""
+    t = _glue(cfg).get_table(DatabaseName=database, Name=table)["Table"]
+    loc = (t.get("StorageDescriptor") or {}).get("Location") or ""
+    keys = [k["Name"] for k in (t.get("PartitionKeys") or [])]
+    rest = loc.split("://", 1)[-1]
+    bucket, _, prefix = rest.partition("/")
+    return bucket, prefix.rstrip("/"), keys
+
+
+def _prefix_bytes(cfg: dict, bucket: str, prefix: str) -> int:
+    """Total size under one S3 prefix. The ground truth the bound is built on."""
+    s3 = session(cfg).client("s3", region_name=cfg["region"])
+    total = 0
+    for page in s3.get_paginator("list_objects_v2").paginate(
+            Bucket=bucket, Prefix=prefix + "/",
+            PaginationConfig={"PageSize": _LIST_PAGE}):
+        for obj in page.get("Contents", []):
+            total += obj.get("Size", 0)
+    return total
+
+
+def scan_estimate(cfg: dict, sql: str, *, database: str | None = None) -> dict:
+    """An upper bound on what `sql` can scan, and how it was arrived at.
+
+    Returns {'metadata_only': bool, 'bytes': int|None, 'partitions': [values],
+    'table': str|None}. `bytes` is None when the shape could not be worked out
+    — an unknown bound is reported as unknown, never as zero."""
+    import sqlglot
+    from sqlglot import exp
+
+    out = {"metadata_only": False, "bytes": None, "partitions": [], "table": None}
+    database = database or cfg["database"]
+    try:
+        tree = sqlglot.parse_one(sql, read="athena")
+    except Exception:
+        return out
+
+    tables = {t.name for t in tree.find_all(exp.Table) if t.name}
+    if len(tables) != 1:
+        # A join, or nothing recognisable. One table is the shape this archive
+        # has; anything else gets no bound rather than a guessed one.
+        return out
+    table = tables.pop()
+    out["table"] = table
+
+    try:
+        bucket, prefix, part_keys = _partition_prefixes(cfg, database, table)
+    except Exception:
+        log.info("athena: no bound for %s.%s (catalog read failed)",
+                 database, table, exc_info=True)
+        return out
+    if not bucket:
+        return out
+
+    referenced = {c.name.lower() for c in tree.find_all(exp.Column) if c.name}
+    part_lower = {k.lower() for k in part_keys}
+    if referenced <= part_lower:
+        # Footers only: no data column is read. `count(*)` has no Column nodes
+        # at all, which lands here too.
+        out["metadata_only"] = True
+        out["bytes"] = 0
+        return out
+
+    wanted = _partition_values(tree, part_keys)
+    out["partitions"] = sorted(wanted)
+    try:
+        if wanted and len(part_keys) == 1:
+            out["bytes"] = sum(
+                _prefix_bytes(cfg, bucket, f"{prefix}/{part_keys[0]}={v}")
+                for v in sorted(wanted))
+        else:
+            out["bytes"] = _prefix_bytes(cfg, bucket, prefix)
+    except Exception:
+        log.info("athena: could not size %s.%s", database, table, exc_info=True)
+    return out
+
+
+def _partition_values(tree, part_keys: list[str]) -> set[str]:
+    """Literal partition values the query pins down, via `=` or `IN`.
+
+    Anything else — a range, a function, a subquery — pins nothing, and the
+    bound falls back to the whole table. Being wrong in the expensive
+    direction is the only safe way to be wrong here."""
+    from sqlglot import exp
+
+    if len(part_keys) != 1:
+        return set()
+    key = part_keys[0].lower()
+    found: set[str] = set()
+    for eq in tree.find_all(exp.EQ):
+        col, lit = eq.this, eq.expression
+        if isinstance(col, exp.Column) and col.name.lower() == key \
+                and isinstance(lit, exp.Literal) and lit.is_string:
+            found.add(lit.this)
+    for in_ in tree.find_all(exp.In):
+        col = in_.this
+        if isinstance(col, exp.Column) and col.name.lower() == key:
+            for lit in in_.expressions:
+                if isinstance(lit, exp.Literal) and lit.is_string:
+                    found.add(lit.this)
+    return found
+
+
+# Partition value used by this archiver for rows whose cutoff column is NULL.
+# It is data, not a column name: a date filter can never match it, so a query
+# that narrows by partition silently excludes those rows. Hive's own convention
+# for the same idea is `__HIVE_DEFAULT_PARTITION__`; both are listed because the
+# point is the SEMANTICS -- "these rows have no date" -- not the spelling.
+_DATELESS_PARTITIONS = ("unknown", "__HIVE_DEFAULT_PARTITION__")
+
+
+def _fmt_bytes(n: int) -> str:
+    for unit, size in (("TB", 1e12), ("GB", 1e9), ("MB", 1e6), ("KB", 1e3)):
+        if n >= size:
+            return f"{n / size:,.1f} {unit}"
+    return f"{n} B"
+
+
+def risk_hint(cfg: dict, sql: str, *, database: str | None = None) -> str | None:
+    """One line for the approver: what this query can cost, and what it leaves
+    out. Returns None when nothing useful can be said — a hint nobody can act
+    on is worse than no hint, because it teaches people to skip the line.
+
+    Never raises: an estimate is a courtesy and must never be the reason a
+    submission fails."""
+    try:
+        est = scan_estimate(cfg, sql, database=database)
+    except Exception:
+        log.info("athena: no risk hint for this query", exc_info=True)
+        return None
+
+    parts: list[str] = []
+    if est["metadata_only"]:
+        parts.append("Reads file footers only — no data scanned.")
+    elif est["bytes"] is None:
+        return None
+    elif est["partitions"]:
+        parts.append(f"Scans at most ~{_fmt_bytes(est['bytes'])} "
+                     f"({', '.join(est['partitions'])}).")
+    else:
+        parts.append(f"No partition filter — scans at most "
+                     f"~{_fmt_bytes(est['bytes'])}, the whole table.")
+
+    # The bound is an upper bound on a capped engine, and saying so is what
+    # makes it actionable: the worst case is bounded by the workgroup, not by
+    # the reader's nerve.
+    if not est["metadata_only"] and est["bytes"]:
+        parts.append("The workgroup cancels any query above its scan limit.")
+
+    if est["partitions"] and not any(
+            p in est["partitions"] for p in _DATELESS_PARTITIONS):
+        try:
+            missing = _dateless_partition(cfg, database or cfg["database"],
+                                          est["table"])
+        except Exception:
+            missing = None
+        if missing:
+            parts.append(
+                f"Rows with no date are in `{missing}` and are NOT included.")
+    return " ".join(parts)
+
+
+def _dateless_partition(cfg: dict, database: str, table: str) -> str | None:
+    """The `<key>=<value>` of this table's dateless bucket, if it has one."""
+    if not table:
+        return None
+    glue = _glue(cfg)
+    t = glue.get_table(DatabaseName=database, Name=table)["Table"]
+    keys = [k["Name"] for k in (t.get("PartitionKeys") or [])]
+    if len(keys) != 1:
+        return None
+    for page in glue.get_paginator("get_partitions").paginate(
+            DatabaseName=database, TableName=table,
+            PaginationConfig={"PageSize": 1000}):
+        for p in page.get("Partitions", []):
+            value = (p.get("Values") or [None])[0]
+            if value in _DATELESS_PARTITIONS:
+                return f"{keys[0]}={value}"
+    return None

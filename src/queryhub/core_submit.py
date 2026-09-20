@@ -398,6 +398,21 @@ def validate_submission(
     # READ ONLY txn, fail-open).
     explain_plan: list | None = None
     risk_summary: str | None = None
+
+    # On a pay-per-byte engine the risk an approver cannot see is the bill.
+    # There is no plan to derive it from — Athena's EXPLAIN returns a shape,
+    # not a size, and nothing tells you the size before the query runs — so the
+    # hint is an upper bound read from the objects the query could touch. Same
+    # slot as the Postgres risk line, because it answers the same question:
+    # what is this about to do that I would want to know first.
+    if (getattr(target, "engine", None) or "postgres") == "athena":
+        try:
+            from . import athena_exec
+            risk_summary = athena_exec.risk_hint(
+                athena_exec.config_of(target), query, database=database)
+        except Exception:
+            log.exception("athena risk hint failed; continuing without one")
+
     if (pre_flight.is_enabled() and required_mode == "ro"
             and pre_flight.is_explainable(query)):
         ok, err, plan = pre_flight.explain(
