@@ -83,9 +83,9 @@ def test_the_readme_engine_table_matches_the_code():
     i = readme.index("## Engines")
     table = readme[i:i + 2600]
 
-    assert sorted(engines.WIRED_ENGINES) == ["mssql", "postgres"], (
+    assert sorted(engines.WIRED_ENGINES) == ["athena", "mssql", "postgres"], (
         "WIRED_ENGINES changed — the README table needs updating with it")
-    for wired in ("PostgreSQL", "SQL Server"):
+    for wired in ("PostgreSQL", "SQL Server", "Amazon Athena"):
         assert wired in table
     assert "ClickHouse" in table
     # The middle state has to be stated as a refusal, not as a supported engine.

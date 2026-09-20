@@ -404,7 +404,13 @@ def spec(engine: str | None) -> EngineSpec:
 # (ApplicationIntent=ReadOnly → readable secondary) were validated live
 # against a real SQL Server Availability Group (connect / route / execute /
 # stream / PII mask).
-WIRED_ENGINES = frozenset({"postgres", "mssql"})
+# athena: wired 2026-09-20 after the cursor adapter was validated live against
+# the real archive (start / poll / page / decimal precision / bytes scanned).
+# Wiring it does not let anybody in: the target carrying this engine stays
+# DISABLED until the archive's own completeness gate and the result-bucket
+# deny policy land. What it stops is the engine failing closed, so the path
+# can be exercised before it is opened.
+WIRED_ENGINES = frozenset({"postgres", "mssql", "athena"})
 
 
 def is_executable(engine: str | None) -> bool:

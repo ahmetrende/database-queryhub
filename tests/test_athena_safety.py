@@ -95,8 +95,11 @@ def test_the_catalogs_own_metadata_is_off_limits():
     assert _blockers("SELECT * FROM information_schema.columns")
 
 
-def test_a_tagged_target_cannot_execute_yet():
-    """Belt and braces: the safety profile is live, the execution path is not,
-    and the second must not be inferred from the first."""
+def test_the_read_only_gate_is_what_makes_this_engine_safe():
+    """Belt and braces, now that execution IS wired: the safety profile is not
+    a formality on this engine, it is the only thing between an approved
+    SELECT and a service that would happily run `INSERT` against the same
+    endpoint. Nothing about wiring execution may relax it."""
     from queryhub import engines
-    assert engines.is_executable("athena") is False
+    assert engines.is_executable("athena") is True
+    assert engines.spec("athena").read_only is True

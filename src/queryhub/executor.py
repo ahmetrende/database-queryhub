@@ -604,23 +604,28 @@ def _run(request: dict, client: WebClient) -> None:
                        "tier": mode,
                        "reason": "super-admin ran this with masking turned off"})
 
-        try:
-            db_user, password = targets.get_credentials(target.id, mode)
-        except LookupError:
-            _fail(
-                client, request,
-                f"Target `{target.alias}` is not ready for {mode.upper()} "
-                f"queries (credentials not configured on the bot side). "
-                f"Please contact the DBA team.",
-            )
-            return
-        if password == _SENTINEL_PASSWORD:
-            _fail(
-                client, request,
-                f"Target `{target.alias}` is not ready yet. "
-                f"Please contact the DBA team.",
-            )
-            return
+        # An engine whose identity is an assumed role has no credential to
+        # resolve, and "no credential" must not read as "not provisioned yet"
+        # — which is what the two refusals below would tell the user.
+        db_user, password = "", ""
+        if engines.spec(target.engine).requires_credentials:
+            try:
+                db_user, password = targets.get_credentials(target.id, mode)
+            except LookupError:
+                _fail(
+                    client, request,
+                    f"Target `{target.alias}` is not ready for {mode.upper()} "
+                    f"queries (credentials not configured on the bot side). "
+                    f"Please contact the DBA team.",
+                )
+                return
+            if password == _SENTINEL_PASSWORD:
+                _fail(
+                    client, request,
+                    f"Target `{target.alias}` is not ready yet. "
+                    f"Please contact the DBA team.",
+                )
+                return
 
         timeout_sec = cfg.get_int("query_timeout_sec", 300)
         # Per-user caps: a time-bounded row-limit override raises these
@@ -689,6 +694,11 @@ def _run(request: dict, client: WebClient) -> None:
         # It builds the same _StmtResult list and shares _finalize + the
         # completion path. Reached only for a WIRED mssql target (fail-closed
         # in engines.is_executable above). Postgres continues below unchanged.
+        if target.engine == "athena":
+            _run_athena(client, request, target, mode, report,
+                        timeout_sec, max_rows, max_csv_bytes, unmask=unmask)
+            return
+
         if target.engine == "mssql":
             _run_mssql(client, request, target, mode, report,
                        db_user, password, timeout_sec, max_rows, max_csv_bytes,
@@ -1171,6 +1181,97 @@ def _finalize(client: WebClient, request: dict, stmt_results: list,
     else:
         _complete_multi(client, request, stmt_results, elapsed=elapsed,
                         pii_masked=masked_sorted)
+
+
+def _run_athena(client: WebClient, request: dict, target, mode: str, report,
+                timeout_sec: int, max_rows: int, max_csv_bytes: int,
+                unmask: bool = False) -> None:
+    """Amazon Athena execution path. Reached only for a WIRED athena target.
+
+    There is no connection to open and no credential to present: the cursor is
+    an adapter over the service's own API, running under the role this target
+    names. Everything after the cursor — the statement guard, masking, the row
+    limit, the CSV/XLSX writers, `_finalize` and the completion path — is the
+    shared code, which is the whole reason for adapting Athena to a cursor
+    rather than teaching the executor a second shape.
+
+    Two engine-specific notes:
+
+    * **One statement per call, enforced by the service.** Athena refuses a
+      second command in one `QueryString` — the wire-level guarantee Postgres
+      gets from the extended protocol and SQL Server has to be asked for with
+      SHOWPLAN. There is no SET prelude here either: `set_local_supported` is
+      False for this engine, so a leading SET never reaches execution.
+    * **The cost is recorded, because on this engine cost IS the risk.**
+      Nothing can be corrupted through a read-only warehouse; what a query can
+      do is scan a great deal of data and bill for it. `DataScannedInBytes` is
+      the only honest answer to "what did this cost", it exists only after the
+      run, and it belongs in the audit trail beside who asked for it.
+    """
+    from . import athena_exec
+    request_id = request["id"]
+    athena_cfg = athena_exec.config_of(target)
+    main_stmts = [s for s in report.statements if s.kind != "set"]
+    result_format = request.get("result_format") or "csv"
+
+    t_start = time.monotonic()
+    stmt_results: list[_StmtResult] = []
+    for i, stmt in enumerate(main_stmts, start=1):
+        cur = athena_exec.AthenaCursor(
+            athena_cfg, timeout_sec=timeout_sec, request_id=request_id,
+            on_started=lambda qid: _record_execution_id(request_id, qid))
+        try:
+            res = _execute_main_statement(
+                cur, stmt, i, request_id,
+                request["wants_result"], max_rows, max_csv_bytes,
+                result_format=result_format,
+                target_id=target.id,
+                database=request["database_name"],
+                engine=target.engine,
+                requester_id=request["requester_slack_id"],
+                unmasked=unmask,
+                capture_plan=False,      # Athena's EXPLAIN is not Postgres's
+            )
+            _log_athena_cost(request_id, target, cur)
+        finally:
+            cur.close()
+        stmt_results.append(res)
+    elapsed = time.monotonic() - t_start
+
+    csv_paths = [r.csv_path for r in stmt_results if r.csv_path is not None]
+    _finalize(client, request, stmt_results, csv_paths,
+              max_csv_bytes=max_csv_bytes, target=target, elapsed=elapsed)
+
+
+def _record_execution_id(request_id: int, execution_id: str) -> None:
+    """Store the engine's handle for a running query, so a cancel arriving in
+    another process can reach it. Written before the wait, never after."""
+    with db.transaction() as cur:
+        cur.execute("UPDATE requests SET engine_execution_id = %s WHERE id = %s",
+                    (execution_id, request_id))
+
+
+def _log_athena_cost(request_id: int, target, cur) -> None:
+    """What the query scanned, written where an auditor already looks.
+
+    Never raises. The cost record is worth having, and worth nothing if
+    failing to write it can lose a result the user is waiting for."""
+    try:
+        stats = getattr(cur, "stats", None) or {}
+        scanned = stats.get("DataScannedInBytes")
+        audit.log(request_id, None, None, "athena_query_cost",
+                  {"target": target.alias,
+                   "execution_id": getattr(cur, "execution_id", None),
+                   "data_scanned_bytes": scanned,
+                   "engine_ms": stats.get("EngineExecutionTimeInMillis"),
+                   "total_ms": stats.get("TotalExecutionTimeInMillis")})
+        if scanned is not None:
+            log.info("Request %s: Athena scanned %s bytes (%s)",
+                     request_id, f"{scanned:,}",
+                     getattr(cur, "execution_id", None))
+    except Exception:
+        log.warning("Request %s: could not record the Athena cost",
+                    request_id, exc_info=True)
 
 
 def _run_mssql(client: WebClient, request: dict, target, mode: str, report,

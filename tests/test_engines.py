@@ -81,8 +81,14 @@ def test_athena_spec():
     assert a.default_schema == "public"
 
 
-def test_athena_is_not_executable_yet():
-    """Spec now, execution later — the same order mssql went through. A tagged
-    target must refuse rather than fall back to the Postgres path."""
-    assert engines.is_executable("athena") is False
+def test_athena_is_wired_but_carries_no_credential():
+    """Spec first, execution after — the order mssql went through, completed
+    2026-09-20. What stays true either way is that this engine has nothing to
+    connect with: the identity is an assumed role, so a caller must not read a
+    missing password as "not provisioned yet"."""
+    assert engines.is_executable("athena") is True
     assert engines.spec("athena").read_only is True
+    assert engines.spec("athena").requires_credentials is False
+    # The two engines that DO connect must keep saying so.
+    assert engines.spec("postgres").requires_credentials is True
+    assert engines.spec("mssql").requires_credentials is True

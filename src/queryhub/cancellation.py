@@ -108,6 +108,34 @@ def _matches_this_request(cur, pid: int, request_id: int) -> bool:
     return cur.fetchone() is not None
 
 
+def _stop_athena(request_id: int, target, execution_id: str | None) -> str:
+    """Stop a query on an engine that has no backend to signal.
+
+    There is nothing to escalate to here, and nothing to be polite about:
+    `StopQueryExecution` is the whole mechanism, and the service either stops
+    the query or reports that it had already finished. Stopping matters more
+    on this engine than on Postgres, not less — an abandoned query keeps
+    scanning, and scanning is what the bill is made of.
+    """
+    if not execution_id:
+        # Started before migration 128, or stopped before the id was recorded.
+        log.warning("cancel: request %s has no engine execution id", request_id)
+        return CancelOutcome.FAILED
+    try:
+        from . import athena_exec
+        cfg_ath = athena_exec.config_of(target)
+        client = athena_exec.session(cfg_ath).client(
+            "athena", region_name=cfg_ath["region"])
+        client.stop_query_execution(QueryExecutionId=execution_id)
+        log.info("cancel: stopped Athena execution %s for request %s",
+                 execution_id, request_id)
+        return CancelOutcome.CANCELLED
+    except Exception:
+        log.exception("cancel: could not stop Athena execution %s "
+                      "for request %s", execution_id, request_id)
+        return CancelOutcome.FAILED
+
+
 def stop_backend(request_id: int) -> str:
     """Signal the target backend running `request_id`. Returns a CancelOutcome.
 
@@ -116,12 +144,21 @@ def stop_backend(request_id: int) -> str:
     exactly what happens in the case worth caring about.
     """
     row = db.fetch_one(
-        "SELECT backend_pid, target_server_id, database_name, status::text AS st "
+        "SELECT backend_pid, engine_execution_id, target_server_id, "
+        "       database_name, status::text AS st "
         "  FROM requests WHERE id = %s", (request_id,))
     if not row:
         return CancelOutcome.FAILED
     if row["st"] != "executing":
         return CancelOutcome.NOT_RUNNING
+
+    # `getattr`, like every other engine branch in this codebase: a target that
+    # predates the engine column, or a stand-in in a test, must read as the
+    # legacy default rather than raise inside a cancel.
+    target = targets.get(row["target_server_id"])
+    if (getattr(target, "engine", None) or "postgres") == "athena":
+        return _stop_athena(request_id, target, row.get("engine_execution_id"))
+
     pid = row.get("backend_pid")
     if not pid:
         # Executions started before migration 084, or a request that failed

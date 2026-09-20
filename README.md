@@ -14,13 +14,13 @@ every decision audited. Apache-2.0, no enterprise tier.
   <a href="../../actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/ahmetrende/database-queryhub/ci.yml?branch=main&label=CI" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/engines-PostgreSQL%20%7C%20SQL%20Server-informational.svg" alt="Engines">
+  <img src="https://img.shields.io/badge/engines-PostgreSQL%20%7C%20SQL%20Server%20%7C%20Athena-informational.svg" alt="Engines">
   <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-keep--a--changelog-orange.svg" alt="Changelog"></a>
 </p>
 
 Two surfaces over one core: `/sql` in **Slack**, or the **web UI**. Engines:
-**PostgreSQL** and **SQL Server** (ClickHouse has a safety spec but no
-execution path yet).
+**PostgreSQL**, **SQL Server** and **Amazon Athena** (read-only; ClickHouse has
+a safety spec but no execution path yet).
 
 <p align="center">
   <img src="docs/screenshots/hero.png" alt="A pending RW request in the approval queue: the SQL, its classification, the reason, and Approve / Reject / Request changes" width="900"><br>
@@ -84,7 +84,8 @@ too:
 
 - **No schema-migration pipeline, no GitOps.** If reviewing and shipping
   migrations is your problem, Bytebase is built for it and this is not.
-- **Two engines.** PostgreSQL and SQL Server. Bytebase speaks a dozen-plus.
+- **Three engines.** PostgreSQL, SQL Server and Athena (read-only).
+  Bytebase speaks a dozen-plus.
 - **No HA.** One process, one host; see
   [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
 - **No infrastructure access.** Teleport governs SSH, Kubernetes and more;
@@ -122,6 +123,7 @@ Three states, and the middle one is the interesting one.
 |---|---|---|
 | **PostgreSQL** | **Executes** | Full three-tier model: RO / RW / DDL, per-tier credentials, streamed results, EXPLAIN pre-flight, PII lineage from the planner. The reference engine. |
 | **SQL Server** | **Executes** | Same model. T-SQL safety dialect, cross-catalog and linked-server references refused, AG read-routing for RO. |
+| **Amazon Athena** | **Executes, read-only** | For data that has left the database for object storage. No host and no stored credential — the gateway assumes a role. Only SELECT / WITH: on this engine that is what refuses the statements which would WRITE (`CREATE TABLE AS`, `INSERT`, `UNLOAD`, `MSCK REPAIR`). The schema comes from the data catalog, and every query records what it scanned, because on a pay-per-byte engine that is the risk. |
 | **ClickHouse** | **Parses, refuses to run** | A real safety spec (read-only: only SELECT / WITH are accepted) but no execution path. A target tagged `clickhouse` is rejected **at execution time**, not silently run through the PostgreSQL driver. |
 | Anything else | **Not started** | No spec, no driver. Nothing to configure. |
 

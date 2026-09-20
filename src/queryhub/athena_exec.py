@@ -205,3 +205,189 @@ def _count_partitions(glue, database: str, table: str) -> int | None:
         log.info("athena: partition count unavailable for %s.%s",
                  database, table, exc_info=True)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Execution: a DB-API-shaped cursor over the Athena API.
+# ---------------------------------------------------------------------------
+#
+# Athena is asynchronous -- start, poll, page the results -- and the executor
+# is written against a cursor. Rather than teach the executor a second shape,
+# this adapts Athena to the shape it already speaks: `execute()`,
+# `description`, `rowcount`, iteration. The masking, the row limit, the CSV and
+# XLSX writers, the statement guard and the completion path then work here
+# unchanged, exactly as they do for the SQL Server path.
+#
+# Three things this deliberately does NOT do:
+#
+#   * **No `ResultConfiguration`.** The workgroup enforces its own output
+#     location; sending one would be ignored at best and a second copy of
+#     financial data in a bucket nobody governs at worst.
+#   * **No `ResultReuseConfiguration`.** Athena can return a previous run's
+#     result for up to 7 days. It is off by default and MUST stay off: a reused
+#     result reports `DataScannedInBytes = 0`, so the audit trail would record
+#     that a query scanned nothing when it scanned gigabytes the first time.
+#     Cheaper queries are not worth an audit record that lies.
+#   * **No numeric parsing.** Every value arrives as a string and is kept as
+#     one. The money columns here are `decimal(38,18)` -- 19 significant digits,
+#     where a float carries 15-16 -- so parsing would silently round the last
+#     digits and equality comparisons would stop matching. The CSV is written
+#     from the string the service returned.
+
+_POLL_FIRST = 0.2      # most archive queries finish in a couple of seconds
+_POLL_MAX = 1.0
+_PAGE_SIZE = 1000      # GetQueryResults' maximum
+
+
+class AthenaQueryError(RuntimeError):
+    """The service refused or failed the query. Carries the reason Athena gave
+    -- including the one that matters most here, the workgroup's scanned-bytes
+    limit, which reads as `Bytes scanned limit was exceeded`."""
+
+
+class _Column(tuple):
+    """A DB-API description entry that also answers `type_display`.
+
+    `executor._column_types` reads that attribute first and falls back to a
+    Python type object. Giving it the engine's own type name means the grid's
+    header tooltip says `decimal(38,18)` rather than `str`, which on this
+    target is the difference between a number a reader trusts and one they
+    should not."""
+
+    __slots__ = ()
+
+    def __new__(cls, name: str, type_name: str):
+        return super().__new__(cls, (name, type_name, None, None, None, None, None))
+
+    @property
+    def type_display(self) -> str:
+        return self[1]
+
+
+class AthenaCursor:
+    """One query. Not reusable, not thread-safe, and not pooled -- there is no
+    connection to pool: every call is an HTTPS request under the target's
+    assumed role."""
+
+    arraysize = 1
+
+    def __init__(self, cfg: dict, *, timeout_sec: int = 300,
+                 request_id: int | None = None, on_started=None):
+        self._cfg = cfg
+        self._timeout = timeout_sec
+        self._request_id = request_id
+        # Called with the execution id the instant the service returns it, so
+        # the caller can persist it BEFORE the poll loop starts. A cancel that
+        # arrives while the query is running has nothing else to aim at.
+        self._on_started = on_started
+        self._client = session(cfg).client("athena", region_name=cfg["region"])
+        self.execution_id: str | None = None
+        self.stats: dict = {}
+        self.description = None
+        self.rowcount = -1
+        self._first_page: dict | None = None
+
+    # -- DB-API surface ----------------------------------------------------
+
+    def execute(self, sql: str, *_args, **_kwargs) -> "AthenaCursor":
+        start = self._client.start_query_execution(
+            QueryString=sql,
+            QueryExecutionContext={"Database": self._cfg["database"],
+                                   "Catalog": self._cfg.get("catalog",
+                                                            "AwsDataCatalog")},
+            WorkGroup=self._cfg["workgroup"],
+        )
+        self.execution_id = start["QueryExecutionId"]
+        if self._on_started is not None:
+            try:
+                self._on_started(self.execution_id)
+            except Exception:
+                log.warning("athena: could not record the execution id for "
+                            "request %s — the query runs, but a cancel will "
+                            "have nothing to aim at", self._request_id,
+                            exc_info=True)
+        self._await_completion()
+        self._load_first_page()
+        return self
+
+    def __iter__(self):
+        """Rows in column order, as tuples of strings (None for NULL)."""
+        page = self._first_page
+        if page is None:
+            return
+        while True:
+            rows = page["ResultSet"]["Rows"]
+            for row in rows:
+                yield tuple(cell.get("VarCharValue") for cell in row["Data"])
+            token = page.get("NextToken")
+            if not token:
+                return
+            page = self._client.get_query_results(
+                QueryExecutionId=self.execution_id,
+                NextToken=token, MaxResults=_PAGE_SIZE)
+
+    def close(self) -> None:
+        """Stops the query if it is somehow still running. Safe to call twice:
+        stopping a finished query is a no-op the service accepts."""
+        if self.execution_id:
+            try:
+                self._client.stop_query_execution(
+                    QueryExecutionId=self.execution_id)
+            except Exception:
+                pass
+
+    def cancel(self) -> None:
+        if self.execution_id:
+            self._client.stop_query_execution(QueryExecutionId=self.execution_id)
+
+    # -- the asynchronous half --------------------------------------------
+
+    def _await_completion(self) -> None:
+        deadline = time.monotonic() + self._timeout
+        wait = _POLL_FIRST
+        while True:
+            info = self._client.get_query_execution(
+                QueryExecutionId=self.execution_id)["QueryExecution"]
+            state = info["Status"]["State"]
+            if state in ("SUCCEEDED", "FAILED", "CANCELLED"):
+                self.stats = dict(info.get("Statistics") or {})
+                if state == "SUCCEEDED":
+                    return
+                reason = (info["Status"].get("StateChangeReason")
+                          or f"query {state.lower()}")
+                raise AthenaQueryError(reason)
+            if time.monotonic() >= deadline:
+                # Stop it rather than merely stop waiting: an abandoned query
+                # keeps scanning, and scanning is what this engine bills for.
+                self.cancel()
+                raise TimeoutError(
+                    f"Athena query exceeded {self._timeout}s and was stopped")
+            time.sleep(wait)
+            wait = min(wait * 2, _POLL_MAX)
+
+    def _load_first_page(self) -> None:
+        """The first page also carries the column metadata -- and, for a
+        SELECT, a header row that repeats the column names as data. Dropping it
+        is not cosmetic: left in, every result would carry a first row of
+        column labels, and a CSV consumer would read them as values."""
+        page = self._client.get_query_results(
+            QueryExecutionId=self.execution_id, MaxResults=_PAGE_SIZE)
+        meta = page["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]
+        self.description = [_Column(c["Name"], _type_label(c)) for c in meta]
+        rows = page["ResultSet"]["Rows"]
+        if rows:
+            first = [cell.get("VarCharValue") for cell in rows[0]["Data"]]
+            if first == [c["Name"] for c in meta]:
+                page["ResultSet"]["Rows"] = rows[1:]
+        self._first_page = page
+
+
+def _type_label(col: dict) -> str:
+    """`decimal(38,18)`, `varchar`, `timestamp` — the engine's own name, with
+    the precision that makes a decimal readable as a decimal."""
+    name = col.get("Type") or "varchar"
+    if name == "decimal":
+        precision, scale = col.get("Precision"), col.get("Scale")
+        if precision is not None and scale is not None:
+            return f"decimal({precision},{scale})"
+    return name
