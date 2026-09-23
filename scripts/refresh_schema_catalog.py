@@ -91,6 +91,8 @@ def refresh_target(target, only_database: str | None = None) -> dict:
 # a `running` older than a few minutes may already be `idle`, and reading it
 # then would wake it.
 _CH_FRESH_MINUTES = 3
+# The zone the inventory writes its naive timestamps in.
+_INVENTORY_TZ = "Europe/Istanbul"
 # At most one read a day per ClickHouse service, attempted or not: a service
 # that failed is not retried every hour, because retrying is what wakes it.
 _CH_EVERY_HOURS = 23
@@ -107,11 +109,23 @@ def _clickhouse_states() -> dict[str, str] | None:
                          application_name="queryhub:clickhouse-catalog",
                          options="-c default_transaction_read_only=on") as conn, \
             conn.cursor() as cur:
+        # v_server, not `servers`: the bot's login may read the view only.
+        # The view does not filter soft-deleted rows, so this does.
+        #
+        # `updated_at` is a timestamp WITHOUT time zone holding Istanbul local
+        # time (measured: 16:01 while now() said 13:07 UTC). Compared with
+        # now() as it stands it reads three hours in the future, i.e. always
+        # fresh, which is the one wrong answer that wakes services. So it is
+        # compared in Istanbul time, and bounded ABOVE too: if that assumption
+        # ever stops holding, the snapshot reads as not fresh and nothing is
+        # read, rather than everything, every minute.
         cur.execute(
             "SELECT endpoint, db_instance_status, "
-            "       max(updated_at) OVER () >= now() - make_interval(mins => %s) "
-            "  FROM servers WHERE engine = 'clickhouse' AND NOT is_deleted",
-            (_CH_FRESH_MINUTES,))
+            "       max(updated_at) OVER () BETWEEN "
+            "         (now() AT TIME ZONE %s) - make_interval(mins => %s) "
+            "         AND (now() AT TIME ZONE %s) + interval '1 minute' "
+            "  FROM v_server WHERE engine = 'clickhouse' AND NOT is_deleted",
+            (_INVENTORY_TZ, _CH_FRESH_MINUTES, _INVENTORY_TZ))
         rows = cur.fetchall()
     if not rows or not rows[0][2]:
         return None

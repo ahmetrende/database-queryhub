@@ -327,3 +327,39 @@ def test_a_server_error_reaches_the_requester_without_its_stack_trace():
     assert clickhouse_exec.server_message(e) == (
         "Code 160: The maximum sleep time is 3000000 microseconds. "
         "Requested: 5000000 microseconds per block (of size 5).")
+
+
+def test_the_freshness_check_reads_the_view_in_the_inventorys_own_time_zone(refresh):
+    """Two traps, both found live before any target was enabled: the bot's login
+    may read v_server but not the `servers` table under it, and `updated_at` is
+    a naive Istanbul timestamp that reads three hours in the future against
+    now() -- always "fresh", which is the answer that wakes services."""
+    import inspect
+    mod, _ran = refresh
+    src = inspect.getsource(mod._clickhouse_states)
+    assert "FROM v_server" in src and "NOT is_deleted" in src
+    assert "AT TIME ZONE" in src and "BETWEEN" in src
+    assert mod._INVENTORY_TZ == "Europe/Istanbul"
+
+
+def test_catalog_flags_reach_the_bot_db_as_booleans(monkeypatch):
+    """ClickHouse returns a comparison as UInt8; the bot DB's boolean[] refused
+    the smallint[] a list of ints became, and the first live snapshot failed."""
+    class C:
+        def execute(self, sql, params=None, with_column_types=False):
+            if "system.tables" in sql:
+                return ([("db", "t", "MergeTree", 5, 100, "", "id")],
+                        [("schema_name", "String"), ("table_name", "String"), ("engine", "String"),
+                         ("total_rows", "UInt64"), ("total_bytes", "UInt64"),
+                         ("partition_key", "String"), ("sorting_key", "String")])
+            return ([("db", "t", 1, "id", "UInt64", 1, None, 1, 1)],
+                    [("schema_name", ""), ("table_name", ""), ("ordinal", ""), ("column_name", ""),
+                     ("data_type", ""), ("not_null", "UInt8"), ("default_expr", ""),
+                     ("is_pk", "UInt8"), ("in_index", "UInt8")])
+
+        def disconnect(self):
+            pass
+    monkeypatch.setattr(clickhouse_exec, "client", lambda *a, **k: C())
+    tables, columns = clickhouse_exec.catalog_snapshot("h", 9440, "db", "u", "p")
+    assert columns[0]["not_null"] is True and columns[0]["is_pk"] is True
+    assert tables[0]["relkind"] == "r" and tables[0]["indexes"][0]["def"] == "ORDER BY (id)"

@@ -341,6 +341,12 @@ def catalog_snapshot(host, port, database, user, password, *,
              ORDER BY table, position""", {"db": database})
     finally:
         c.disconnect()
+    # ClickHouse answers a comparison with UInt8 0/1, and the bot DB stores
+    # these as boolean: a list of ints reaches it as smallint[] and the cast to
+    # boolean[] fails (measured on the first live snapshot).
+    for col in columns:
+        for key in ("not_null", "is_pk", "in_index"):
+            col[key] = bool(col[key])
     tables = [{
         "schema_name": t["schema_name"], "table_name": t["table_name"],
         "relkind": _relkind(t["engine"]),
