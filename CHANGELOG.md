@@ -89,6 +89,8 @@ existing row changes meaning.
   screens already showed.
 - **A connection test shows green or red.** A connection an admin enables or
   adds appears in the list without a page reload.
+- **The audit log stops at 1480 px** on a wide screen, so the actor and the
+  request id stay next to the action they belong to.
 
 ### Fixed
 

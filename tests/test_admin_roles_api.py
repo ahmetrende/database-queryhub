@@ -479,7 +479,7 @@ def test_a_sent_null_widens_and_a_missing_field_is_not_edited(edit):
     _, details = edit["audit"][0]
     assert details["after"]["scopeTeamId"] is None
     edit["audit"].clear()
-    out = ra.admin_update_role(901, ra.RolePatch(reason="team lead"), claims={"sub": "x"})
+    ra.admin_update_role(901, ra.RolePatch(reason="team lead"), claims={"sub": "x"})
     assert edit["audit"][0][1]["after"]["scopeTeamId"] == 7
 
 

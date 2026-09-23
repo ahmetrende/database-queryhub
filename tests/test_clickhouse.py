@@ -314,8 +314,9 @@ def test_the_connection_test_speaks_clickhouse(monkeypatch):
 def test_an_aggregate_state_column_says_how_to_read_it(monkeypatch):
     """Measured on a live AggregatingMergeTree table: the driver has no reader
     for AggregateFunction(...) and raises mid-stream. The requester is told what
-    to write instead of seeing the driver's error."""
-    from clickhouse_driver import errors as ch_errors
+    to write instead of seeing the driver's error. Needs the real driver's
+    error class, so it runs where the `clickhouse` extra is installed."""
+    ch_errors = pytest.importorskip("clickhouse_driver.errors")
 
     class Unreadable(FakeClient):
         def execute_iter(self, *a, **k):

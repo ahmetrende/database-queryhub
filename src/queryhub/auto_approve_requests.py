@@ -119,7 +119,6 @@ def submit_window(*, principal_id: str, name: str | None, target_id: int,
     needs a Slack client and the two surfaces hold theirs differently.
     """
     from . import auto_approve, core_submit, targets, teams
-    from .slack_app import ro_window
     if core_submit.kill_switch_on():
         raise WindowRequestRefused("reason", core_submit.kill_switch_message(), 503)
     tier = (tier or "ro").strip().lower()

@@ -1252,6 +1252,11 @@
   .qh-roleform-act { margin-top: 9px; }
   /* ---------- Audit trail (redesign 2026-09-09 (b)) ---------- */
   .qh-audwrap { display: flex; flex-direction: column; min-height: 0; }
+  /* A wide monitor stretched every row to the screen edge, so the actor and the
+     request id sat a metre away from the action they belong to. The content
+     stops at 1480px (left-aligned, like every admin screen); the scroll area
+     stays full width so the scrollbar is still at the window edge. */
+  .qh-audwrap > * { width: 100%; max-width: 1480px; }
   /* Search is the primary control, not an afterthought beside the chips: it
      reaches the whole table server-side and it is how most sessions start. */
   .qh-audsearch { display: flex; align-items: center; gap: 10px; padding: 0 12px; height: 42px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-full); color: var(--fg-tertiary); }
