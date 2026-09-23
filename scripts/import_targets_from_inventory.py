@@ -42,6 +42,12 @@ For each new row:
     password_encrypted = encrypt('PASSWORD_NOT_SET')   sentinel
     enabled          = TRUE
     notes            = 'auto-imported from inventory.v_all_databases — fill creds.'
+    tags             = {provider, service: RDS} from v_server.cloud_provider,
+                       for the providers the UI knows (aws, huawei)
+
+A target already here with NO provider tag gets one the same way (step 1b),
+so an import from before the importer wrote tags heals on the next run. A
+provider or service someone set is never overwritten.
 
 Usage:
     set -a; source /etc/queryhub/env; set +a
@@ -115,11 +121,64 @@ def _inventory_servers() -> list[dict]:
         application_name="dba-slack-bot:bulk-import",
     ) as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT db_instance_identifier, endpoint, is_deleted, deleted_at "
+            "SELECT db_instance_identifier, endpoint, is_deleted, deleted_at, "
+            "       cloud_provider "
             "FROM v_server"
         )
         cols = [d.name for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+# The providers the connection screen has controls for. A cloud_provider the
+# inventory reports that is not one of these (e.g. a ClickHouse cluster) stays
+# untagged: an honest gap is better than a guess the screen would then trust.
+_KNOWN_PROVIDERS = {"aws", "huawei"}
+
+
+def provider_tags(cloud_provider: str | None) -> dict:
+    """The tag bag an inventory endpoint implies: every inventory row is a
+    managed database instance, which the fleet labels `RDS` on both clouds."""
+    cp = (cloud_provider or "").strip().lower()
+    return {"provider": cp, "service": "RDS"} if cp in _KNOWN_PROVIDERS else {}
+
+
+def provider_by_endpoint(servers: list[dict]) -> dict[str, str]:
+    """endpoint -> cloud_provider. An endpoint can appear on more than one
+    v_server row (an identifier reused, an instance deleted and recreated), so
+    a live row always wins. A deleted instance still labels its own endpoint
+    when nothing live holds it: where a server ran stays true after it is gone,
+    endpoint names are specific to one cloud, and the registry keeps the row
+    (disabled) either way -- 4 of the 11 untagged targets were exactly that."""
+    out: dict[str, str] = {}
+    for deleted_pass in (False, True):
+        for s in servers:
+            if bool(s.get("is_deleted")) != deleted_pass:
+                continue
+            if s.get("endpoint") and s.get("cloud_provider"):
+                out.setdefault(s["endpoint"], s["cloud_provider"])
+    return out
+
+
+def plan_provider_fills(targets: list[dict],
+                        by_endpoint: dict[str, str]) -> list[tuple[int, dict]]:
+    """(target id, keys to ADD) for targets whose bag lacks provider/service.
+
+    Only absent keys are proposed. Every target imported before this script
+    wrote tags arrived with none -- 11 of them on 2026-09-23, 5 on Huawei --
+    and the connection screen filed each under "Untagged".
+    """
+    plan = []
+    for t in targets:
+        want = provider_tags(by_endpoint.get(t["host"]))
+        if not want:
+            continue
+        have = t.get("tags") or {}
+        if have.get("provider"):
+            continue
+        patch = {k: v for k, v in want.items() if not have.get(k)}
+        if patch:
+            plan.append((t["id"], patch))
+    return plan
 
 
 def plan_authoritative_disables(servers: list[dict],
@@ -216,6 +275,16 @@ def main() -> int:
                   "sweep and risk mass-disabling target_servers)")
         return 1
 
+    # Read once and shared: step 1 labels new rows from it, step 1b heals old
+    # ones, step 3 sweeps with it. A failure here costs the labels and the
+    # sweep, never the import.
+    try:
+        servers = _inventory_servers()
+    except Exception:
+        log.exception("v_server read failed — importing without provider tags")
+        servers = []
+    by_endpoint = provider_by_endpoint(servers)
+
     sentinel_ct = encrypt(SENTINEL_PASSWORD)
     inserted = skipped = 0
 
@@ -237,8 +306,8 @@ def main() -> int:
         db.execute(
             "INSERT INTO target_servers "
             "(alias, host, port, default_database, username, "
-            " password_encrypted, enabled, notes) "
-            "VALUES (%s, %s, %s, %s, %s, %s, FALSE, %s)",
+            " password_encrypted, enabled, notes, tags) "
+            "VALUES (%s, %s, %s, %s, %s, %s, FALSE, %s, %s::jsonb)",
             (
                 alias,
                 endpoint,
@@ -247,10 +316,28 @@ def main() -> int:
                 DEFAULT_USERNAME,
                 sentinel_ct,
                 "auto-imported from inventory.v_all_databases — fill creds.",
+                json.dumps(provider_tags(by_endpoint.get(endpoint))),
             ),
         )
         log.info("added %s -> %s (default db=%s)", alias, endpoint, default_db)
         inserted += 1
+
+    # ---- 1b. LABEL: give an untagged target the provider inventory reports ----
+    # Merged, never replaced, and only the keys that are absent: a provider a
+    # person set is theirs. One audit row per run that changed anything.
+    fills = plan_provider_fills(
+        db.fetch_all("SELECT id, alias, host, COALESCE(tags, '{}'::jsonb) AS tags "
+                     "FROM target_servers"), by_endpoint)
+    for tid, patch in fills:
+        db.execute("UPDATE target_servers SET tags = COALESCE(tags, '{}'::jsonb) "
+                   "|| %s::jsonb WHERE id = %s AND NOT (COALESCE(tags, '{}'::jsonb) ? 'provider')",
+                   (json.dumps(patch), tid))
+        log.info("labelled target %s with %s", tid, patch)
+    if fills:
+        db.execute(
+            "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
+            "VALUES ('inventory-sync', 'inventory sync', 'target_tags_filled', %s::jsonb)",
+            (json.dumps({"targets": [{"id": t, "added": p} for t, p in fills]}),))
 
     # ---- 2. SWEEP: disable stale auto-imported placeholders ----
     # Only touches enabled=TRUE rows so manual disables (e.g. the
@@ -297,7 +384,6 @@ def main() -> int:
     # spot, hands off) but v_server explicitly reporting the instance
     # deleted / its identifier re-used at another endpoint. Same safety
     # rails: enabled-only, no DELETE, no re-enable, audited, admins DMed.
-    servers = _inventory_servers()
     auto_disabled = 0
     if not servers:
         log.warning("v_server returned zero rows — skipping the "
