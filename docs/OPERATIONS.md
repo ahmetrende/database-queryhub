@@ -37,6 +37,8 @@ self-contained — read what you need, skip the rest.
 22. [Excluding test traffic from product metrics](#22-excluding-test-traffic-from-product-metrics)
 23. [Publishing the metrics dashboard to S3](#23-publishing-the-metrics-dashboard-to-s3)
 24. [Monitoring: /metrics and structured logs](#24-monitoring-metrics-and-structured-logs)
+25. [Super-admin elevation on a target](#25-super-admin-elevation-on-a-target)
+26. [Read replicas](#26-read-replicas)
 
 ---
 
@@ -1702,3 +1704,74 @@ SELECT current_user;                                        -- back to the login
 - **`pg_authid` is not readable on RDS even as `rds_superuser`**, so a
   SCRAM verifier cannot be copied between clusters to clone a login
   without knowing its plaintext.
+
+---
+
+## 26. Read replicas
+
+A read-only request on a target that has a read replica runs on the replica
+when the replica is healthy, and on the primary otherwise. Nobody picks a
+replica: every list shows the primary's one name, and the request, its grant
+and its history stay on the primary. Code: `src/queryhub/replicas.py`.
+
+**How a replica is known.** `target_servers.replica_of` points a replica row at
+its primary. The hourly inventory import sets it from `v_server.replica_source`
+(step 1c) and clears it when the inventory stops calling that host a replica.
+A target the inventory does not list keeps a link set by hand.
+
+**What decides where a request runs**, in order:
+
+1. `bot_config.replica_routing = 'on'`. This is the kill switch. The default is `off`.
+2. PostgreSQL, and the request runs at the RO tier.
+3. The SQL reads nothing that describes the server itself (`pg_stat_*`,
+   `pg_locks`, WAL positions, `txid_*` ...). On a replica those answer about
+   the replica.
+4. The requester ran no RW/DDL on this target in the last
+   `replica_read_your_writes_minutes` (5). A SELECT that checks their own
+   UPDATE then reads it back.
+5. The replica row is **enabled**, and healthy: still in recovery, and at most
+   `replica_max_lag_seconds` (10) behind. Lag is measured against the
+   primary's current WAL position, then the replica's replay position. One
+   check is trusted for `replica_health_ttl_seconds` (15), per process.
+
+A replica needs no credential of its own. A physical replica has the primary's
+roles and passwords, so the primary's RO login is used, and an admin can enable
+a replica row that has only the placeholder password.
+
+**Putting one in or out of rotation.** Enable or disable the replica row, in
+the admin Connections screen or with SQL. The importer never enables anything.
+
+```sql
+-- Which replicas exist, and which are in rotation
+SELECT r.id, r.alias, r.enabled, p.alias AS primary_alias
+  FROM target_servers r JOIN target_servers p ON p.id = r.replica_of;
+```
+
+**If the replica fails the query.** When the replica is unreachable, or
+cancels the statement to keep replaying ("conflict with recovery", measured
+`max_standby_streaming_delay = 30s` on the fleet), the query runs again on the
+primary once. The audit log records a `replica_fallback` row. A timeout or a
+user's cancel is not re-run.
+
+**Where a request ran.** `requests.executed_target_id` names the replica. The
+`execution_started` audit row carries `replica` and `replica_lag_s`, or
+`replica_skipped` with the reason the replica was passed over. The requester
+sees "Ran on a read replica ..." in the Slack result and in the web Messages
+tab. The replica's name is not shown.
+
+```sql
+-- Read requests served by a replica, last day
+SELECT r.id, t.alias AS target, x.alias AS ran_on, r.completed_at
+  FROM requests r
+  JOIN target_servers t ON t.id = r.target_server_id
+  JOIN target_servers x ON x.id = r.executed_target_id
+ WHERE r.executed_at > now() - interval '1 day'
+ ORDER BY r.id DESC;
+```
+
+**Cancel and lockout.** A cancel signals the backend on the server that runs
+the query (`executed_target_id`), with the primary's login.
+`scripts/breakglass_lockout.py` ends QueryHub sessions on replicas too. It
+writes no role change there: the NOLOGIN reaches a replica through replication.
+Replicas are processed after the primaries.
+

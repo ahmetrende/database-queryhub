@@ -665,6 +665,9 @@ def _connection_entry(row: dict, databases: list[str]) -> dict:
         "notes": row["notes"],
         "secretsProvider": row["secrets_provider"],
         "tags": row.get("tags") or {},
+        # The primary this row is a read replica of, by name; null for every
+        # other connection. A replica is listed here and nowhere else.
+        "replicaOf": row.get("replica_of_alias"),
         "credentials": row["credentials"],
         "databases": [{"id": d, "name": d} for d in databases],
     }
@@ -1127,8 +1130,10 @@ def _plan_connection_update(row: dict, body: "ConnectionPatch") -> tuple[dict, d
         # somebody's query fails on a sentinel password.
         ro = row["credentials"]["ro"]
         rotating_ro = "ro" in creds and creds["ro"][1]
-        if body.enabled and not rotating_ro and (not ro["configured"]
-                                                 or ro["placeholder"]):
+        # A read replica runs on its primary's login (replicas.py), so its own
+        # empty credential is not a half-finished onboarding.
+        if body.enabled and not rotating_ro and not row.get("replica_of") and (
+                not ro["configured"] or ro["placeholder"]):
             raise deps._error(
                 409, "conflict",
                 f"'{row['alias']}' has no read-only credentials yet — set them "

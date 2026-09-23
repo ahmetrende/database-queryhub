@@ -4,9 +4,8 @@ Two-way reconciliation, idempotent, safe to run hourly via cron / job
 runner:
 
   1. ADD — endpoints in inventory but not in target_servers get
-     INSERTed (enabled=TRUE, sentinel password) so they appear in the
-     /sql admin dropdown immediately. Querying them fails fast with
-     an auth error until DBA fills in real credentials.
+     INSERTed DISABLED, with the sentinel password. Enabling one is a
+     deliberate act: fill real credentials first.
 
   2. SWEEP — target_servers rows whose host is NO LONGER in inventory
      get UPDATEd to enabled=FALSE, BUT ONLY for unprovisioned
@@ -32,6 +31,7 @@ Naming convention:
     alias = first dotted segment of the endpoint
         e.g. acme-prod-orders.<aws-id>.<region>.rds.amazonaws.com
              → acme-prod-orders
+    A name already in use is settled by targets.claim_alias().
 
 For each new row:
     host             = full endpoint
@@ -40,7 +40,7 @@ For each new row:
                        (fallback 'postgres' if only 'postgres' exists)
     username         = 'queryhub_ro'   (matches deploy/grant_readonly.sql)
     password_encrypted = encrypt('PASSWORD_NOT_SET')   sentinel
-    enabled          = TRUE
+    enabled          = FALSE
     notes            = 'auto-imported from inventory.v_all_databases — fill creds.'
     tags             = {provider, service: RDS} from v_server.cloud_provider,
                        for the providers the UI knows (aws, huawei)
@@ -48,6 +48,10 @@ For each new row:
 A target already here with NO provider tag gets one the same way (step 1b),
 so an import from before the importer wrote tags heals on the next run. A
 provider or service someone set is never overwritten.
+
+A read replica (`v_server.is_read_replica`) is linked to its primary
+(step 1c, `target_servers.replica_of`): it leaves every picker, and serves the
+primary's read-only requests when it is enabled and healthy (replicas.py).
 
 Usage:
     set -a; source /etc/queryhub/env; set +a
@@ -123,7 +127,7 @@ def _inventory_servers() -> list[dict]:
     ) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT db_instance_identifier, endpoint, is_deleted, deleted_at, "
-            "       cloud_provider, engine "
+            "       cloud_provider, engine, is_read_replica, replica_source "
             "FROM v_server"
         )
         cols = [d.name for d in cur.description]
@@ -226,6 +230,37 @@ def plan_authoritative_disables(servers: list[dict],
                 "detail": f"now at {live['endpoint']}",
             })
     return plans
+
+
+def plan_replica_links(servers: list[dict], rows: list[dict]) -> list[tuple[int, int | None]]:
+    """(target id, primary target id or None) for every Postgres target whose
+    read-replica link should change.
+
+    The inventory is the authority on what replicates what (`v_server.
+    replica_source` names the primary's identifier), for the hosts it lists. A
+    target it does not list keeps whatever link it has, so a replica somebody
+    linked by hand stays linked. None unlinks: the inventory no longer calls
+    that host a replica -- promoted, or the primary is not registered here.
+    """
+    live = {s["endpoint"]: s for s in servers
+            if not s.get("is_deleted") and s.get("endpoint")}
+    endpoint_of = {s["db_instance_identifier"]: s["endpoint"] for s in live.values()}
+    by_host = {r["host"]: r for r in rows}
+    out = []
+    for r in rows:
+        if (r.get("engine") or "postgres") != "postgres":
+            continue
+        s = live.get(r["host"])
+        if s is None:
+            continue
+        want = None
+        if s.get("is_read_replica") and s.get("replica_source"):
+            primary = by_host.get(endpoint_of.get(s["replica_source"]))
+            if primary is not None and primary["id"] != r["id"]:
+                want = primary["id"]
+        if want != r.get("replica_of"):
+            out.append((r["id"], want))
+    return out
 
 
 # ClickHouse Cloud services are listed in v_server (engine = 'clickhouse') but
@@ -433,6 +468,26 @@ def main() -> int:
     inventory_hosts.update(s["endpoint"] for s in servers
                            if (s.get("engine") or "").lower() == "clickhouse"
                            and not s.get("is_deleted") and s.get("endpoint"))
+
+    # ---- 1c. LINK read replicas to their primaries (see replicas.py) ----
+    # A linked replica leaves every picker and serves its primary's read-only
+    # requests when it is enabled and healthy. Linking changes no enabled flag.
+    links = plan_replica_links(servers, db.fetch_all(
+        "SELECT id, alias, host, replica_of, COALESCE(engine, 'postgres') AS engine "
+        "  FROM target_servers")) if servers else []
+    if links:
+        with db.transaction() as cur:
+            for tid, primary in links:
+                cur.execute("UPDATE target_servers SET replica_of = %s WHERE id = %s",
+                            (primary, tid))
+            cur.execute(
+                "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
+                "VALUES ('inventory-sync', 'inventory sync', 'replicas_linked', %s::jsonb)",
+                (json.dumps({"links": [{"target_id": t, "replica_of": p}
+                                       for t, p in links]}),))
+        for tid, primary in links:
+            log.info("target %s is %s", tid,
+                     f"a read replica of {primary}" if primary else "no longer a replica")
 
     # ---- 1b. LABEL: give an untagged target the provider inventory reports ----
     # Merged, never replaced, and only the keys that are absent: a provider a

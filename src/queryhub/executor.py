@@ -34,7 +34,7 @@ except ModuleNotFoundError:  # vanilla profile: the [slack] extra isn't installe
 if TYPE_CHECKING:  # only a type hint — no runtime dependency on slack_sdk
     from slack_sdk.web import WebClient
 
-from . import access, admins, audit, cancellation, cell_format, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, query_secrets, ratings, requesters, row_limits, stmt_guard, targets, teams
+from . import access, admins, audit, cancellation, cell_format, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, query_secrets, ratings, replicas, requesters, row_limits, stmt_guard, targets, teams
 from . import config as cfg
 from .slack_app import notifications
 
@@ -492,6 +492,29 @@ def _deliver_result_to_requester(request: dict) -> bool:
     return True
 
 
+def _fall_back_to_primary(request: dict, route, error: BaseException,
+                          csv_paths: list) -> None:
+    """The replica failed the query for a reason of its own. Forget what that
+    attempt wrote, record it, and return the route for the second attempt: none,
+    which is the primary."""
+    log.warning("request %s: replica %s failed (%s); running it on the primary",
+                request["id"], route.alias, type(error).__name__)
+    replicas.mark_unhealthy(route.target_id, type(error).__name__)
+    for path in csv_paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    csv_paths.clear()
+    with db.transaction() as cur:
+        cur.execute("UPDATE requests SET executed_target_id = NULL, backend_pid = NULL "
+                    " WHERE id = %s", (request["id"],))
+        audit.log_in(cur, request["id"], None, None, "replica_fallback",
+                     {"replica": route.alias,
+                      "error": errors.scrub(f"{type(error).__name__}: {error}")})
+    return None
+
+
 def _run(request: dict, client: WebClient) -> None:
     request_id = request["id"]
     csv_paths_to_cleanup: list[Path] = []
@@ -642,6 +665,12 @@ def _run(request: dict, client: WebClient) -> None:
                 )
                 return
 
+        # A read-only request may run on a healthy read replica of its target
+        # (replicas.py). Decided before the claim, so the claim records where it
+        # runs -- which the cancel path needs, a backend pid being meaningless
+        # on the wrong server.
+        replica = replicas.choose(target, request, mode, db_user, password)
+
         timeout_sec = cfg.get_int("query_timeout_sec", 300)
         # Per-user caps: a time-bounded row-limit override raises these
         # above the global default for specific users (row_limits); an
@@ -683,9 +712,10 @@ def _run(request: dict, client: WebClient) -> None:
         with db.transaction() as cur:
             cur.execute(
                 "UPDATE requests SET status = 'executing', executed_at = NOW(), "
-                " executed_tier = %s "
+                " executed_tier = %s, executed_target_id = %s "
                 "WHERE id = %s AND status = 'approved'",
-                (mode, request_id),
+                (mode, replica.route.target_id if replica.route else None,
+                 request_id),
             )
             if cur.rowcount == 0:
                 log.info("request %s is no longer runnable at claim time "
@@ -694,6 +724,13 @@ def _run(request: dict, client: WebClient) -> None:
             audit.log_in(cur, request_id, None, None, "execution_started",
                          {"mode": mode, "user": db_user,
                           "n_statements": len(report.statements),
+                          # Where it ran, when that was a replica, and why not
+                          # when the target has one and it was passed over.
+                          **({"replica": replica.route.alias,
+                              "replica_lag_s": replica.route.lag_s}
+                             if replica.route else {}),
+                          **({"replica_skipped": replica.skipped}
+                             if replica.skipped else {}),
                           # What the session actually BECAME, and why. `user`
                           # above is only who it connected as; with an
                           # elevation in play that is no longer who ran the
@@ -772,133 +809,148 @@ def _run(request: dict, client: WebClient) -> None:
                 )
                 return
 
-        with psycopg.connect(
-            host=target.host,
-            port=target.port,
-            dbname=request["database_name"],
-            user=db_user,
-            password=password,
-            connect_timeout=15,
-            application_name=app_name,
-            **cfg.target_ssl_kwargs(),
-            autocommit=autocommit,
-            options=options,
-        ) as conn:
-            # `infinity` / `-infinity` timestamps come back as text instead of
-            # raising while the row is being read. pg_roles.rolvaliduntil is
-            # infinity for any role without VALID UNTIL, which made
-            # `SELECT * FROM pg_roles` fail with a message about the year 10000.
-            pg_types.register_infinity_safe_loaders(conn)
-            # Everything the server says while this connection runs. A DDL
-            # script's RAISE NOTICE lines are its only output, and they were
-            # being dropped: nine statements finished as "0 rows" and read as
-            # if nothing had happened.
-            notice_buf: list[dict] = []
-            conn.add_notice_handler(_notice_collector(notice_buf))
-            with conn.cursor() as cur:
-                # Pin search_path with pg_catalog FIRST so a same-named object in
-                # a writable schema (e.g. a malicious public.now()) can't shadow a
-                # built-in function/operator (CVE-2018-1058 class). `public` still
-                # follows, so unqualified user tables resolve.
-                #
-                # EXCEPT for DDL, where that order is not a hardening but a wall.
-                # An unqualified CREATE lands in the FIRST schema on the path, so
-                # with pg_catalog leading, `CREATE TABLE t (...)` fails with
-                # "permission denied for schema pg_catalog" — measured, not
-                # theorised. The comment here used to claim it "still lands in
-                # public (pg_catalog isn't writable)"; that is simply not how
-                # PostgreSQL picks the creation target. Nobody hit it because no
-                # DDL had ever run through this pipeline.
-                #
-                # So for the ddl tier the writable schema leads. The exposure that
-                # buys back is narrow and bounded: shadowing would have to affect
-                # the DDL statement's own text, which is what the operator wrote
-                # and — for anything destructive — confirmed by hand. Read and
-                # write queries, where the bot runs someone else's SQL and a
-                # shadowed operator could change what it means, keep the strict
-                # order.
-                scope = "" if autocommit else "LOCAL "
-                path = ("public, pg_catalog" if mode == "ddl"
-                        else "pg_catalog, public")
-                cur.execute(f"SET {scope}search_path = {path}")
+        # Twice at most: a replica that fails the query for a reason of its own
+        # (unreachable, or it cancelled the statement to keep replaying) hands
+        # it to the primary. A read has no side effects, so it can run again.
+        route = replica.route
+        while True:
+            try:
+                with psycopg.connect(
+                    host=route.host if route else target.host,
+                    port=route.port if route else target.port,
+                    dbname=request["database_name"],
+                    user=db_user,
+                    password=password,
+                    connect_timeout=15,
+                    application_name=app_name,
+                    **cfg.target_ssl_kwargs(),
+                    autocommit=autocommit,
+                    options=options,
+                ) as conn:
+                    # `infinity` / `-infinity` timestamps come back as text instead of
+                    # raising while the row is being read. pg_roles.rolvaliduntil is
+                    # infinity for any role without VALID UNTIL, which made
+                    # `SELECT * FROM pg_roles` fail with a message about the year 10000.
+                    pg_types.register_infinity_safe_loaders(conn)
+                    # Everything the server says while this connection runs. A DDL
+                    # script's RAISE NOTICE lines are its only output, and they were
+                    # being dropped: nine statements finished as "0 rows" and read as
+                    # if nothing had happened.
+                    notice_buf: list[dict] = []
+                    conn.add_notice_handler(_notice_collector(notice_buf))
+                    with conn.cursor() as cur:
+                        # Pin search_path with pg_catalog FIRST so a same-named object in
+                        # a writable schema (e.g. a malicious public.now()) can't shadow a
+                        # built-in function/operator (CVE-2018-1058 class). `public` still
+                        # follows, so unqualified user tables resolve.
+                        #
+                        # EXCEPT for DDL, where that order is not a hardening but a wall.
+                        # An unqualified CREATE lands in the FIRST schema on the path, so
+                        # with pg_catalog leading, `CREATE TABLE t (...)` fails with
+                        # "permission denied for schema pg_catalog" — measured, not
+                        # theorised. The comment here used to claim it "still lands in
+                        # public (pg_catalog isn't writable)"; that is simply not how
+                        # PostgreSQL picks the creation target. Nobody hit it because no
+                        # DDL had ever run through this pipeline.
+                        #
+                        # So for the ddl tier the writable schema leads. The exposure that
+                        # buys back is narrow and bounded: shadowing would have to affect
+                        # the DDL statement's own text, which is what the operator wrote
+                        # and — for anything destructive — confirmed by hand. Read and
+                        # write queries, where the bot runs someone else's SQL and a
+                        # shadowed operator could change what it means, keep the strict
+                        # order.
+                        scope = "" if autocommit else "LOCAL "
+                        path = ("public, pg_catalog" if mode == "ddl"
+                                else "pg_catalog, public")
+                        cur.execute(f"SET {scope}search_path = {path}")
 
-                # Record which target backend is about to run this, so a user
-                # (or the runaway watchdog) can actually stop it. Without a pid
-                # there is nothing to aim at, and an operator had to hunt through
-                # pg_stat_activity by hand. Best-effort: losing the pid must
-                # never cost us the query.
-                try:
-                    cur.execute("SELECT pg_backend_pid()")
-                    _pid = cur.fetchone()[0]
-                    with db.transaction() as _mcur:
-                        _mcur.execute(
-                            "UPDATE requests SET backend_pid = %s WHERE id = %s",
-                            (_pid, request["id"]))
-                except Exception:
-                    log.debug("could not record backend pid for request %s",
-                              request["id"], exc_info=True)
-                if assume_role:
-                    set_role = pgsql.SQL(
-                        "SET " + scope + "ROLE {}"
-                    ).format(pgsql.Identifier(assume_role))
-                    cur.execute(set_role)
+                        # Record which target backend is about to run this, so a user
+                        # (or the runaway watchdog) can actually stop it. Without a pid
+                        # there is nothing to aim at, and an operator had to hunt through
+                        # pg_stat_activity by hand. Best-effort: losing the pid must
+                        # never cost us the query.
+                        try:
+                            cur.execute("SELECT pg_backend_pid()")
+                            _pid = cur.fetchone()[0]
+                            with db.transaction() as _mcur:
+                                _mcur.execute(
+                                    "UPDATE requests SET backend_pid = %s WHERE id = %s",
+                                    (_pid, request["id"]))
+                        except Exception:
+                            log.debug("could not record backend pid for request %s",
+                                      request["id"], exc_info=True)
+                        if assume_role:
+                            set_role = pgsql.SQL(
+                                "SET " + scope + "ROLE {}"
+                            ).format(pgsql.Identifier(assume_role))
+                            cur.execute(set_role)
 
-                t_start = time.monotonic()
+                        t_start = time.monotonic()
 
-                # Prelude SET LOCAL statements (auto-rewritten to LOCAL by
-                # query_safety). Empty in the autocommit path by construction.
-                for s in prelude_stmts:
-                    cur.execute(s.rewritten)
+                        # Prelude SET LOCAL statements (auto-rewritten to LOCAL by
+                        # query_safety). Empty in the autocommit path by construction.
+                        for s in prelude_stmts:
+                            cur.execute(s.rewritten)
 
-                # An EXPLAIN plan is delivered inline as a code block rather
-                # than a file — but only for a lone EXPLAIN statement, and
-                # only while the (default-on) toggle allows it.
-                capture_plan = (
-                    len(main_stmts) == 1
-                    and cfg.get_setting("explain_inline_plan", "on") == "on"
-                )
+                        # An EXPLAIN plan is delivered inline as a code block rather
+                        # than a file — but only for a lone EXPLAIN statement, and
+                        # only while the (default-on) toggle allows it.
+                        capture_plan = (
+                            len(main_stmts) == 1
+                            and cfg.get_setting("explain_inline_plan", "on") == "on"
+                        )
 
-                # Run main statements, capture per-statement result.
-                stmt_results: list[_StmtResult] = []
-                notice_mark = 0
-                for i, s in enumerate(main_stmts, start=1):
-                    res = _execute_main_statement(
-                        cur, s, i, request_id,
-                        request["wants_result"], max_rows, max_csv_bytes,
-                        result_format=request.get("result_format") or "csv",
-                        target_id=target.id,
-                        database=request["database_name"],
-                        engine=target.engine,
-                        requester_id=request["requester_slack_id"],
-                    unmasked=unmask,
-                        capture_plan=capture_plan,
-                        # In autocommit mode a mutating (RW/DDL) statement is
-                        # durable the instant it returns — mark it so a later
-                        # failure isn't reported as if nothing happened.
-                        on_committed=(
-                            (lambda: committed.__setitem__("mutation", True))
-                            if (autocommit and mode in ("rw", "ddl")) else None
-                        ),
-                        # Wire-level multi-command refusal (Postgres path only;
-                        # the pyodbc path has no equivalent knob).
-                        force_extended=True,
-                    )
-                    if res.csv_path is not None:
-                        csv_paths_to_cleanup.append(res.csv_path)
-                    # Whatever arrived since the previous statement belongs to
-                    # this one. Sliced here rather than inside the executor
-                    # helper because the buffer is the CONNECTION's, and the
-                    # helper is engine-agnostic.
-                    res.notices = notice_buf[notice_mark:]
-                    notice_mark = len(notice_buf)
-                    stmt_results.append(res)
+                        # Run main statements, capture per-statement result.
+                        stmt_results: list[_StmtResult] = []
+                        notice_mark = 0
+                        for i, s in enumerate(main_stmts, start=1):
+                            res = _execute_main_statement(
+                                cur, s, i, request_id,
+                                request["wants_result"], max_rows, max_csv_bytes,
+                                result_format=request.get("result_format") or "csv",
+                                target_id=target.id,
+                                database=request["database_name"],
+                                engine=target.engine,
+                                requester_id=request["requester_slack_id"],
+                            unmasked=unmask,
+                                capture_plan=capture_plan,
+                                # In autocommit mode a mutating (RW/DDL) statement is
+                                # durable the instant it returns — mark it so a later
+                                # failure isn't reported as if nothing happened.
+                                on_committed=(
+                                    (lambda: committed.__setitem__("mutation", True))
+                                    if (autocommit and mode in ("rw", "ddl")) else None
+                                ),
+                                # Wire-level multi-command refusal (Postgres path only;
+                                # the pyodbc path has no equivalent knob).
+                                force_extended=True,
+                            )
+                            if res.csv_path is not None:
+                                csv_paths_to_cleanup.append(res.csv_path)
+                            # Whatever arrived since the previous statement belongs to
+                            # this one. Sliced here rather than inside the executor
+                            # helper because the buffer is the CONNECTION's, and the
+                            # helper is engine-agnostic.
+                            res.notices = notice_buf[notice_mark:]
+                            notice_mark = len(notice_buf)
+                            stmt_results.append(res)
 
-                if not autocommit:
-                    conn.commit()
-                elapsed = time.monotonic() - t_start
-
+                        if not autocommit:
+                            conn.commit()
+                        elapsed = time.monotonic() - t_start
+                break
+            except psycopg.OperationalError as e:
+                # Not retried when its owner asked to stop it meanwhile.
+                if (route is None or not replicas.is_fallback_error(e)
+                        or _cancel_requested(request["id"])):
+                    raise
+                route = _fall_back_to_primary(request, route, e,
+                                              csv_paths_to_cleanup)
         _finalize(client, request, stmt_results, csv_paths_to_cleanup,
-                  max_csv_bytes=max_csv_bytes, target=target, elapsed=elapsed)
+                  max_csv_bytes=max_csv_bytes, target=target, elapsed=elapsed,
+                  # The requester is told, in the result and the Messages tab.
+                  replica={"lag_s": route.lag_s} if route is not None else None)
 
     except psycopg.errors.QueryCanceled as e:
         # `statement_timeout` fired (or pg_cancel_backend / lock_timeout).
@@ -1103,7 +1155,7 @@ def _notice_collector(buf: list):
     return handle
 
 
-def _run_notes(stmt_results: list) -> dict:
+def _run_notes(stmt_results: list, replica: dict | None = None) -> dict:
     """The record the Messages tab reads: what ran, and what the server said.
 
     Statements are summarised rather than listed one by one for their SQL: the
@@ -1120,12 +1172,16 @@ def _run_notes(stmt_results: list) -> dict:
                 dropped = True
                 break
             notices.append({"i": r.index, **n})
-    return {"statements": statements, "notices": notices, "truncated": dropped}
+    out = {"statements": statements, "notices": notices, "truncated": dropped}
+    if replica:
+        out["replica"] = replica
+    return out
 
 
 def _finalize(client: WebClient, request: dict, stmt_results: list,
               csv_paths_to_cleanup: list, *,
-              max_csv_bytes: int, target, elapsed: float) -> None:
+              max_csv_bytes: int, target, elapsed: float,
+              replica: dict | None = None) -> None:
     """Shared post-execution: size-cap check, PII-fired collection + audit,
     and completion dispatch (plan / no-result / csv / multi). Engine-agnostic
     — both the Postgres and SQL Server paths build a list of _StmtResult and
@@ -1167,7 +1223,7 @@ def _finalize(client: WebClient, request: dict, stmt_results: list,
     # even when there are no notices, because the statement count alone
     # answers "did all nine of them run".
     try:
-        notes = _run_notes(stmt_results)
+        notes = _run_notes(stmt_results, replica=replica)
         with db.transaction() as cur:
             cur.execute("UPDATE requests SET run_notes = %s WHERE id = %s",
                         (json.dumps(notes), request_id))
@@ -1184,14 +1240,15 @@ def _finalize(client: WebClient, request: dict, stmt_results: list,
             # EXPLAIN plan → inline code block, no file.
             _complete_with_plan(
                 client, request, r.plan_text, r.truncated_rows,
-                elapsed=elapsed, csv_path=r.csv_path, line_count=r.rowcount)
+                elapsed=elapsed, csv_path=r.csv_path, line_count=r.rowcount,
+                replica=replica)
         elif r.csv_path is None:
             # No CSV path: either DML w/o RETURNING (had_result_set=False)
             # or SELECT/RETURNING that produced 0 rows (had_result_set=True).
             _complete_no_result(
                 client, request, r.rowcount,
                 truncated=r.truncated_rows, elapsed=elapsed,
-                had_result_set=r.has_result_set,
+                had_result_set=r.has_result_set, replica=replica,
             )
         else:
             _complete_with_csv(
@@ -1200,10 +1257,11 @@ def _finalize(client: WebClient, request: dict, stmt_results: list,
                 pii_masked=masked_sorted,
                 pii_exempt=pii_exempted,
                 col_types=r.col_types,
+                replica=replica,
             )
     else:
         _complete_multi(client, request, stmt_results, elapsed=elapsed,
-                        pii_masked=masked_sorted)
+                        pii_masked=masked_sorted, replica=replica)
 
 
 def _run_athena(client: WebClient, request: dict, target, mode: str, report,
@@ -1933,6 +1991,7 @@ def _complete_no_result(
     truncated: bool = False,
     elapsed: float | None = None,
     had_result_set: bool = False,
+    replica: dict | None = None,
 ) -> None:
     """Final state for a request that produced no CSV. Two shapes:
       - had_result_set=False: DML without RETURNING. Uses "affected".
@@ -1988,10 +2047,18 @@ def _complete_no_result(
             client, request["requester_slack_id"],
             f":white_check_mark: *SQL query `#{request['id']}` completed* — "
             f"{rc_str} {rs} {verb}{trunc_user}{empty_csv_note}{dur}.\n"
-            + notifications.request_context_md(request),
+            + notifications.request_context_md(request)
+            + _replica_hint(replica),
         )
         notifications.favorite_followup(client, request["requester_slack_id"], request["id"])
         ratings.maybe_prompt(client, request)
+
+
+def _replica_hint(replica: dict | None) -> str:
+    """One line for the result DM when a read replica ran the request."""
+    if not replica:
+        return ""
+    return f"\n:information_source: _{replicas.served_note(replica.get('lag_s'))}_"
 
 
 def _pii_hint(masked: list | None, exempted: bool = False) -> str:
@@ -2019,6 +2086,7 @@ def _complete_with_csv(
     pii_masked: list | None = None,
     pii_exempt: bool = False,
     col_types: dict | None = None,
+    replica: dict | None = None,
 ) -> None:
     with db.transaction() as cur:
         cur.execute(
@@ -2061,6 +2129,7 @@ def _complete_with_csv(
             f"{rc_str} {rs}{trunc_note}{dur}.\n"
             + notifications.request_context_md(request)
             + _pii_hint(pii_masked, pii_exempt)
+            + _replica_hint(replica)
         )
         upload_resp = _upload_with_retry(
             client,
@@ -2143,6 +2212,7 @@ def _complete_with_plan(
     elapsed: float | None = None,
     csv_path: Path | None = None,
     line_count: int | None = None,
+    replica: dict | None = None,
 ) -> None:
     """Deliver an EXPLAIN plan as fenced code block(s) in Slack — the plan is
     text and a code block preserves the tree indentation — while `csv_path`
@@ -2175,6 +2245,7 @@ def _complete_with_plan(
         f":white_check_mark: *SQL query `#{request['id']}` completed* — "
         f"query plan{dur}.\n"
         + notifications.request_context_md(request)
+        + _replica_hint(replica)
     )
 
     if request.get("bundle_id"):
@@ -2216,6 +2287,7 @@ def _complete_multi(
     stmt_results: list,
     elapsed: float | None = None,
     pii_masked: list | None = None,
+    replica: dict | None = None,
 ) -> None:
     """Finalize a multi-statement request. Builds a per-statement summary,
     zips any CSVs into one archive (if 2+) or uploads the single CSV as-is,
@@ -2302,6 +2374,7 @@ def _complete_multi(
         f"{summary}\n"
         + notifications.request_context_md(request)
         + _pii_hint(pii_masked, any(r.pii_exempt for r in stmt_results))
+        + _replica_hint(replica)
     )
 
     deliver = _deliver_result_to_requester(request)

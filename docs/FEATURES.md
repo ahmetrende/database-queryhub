@@ -14,6 +14,11 @@ your problem. This is the complete inventory, for when it is.
   routing); **Amazon Athena** and **ClickHouse** read-only (ClickHouse over
   the native protocol, readonly=1, default-deny table functions). New engines are added as
   a spec, not scattered `if`s.
+- **Read replicas, invisibly** — a read-only PostgreSQL query runs on a
+  healthy read replica of its target (lag measured against the primary's WAL
+  position), and on the primary otherwise. It falls back to the primary if the
+  replica fails it. People see one connection name. The result says it came
+  from a replica.
 - Admin DM with **Approve / Reject / Request changes** buttons; one
   approval is enough; all admins see the resolution.
 - **Batch submissions** — `/sql batch` (or the Single ↔ Batch radio

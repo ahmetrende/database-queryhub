@@ -197,6 +197,7 @@ Fernet-encrypted with the master key on disk and stored as ciphertext in
 | `super_ddl_role` | Name of a role a **super-admin's** session enters with `SET LOCAL ROLE` before the statement runs. NULL = no elevation on this target; the query runs as the login, exactly as for everyone else. See "Super-admin elevation" below. |
 | `tags` | JSONB object (CHECK enforces object shape) describing where the target actually runs. |
 | `enabled` | Soft-delete flag. Disabled targets disappear from the modal (admins still see them). |
+| `replica_of` | The primary this row is a read replica of (migration 131; linked from the inventory's `replica_source` by `import_targets_from_inventory.py`). A replica never appears in a picker and cannot be submitted to. When it is `enabled` and healthy it runs its primary's read-only requests, with the primary's login — see OPERATIONS.md §26. |
 | `notes` | Free text — describe purpose, owner, on-call team, etc. |
 | `created_at`, `updated_at` | Timestamps. |
 
@@ -402,6 +403,7 @@ Every `/sql` submission, regardless of outcome. The audit trail.
 | `status` | enum `request_status` (see below). |
 | `decided_by_slack_id`, `decided_by_name`, `decision_reason`, `decided_at` | Approver / rejector details. |
 | `executed_at`, `completed_at` | Execution timing. |
+| `executed_target_id` | The read replica that ran this request, when it did not run on `target_server_id` (migration 131). NULL = ran on its own target. The cancel path signals `backend_pid` on this server. |
 | `row_count`, `truncated` | Result stats. |
 | `error_message` | Filled when status=`failed`. |
 | `csv_file_path` | Local CSV path (under `/var/lib/queryhub/results/`). NULL'd by cleanup. |

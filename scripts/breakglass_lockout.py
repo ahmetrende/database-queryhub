@@ -132,15 +132,25 @@ def fleet(args) -> list[dict]:
     if args.plan:
         rows = _load_plan(args.plan)["targets"]
     else:
+        # A read replica runs QueryHub reads too (replicas.py), so its sessions
+        # are locked out with everyone else's. Its logins and elevation role are
+        # the primary's: it has the primary's roles and no credential of its own.
         rows = [dict(r, database=r.pop("default_database")) for r in db.fetch_all(
-            "SELECT id, alias, engine, host, port, default_database, "
-            "       super_ddl_role, username, username_rw, username_ddl "
-            "  FROM target_servers "
-            f"{'' if args.include_disabled else 'WHERE enabled '}"
-            " ORDER BY alias")]
+            "SELECT t.id, t.alias, t.engine, t.host, t.port, t.default_database, "
+            "       t.replica_of, "
+            "       COALESCE(p.super_ddl_role, t.super_ddl_role) AS super_ddl_role, "
+            "       COALESCE(p.username, t.username) AS username, "
+            "       COALESCE(p.username_rw, t.username_rw) AS username_rw, "
+            "       COALESCE(p.username_ddl, t.username_ddl) AS username_ddl "
+            "  FROM target_servers t "
+            "  LEFT JOIN target_servers p ON p.id = t.replica_of "
+            f"{'' if args.include_disabled else 'WHERE t.enabled '}"
+            " ORDER BY t.alias")]
     if args.alias:
         rows = [r for r in rows if fnmatch.fnmatch(r["alias"], args.alias)]
-    return rows
+    # Replicas last: the NOLOGIN reaches them by replication from their
+    # primary, so their sessions are terminated after it has been written.
+    return sorted(rows, key=lambda r: r.get("replica_of") is not None)
 
 
 def dump_plan(rows: list[dict], path: str, ssl: dict) -> int:
@@ -153,6 +163,7 @@ def dump_plan(rows: list[dict], path: str, ssl: dict) -> int:
         {"id": r["id"], "alias": r["alias"], "engine": r.get("engine") or "postgres",
          "host": r["host"], "port": r["port"], "database": r["database"],
          "super_ddl_role": r.get("super_ddl_role"),
+         "replica_of": r.get("replica_of"),
          "username": r.get("username"), "username_rw": r.get("username_rw"),
          "username_ddl": r.get("username_ddl")}
         for r in rows], "ssl": ssl}
@@ -184,7 +195,7 @@ def _connect(row: dict, args) -> psycopg.Connection:
         user = args.admin_user
         password = os.environ.get(args.admin_password_env or "PGPASSWORD", "")
     else:
-        user, password = targets.get_credentials(row["id"], "ddl")
+        user, password = targets.get_credentials(row.get("replica_of") or row["id"], "ddl")
     conn = psycopg.connect(
         host=row["host"], port=row["port"], dbname=row["database"],
         user=user, password=password, connect_timeout=args.timeout,
@@ -214,7 +225,9 @@ def lock_postgres(row: dict, args) -> dict:
                 cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (name,))
                 if cur.fetchone() is None:
                     continue                      # not on this cluster
-                if args.apply:
+                # A read replica cannot write; its roles change with its
+                # primary's. Only its sessions are this run's to end.
+                if args.apply and not row.get("replica_of"):
                     cur.execute(pgsql.SQL("ALTER ROLE {} NOLOGIN").format(
                         pgsql.Identifier(name)))
                     cur.execute(pgsql.SQL("ALTER ROLE {} PASSWORD {}").format(

@@ -263,8 +263,11 @@ def connections(claims: dict = Depends(deps.current_user)):
     # It used to be one pass and one round trip per thing: 313 statements and
     # 656ms for a 50-connection reader, on the payload the app loads first and
     # cannot render anything without. Four reads now, whatever the fleet size.
+    # A read replica is not a connection of its own: it serves its primary's
+    # read-only requests under the primary's name (replicas.py).
     fleet = [t for t in (targets.list_all() if is_admin else targets.list_enabled())
-             if t.enabled or t.id in used_disabled]
+             if (t.enabled or t.id in used_disabled)
+             and getattr(t, "replica_of", None) is None]
     grants = teams.effective_grants_for_user(uid, [t.id for t in fleet])
     catalog_dbs = _catalog_databases_map([t.id for t in fleet])
     # One read of the reader's auto-approve grants; the scope match is pure and

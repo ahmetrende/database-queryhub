@@ -782,6 +782,12 @@ def _run_note_messages(row: dict, when: str) -> list[dict]:
         out.append({"time": when, "kind": "info",
                     "text": f"{n} statement{'' if n == 1 else 's'} executed: {parts}."})
 
+    replica = notes.get("replica")
+    if isinstance(replica, dict):
+        from .. import replicas
+        out.append({"time": when, "kind": "info",
+                    "text": replicas.served_note(replica.get("lag_s"))})
+
     for note in notes.get("notices") or []:
         sev = (note.get("severity") or "NOTICE").upper()
         text = note.get("text") or ""

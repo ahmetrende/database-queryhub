@@ -60,6 +60,9 @@ class TargetServer:
     # postgres and mssql, which carry everything they need in the columns
     # above — so a reader that does not know about this engine sees no change.
     engine_config: dict = field(default_factory=dict)
+    # The primary this target is a read replica of (migration 131). A replica
+    # is never a connection anyone picks; see replicas.py.
+    replica_of: int | None = None
 
 
 def _row_to_target(row: dict) -> TargetServer:
@@ -77,6 +80,7 @@ def _row_to_target(row: dict) -> TargetServer:
         # Default to postgres if a SELECT forgot the column — a missing
         # engine must read as the safe legacy default, never crash.
         engine=(row.get("engine") or "postgres"),
+        replica_of=row.get("replica_of"),
     )
 
 
@@ -99,12 +103,14 @@ def label_with_provider(alias: str, host: str | None) -> str:
 
 
 def list_enabled() -> list[TargetServer]:
+    """Enabled targets people can pick. A read replica is not one: it serves its
+    primary's read-only requests under the primary's name (replicas.py)."""
     rows = db.fetch_all(
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
         "       COALESCE(tags, '{}'::jsonb) AS tags, "
-        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config "
-        "FROM target_servers WHERE enabled = TRUE ORDER BY alias"
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of "
+        "FROM target_servers WHERE enabled = TRUE AND replica_of IS NULL ORDER BY alias"
     )
     return [_row_to_target(r) for r in rows]
 
@@ -118,7 +124,7 @@ def list_all() -> list[TargetServer]:
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
         "       COALESCE(tags, '{}'::jsonb) AS tags, "
-        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of "
         # Disabled targets sort last. They are unusable, so alphabetical
         # placement buries a working connection between two that are not —
         # `prod-archive` sitting between `beta` and `gamma` is noise in
@@ -133,9 +139,9 @@ def search(prefix: str, limit: int = 100) -> list[TargetServer]:
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
         "       COALESCE(tags, '{}'::jsonb) AS tags, "
-        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of "
         "FROM target_servers "
-        "WHERE enabled = TRUE AND alias ILIKE %s "
+        "WHERE enabled = TRUE AND replica_of IS NULL AND alias ILIKE %s "
         "ORDER BY alias LIMIT %s",
         (f"%{prefix}%", limit),
     )
@@ -147,7 +153,7 @@ def get(target_id: int) -> TargetServer | None:
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
         "       COALESCE(tags, '{}'::jsonb) AS tags, "
-        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of "
         "FROM target_servers WHERE id = %s",
         (target_id,),
     )
@@ -166,7 +172,7 @@ def by_alias(alias: str) -> TargetServer | None:
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
         "       COALESCE(tags, '{}'::jsonb) AS tags, "
-        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of "
         "FROM target_servers WHERE alias = %s",
         (alias,),
     )
@@ -389,7 +395,7 @@ def unprovisioned_enabled() -> list[dict]:
     """
     rows = db.fetch_all(
         "SELECT id, alias, password_encrypted FROM target_servers "
-        "WHERE enabled ORDER BY id"
+        "WHERE enabled AND replica_of IS NULL ORDER BY id"
     )
     return [{"id": r["id"], "alias": r["alias"]}
             for r in rows if _is_placeholder(r["password_encrypted"])]
@@ -411,7 +417,9 @@ _ADMIN_COLS = (
     "       username, username_rw, username_ddl, "
     "       password_encrypted, password_rw_encrypted, password_ddl_encrypted, "
     "       COALESCE(tags, '{}'::jsonb) AS tags, "
-        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of, "
+    "       (SELECT p.alias FROM target_servers p "
+    "         WHERE p.id = target_servers.replica_of) AS replica_of_alias "
     "FROM target_servers"
 )
 
@@ -451,6 +459,8 @@ def _admin_row(row: dict) -> dict:
         "engine": row["engine"],
         "secrets_provider": row["secrets_provider"],
         "tags": row.get("tags") or {},
+        "replica_of": row.get("replica_of"),
+        "replica_of_alias": row.get("replica_of_alias"),
         "credentials": {
             mode: {
                 "username": row[ucol],

@@ -71,14 +71,15 @@ my_teams AS (
 )"""
 
 _TARGET_COLUMNS = ("id, alias, host, port, default_database, username, enabled, "
-                   "notes, COALESCE(engine, 'postgres') AS engine")
+                   "notes, COALESCE(engine, 'postgres') AS engine, replica_of")
 
 
 def _row_to_target(r) -> TargetServer:
     return TargetServer(
         id=r["id"], alias=r["alias"], host=r["host"], port=r["port"],
         default_database=r["default_database"], username=r["username"],
-        enabled=r["enabled"], notes=r["notes"], engine=r["engine"])
+        enabled=r["enabled"], notes=r["notes"], engine=r["engine"],
+        replica_of=r.get("replica_of"))
 
 
 # ---------------------------------------------------------------------------
@@ -422,18 +423,19 @@ def visible_targets(principal_id: str) -> list[TargetServer]:
     Rule 5. An admin sees every row including disabled ones, so a DBA can still
     reach a target taken out of service. Everyone else sees enabled targets
     they hold a covering GRANT on — waivers excluded, since a waived wait on a
-    target you cannot reach was never a reason to show it.
+    target you cannot reach was never a reason to show it. Nobody sees a read
+    replica: it serves its primary under the primary's name (replicas.py).
     """
     if is_admin(principal_id):
         return [_row_to_target(r) for r in db.fetch_all(
             f"SELECT {_TARGET_COLUMNS} FROM target_servers "
-            " ORDER BY enabled DESC, alias")]
+            " WHERE replica_of IS NULL ORDER BY enabled DESC, alias")]
 
     return [_row_to_target(r) for r in db.fetch_all(
         f"WITH {_ME} "
         f"SELECT DISTINCT {_TARGET_COLUMNS} "
         "  FROM target_servers ts "
-        " WHERE ts.enabled AND EXISTS ( "
+        " WHERE ts.enabled AND ts.replica_of IS NULL AND EXISTS ( "
         "   SELECT 1 FROM access_grant g "
         "    WHERE NOT g.is_deleted AND g.revoked_at IS NULL "
         "      AND NOT g.auto_approve "
@@ -581,14 +583,16 @@ def search_visible_targets(principal_id: str, prefix: str,
     if is_admin(principal_id):
         return [_row_to_target(r) for r in db.fetch_all(
             f"SELECT {_TARGET_COLUMNS} FROM target_servers "
-            " WHERE alias ILIKE %(like)s ORDER BY enabled DESC, alias LIMIT %(lim)s",
+            " WHERE replica_of IS NULL AND alias ILIKE %(like)s "
+            " ORDER BY enabled DESC, alias LIMIT %(lim)s",
             {"like": like, "lim": limit})]
 
     return [_row_to_target(r) for r in db.fetch_all(
         f"WITH {_ME} "
         f"SELECT DISTINCT {_TARGET_COLUMNS} "
         "  FROM target_servers ts "
-        " WHERE ts.enabled AND ts.alias ILIKE %(like)s AND EXISTS ( "
+        " WHERE ts.enabled AND ts.replica_of IS NULL AND ts.alias ILIKE %(like)s "
+        "   AND EXISTS ( "
         "   SELECT 1 FROM access_grant g "
         "    WHERE NOT g.is_deleted AND g.revoked_at IS NULL "
         "      AND NOT g.auto_approve "

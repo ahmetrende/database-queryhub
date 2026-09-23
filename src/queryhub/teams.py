@@ -78,7 +78,7 @@ def list_targets_for_user(principal_id: str) -> list[TargetServer]:
         rows = db.fetch_all(
             "SELECT id, alias, host, port, default_database, username, enabled, notes, "
             "       COALESCE(engine, 'postgres') AS engine "
-            "FROM target_servers ORDER BY enabled DESC, alias"
+            "FROM target_servers WHERE replica_of IS NULL ORDER BY enabled DESC, alias"
         )
         return [_row_to_target(r) for r in rows]
 
@@ -86,7 +86,7 @@ def list_targets_for_user(principal_id: str) -> list[TargetServer]:
         rows = db.fetch_all(
             "SELECT id, alias, host, port, default_database, username, enabled, notes, "
             "       COALESCE(engine, 'postgres') AS engine "
-            "FROM target_servers WHERE enabled = TRUE ORDER BY alias"
+            "FROM target_servers WHERE enabled = TRUE AND replica_of IS NULL ORDER BY alias"
         )
         return [_row_to_target(r) for r in rows]
 
@@ -95,7 +95,7 @@ def list_targets_for_user(principal_id: str) -> list[TargetServer]:
         "       ts.username, ts.enabled, ts.notes, "
         "       COALESCE(ts.engine, 'postgres') AS engine "
         "FROM target_servers ts "
-        "WHERE ts.enabled = TRUE AND ( "
+        "WHERE ts.enabled = TRUE AND ts.replica_of IS NULL AND ( "
         "    ts.id IN (SELECT g.target_server_id FROM team_target_grants g "
         "                JOIN team_members tm ON tm.team_id = g.team_id "
         "                WHERE tm.slack_user_id = %s AND g.revoked_at IS NULL "
@@ -120,7 +120,7 @@ def search_targets_for_user(
             "SELECT id, alias, host, port, default_database, username, enabled, notes, "
             "       COALESCE(engine, 'postgres') AS engine "
             "FROM target_servers "
-            "WHERE alias ILIKE %s "
+            "WHERE replica_of IS NULL AND alias ILIKE %s "
             "ORDER BY enabled DESC, alias LIMIT %s",
             (f"%{prefix}%", limit),
         )
@@ -131,7 +131,7 @@ def search_targets_for_user(
             "SELECT id, alias, host, port, default_database, username, enabled, notes, "
             "       COALESCE(engine, 'postgres') AS engine "
             "FROM target_servers "
-            "WHERE enabled = TRUE AND alias ILIKE %s "
+            "WHERE enabled = TRUE AND replica_of IS NULL AND alias ILIKE %s "
             "ORDER BY alias LIMIT %s",
             (f"%{prefix}%", limit),
         )
@@ -142,7 +142,7 @@ def search_targets_for_user(
         "       ts.username, ts.enabled, ts.notes, "
         "       COALESCE(ts.engine, 'postgres') AS engine "
         "FROM target_servers ts "
-        "WHERE ts.enabled = TRUE AND ts.alias ILIKE %s AND ( "
+        "WHERE ts.enabled = TRUE AND ts.replica_of IS NULL AND ts.alias ILIKE %s AND ( "
         "    ts.id IN (SELECT g.target_server_id FROM team_target_grants g "
         "                JOIN team_members tm ON tm.team_id = g.team_id "
         "                WHERE tm.slack_user_id = %s AND g.revoked_at IS NULL "

@@ -220,6 +220,15 @@ def validate_submission(
     target = targets.get(target_server_id)
     if target is None:
         return Rejection("server", "Selected server is no longer available.")
+    # A read replica is reached through its primary, never picked: the primary
+    # holds the grants, and its read-only requests use the replica on their own.
+    if getattr(target, "replica_of", None) is not None:
+        primary = targets.get(target.replica_of)
+        return Rejection(
+            "server",
+            f"`{target.alias}` is a read replica. Submit to "
+            f"`{primary.alias if primary else 'its primary'}`: read-only queries "
+            f"there run on the replica when it is healthy.")
 
     # Whether the bulk-destructive refusals apply to this submitter.
     #

@@ -168,7 +168,7 @@ def stop_backend(request_id: int) -> str:
     """
     row = db.fetch_one(
         "SELECT backend_pid, engine_execution_id, target_server_id, "
-        "       database_name, status::text AS st "
+        "       executed_target_id, database_name, status::text AS st "
         "  FROM requests WHERE id = %s", (request_id,))
     if not row:
         return CancelOutcome.FAILED
@@ -196,8 +196,13 @@ def stop_backend(request_id: int) -> str:
         target = targets.get(row["target_server_id"])
         if target is None:
             return CancelOutcome.FAILED
+        # The pid belongs to the server that runs the query: a read replica,
+        # when replicas.py sent it there. The login stays the target's own --
+        # a replica has the primary's roles and no credential of its own.
+        where = (targets.get(row["executed_target_id"])
+                 if row.get("executed_target_id") else None) or target
         import psycopg
-        dsn = (f"host={target.host} port={target.port} "
+        dsn = (f"host={where.host} port={where.port} "
                f"dbname={row['database_name']} user={target.username} "
                f"password={targets.get_password(target.id)}")
         conn_kwargs = dict(cfg.target_ssl_kwargs())
