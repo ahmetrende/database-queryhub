@@ -103,6 +103,14 @@ gates *execution*, so an engine can ship a spec (safety rules understood)
 before its executor path is enabled. `query_safety`/`ast_safety` take the
 engine so a T-SQL statement is never classified by the Postgres parser.
 
+**Read replicas** are a routing decision, not an engine. A replica is a
+`target_servers` row with `replica_of` set, hidden from every picker.
+`replicas.choose()` runs in the executor, after re-authorization and before
+the claim. It sends a read-only PostgreSQL request to a healthy, enabled
+replica, and everything else to the target itself. The request, its grant
+and its audit stay on the primary. `requests.executed_target_id` records
+where it ran, and the cancel path signals that server.
+
 ## Profiles (optional dependencies)
 
 The adapters map to `pip` extras (see `pyproject.toml`):

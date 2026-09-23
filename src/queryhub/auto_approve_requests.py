@@ -125,7 +125,7 @@ def submit_window(*, principal_id: str, name: str | None, target_id: int,
     tier = (tier or "ro").strip().lower()
     if tier == "ddl":
         raise WindowRequestRefused(
-            "tier", "Schema changes are always reviewed and cannot skip review.")
+            "tier", "Schema changes are always reviewed and cannot be auto-approved.")
     if tier not in ("ro", "rw"):
         raise WindowRequestRefused("tier", "Pick RO or RW.")
     if not valid_window(window_minutes):
@@ -162,7 +162,7 @@ def submit_window(*, principal_id: str, name: str | None, target_id: int,
                 ((teams.effective_grant_for_user(principal_id, target_id) or {}).get("mode")))
         if _TIER_RANK.get((held or "").lower(), 0) < _TIER_RANK["rw"]:
             raise WindowRequestRefused(
-                "tier", "You hold read-only here, so only reads can skip review.", 403)
+                "tier", "You hold read-only here, so only reads can be auto-approved.", 403)
     row = create(principal_id=principal_id, name=name, target_server_id=target_id,
                  database_name=db_scope, max_tier=tier,
                  window_minutes=window_minutes, reason=reason)

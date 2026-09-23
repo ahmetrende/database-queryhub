@@ -547,7 +547,7 @@ function AutoForm({ init, actor, st, onDone }) {
       </select>
       <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={save}>{editing ? 'Save' : 'Add'}</button>
       {editing && <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone}>Cancel</button>}
-      {(f.ttl === 'none' || (f.ttl === 'keep' && !f.expiresAt)) && <div className="qh-exp-note">No end date — this subject keeps skipping review on that target until someone revokes the grant.</div>}
+      {(f.ttl === 'none' || (f.ttl === 'keep' && !f.expiresAt)) && <div className="qh-exp-note">No end date — this subject stays auto-approved on that target until someone revokes the grant.</div>}
     </div>
   );
 }
@@ -621,7 +621,7 @@ function AutoView({ st, user }) {
                 <span className={'qh-peravatar' + (s.team ? ' is-team' : '')}>{s.initials}</span>
                 <div className="qh-autosub-who"><div className="qh-autosub-name">{s.name}{s.team && <span className="qh-subj-type team">team</span>}</div>
                   {!s.team && s.key !== s.name && <div className="qh-autosub-h">{s.key}</div>}</div>
-                <div className="qh-autosub-sum">Skips review on {s.rows.length} target{s.rows.length === 1 ? '' : 's'}{s.open ? <> · <span className="qh-expiry is-soon">{s.open} with no end date</span></> : null}</div>
+                <div className="qh-autosub-sum">Auto-approved on {s.rows.length} target{s.rows.length === 1 ? '' : 's'}{s.open ? <> · <span className="qh-expiry is-soon">{s.open} with no end date</span></> : null}</div>
               </div>
               <div className="qh-autosub-rows">
                 {s.rows.map(a => editId === a.id
@@ -641,7 +641,7 @@ function AutoView({ st, user }) {
                 : <button className="qh-linkbtn qh-autosub-add" onClick={() => { setAdding(s.key); setEditId(null); }}><AIcon.plus />Add targets for {s.name}</button>}
             </div>
           ))}
-          {subjects.length === 0 && <div className="qh-conn-empty">{q.trim() ? 'No exemption matches your filter.' : 'Nobody skips review. Every query is looked at by a DBA.'}</div>}
+          {subjects.length === 0 && <div className="qh-conn-empty">{q.trim() ? 'No exemption matches your filter.' : 'Nobody is auto-approved. Every query is looked at by a DBA.'}</div>}
         </div>
       ) : (
       <div className="qh-tablewrap">
@@ -760,7 +760,7 @@ function AutoBulkForm({ st, actor, lockType, lockUser, lockName, existing, onDon
               </select>}
         </div>
       )}
-      {held.length > 0 && who && <div className="qh-autobulk-held">Already skips review on {held.map(a => a.connectionId + ' · ' + (a.databaseId || 'all databases')).join(', ')}.</div>}
+      {held.length > 0 && who && <div className="qh-autobulk-held">Already auto-approved on {held.map(a => a.connectionId + ' · ' + (a.databaseId || 'all databases')).join(', ')}.</div>}
       <div className="qh-autobulk-rows">
         <div className="qh-autobulk-hd"><span>Connection</span><span>Database</span><span></span></div>
         {rows.map((r, i) => {
@@ -1070,10 +1070,19 @@ function TeamsView({ st, user }) {
 // before it can execute, and offering one of those here would let an admin
 // register a connection that fails closed at submit time for reasons this
 // screen gives no hint of.
+// ClickHouse executes since 2026-09-23 (d), read-only over the native protocol:
+// 9440 is native over TLS. The 8443 from the cloud console is HTTPS, and wrong
+// here — a read-only login cannot cancel a query over HTTP.
 const QH_CONN_ENGINES = [
   ['postgres', 'PostgreSQL', 5432],
   ['mssql', 'SQL Server', 1433],
+  ['clickhouse', 'ClickHouse', 9440],
 ];
+// Engines where only SELECT / WITH ever run (anything else is refused at
+// submit). The form asks for the read-only credential alone: an RW or DDL
+// password there would be stored and never used. `athena` is listed before it
+// is wired so the rule is already right the day it lands.
+const QH_RO_ENGINES = ['clickhouse', 'athena'];
 const QH_CRED_TIERS = [
   ['ro', 'Read-only', 'Used for every SELECT, the schema snapshot and the connection test.'],
   ['rw', 'Read/Write', 'Optional. Without it, write queries on this target are refused.'],
@@ -1252,6 +1261,7 @@ function ConnectionForm({ st, init, mode, onDone }) {
   const changedCreds = () => {
     const out = {};
     QH_CRED_TIERS.forEach(([t]) => {
+      if (t !== 'ro' && QH_RO_ENGINES.indexOf(f.engine) >= 0) return;
       const cur = creds[t];
       const was = ((init && init.credentials && init.credentials[t]) || {}).username || '';
       const u = cur.username.trim();
@@ -1341,7 +1351,8 @@ function ConnectionForm({ st, init, mode, onDone }) {
           </label>
           <HostingFields tags={f.tags} vocab={vocab} onChange={tags => setF({ ...f, tags })} />
         </>)}
-        {QH_CRED_TIERS.map(([t, label, hint]) => (
+        {QH_RO_ENGINES.indexOf(f.engine) >= 0 && <div className="qh-req-note">Read-only engine — only SELECT and WITH run here.</div>}
+        {QH_CRED_TIERS.filter(([t]) => t === 'ro' || QH_RO_ENGINES.indexOf(f.engine) < 0).map(([t, label, hint]) => (
           <ConnCredRow key={t} label={label} hint={hint}
                        stored={init && init.credentials ? init.credentials[t] : null}
                        value={creds[t]} onChange={v => setCreds({ ...creds, [t]: v })} />

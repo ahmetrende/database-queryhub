@@ -184,7 +184,7 @@ function EffNone({ team }) {
 }
 
 function effApproverSentence(ap) {
-  if (ap.superAdmin) return <>Super-admin — approves <b>anything, anywhere</b>, and their own queries skip review.</>;
+  if (ap.superAdmin) return <>Super-admin — approves <b>anything, anywhere</b>, and their own queries are auto-approved.</>;
   const teams = ap.scopeTeamsAll ? <b>everyone</b> : (ap.scopeTeams && ap.scopeTeams.length ? <b>{ap.scopeTeams.join(', ')}</b> : null);
   const targets = ap.scopeTargetsAll ? <b>every connection</b> : (ap.scopeTargets && ap.scopeTargets.length ? <b>{ap.scopeTargets.join(', ')}</b> : null);
   if (!teams || !targets) return <>Holds an approver scope that <b>approves nothing</b> — {!teams ? 'no team' : 'no connection'} is in it.</>;
@@ -256,7 +256,7 @@ function EffPerson({ st, subject, onOpenTeam }) {
                 </div>}
           </EffSection>
 
-          <EffSection title="Skips review" tone="warn" sub="Queries matching these run without anyone looking. Every run is still in the audit log.">
+          <EffSection title="Auto-approved" tone="warn" sub="Queries matching these run without anyone looking. Every run is still in the audit log.">
             {autos.length
               ? <div className="qh-eff-list">{autos.map((a, i) => <EffAutoRow key={i} a={a} own="Own exemption" />)}</div>
               : <div className="qh-eff-empty">Nothing — every query they submit is reviewed.</div>}
@@ -333,7 +333,7 @@ function EffTeam({ st, subject, onOpenPerson }) {
                 })} />))}</div>}
           </EffSection>
 
-          <EffSection title="Skips review" tone="warn" sub="Every member's matching queries run without anyone looking.">
+          <EffSection title="Auto-approved" tone="warn" sub="Every member's matching queries run without anyone looking.">
             {autos.length
               ? <div className="qh-eff-list">{autos.map((a, i) => <EffAutoRow key={i} a={a} own="Team exemption" />)}</div>
               : <div className="qh-eff-empty">Nothing — every member's query is reviewed.</div>}
@@ -415,7 +415,7 @@ function EffectiveAccessView({ st }) {
         {person ? <EffPerson key={'p' + person.handle} st={st} subject={person} onOpenTeam={openTeam} />
           : team ? <EffTeam key={'t' + team.id} st={st} subject={team} onOpenPerson={openPerson} />
           : <div className="qh-eff-intro"><div className="qh-eff-intro-t">Pick someone on the left</div>
-              <div className="qh-eff-intro-p">Every connection and database they can query, where each one comes from, when it ends, what skips review, and whether they approve anything — resolved the way a submission resolves it.</div></div>}
+              <div className="qh-eff-intro-p">Every connection and database they can query, where each one comes from, when it ends, what is auto-approved, and whether they approve anything — resolved the way a submission resolves it.</div></div>}
       </div>
     </div>
   );

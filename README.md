@@ -14,7 +14,7 @@ every decision audited. Apache-2.0, no enterprise tier.
   <a href="../../actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/ahmetrende/database-queryhub/ci.yml?branch=main&label=CI" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/engines-PostgreSQL%20%7C%20SQL%20Server%20%7C%20Athena-informational.svg" alt="Engines">
+  <img src="https://img.shields.io/badge/engines-PostgreSQL%20%7C%20SQL%20Server%20%7C%20Athena%20%7C%20ClickHouse-informational.svg" alt="Engines">
   <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-keep--a--changelog-orange.svg" alt="Changelog"></a>
 </p>
 
@@ -84,7 +84,7 @@ too:
 
 - **No schema-migration pipeline, no GitOps.** If reviewing and shipping
   migrations is your problem, Bytebase is built for it and this is not.
-- **Three engines.** PostgreSQL, SQL Server and Athena (read-only).
+- **Four engines.** PostgreSQL, SQL Server, and Athena and ClickHouse (both read-only).
   Bytebase speaks a dozen-plus.
 - **No HA.** One process, one host; see
   [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
@@ -293,8 +293,8 @@ runs because a shared tag moved. To skip the build, pull a released image and
 name it:
 
 ```bash
-docker pull ghcr.io/ahmetrende/database-queryhub:1.0.32
-QH_IMAGE=ghcr.io/ahmetrende/database-queryhub:1.0.32 docker compose -f docker-compose.install.yml up -d
+docker pull ghcr.io/ahmetrende/database-queryhub:1.0.33
+QH_IMAGE=ghcr.io/ahmetrende/database-queryhub:1.0.33 docker compose -f docker-compose.install.yml up -d
 ```
 
 Every release publishes its own immutable tag alongside `:latest`. Reference the
@@ -402,6 +402,10 @@ src/queryhub/
 ├── core_decide.py      # transport-agnostic approve / reject / request-changes
 ├── executor.py         # runs approved queries, builds CSV/XLSX, delivers
 ├── mssql_exec.py       # SQL Server execution (pyodbc + AG read-only routing)
+├── athena_exec.py      # Athena execution (assumed role, bytes scanned in the audit)
+├── clickhouse_exec.py  # ClickHouse execution (native protocol, own deadline watchdog)
+├── replicas.py         # where an RO request runs: a healthy read replica or the primary
+├── query_secrets.py    # a submitted password is stored masked, kept encrypted only while it can run
 ├── csv_import.py       # /sql import (COPY into the dba schema)
 ├── targets.py          # target_servers CRUD + per-tier credentials
 ├── target_policy.py    # alias/host allow-deny globs for target sync

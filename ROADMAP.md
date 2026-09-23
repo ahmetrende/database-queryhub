@@ -242,8 +242,10 @@ Close before the repository goes public or before any "try me" artifact ships.
 **Multi-engine data sources**
 - [ ] Engine adapter contract (connect, tier-matched execute, cancel/timeout,
       row/byte limits, result shaping) + a per-engine conformance test suite.
-- [ ] MySQL / MariaDB adapter; SQL Server promoted to first-class; ClickHouse
-      (read-oriented).
+- [ ] MySQL / MariaDB adapter; SQL Server promoted to first-class.
+- [x] ClickHouse and Amazon Athena, read-only (1.0.33).
+- [x] Read-only PostgreSQL queries on a healthy read replica, off by default
+      (1.0.33).
 - [ ] Per-engine dialect-aware safety (leverage `sqlglot` dialects) so RO/RW/DDL
       tiering is correct per engine.
 - [ ] Later: warehouse read connectors (Snowflake / BigQuery / Redshift).

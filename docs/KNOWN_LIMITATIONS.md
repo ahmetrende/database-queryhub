@@ -25,6 +25,13 @@ forward plan lives in [ROADMAP.md](../ROADMAP.md).
   engine with a spec but no execution path fails closed.
 - Cross-database access is intentionally blocked; a query is scoped to
   the target database it was submitted against.
+- **Read replicas are PostgreSQL only, and switched off by default**
+  (`replica_routing`). A replica read can be up to `replica_max_lag_seconds`
+  behind. Read-your-writes covers writes made through QueryHub only, not
+  writes the application makes. The check for reads that must stay on the
+  primary (`pg_stat_*`, `pg_locks`, WAL functions ...) looks at the SQL text,
+  so a view that wraps one of them is not detected. SQL Server readable
+  secondaries are not routed.
 
 ## Testing & typing
 

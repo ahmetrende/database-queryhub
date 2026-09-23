@@ -296,8 +296,11 @@ const QH_ENGINES = {
     system: { 'Dynamic views': ['V$SESSION', 'V$SQL', 'V$LOCK'], 'Dictionary': ['ALL_TABLES', 'ALL_TAB_COLUMNS', 'DBA_USERS', 'DBA_ROLES'] } },
   mysql: { label: 'MySQL', badge: 'MYSQL', q: ['`', '`'], foldsLower: false, rolesLabel: 'Users & grants', catalogLabel: 'System schema',
     system: { 'performance_schema': ['threads', 'events_statements_current'], 'information_schema': ['TABLES', 'COLUMNS', 'USER_PRIVILEGES'], 'mysql': ['user', 'db', 'tables_priv'] } },
-  clickhouse: { label: 'ClickHouse', badge: 'CH', q: ['`', '`'], foldsLower: false, rolesLabel: 'Users & roles', catalogLabel: 'System tables',
-    system: { 'system': ['system.processes', 'system.query_log', 'system.tables', 'system.columns', 'system.parts'] } },
+  // No system node: QueryHub refuses `system.*` and `information_schema` here
+  // (other users' queries, server internals), so the tree does not offer tables
+  // a query cannot read (2026-09-23 (d)). `catalogLabel: null` hides it.
+  clickhouse: { label: 'ClickHouse', badge: 'CH', q: ['`', '`'], foldsLower: false, rolesLabel: 'Users & roles', catalogLabel: null,
+    system: {} },
   couchbase: { label: 'Couchbase', badge: 'CB', q: ['`', '`'], foldsLower: false, rolesLabel: 'Users & roles', catalogLabel: 'System keyspaces',
     system: { 'system': ['system:keyspaces', 'system:indexes', 'system:datastores', 'system:dual'] } },
 };
@@ -315,7 +318,7 @@ const QH_SHOW_ENV_TAGS = false;
 // `couchbase` were dropped 2026-08-15: no engine spec exists for them, so no
 // connection could ever render one — they were vendor trademarks shipped to
 // advertise capability the product does not have (CODE_TO_DESIGN_BRIEF
-// 2026-07-30). `clickhouse` stays: the spec is real, execution is refused.
+// 2026-07-30). `clickhouse` stays: it executes, read-only (2026-09-23 (d)).
 const QH_ENGINE_LOGO = { postgres: '/brand/engines/postgres.svg', mssql: '/brand/engines/mssql.svg', clickhouse: '/brand/engines/clickhouse.svg' };
 // `window.__resources` only exists in the standalone/offline export, where the
 // bundler has inlined each logo and swapped the path for a blob URL (see the

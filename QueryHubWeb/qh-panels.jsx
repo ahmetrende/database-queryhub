@@ -322,8 +322,8 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
             )}
             {isSuper && (
               <>
-                <TreeRow depth={base + 1} expandable open={isOpen(did + '/sys')} onToggle={() => tog(did + '/sys')} muted icon={TICN.sys()} label={qhEngine(c).catalogLabel} />
-                {isOpen(did + '/sys') && Object.entries(qhEngine(c).system).map(([grp, objs]) => (
+                {qhEngine(c).catalogLabel && <TreeRow depth={base + 1} expandable open={isOpen(did + '/sys')} onToggle={() => tog(did + '/sys')} muted icon={TICN.sys()} label={qhEngine(c).catalogLabel} />}
+                {qhEngine(c).catalogLabel && isOpen(did + '/sys') && Object.entries(qhEngine(c).system).map(([grp, objs]) => (
                   <React.Fragment key={grp}>
                     <TreeRow depth={base + 2} expandable open={isOpen(did + '/sys/' + grp)} onToggle={() => tog(did + '/sys/' + grp)} muted icon={TICN.folder(isOpen(did + '/sys/' + grp))} label={grp} right={<span className="qh-tr-count">{objs.length}</span>} />
                     {isOpen(did + '/sys/' + grp) && objs.map(o => (
@@ -1209,10 +1209,10 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
         <span className="qh-req-note">Only databases you can already query are listed. This asks for fewer reviews, not more access.</span>
 
         <div className="qh-field">
-          <span className="qh-field-lbl">Queries that would skip review</span>
+          <span className="qh-field-lbl">Queries to auto-approve</span>
           <div className="qh-seg">
             <button className={'qh-seg-opt' + (eff === 'RO' ? ' is-active' : '')} onClick={() => setTier('RO')}><TierBadge tier="RO" sm />Reads only</button>
-            <button className={'qh-seg-opt' + (eff === 'RW' ? ' is-active' : '')} disabled={!rwOk} title={rwOk ? undefined : 'You hold read-only here, so only reads can skip review.'} onClick={() => setTier('RW')}><TierBadge tier="RW" sm />Reads and writes</button>
+            <button className={'qh-seg-opt' + (eff === 'RW' ? ' is-active' : '')} disabled={!rwOk} title={rwOk ? undefined : 'You hold read-only here, so only reads can be auto-approved.'} onClick={() => setTier('RW')}><TierBadge tier="RW" sm />Reads and writes</button>
           </div>
           <span className="qh-req-note">Schema changes (DDL) are always reviewed and cannot be asked for.</span>
         </div>

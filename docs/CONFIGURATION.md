@@ -95,6 +95,7 @@ default rather than stopping the process.
 | `query_plan_logging` | `off` | Log EXPLAIN plans of executed queries. |
 | `risk_high_cost` | `50000` | EXPLAIN total-cost above which a submit is flagged high-risk. |
 | `risk_seq_scan_rows` | `100000` | Estimated seq-scan rows above which a submit is flagged. |
+| `<engine>_blocked_functions` | `""` | Comma-separated function names refused on a read-only engine, e.g. `clickhouse_blocked_functions`. They are added to the functions the code already refuses, and cannot re-allow any of them. |
 
 ## Pre-flight & EXPLAIN
 
@@ -156,6 +157,18 @@ default rather than stopping the process.
 | `auth_event_poll_seconds` | `20` | Poll cadence for the auth-event outbox (read when the poller thread starts). |
 | `grant_expiry_warn_enabled` | `on` | Warn a grant holder before a time-bounded grant lapses. Off leaves expiry silent, which is how it behaved before migration 098. |
 | `grant_expiry_warn_hours` | `24,4` | Comma-separated hours-before-expiry to warn at. Widest first wins, so a grant created with three hours left gets one message rather than two. Each fires once per grant per deadline; extending a grant re-arms them, because the recorded deadline stops matching. Empty disables warning without turning the feature off. |
+
+## Read replicas
+
+A read-only PostgreSQL request runs on a healthy, enabled read replica of its
+target (`target_servers.replica_of`); see OPERATIONS.md, "Read replicas".
+
+| Key | Default | What it does |
+|---|---|---|
+| `replica_routing` | `off` | `on` = read-only requests may run on a read replica. This is the kill switch: `off` sends everything to the primary. |
+| `replica_max_lag_seconds` | `10` | A replica further behind its primary than this is not used. Lag is measured against the primary's current WAL position. |
+| `replica_health_ttl_seconds` | `15` | How long one health check of a replica is trusted, per process. |
+| `replica_read_your_writes_minutes` | `5` | After a requester's own RW/DDL request on a target, their reads there stay on the primary this long. `0` = off. |
 
 ## SQL Server (MSSQL) targets
 

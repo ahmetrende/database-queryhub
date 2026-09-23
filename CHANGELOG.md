@@ -9,6 +9,95 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.33] — 2026-09-23
+
+Two engines execute: ClickHouse and Amazon Athena, both read-only. A read-only
+query can run on a healthy read replica. A submitted password is no longer
+stored anywhere. Patch bump: every new `bot_config` key keeps the old behaviour
+by default, and the audit contract is unchanged. New actions are added, and no
+existing row changes meaning.
+
+### Upgrading
+
+- **Run `scripts/apply_migrations.py`.** It applies 126–131. 129 changes how a
+  password in submitted SQL is stored. 130 corrects 129's trigger, which named
+  a status the enum does not have, and so failed every write to `requests`. The
+  runner applies both together; do not stop between them.
+- **Optional extras.** `pip install '.[clickhouse]'` for ClickHouse targets.
+  Athena uses `'.[aws]'` (boto3). Neither is needed if you run neither engine.
+- **New `bot_config` keys**, each defaulting to what happened before:
+  `replica_routing` (`off`), `replica_max_lag_seconds`,
+  `replica_health_ttl_seconds`, `replica_read_your_writes_minutes`, and
+  `<engine>_blocked_functions`. See docs/CONFIGURATION.md.
+- **SQL copied back out of history may be refused.** A statement stored with
+  `PASSWORD '***REDACTED***'` is refused until the password is typed again.
+
+### Security
+
+- **A submitted password is never stored.** `requests.query` is written with
+  every password literal masked. The original is kept Fernet-encrypted in
+  `requests.query_secret` only while the request can still run, and dropped
+  when it ends, including when it is handed to a DBA. Saved workspaces,
+  templates, favourites and refused submissions keep the masked text. So do
+  Slack messages, snippets, upload comments and log lines.
+- **ClickHouse runs read-only by construction.** The login is `readonly=1`,
+  table functions are refused unless allowed, `SETTINGS` clauses are refused,
+  and `system.*` and `information_schema` are blocked. An operator can refuse
+  more functions with `clickhouse_blocked_functions`, and cannot allow any.
+- **An Athena approver sees what a query can scan before approving it.** The
+  bound is read from the objects the query can touch, not from catalog
+  statistics, which were measured five weeks stale.
+
+### Added
+
+- **ClickHouse executes**, over the native protocol (9440, TLS). The read-only
+  login cannot set server-side limits, so a watchdog enforces the timeout and
+  a cancel by closing the connection, which stops the query on the server.
+  The schema catalog is read at most daily, and only when the inventory says
+  the service is running: an idle service is billed when a query wakes it.
+  Import with `import_targets_from_inventory.py --clickhouse`.
+- **Amazon Athena executes**: Glue-backed schema, result values kept as the
+  exact strings Athena returns, and the bytes scanned recorded in the audit
+  trail.
+- **Read replicas.** A read-only PostgreSQL request runs on a healthy, enabled
+  replica of its target, and on the primary otherwise. Replicas are linked
+  from the inventory (`target_servers.replica_of`, migration 131) and never
+  appear in a picker. Some reads stay on the primary: those about the server
+  itself (`pg_stat_*`, `pg_locks`, WAL functions), and a requester's reads
+  just after their own write there. A replica that fails a read hands it to
+  the primary once. The result says it came from a replica, and
+  `requests.executed_target_id` records which one. Off until
+  `replica_routing = 'on'`; see docs/OPERATIONS.md §26.
+- **Admin:** enable, disable or set a credential on many connections at once,
+  all or nothing. Edit a role in place. See one team's effective access, and
+  a person's, resolved per database. Add auto-approve for a team or for many
+  targets in one step. A queue lists requests waiting for a DBA to run by
+  hand, and closes them from the web.
+- **Requesters can ask for auto-approve from the web**, and an admin decides
+  there or in Slack.
+- **Imported targets are labelled with the cloud they run on** (`tags.provider`).
+
+### Changed
+
+- **A new connection can take the name a disabled one holds.** The disabled
+  one takes its engine's suffix (`orders` → `orders-pg`). An enabled holder
+  keeps its name: the importers suffix the newcomer, and the admin form
+  refuses the name.
+- **"Ask to skip review" is "Request auto-approve"**, and every screen says
+  auto-approve for the same idea.
+- **A team's auto-approve applies to its members when they submit**, as the
+  screens already showed.
+- **A connection test shows green or red.** A connection an admin enables or
+  adds appears in the list without a page reload.
+
+### Fixed
+
+- **A request handed to a DBA no longer shows as running forever** on the
+  web. It says "Needs a DBA", with no spinner and no Stop button.
+- **The RDS import step no longer stops on a name clash.**
+- **The ClickHouse catalog** compares the inventory's naive timestamps in the
+  inventory's own time zone, and stores its flags as booleans.
+
 ## [1.0.32] — 2026-09-17
 
 The panel names people instead of logins, the masking ladder's second rung is
