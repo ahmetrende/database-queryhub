@@ -28,9 +28,25 @@ def _route(method: str, path: str) -> str:
     return m.group(0)
 
 
+def _func(name: str) -> str:
+    m = re.search(rf"\ndef {name}\(.*?(?=\n@router\.|\ndef |\nclass |\Z)", SRC, re.S)
+    assert m, f"{name} is gone"
+    return m.group(0)
+
+
 LIST = _route("get", "/roles")
-CREATE = _route("post", "/roles")
+# The rules a role must satisfy live in one checker shared by create and edit;
+# the create route is read together with it.
+CHECK = _func("_check_role_spec")
+CREATE = _route("post", "/roles") + CHECK
 REVOKE = _route("delete", "/roles/{role_id}")
+EDIT = _route("patch", "/roles/{role_id}")
+
+
+def test_create_and_edit_share_one_rulebook():
+    assert "_check_role_spec(body.role, body.scopeTeamId, body.scopeTargetId, body.maxTier)" \
+        in _route("post", "/roles")
+    assert "_check_role_spec(role, team, target, max_tier)" in EDIT
 
 
 # --- who may touch them ------------------------------------------------------
@@ -40,7 +56,7 @@ def test_reading_roles_needs_only_an_admin():
     assert 'require_admin(claims, "review")' in LIST
 
 
-@pytest.mark.parametrize("body", [CREATE, REVOKE])
+@pytest.mark.parametrize("body", [CREATE, REVOKE, EDIT])
 def test_changing_roles_needs_a_super_admin(body):
     """Granting somebody the power to approve is how an approval boundary is
     moved. It belongs with the people who can already move it."""
@@ -48,7 +64,8 @@ def test_changing_roles_needs_a_super_admin(body):
 
 
 @pytest.mark.parametrize("body,action", [(CREATE, "role_granted"),
-                                         (REVOKE, "role_revoked")])
+                                         (REVOKE, "role_revoked"),
+                                         (EDIT, "role_changed")])
 def test_every_change_writes_an_audit_row_in_the_same_transaction(body, action):
     assert f'"{action}"' in body
     assert "audit.log_in(cur" in body
@@ -91,7 +108,7 @@ def test_an_admin_role_may_not_be_scoped():
     """The constraint refuses it too; saying so here gives a usable message
     instead of a constraint violation."""
     assert "fleet-wide" in CREATE
-    assert 'body.role == "admin"' in CREATE
+    assert 'if role == "admin" and (scope_team_id is not None' in CREATE
 
 
 def test_an_unknown_role_is_refused_by_name():
@@ -341,3 +358,112 @@ def test_the_grant_resolvers_deliberately_do_not_filter_enabled():
     assert "p.enabled" not in inspect.getsource(access._covering)
     i = access.__dict__["_ME"]
     assert "enabled" not in i, "the shared CTE must stay neutral"
+
+
+# --- editing ------------------------------------------------------------------
+#
+# A role row is immutable, so an edit is a revoke plus an insert in one
+# transaction. The refusals are the revoke's: a row a sync or the admins mirror
+# owns would come back on its next run.
+
+
+def test_an_edit_revokes_and_inserts_in_one_transaction():
+    i_rev = EDIT.index("UPDATE role_assignment SET revoked_at = NOW()")
+    i_ins = EDIT.index("INSERT INTO role_assignment")
+    assert i_rev < i_ins
+    assert EDIT.count("with db.transaction() as cur:") == 1
+
+
+def test_an_edit_refuses_what_a_sync_or_the_mirror_owns():
+    assert 'if old["mirrored_from"]:' in EDIT and 'if old["source"]:' in EDIT
+
+
+def test_an_edit_is_audited_with_both_sides():
+    assert '"role_changed"' in EDIT
+    assert '"before": before, "after": after' in EDIT
+
+
+def test_widening_to_everything_is_its_own_flag_not_a_null():
+    """A bare null would mean both "not editing this" and "every team"."""
+    for f in ("scopeTeamAll", "scopeTargetAll", "clearMaxTier", "clearValidUntil"):
+        assert f"{f}: bool = False" in SRC
+
+
+class _Cur:
+    def __init__(self, old):
+        self.old, self.sql, self.rows = old, [], []
+
+    def execute(self, sql, params=None):
+        self.sql.append(sql)
+        if sql.startswith("SELECT ra.*"):
+            self.rows = [self.old] if self.old else []
+        elif "SELECT 1 FROM team" in sql:
+            self.rows = [{"?column?": 1}]
+        elif sql.startswith("SELECT id FROM role_assignment"):
+            self.rows = []
+        elif sql.startswith("INSERT INTO role_assignment"):
+            self.rows = [{"id": 902}]
+        else:
+            self.rows = []
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+
+def _old(**kw):
+    base = {"id": 901, "principal_id": 5, "role": "approver", "scope_team_id": 7,
+            "all_teams": False, "scope_target_id": 53, "all_targets": False,
+            "max_tier": "ro", "any_tier": False, "valid_until": None, "reason": None,
+            "mirrored_from": None, "source": None, "external_id": "U0EXAMPLE002"}
+    base.update(kw)
+    return base
+
+
+@pytest.fixture
+def edit(monkeypatch):
+    from queryhub.web import routes_admin as ra
+    st = {"cur": _Cur(_old()), "audit": []}
+
+    class Txn:
+        def __enter__(self): return st["cur"]
+        def __exit__(self, *e): return False
+    monkeypatch.setattr(ra.admin, "require_admin", lambda c, a: "U0EXAMPLE001")
+    monkeypatch.setattr(ra.db, "transaction", lambda: Txn())
+    monkeypatch.setattr(ra.audit, "log_in", lambda cur, rid, uid, name, action, details=None:
+                        st["audit"].append((action, details)))
+    st["ra"] = ra
+    return st
+
+
+def test_raising_the_ceiling_replaces_the_row(edit):
+    ra = edit["ra"]
+    out = ra.admin_update_role(901, ra.RolePatch(maxTier="RW"), claims={"sub": "x"})
+    assert out == {"id": 902, "replaced": 901, "before": {
+        "role": "approver", "scopeTeamId": 7, "scopeTargetId": 53, "maxTier": "RO",
+        "validUntil": None, "reason": None}}
+    action, details = edit["audit"][0]
+    assert action == "role_changed" and details["after"]["maxTier"] == "RW"
+
+
+def test_an_edit_that_changes_nothing_writes_nothing(edit):
+    ra = edit["ra"]
+    out = ra.admin_update_role(901, ra.RolePatch(maxTier="ro"), claims={"sub": "x"})
+    assert out["replaced"] is None and edit["audit"] == []
+    assert not any(q.startswith("INSERT") for q in edit["cur"].sql)
+
+
+def test_a_synced_role_is_refused(edit):
+    from fastapi import HTTPException
+    ra = edit["ra"]
+    edit["cur"].old = _old(source="pod-sync")
+    with pytest.raises(HTTPException) as e:
+        ra.admin_update_role(901, ra.RolePatch(maxTier="RW"), claims={"sub": "x"})
+    assert e.value.status_code == 409
+
+
+def test_an_admin_cannot_be_given_a_scope_by_edit(edit):
+    from fastapi import HTTPException
+    ra = edit["ra"]
+    with pytest.raises(HTTPException) as e:
+        ra.admin_update_role(901, ra.RolePatch(role="admin"), claims={"sub": "x"})
+    assert e.value.detail["code"] == "admin_scope"

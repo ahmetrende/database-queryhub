@@ -3057,14 +3057,13 @@ def admin_roles(claims: dict = Depends(deps.current_user)):
             "enforced": teams.use_v2()}
 
 
-@router.post("/roles", status_code=201)
-def admin_create_role(body: RoleIn, claims: dict = Depends(deps.current_user)):
-    uid = admin.require_admin(claims, "access")
-    if body.role not in _ROLES:
+def _check_role_spec(role: str, scope_team_id, scope_target_id, max_tier) -> str | None:
+    """The rules a role must satisfy, shared by create and edit. Returns the
+    tier as the FK stores it."""
+    if role not in _ROLES:
         raise deps._error(400, "bad_request",
                           f"Unknown role. One of: {', '.join(_ROLES)}.")
-    if body.role == "admin" and (body.scopeTeamId is not None
-                                 or body.scopeTargetId is not None):
+    if role == "admin" and (scope_team_id is not None or scope_target_id is not None):
         # The schema refuses it too; saying so here gives a usable message
         # instead of a constraint violation.
         raise deps._error(400, "admin_scope",
@@ -3073,14 +3072,21 @@ def admin_create_role(body: RoleIn, claims: dict = Depends(deps.current_user)):
     # The client speaks uppercase and the tier table is lowercase. Accept
     # either rather than making the caller know which side of the seam it is
     # on, and store the one the FK will match.
-    tier = (body.maxTier or "").strip().lower() or None
+    tier = (max_tier or "").strip().lower() or None
     if tier is not None and tier not in ("ro", "rw", "ddl"):
         raise deps._error(400, "tier_scope", "maxTier must be RO, RW or DDL.")
-    if tier is not None and body.role not in _ROLES_WITH_CEILING:
+    if tier is not None and role not in _ROLES_WITH_CEILING:
         raise deps._error(
             400, "tier_scope",
             f"A tier ceiling only applies to {' and '.join(_ROLES_WITH_CEILING)}"
-            f" — nothing reads it on a {body.role}. Leave it empty.")
+            f" — nothing reads it on a {role}. Leave it empty.")
+    return tier
+
+
+@router.post("/roles", status_code=201)
+def admin_create_role(body: RoleIn, claims: dict = Depends(deps.current_user)):
+    uid = admin.require_admin(claims, "access")
+    tier = _check_role_spec(body.role, body.scopeTeamId, body.scopeTargetId, body.maxTier)
 
     with db.transaction() as cur:
         cur.execute(
@@ -3189,6 +3195,126 @@ def admin_revoke_role(role_id: int, claims: dict = Depends(deps.current_user)):
         audit.log_in(cur, None, uid, claims.get("name"), "role_revoked",
                      {"subject": row["external_id"], "role": row["role"],
                       "role_id": role_id})
+
+
+class RolePatch(BaseModel):
+    role: str | None = None
+    # A scope is changed by sending it; `...All` switches it to every team or
+    # every target. The two cannot be told apart from a bare null, which would
+    # mean both "not editing this" and "widen it to everything".
+    scopeTeamId: int | None = None
+    scopeTeamAll: bool = False
+    scopeTargetId: int | None = None
+    scopeTargetAll: bool = False
+    maxTier: str | None = None
+    clearMaxTier: bool = False
+    validUntil: datetime | None = None
+    clearValidUntil: bool = False
+    reason: str | None = None
+
+
+@router.patch("/roles/{role_id}")
+def admin_update_role(role_id: int, body: RolePatch,
+                      claims: dict = Depends(deps.current_user)):
+    """Change a role: its kind, scope, ceiling or expiry.
+
+    A role row is immutable -- `role_assignment_live_uq` is built on that -- so
+    an edit is the revoke of the old row and the insert of its replacement, in
+    one transaction: never a moment with both, never a moment with neither.
+    The same rules as creating one apply, and the same refusals as revoking
+    one: a row that mirrors the admins table or that a sync maintains would
+    come back on its next run, so it is changed where it is owned.
+
+    Returns the new id and the row as it was, so the screen can show what the
+    change replaced.
+    """
+    uid = admin.require_admin(claims, "access")
+    with db.transaction() as cur:
+        cur.execute(
+            "SELECT ra.*, i.external_id FROM role_assignment ra "
+            "  JOIN principal_identity i ON i.principal_id = ra.principal_id "
+            "   AND i.provider = 'slack' AND NOT i.is_deleted "
+            " WHERE ra.id = %s AND ra.revoked_at IS NULL AND NOT ra.is_deleted",
+            (role_id,))
+        old = cur.fetchone()
+        if old is None:
+            raise deps._error(404, "not_found", "No such active role.")
+        if old["mirrored_from"]:
+            raise deps._error(409, "conflict",
+                              "This role mirrors the admins table — change it there instead.")
+        if old["source"]:
+            raise deps._error(
+                409, "conflict",
+                f"This role is maintained by the '{old['source']}' sync — an edit "
+                f"would be undone on its next run. Change the team's lead or what "
+                f"the team owns instead.")
+
+        role = body.role or old["role"]
+        team = (None if body.scopeTeamAll else
+                body.scopeTeamId if body.scopeTeamId is not None else old["scope_team_id"])
+        target = (None if body.scopeTargetAll else
+                  body.scopeTargetId if body.scopeTargetId is not None else old["scope_target_id"])
+        if body.clearMaxTier:
+            max_tier = None
+        elif body.maxTier is not None:
+            max_tier = body.maxTier
+        else:
+            max_tier = None if role == "admin" and old["role"] != "admin" else old["max_tier"]
+        until = (None if body.clearValidUntil else
+                 body.validUntil if body.validUntil is not None else old["valid_until"])
+        reason = body.reason if body.reason is not None else old["reason"]
+        tier = _check_role_spec(role, team, target, max_tier)
+
+        before = {"role": old["role"], "scopeTeamId": old["scope_team_id"],
+                  "scopeTargetId": old["scope_target_id"],
+                  "maxTier": (old["max_tier"] or "").upper() or None,
+                  "validUntil": mapping.iso(old["valid_until"]), "reason": old["reason"]}
+        after = {"role": role, "scopeTeamId": team, "scopeTargetId": target,
+                 "maxTier": (tier or "").upper() or None,
+                 "validUntil": mapping.iso(until), "reason": reason}
+        if before == after:
+            return {"id": role_id, "replaced": None, "before": before}
+        if team is not None:
+            cur.execute("SELECT 1 FROM team WHERE id = %s AND NOT is_deleted", (team,))
+            if cur.fetchone() is None:
+                raise deps._error(404, "no_team", "No such team.")
+
+        cur.execute("UPDATE role_assignment SET revoked_at = NOW(), "
+                    "       revoked_by = (SELECT p.id FROM principal p "
+                    "         JOIN principal_identity i ON i.principal_id = p.id "
+                    "        WHERE i.provider = 'slack' AND i.external_id = %s "
+                    "          AND NOT i.is_deleted LIMIT 1) "
+                    " WHERE id = %s", (uid, role_id))
+        cur.execute(
+            "SELECT id FROM role_assignment "
+            " WHERE principal_id = %s AND role = %s "
+            "   AND scope_team_id IS NOT DISTINCT FROM %s "
+            "   AND scope_target_id IS NOT DISTINCT FROM %s "
+            "   AND revoked_at IS NULL AND NOT is_deleted",
+            (old["principal_id"], role, team, target))
+        dup = cur.fetchone()
+        if dup is not None:
+            raise deps._error(
+                409, "conflict",
+                f"This person already holds {role} over that scope (role "
+                f"{dup['id']}). Change or revoke that one instead.", roleId=dup["id"])
+        cur.execute(
+            "INSERT INTO role_assignment "
+            "  (principal_id, role, scope_team_id, all_teams, scope_target_id, "
+            "   all_targets, max_tier, any_tier, valid_until, reason, created_by) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+            "        (SELECT p.id FROM principal p "
+            "           JOIN principal_identity i ON i.principal_id = p.id "
+            "          WHERE i.provider = 'slack' AND i.external_id = %s "
+            "            AND NOT i.is_deleted LIMIT 1)) "
+            "RETURNING id",
+            (old["principal_id"], role, team, team is None, target, target is None,
+             tier, tier is None, until, reason, uid))
+        new_id = cur.fetchone()["id"]
+        audit.log_in(cur, None, uid, claims.get("name"), "role_changed",
+                     {"subject": old["external_id"], "role_id": role_id,
+                      "new_role_id": new_id, "before": before, "after": after})
+    return {"id": new_id, "replaced": role_id, "before": before}
 
 
 # ---- Insights (review): audit / metrics / feedback --------------------------
