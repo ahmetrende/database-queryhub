@@ -417,7 +417,58 @@ def admin_auto_grants(claims: dict = Depends(deps.current_user)):
         "  LEFT JOIN admins     ga ON ga.slack_user_id = g.granted_by "
         " WHERE g.expires_at IS NULL OR g.expires_at > NOW() "
         " ORDER BY g.granted_at DESC")
-    return {"autoGrants": [mapping.auto_grant_entry(r, _alias_of) for r in rows]}
+    out = [{**mapping.auto_grant_entry(r, _alias_of), "subjectType": "user"} for r in rows]
+    if teams_mod.use_v2():
+        out += _v2_only_auto_grants()
+    return {"autoGrants": out}
+
+
+def _v2_only_auto_grants() -> list[dict]:
+    """The waivers the legacy table cannot hold: a TEAM's, and a hand-written
+    personal one. They decide at submit and showed nowhere on this screen, so an
+    admin could not see -- let alone revoke -- the waiver that let a whole pod
+    skip review.
+
+    A team row's `user` is the team's name, which is how the list already
+    treats a subject that is in neither people table; `subjectType` says which
+    it is. The id carries `ag:` so the revoke knows which table it names.
+    """
+    rows = db.fetch_all(
+        "SELECT g.id, g.team_id, COALESCE(t.display_name, t.name) AS team_name, "
+        "       i.external_id AS slack_user_id, p.display_name AS user_name, "
+        "       g.tier, g.target_id, g.database_name, g.reason, g.valid_until, "
+        "       g.valid_from, cb.display_name AS created_by_name "
+        "  FROM access_grant g "
+        "  LEFT JOIN team t ON t.id = g.team_id "
+        "  LEFT JOIN principal p ON p.id = g.principal_id "
+        "  LEFT JOIN principal_identity i ON i.principal_id = g.principal_id "
+        "   AND i.provider = 'slack' AND NOT i.is_deleted "
+        "  LEFT JOIN principal cb ON cb.id = g.created_by "
+        " WHERE g.auto_approve AND g.mirrored_from IS NULL "
+        "   AND g.revoked_at IS NULL AND NOT g.is_deleted "
+        "   AND (g.valid_until IS NULL OR g.valid_until > NOW()) "
+        " ORDER BY g.valid_from DESC")
+    out = []
+    for r in rows:
+        team = r["team_id"] is not None
+        subject = r["team_name"] if team else r["slack_user_id"]
+        out.append({
+            "id": f"ag:{r['id']}",
+            "subjectType": "team" if team else "user",
+            "teamId": str(r["team_id"]) if team else None,
+            "user": subject,
+            "userName": r["team_name"] if team else (r["user_name"] or subject),
+            "tier": (r["tier"] or "ro").upper(),
+            "connectionId": _alias_of(r["target_id"]) if r["target_id"] else None,
+            "databaseId": r["database_name"],
+            "maxRows": None,
+            "reason": r["reason"],
+            "expiresAt": mapping.iso(r["valid_until"]),
+            "createdBy": None,
+            "createdByName": r["created_by_name"],
+            "grantedAt": mapping.iso(r["valid_from"]),
+        })
+    return out
 
 
 @router.get("/scopes")
@@ -2752,6 +2803,45 @@ class AutoGrantIn(BaseModel):
     expiresInMinutes: int | None = None
 
 
+def _insert_user_waiver(cur, user, tier, tid, db_scope, expires_at, expires_in_minutes,
+                        reason, uid) -> int:
+    """One person's waiver, in the table the migration-109 mirror projects."""
+    if expires_in_minutes:
+        cur.execute(
+            "INSERT INTO auto_approve_grants (slack_user_id, max_tier, "
+            "  target_server_id, database_name, expires_at, reason, granted_by) "
+            "VALUES (%s, %s, %s, %s, NOW() + make_interval(mins => %s), %s, %s) "
+            "RETURNING id",
+            (user, tier, tid, db_scope, expires_in_minutes, reason, uid))
+    else:
+        cur.execute(
+            "INSERT INTO auto_approve_grants (slack_user_id, max_tier, "
+            "  target_server_id, database_name, expires_at, reason, granted_by) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (user, tier, tid, db_scope, expires_at, reason, uid))
+    return cur.fetchone()["id"]
+
+
+def _insert_team_waiver(cur, team_id, tier, tid, db_scope, expires_at, expires_in_minutes,
+                        reason, uid) -> int:
+    """A team's waiver. It has no legacy home -- `auto_approve_grants` is keyed
+    on one person -- so it is an `access_grant` row, which the submit path reads
+    since team waivers were made to reach their members."""
+    until_sql = "NOW() + make_interval(mins => %s)" if expires_in_minutes else "%s"
+    cur.execute(
+        "INSERT INTO access_grant (team_id, target_id, all_targets, database_name, "
+        "  all_databases, tier, auto_approve, merge_with_team, valid_from, valid_until, "
+        "  reason, created_by) "
+        f"VALUES (%s, %s, FALSE, %s, %s, %s, TRUE, FALSE, NOW(), {until_sql}, %s, "
+        "        (SELECT p.id FROM principal p JOIN principal_identity i "
+        "           ON i.principal_id = p.id WHERE i.provider = 'slack' "
+        "          AND i.external_id = %s AND NOT i.is_deleted LIMIT 1)) "
+        "RETURNING id",
+        (team_id, tid, db_scope, db_scope is None, tier,
+         expires_in_minutes if expires_in_minutes else expires_at, reason, uid))
+    return cur.fetchone()["id"]
+
+
 @router.post("/auto-grants", status_code=201)
 def admin_create_auto_grant(body: AutoGrantIn,
                             claims: dict = Depends(deps.current_user)):
@@ -2774,22 +2864,9 @@ def admin_create_auto_grant(body: AutoGrantIn,
         raise deps._error(400, "bad_request", str(e))
     # NOT suppressing app.auth_dm_suppress: the auth-event trigger DMs the user.
     with db.transaction() as cur:
-        if body.expiresInMinutes:
-            cur.execute(
-                "INSERT INTO auto_approve_grants (slack_user_id, max_tier, "
-                "  target_server_id, database_name, expires_at, reason, granted_by) "
-                "VALUES (%s, %s, %s, %s, NOW() + make_interval(mins => %s), %s, %s) "
-                "RETURNING id",
-                (body.user, tier, tid, db_scope, body.expiresInMinutes,
-                 body.reason, uid))
-        else:
-            cur.execute(
-                "INSERT INTO auto_approve_grants (slack_user_id, max_tier, "
-                "  target_server_id, database_name, expires_at, reason, granted_by) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
-                (body.user, tier, tid, db_scope, body.expiresAt,
-                 body.reason, uid))
-        new_id = cur.fetchone()["id"]
+        new_id = _insert_user_waiver(cur, body.user, tier, tid, db_scope,
+                                     body.expiresAt, body.expiresInMinutes,
+                                     body.reason, uid)
         audit.log_in(cur, None, uid, claims.get("name"), "auto_approve_granted",
                      {"user": body.user, "target_id": tid,
                       "database": db_scope, "tier": tier})
@@ -2798,9 +2875,38 @@ def admin_create_auto_grant(body: AutoGrantIn,
 
 
 @router.delete("/auto-grants/{grant_id}", status_code=204)
-def admin_delete_auto_grant(grant_id: int,
+def admin_delete_auto_grant(grant_id: str,
                             claims: dict = Depends(deps.current_user)):
     uid = admin.require_admin(claims, "access")
+    if grant_id.startswith("ag:"):
+        # A waiver with no legacy row -- a team's, or a hand-written personal
+        # one. Revoked, not deleted, like every access_grant row. A mirrored
+        # row is refused: it would come back from its legacy source.
+        try:
+            ag_id = int(grant_id[3:])
+        except ValueError:
+            raise deps._error(400, "bad_request", "Bad auto-grant id.")
+        with db.transaction() as cur:
+            cur.execute(
+                "UPDATE access_grant SET revoked_at = NOW(), "
+                "       revoked_by = (SELECT p.id FROM principal p "
+                "         JOIN principal_identity i ON i.principal_id = p.id "
+                "        WHERE i.provider = 'slack' AND i.external_id = %s "
+                "          AND NOT i.is_deleted LIMIT 1) "
+                " WHERE id = %s AND auto_approve AND mirrored_from IS NULL "
+                "   AND revoked_at IS NULL AND NOT is_deleted "
+                "RETURNING team_id, principal_id, target_id", (uid, ag_id))
+            row = cur.fetchone()
+            if row is None:
+                raise deps._error(404, "not_found", "No such auto-grant.")
+            audit.log_in(cur, None, uid, claims.get("name"), "auto_approve_revoked",
+                         {"grant_id": grant_id, "team_id": row["team_id"],
+                          "target_id": row["target_id"]})
+        return
+    try:
+        grant_id = int(grant_id)
+    except ValueError:
+        raise deps._error(400, "bad_request", "Bad auto-grant id.")
     with db.transaction() as cur:
         cur.execute(
             "DELETE FROM auto_approve_grants WHERE id = %s "
@@ -2811,6 +2917,114 @@ def admin_delete_auto_grant(grant_id: int,
         audit.log_in(cur, None, uid, claims.get("name"), "auto_approve_revoked",
                      {"grant_id": grant_id, "user": row["slack_user_id"],
                       "target_id": row["target_server_id"]})
+
+
+class AutoGrantTargetIn(BaseModel):
+    connectionId: str
+    databaseId: str | None = None
+
+
+class BulkAutoGrantIn(BaseModel):
+    subjectType: str = "user"            # user | team
+    subject: str                         # a principal id, or a team's name
+    targets: list[AutoGrantTargetIn]
+    tier: str = "ro"
+    reason: str | None = None
+    expiresAt: str | None = None
+    expiresInMinutes: int | None = None
+    dryRun: bool = False
+
+
+_BULK_AUTO_GRANTS_MAX = 100
+
+
+@router.post("/auto-grants/bulk", status_code=201)
+def admin_bulk_create_auto_grants(body: BulkAutoGrantIn,
+                                  claims: dict = Depends(deps.current_user)):
+    """One subject, several connections or databases, one save -- all or nothing.
+
+    Granting one person an exemption on four targets meant picking the person
+    four times. Every target is checked with the single route's rules first --
+    a known connection, a database that exists there -- and if any is refused,
+    nothing is written and every refusal comes back. A TEAM can be the subject
+    too: its waiver reaches every member, the way a team grant does.
+    """
+    uid = admin.require_admin(claims, "access")
+    stype = (body.subjectType or "user").lower()
+    if stype not in ("user", "team"):
+        raise deps._error(400, "bad_request", "subjectType must be user or team.")
+    tier = (body.tier or "ro").lower()
+    if tier not in ("ro", "rw", "ddl"):
+        raise deps._error(400, "bad_request", "tier must be RO, RW, or DDL.")
+    if not body.targets:
+        raise deps._error(400, "bad_request", "Name at least one connection.")
+    if len(body.targets) > _BULK_AUTO_GRANTS_MAX:
+        raise deps._error(400, "bad_request",
+                          f"At most {_BULK_AUTO_GRANTS_MAX} targets per request.")
+    team = None
+    if stype == "team":
+        if not teams_mod.use_v2():
+            raise deps._error(400, "bad_request",
+                              "Team waivers need the new access model.")
+        team = _resolve_team(body.subject)
+        if team is None:
+            raise deps._error(404, "not_found", f"No team named '{body.subject}'.")
+    elif not _valid_principal(body.subject):
+        raise deps._error(400, "bad_request",
+                          "subject must be a principal id: a Slack user id or local:<username>.")
+
+    plan, refused, seen = [], [], set()
+    for t in body.targets:
+        label = t.connectionId + (f"/{t.databaseId}" if t.databaseId else "")
+        tid = _target_id_of(t.connectionId)
+        if tid is None:
+            refused.append({"target": label, "reason": "Unknown connection."})
+            continue
+        db_scope = auto_approve.normalise_scope(t.databaseId)
+        try:
+            auto_approve.validate_scope(tid, db_scope)
+        except auto_approve.ScopeError as e:
+            refused.append({"target": label, "reason": str(e)})
+            continue
+        if (tid, db_scope) in seen:
+            continue
+        seen.add((tid, db_scope))
+        plan.append((tid, db_scope, label))
+    if team is not None and plan:
+        live = {(r["target_id"], r["database_name"]) for r in db.fetch_all(
+            "SELECT target_id, database_name FROM access_grant "
+            " WHERE team_id = %s AND auto_approve AND tier = %s "
+            "   AND revoked_at IS NULL AND NOT is_deleted", (team["id"], tier))}
+        for tid, db_scope, label in plan:
+            if (tid, db_scope) in live:
+                refused.append({"target": label,
+                                "reason": "The team already holds this waiver."})
+    if refused:
+        raise deps._error(
+            409, "conflict",
+            f"{len(refused)} of {len(body.targets)} targets cannot take this waiver; "
+            "nothing was written.", refused=refused)
+    if body.dryRun:
+        return {"applied": False, "targets": [label for _t, _d, label in plan]}
+
+    ids = []
+    with db.transaction() as cur:
+        for tid, db_scope, label in plan:
+            if team is not None:
+                wid = _insert_team_waiver(cur, team["id"], tier, tid, db_scope,
+                                          body.expiresAt, body.expiresInMinutes,
+                                          body.reason, uid)
+                ids.append(f"ag:{wid}")
+            else:
+                ids.append(str(_insert_user_waiver(cur, body.subject, tier, tid, db_scope,
+                                                   body.expiresAt, body.expiresInMinutes,
+                                                   body.reason, uid)))
+            audit.log_in(cur, None, uid, claims.get("name"), "auto_approve_granted",
+                         {"subject_type": stype,
+                          "user": body.subject if team is None else None,
+                          "team_id": team["id"] if team is not None else None,
+                          "target_id": tid, "database": db_scope, "tier": tier})
+    return {"applied": True, "ids": ids, "targets": [label for _t, _d, label in plan]}
 
 
 # ---- Endpoint / access requests: decision (super-admin) ---------------------
