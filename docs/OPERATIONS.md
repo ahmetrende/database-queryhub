@@ -274,8 +274,9 @@ UPDATE target_servers SET enabled = TRUE  WHERE alias = 'acme-prod-orders';
 
 ```bash
 .venv/bin/python scripts/import_targets_from_inventory.py
-# Adds enabled rows with sentinel 'PASSWORD_NOT_SET' password — visible
-# in modal but fails fast at execute time until you UPDATE real creds.
+# Adds new endpoints DISABLED, with the sentinel 'PASSWORD_NOT_SET' password:
+# fill real credentials, then enable. A name already in use is settled by
+# targets.claim_alias() -- see SCHEMA.md, target_servers.alias.
 ```
 
 ---

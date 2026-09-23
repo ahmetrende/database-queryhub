@@ -173,6 +173,108 @@ def by_alias(alias: str) -> TargetServer | None:
     return _row_to_target(row) if row else None
 
 
+# What a connection's engine adds to a name that two connections want. A word,
+# not a number: `orders-ch` says what it is, `orders-2` does not.
+ENGINE_SUFFIX = {"postgres": "pg", "mssql": "mssql", "clickhouse": "ch",
+                 "athena": "athena"}
+
+
+class AliasTaken(Exception):
+    """The connection a claim moves aside changed between the plan and the write."""
+
+
+@dataclass(frozen=True)
+class AliasClaim:
+    """The name a new or renamed connection gets.
+
+    `displaced` is (target id, old alias, new alias) for the DISABLED
+    connection that held the name and now takes its engine's suffix. None when
+    the name was free, or when the newcomer took a suffix instead.
+    """
+    alias: str
+    displaced: tuple[int, str, str] | None = None
+
+
+def alias_holders(cur=None) -> dict[str, dict]:
+    """Every registered name, lower-cased -> {id, alias, engine, enabled}."""
+    sql = ("SELECT id, alias, COALESCE(engine, 'postgres') AS engine, enabled "
+           "FROM target_servers")
+    if cur is None:
+        rows = db.fetch_all(sql)
+    else:
+        cur.execute(sql)
+        rows = cur.fetchall()
+    return {r["alias"].lower(): dict(r) for r in rows}
+
+
+def _with_suffix(alias: str, engine: str, taken) -> str:
+    base = f"{alias}-{ENGINE_SUFFIX.get(engine, engine)}"
+    name, n = base, 2
+    while name.lower() in taken:
+        name, n = f"{base}-{n}", n + 1
+    return name
+
+
+def claim_alias(wanted: str, engine: str, holders: dict[str, dict], *,
+                yield_to_live: bool) -> AliasClaim | None:
+    """Decide the name a connection that wants `wanted` gets.
+
+    Names stay unique, because the web API, MCP and the admin screens all use
+    the name as the connection's id: two rows with one name would send a click
+    on the disabled one to the live one. What decides a clash is which holder
+    is in use:
+
+    * held by a DISABLED connection -- the name is free. That connection takes
+      its engine's suffix (`orders` -> `orders-pg`) and the newcomer gets the
+      plain name. A service that moved engines keeps what people call it.
+    * held by an ENABLED connection -- it keeps the name. With
+      `yield_to_live` (an importer, which has nobody to ask) the newcomer takes
+      its own engine's suffix; without it (a person typed the name) the answer
+      is None, and the caller says the name is taken.
+
+    Compared case-insensitively. `holders` is alias_holders(), without the
+    connection being renamed.
+    """
+    holder = holders.get(wanted.lower())
+    if holder is None:
+        return AliasClaim(wanted)
+    if not holder["enabled"]:
+        return AliasClaim(wanted, (holder["id"], holder["alias"],
+                                   _with_suffix(holder["alias"], holder["engine"],
+                                                holders)))
+    if yield_to_live:
+        return AliasClaim(_with_suffix(wanted, engine, holders))
+    return None
+
+
+def note_claim(holders: dict[str, dict], claim: AliasClaim, *, engine: str,
+               target_id: int | None = None) -> None:
+    """Update `holders` after `claim`, so the next claim in the same run sees
+    both the newcomer and the renamed holder."""
+    if claim.displaced:
+        _tid, old, new = claim.displaced
+        moved = holders.pop(old.lower())
+        holders[new.lower()] = {**moved, "alias": new}
+    holders[claim.alias.lower()] = {"id": target_id, "alias": claim.alias,
+                                    "engine": engine, "enabled": False}
+
+
+def displace_in(cur, claim: AliasClaim) -> None:
+    """Rename the connection `claim` moves aside, in the caller's transaction.
+
+    Guarded on the old name and on it still being disabled: if either changed
+    since the plan, nothing is renamed and AliasTaken says so. It runs before
+    the newcomer's own write, so the unique constraint sees one holder at a time.
+    """
+    if claim.displaced is None:
+        return
+    tid, old, new = claim.displaced
+    cur.execute("UPDATE target_servers SET alias = %s "
+                " WHERE id = %s AND alias = %s AND NOT enabled", (new, tid, old))
+    if cur.rowcount != 1:
+        raise AliasTaken(old)
+
+
 def get_password(target_id: int) -> str:
     row = db.fetch_one(
         "SELECT password_encrypted FROM target_servers WHERE id = %s",

@@ -757,6 +757,44 @@ def _clean_alias(alias: str | None) -> str:
     return a
 
 
+def _name_taken(alias: str):
+    return deps._error(409, "conflict",
+                       f"A connection named '{alias}' already exists.")
+
+
+def _alias_claim(alias: str, engine: str, *, exclude_id: int | None = None,
+                 cur=None) -> "targets.AliasClaim":
+    """The name a person typed, as targets.claim_alias() decides it: free, or
+    held by a disabled connection that moves aside. Held by an enabled one, it
+    is refused -- the person chose that name, so they are told rather than
+    handed a suffixed one."""
+    holders = {k: v for k, v in targets.alias_holders(cur).items()
+               if v["id"] != exclude_id}
+    claim = targets.claim_alias(alias, engine, holders, yield_to_live=False)
+    if claim is None:
+        raise _name_taken(alias)
+    return claim
+
+
+def _take_alias_in(cur, alias: str, engine: str, *, exclude_id: int | None,
+                   uid: str, actor_name: str | None) -> dict | None:
+    """Clear `alias` for the connection being created or renamed, inside the
+    caller's transaction. Re-decided here rather than trusted from the check
+    before it, so a holder enabled in between keeps its name."""
+    claim = _alias_claim(alias, engine, exclude_id=exclude_id, cur=cur)
+    if claim.displaced is None:
+        return None
+    try:
+        targets.displace_in(cur, claim)
+    except targets.AliasTaken:
+        raise _name_taken(alias)
+    tid, old, new = claim.displaced
+    audit.log_in(cur, None, uid, actor_name, "connection_renamed",
+                 {"target_id": tid, "from": old, "to": new,
+                  "why": f"disabled; its name went to the connection now called '{alias}'"})
+    return {"from": old, "to": new}
+
+
 def _clean_host(host: str | None) -> str:
     h = (host or "").strip()
     if not _HOST_RE.match(h):
@@ -1022,10 +1060,10 @@ def admin_create_connection(body: ConnectionIn,
     port = _clean_port(body.port, engine)
     database = _clean_ident(body.defaultDatabase, "defaultDatabase")
     creds = _clean_credentials(body.credentials)
-    if targets.by_alias(alias) is not None:
-        raise deps._error(409, "conflict",
-                          f"A connection named '{alias}' already exists.")
+    _alias_claim(alias, engine)
     with db.transaction() as cur:
+        displaced = _take_alias_in(cur, alias, engine, exclude_id=None,
+                                   uid=uid, actor_name=claims.get("name"))
         new_id = targets.create_in(
             cur, alias=alias, host=host, port=port, default_database=database,
             engine=engine, notes=(body.notes or "").strip() or None,
@@ -1036,8 +1074,8 @@ def admin_create_connection(body: ConnectionIn,
         audit.log_in(cur, None, uid, claims.get("name"), "connection_created",
                      {"connection": alias, "target_id": new_id, "host": host,
                       "port": port, "engine": engine, "enabled": False,
-                      "credentials": sorted(creds)})
-    return _connection_payload(targets.admin_row(new_id))
+                      "credentials": sorted(creds), "displaced": displaced})
+    return {**_connection_payload(targets.admin_row(new_id)), "displaced": displaced}
 
 
 def _plan_connection_update(row: dict, body: "ConnectionPatch") -> tuple[dict, dict]:
@@ -1063,9 +1101,7 @@ def _plan_connection_update(row: dict, body: "ConnectionPatch") -> tuple[dict, d
     if body.alias is not None:
         alias = _clean_alias(body.alias)
         if alias != row["alias"]:
-            if targets.by_alias(alias) is not None:
-                raise deps._error(409, "conflict",
-                                  f"A connection named '{alias}' already exists.")
+            _alias_claim(alias, engine, exclude_id=row["id"])
             changes["alias"] = alias
     if body.host is not None:
         _set("host", _clean_host(body.host))
@@ -1107,6 +1143,11 @@ def _apply_connection_update(cur, row: dict, changes: dict, creds: dict,
     """Write one planned connection change and its audit row, inside the
     caller's transaction."""
     target_id = row["id"]
+    displaced = None
+    if "alias" in changes:
+        displaced = _take_alias_in(cur, changes["alias"], row["engine"],
+                                   exclude_id=target_id, uid=uid,
+                                   actor_name=actor_name)
     written = targets.update_in(cur, target_id, changes)
     for mode, (username, password) in creds.items():
         targets.set_credentials_in(cur, target_id, mode, username, password)
@@ -1119,6 +1160,7 @@ def _apply_connection_update(cur, row: dict, changes: dict, creds: dict,
         details["enabled"] = changes["enabled"]
     if "alias" in changes:
         details["renamed_to"] = changes["alias"]
+        details["displaced"] = displaced
     if "tags" in changes:
         # Name the tag change, not just the fact that "tags" moved. These
         # are the words an operator will search the log for six months from

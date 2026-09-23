@@ -188,7 +188,7 @@ Fernet-encrypted with the master key on disk and stored as ciphertext in
 | Column | Notes |
 |--------|-------|
 | `id` | SERIAL, referenced by `team_target_grants.target_server_id`. |
-| `alias` | Unique, shown in the `/sql` modal dropdown. |
+| `alias` | Unique, shown in the `/sql` modal dropdown, and the connection's id in the web API, MCP and the admin screens. When a new or renamed connection wants a name a **disabled** connection holds, that one takes its engine's suffix (`orders` -> `orders-pg`) and the newcomer gets the plain name. An **enabled** holder keeps it: the importers then add the newcomer's own suffix (`-ch`), and the admin form refuses the name (`targets.claim_alias`). |
 | `host`, `port`, `default_database`, `username` | Connection coords. `username` is the RO login (typically `queryhub_ro`). |
 | `password_encrypted` | Fernet ciphertext of the RO user's password. Generate via `scripts/encrypt_secret.py` then INSERT raw. |
 | `username_rw`, `password_rw_encrypted` | RW login (typically `queryhub_rw` with `pg_read_all_data` + `pg_write_all_data`). Used when the effective tier for (user, target) is `rw` or `ddl` and the query classifies as write. NULL = RW not configured; write queries on this target are rejected. |

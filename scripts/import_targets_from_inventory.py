@@ -66,6 +66,7 @@ import psycopg  # noqa: E402
 
 from queryhub import db  # noqa: E402
 from queryhub import target_policy  # noqa: E402
+from queryhub import targets  # noqa: E402
 from queryhub.config import ENV  # noqa: E402
 from queryhub.crypto import decrypt, encrypt  # noqa: E402
 
@@ -236,15 +237,16 @@ CLICKHOUSE_TAGS = {"provider": "aws", "service": "ClickHouse Cloud"}
 
 
 def plan_clickhouse_imports(servers: list[dict], existing_hosts: set[str],
-                            existing_aliases: set[str]) -> list[dict]:
-    """New ClickHouse services to add, as {alias, host, identifier}.
+                            holders: dict[str, dict]) -> list[dict]:
+    """New ClickHouse services to add, as {alias, host, identifier, displaced}.
 
-    The alias is the service's own name, which is what people call it. Where
-    that name is already a target's alias -- a service that moved from RDS to
-    ClickHouse Cloud keeps its name, and the old row stays for its history --
-    it gets a `-ch` suffix rather than a number nobody can place. Soft-deleted
-    services are skipped: v_server does not filter them."""
-    taken = {a.lower() for a in existing_aliases}
+    The alias is the service's own name, which is what people call it. A name
+    already in use is settled by targets.claim_alias(): held by a DISABLED
+    target -- a service that moved from RDS to ClickHouse Cloud, whose old row
+    stays for its history -- that row takes its engine's suffix and the
+    service gets the plain name; held by an enabled one, the service takes
+    `-ch`. `holders` is targets.alias_holders(), and is updated as it goes.
+    Soft-deleted services are skipped: v_server does not filter them."""
     out = []
     for s in sorted(servers, key=lambda r: r.get("db_instance_identifier") or ""):
         if (s.get("engine") or "").lower() != "clickhouse" or s.get("is_deleted"):
@@ -253,34 +255,38 @@ def plan_clickhouse_imports(servers: list[dict], existing_hosts: set[str],
         name = (s.get("db_instance_identifier") or "").strip()
         if not host or not name or host in existing_hosts:
             continue
-        alias = name if name.lower() not in taken else f"{name}-ch"
-        if alias.lower() in taken:
-            continue          # both taken: leave it for a person to name
-        taken.add(alias.lower())
-        out.append({"alias": alias, "host": host, "identifier": name})
+        claim = targets.claim_alias(name, "clickhouse", holders, yield_to_live=True)
+        targets.note_claim(holders, claim, engine="clickhouse")
+        out.append({"alias": claim.alias, "host": host, "identifier": name,
+                    "displaced": claim.displaced})
     return out
 
 
 def _import_clickhouse(servers: list[dict], sentinel_ct: str, *,
                        dry_run: bool) -> int:
-    existing = db.fetch_all("SELECT alias, host FROM target_servers")
-    plan = plan_clickhouse_imports(servers, {r["host"] for r in existing},
-                                   {r["alias"] for r in existing})
+    holders = targets.alias_holders()
+    plan = plan_clickhouse_imports(
+        servers, {h["host"] for h in db.fetch_all("SELECT host FROM target_servers")},
+        holders)
     for p in plan:
-        log.info("%s clickhouse %s -> %s:%d", "would add" if dry_run else "added",
-                 p["alias"], p["host"], CLICKHOUSE_PORT)
-        if dry_run:
-            continue
-        db.execute(
-            "INSERT INTO target_servers "
-            "(alias, host, port, default_database, username, "
-            " password_encrypted, enabled, notes, tags, engine) "
-            "VALUES (%s, %s, %s, 'default', %s, %s, FALSE, %s, %s::jsonb, 'clickhouse')",
-            (p["alias"], p["host"], CLICKHOUSE_PORT, DEFAULT_USERNAME, sentinel_ct,
-             f"auto-imported from inventory (ClickHouse Cloud service "
-             f"{p['identifier']}) — fill creds.", json.dumps(CLICKHOUSE_TAGS)))
-    if plan and not dry_run:
-        db.execute(
+        log.info("%s clickhouse %s -> %s:%d%s", "would add" if dry_run else "added",
+                 p["alias"], p["host"], CLICKHOUSE_PORT,
+                 f" (renaming disabled {p['displaced'][1]} -> {p['displaced'][2]})"
+                 if p["displaced"] else "")
+    if dry_run or not plan:
+        return len(plan)
+    with db.transaction() as cur:
+        for p in plan:
+            targets.displace_in(cur, targets.AliasClaim(p["alias"], p["displaced"]))
+            cur.execute(
+                "INSERT INTO target_servers "
+                "(alias, host, port, default_database, username, "
+                " password_encrypted, enabled, notes, tags, engine) "
+                "VALUES (%s, %s, %s, 'default', %s, %s, FALSE, %s, %s::jsonb, 'clickhouse')",
+                (p["alias"], p["host"], CLICKHOUSE_PORT, DEFAULT_USERNAME, sentinel_ct,
+                 f"auto-imported from inventory (ClickHouse Cloud service "
+                 f"{p['identifier']}) — fill creds.", json.dumps(CLICKHOUSE_TAGS)))
+        cur.execute(
             "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
             "VALUES ('inventory-sync', 'inventory sync', 'targets_imported', %s::jsonb)",
             (json.dumps({"engine": "clickhouse", "targets": plan}),))
@@ -370,12 +376,17 @@ def main() -> int:
 
     # ---- 1. ADD: insert new endpoints ----
     inventory_hosts: set[str] = set()
+    holders = targets.alias_holders()
     for endpoint, db_names in endpoints:
         inventory_hosts.add(endpoint)
         if endpoint in existing:
             skipped += 1
             continue
-        alias = endpoint.split(".", 1)[0]
+        # The first label of the endpoint, unless that name is in use -- then
+        # targets.claim_alias() settles it the same way for every importer.
+        claim = targets.claim_alias(endpoint.split(".", 1)[0], "postgres",
+                                    holders, yield_to_live=True)
+        alias = claim.alias
         non_pg = [d for d in db_names if d != "postgres"]
         default_db = non_pg[0] if non_pg else "postgres"
         # New endpoints are always imported DISABLED (with a sentinel
@@ -383,23 +394,35 @@ def main() -> int:
         # then enable (a provisioning step or a cloud migration). This keeps
         # unprovisioned sentinels out of the picker even when a broad
         # host-allow policy (e.g. *.myhuaweicloud.com) would "want" them.
-        db.execute(
-            "INSERT INTO target_servers "
-            "(alias, host, port, default_database, username, "
-            " password_encrypted, enabled, notes, tags) "
-            "VALUES (%s, %s, %s, %s, %s, %s, FALSE, %s, %s::jsonb)",
-            (
-                alias,
-                endpoint,
-                5432,
-                default_db,
-                DEFAULT_USERNAME,
-                sentinel_ct,
-                "auto-imported from inventory.v_all_databases — fill creds.",
-                json.dumps(provider_tags(by_endpoint.get(endpoint))),
-            ),
-        )
-        log.info("added %s -> %s (default db=%s)", alias, endpoint, default_db)
+        with db.transaction() as cur:
+            targets.displace_in(cur, claim)
+            cur.execute(
+                "INSERT INTO target_servers "
+                "(alias, host, port, default_database, username, "
+                " password_encrypted, enabled, notes, tags) "
+                "VALUES (%s, %s, %s, %s, %s, %s, FALSE, %s, %s::jsonb)",
+                (
+                    alias,
+                    endpoint,
+                    5432,
+                    default_db,
+                    DEFAULT_USERNAME,
+                    sentinel_ct,
+                    "auto-imported from inventory.v_all_databases — fill creds.",
+                    json.dumps(provider_tags(by_endpoint.get(endpoint))),
+                ),
+            )
+            if claim.displaced:
+                cur.execute(
+                    "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
+                    "VALUES ('inventory-sync', 'inventory sync', 'connection_renamed', %s::jsonb)",
+                    (json.dumps({"target_id": claim.displaced[0],
+                                 "from": claim.displaced[1], "to": claim.displaced[2],
+                                 "why": f"disabled; its name went to the new import {endpoint}"}),))
+        targets.note_claim(holders, claim, engine="postgres")
+        log.info("added %s -> %s (default db=%s)%s", alias, endpoint, default_db,
+                 f" (renamed disabled {claim.displaced[1]} -> {claim.displaced[2]})"
+                 if claim.displaced else "")
         inserted += 1
 
     # ---- 1a. ADD ClickHouse services (opt-in, see plan_clickhouse_imports) ----

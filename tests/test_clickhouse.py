@@ -276,11 +276,26 @@ def test_clickhouse_services_are_planned_by_name_with_a_suffix_on_collision():
         {"engine": "postgres", "db_instance_identifier": "pg-one",
          "endpoint": "pg-one.example.internal", "is_deleted": False},
     ]
+    holders = {"prod-orders": {"id": 7, "alias": "prod-orders", "engine": "postgres",
+                               "enabled": True}}
     plan = mod.plan_clickhouse_imports(
         servers, existing_hosts={"d4.eu-central-1.aws.clickhouse.cloud"},
-        existing_aliases={"prod-orders"})
+        holders=holders)
     assert [(p["alias"], p["host"].split(".")[0]) for p in plan] == [
         ("prod-ledger", "a1"), ("prod-orders-ch", "b2")]
+    assert [p["displaced"] for p in plan] == [None, None]
+
+
+def test_a_service_that_left_rds_takes_its_name_back_from_the_disabled_row():
+    """The RDS row stays for its history, disabled, under its engine's suffix."""
+    mod = _importer()
+    servers = [{"engine": "clickhouse", "db_instance_identifier": "prod-orders",
+                "endpoint": "b2.eu-central-1.aws.clickhouse.cloud", "is_deleted": False}]
+    holders = {"prod-orders": {"id": 7, "alias": "prod-orders", "engine": "postgres",
+                               "enabled": False}}
+    plan = mod.plan_clickhouse_imports(servers, existing_hosts=set(), holders=holders)
+    assert plan[0]["alias"] == "prod-orders"
+    assert plan[0]["displaced"] == (7, "prod-orders", "prod-orders-pg")
 
 
 def test_the_importer_uses_the_native_port():

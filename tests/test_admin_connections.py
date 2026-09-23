@@ -41,6 +41,7 @@ class FakeCursor:
     def __init__(self, returning=None):
         self.calls = []
         self._returning = returning or {"id": 77}
+        self.rowcount = 1
 
     def execute(self, sql, params=None):
         self.calls.append((" ".join(sql.split()), params))
@@ -103,6 +104,13 @@ def wire(monkeypatch):
                         lambda alias: (type("T", (), {"id": state["row"]["id"]})()
                                        if alias == state["row"]["alias"] else None))
     monkeypatch.setattr(ra.targets, "admin_row", lambda tid: state["row"])
+    # Every registered name, as the alias rule reads it: the fixture's own row
+    # plus whatever a test adds under "others".
+    state["others"] = []
+    monkeypatch.setattr(ra.targets, "alias_holders", lambda cur=None: {
+        r["alias"].lower(): {"id": r["id"], "alias": r["alias"],
+                             "engine": r["engine"], "enabled": r["enabled"]}
+        for r in [state["row"], *state["others"]]})
     monkeypatch.setattr(ra.targets, "list_admin_rows", lambda: [state["row"]])
     monkeypatch.setattr(ra.targets, "reference_counts", lambda tid: state["refs"])
     monkeypatch.setattr(ra.db, "transaction", lambda: FakeTxn(state["cur"]))
@@ -360,6 +368,49 @@ def test_a_duplicate_alias_is_a_conflict(wire):
             ra.ConnectionIn(alias="prod-beta", host="db.example.internal",
                             defaultDatabase="ledger"), claims=SUPER)
     assert e.value.status_code == 409
+
+
+def test_a_disabled_connections_name_goes_to_the_new_one(wire):
+    """The name is free when only a disabled connection holds it: that one
+    takes its engine's suffix, in the same transaction, and says so in the log."""
+    wire["row"] = _row(enabled=False)
+    out = ra.admin_create_connection(
+        ra.ConnectionIn(alias="prod-beta", host="ch.example.internal",
+                        defaultDatabase="ledger", engine="clickhouse"), claims=SUPER)
+    moved = wire["cur"].statements("UPDATE target_servers SET alias")
+    assert moved and moved[0][1] == ("prod-beta-pg", 42, "prod-beta")
+    first_insert = next(i for i, c in enumerate(wire["cur"].calls)
+                        if c[0].startswith("INSERT INTO target_servers"))
+    assert wire["cur"].calls.index(moved[0]) < first_insert
+    assert ("connection_renamed", {"target_id": 42, "from": "prod-beta", "to": "prod-beta-pg",
+            "why": "disabled; its name went to the connection now called 'prod-beta'"}) in wire["audit"]
+    assert out["displaced"] == {"from": "prod-beta", "to": "prod-beta-pg"}
+
+
+def test_a_rename_onto_a_disabled_connections_name_moves_it_aside(wire):
+    wire["others"] = [_row(id=18, alias="prod-gamma", enabled=False, engine="mssql")]
+    ra.admin_update_connection("prod-beta", ra.ConnectionPatch(alias="prod-gamma"),
+                               claims=SUPER)
+    moved = wire["cur"].statements("UPDATE target_servers SET alias = %s WHERE id = %s AND alias")
+    assert moved and moved[0][1] == ("prod-gamma-mssql", 18, "prod-gamma")
+    action, details = wire["audit"][-1]
+    assert action == "connection_updated" and details["renamed_to"] == "prod-gamma"
+    assert details["displaced"] == {"from": "prod-gamma", "to": "prod-gamma-mssql"}
+
+
+def test_a_rename_onto_an_enabled_connections_name_is_refused(wire):
+    wire["others"] = [_row(id=18, alias="prod-gamma", enabled=True)]
+    with pytest.raises(HTTPException) as e:
+        ra.admin_update_connection("prod-beta", ra.ConnectionPatch(alias="prod-gamma"),
+                                   claims=SUPER)
+    assert e.value.status_code == 409
+    assert wire["cur"].calls == []
+
+
+def test_a_rename_that_only_changes_case_is_not_a_clash_with_itself(wire):
+    ra.admin_update_connection("prod-beta", ra.ConnectionPatch(alias="Prod-Beta"),
+                               claims=SUPER)
+    assert not wire["cur"].statements("AND NOT enabled")
 
 
 @pytest.mark.parametrize("field,value", [
