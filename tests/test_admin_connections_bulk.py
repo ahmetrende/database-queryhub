@@ -64,7 +64,8 @@ def test_disabling_several_writes_each_once_in_one_transaction(env):
         r["enabled"] = True
     out = ra.admin_bulk_update_connections(_body(connections=["alpha", "beta", "gamma"],
                                                  enabled=False), claims=SUPER)
-    assert out["applied"] is True
+    # A count, which the screen prints: "3 connections disabled".
+    assert out["applied"] == 3
     assert [a for a, _c, _k in env["applied"]] == ["alpha", "beta", "gamma"]
     assert env["txns"] == 1
     assert env["audit"][-1][0] == "connections_bulk_updated"
@@ -85,14 +86,14 @@ def test_credentials_in_the_same_request_let_a_placeholder_be_enabled(env):
     creds = {"ro": ra.CredentialIn(username="reader", password="example-only")}
     out = ra.admin_bulk_update_connections(_body(connections=["alpha", "beta"], enabled=True,
                                                  credentials=creds), claims=SUPER)
-    assert out["applied"] is True
+    assert out["applied"] == 2
     assert all(k == ["ro"] for _a, _c, k in env["applied"])
 
 
 def test_a_dry_run_plans_and_writes_nothing(env):
     out = ra.admin_bulk_update_connections(_body(connections=["beta"], enabled=True,
                                                  dryRun=True), claims=SUPER)
-    assert out == {"applied": False, "results": [
+    assert out == {"applied": 0, "results": [
         {"connection": "beta", "changes": ["enabled"], "unchanged": False}]}
     assert env["txns"] == 0
 

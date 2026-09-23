@@ -437,6 +437,7 @@ function App() {
       qhApi.history().then(r => setHistory((r.history || []).map(h => ({
         id: h.id, sql: h.sql, conn: h.connectionId, db: h.databaseId, tier: h.tier,
         status: h.status, rows: h.rowCount, when: qhTimeAgo(h.createdAt), approver: h.approver,
+        awaitingDba: !!h.awaitingDba,
         state: h.connectionState || null,
       })))),
       // Merge the user's server-saved queries into the Saved library (server
@@ -697,6 +698,7 @@ function App() {
   // Create the tab first, then focus it by its real id (avoids racing the
   // setTabs updater's TAB_SEQ++ with a 't'+(TAB_SEQ-1) guess).
   const [edFocus, setEdFocus] = React.useState(0);
+  const [reveal, setReveal] = React.useState(null);   // { start, end, n } — a span for the editor to select
   const focusEditor = () => setEdFocus(x => x + 1);
 
   const newQueryOn = (c, db) => {
@@ -895,12 +897,13 @@ function App() {
   const refreshHistory = () => qhApi.history().then(r => setHistory((r.history || []).map(h => ({
     id: h.id, sql: h.sql, conn: h.connectionId, db: h.databaseId, tier: h.tier,
     status: h.status, rows: h.rowCount, when: qhTimeAgo(h.createdAt), approver: h.approver,
+    awaitingDba: !!h.awaitingDba,
     state: h.connectionState || null,
   })))).catch(() => {});
 
   const applyStatus = async (id, qid, sres) => {
     setTabs(ts => ts.map(x => x.id === id ? {
-      ...x, status: sres.status, runMs: sres.runMs, messages: sres.messages || [], audit: sres.audit || [],
+      ...x, status: sres.status, awaitingDba: !!sres.awaitingDba, runMs: sres.runMs, messages: sres.messages || [], audit: sres.audit || [],
     } : x));
     if (sres.scheduledFor && sres.status !== 'running' && sres.status !== 'done'
         && new Date(sres.scheduledFor) > new Date()) { setResTab('messages'); return true; }
@@ -1093,6 +1096,15 @@ function App() {
   };
 
   const selGet = React.useRef(null);
+  // A password QueryHub did not keep (CODE 2026-09-23 §5). The server refuses
+  // such text with a 422; stopping here instead — the placeholder selected, so
+  // typing replaces it — means that refusal is never how anyone finds out.
+  const redactedIn = (sql) => qhRedactedAt(sql || '');
+  const revealRedacted = () => {
+    const at = redactedIn(tab.sql);
+    if (at.length) setReveal({ start: at[0] + 1, end: at[0] + QH_REDACTED_LIT.length - 1, n: Date.now() });
+    pushToast("This statement's password was hidden when QueryHub stored it. Type the password in again, then run it.");
+  };
   const curSel = () => (selGet.current ? selGet.current() : '');
 
   const primary = () => {
@@ -1103,6 +1115,7 @@ function App() {
     if (tgt.kind === 'selection') { runSelection(tgt.sql); return; }
     if (killed) { pushToast('Kill switch is engaged — query execution is paused.'); return; }
     if (!tab.sql.trim() || busy || !tab.conn) return;
+    if (redactedIn(tab.sql).length) { revealRedacted(); return; }
     if (tierExceedsGrant) { pushToast(classify.tier + ' exceeds your ' + dbTier + ' grant on this database.'); return; }
     // Run is never a no-op. A required reason that is still empty answers the
     // keystroke by taking focus and saying so — a disabled button would let
@@ -1118,6 +1131,7 @@ function App() {
     if (tgt.kind === 'comments') { pushToast(QH_ONLY_COMMENTS); return; }
     if (tgt.kind !== 'selection') return;
     const t = tgt.sql;
+    if (redactedIn(t).length) { revealRedacted(); return; }
     if (killed) { pushToast('Kill switch is engaged — query execution is paused.'); return; }
     if (needWhy && !why.trim()) { demandWhy(); return; }
     submitToServer(activeId, null, t);
@@ -1130,6 +1144,8 @@ function App() {
     if (killed) { pushToast('Kill switch is engaged — query execution is paused.'); return; }
     const valid = ids.filter(id => { const x = tabs.find(t => t.id === id); return x && x.sql.trim() && x.conn; });
     if (!valid.length) return;
+    const hid = valid.map(id => tabs.find(t => t.id === id)).filter(x => redactedIn(x.sql).length);
+    if (hid.length) { pushToast('“' + hid[0].name + '” still has a hidden password — type it in again before submitting the batch.'); return; }
     setBatchOpen(false); setActiveId(valid[0]); setResTab('messages');
     const items = valid.map(id => { const x = tabs.find(t => t.id === id); return { connectionId: x.conn, databaseId: x.db, sql: x.sql, name: x.name }; });
     valid.forEach(id => patch(id, { status: 'pending', result: null,
@@ -1323,9 +1339,9 @@ function App() {
 
   // The modal stays open on a refusal (it names the field), so this RETURNS the
   // promise and only closes on success.
-  const submitAutoRequest = (req) => qhApi.requestAutoApprove(req).then(() => {
+  const submitAutoRequest = (req, label) => qhApi.requestAutoApprove(req).then(() => {
     setAutoReqOpen(false);
-    pushToast('Asked a DBA to let ' + req.tier + ' on ' + req.connectionId + '/' + req.databaseId + ' skip review for ' + req.days + ' day' + (req.days === 1 ? '' : 's') + '. You will get a DM when it is decided.');
+    pushToast('Requested ' + req.tier + ' auto-approve on ' + req.connectionId + '/' + req.databaseId + ' for ' + (label || (req.days ? req.days + (req.days === 1 ? ' day' : ' days') : Math.round((req.windowMinutes || 0) / 60) + 'h')) + '. You will get a DM when a DBA decides.');
   });
 
   const submitRequest = async (req) => {
@@ -1413,6 +1429,7 @@ function App() {
                 autoApprove={autoApprove} tierExceedsGrant={tierExceedsGrant} busy={busy} status={tab.status}
                 hasSql={!!tab.sql.trim()} onPrimary={primary} onExplain={explain} killed={killed}
                 riskHints={riskHints} riskTop={riskTop} onCancelRun={cancelRun}
+                redacted={redactedIn(tab.sql).length} onRevealRedacted={revealRedacted}
                 tabCount={queryTabsForBar.length} onOpenBatch={() => setBatchOpen(true)}
                 schedOpen={schedOpen} setSchedOpen={setSchedOpen} onSchedule={schedule}
                 why={why} onWhy={setWhy} whyNeedSched={needWhySched} whyErr={whyErr}
@@ -1427,13 +1444,13 @@ function App() {
                 onRequest={() => setReqOpen(true)} onDismiss={() => patch(activeId, { expired: null })} />
 
               <div className="qh-ed-host">
-                <SqlEditor value={tab.sql} onChange={onCode} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} />
+                <SqlEditor value={tab.sql} onChange={onCode} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} />
               </div>
 
               <div className="qh-res-grip" onMouseDown={onDragStart}><span /></div>
               <div style={{ height: resH, flexShrink: 0 }}>
                 <ResultsPanel colMeta={colMeta} tab={resTab} setTab={setResTab} result={tab.result} messages={tab.messages}
-                  audit={tab.audit} status={tab.status} runMs={tab.runMs} onExport={exportResult} plan={tab.plan} onToast={pushToast} reqId={tab.reqId}
+                  audit={tab.audit} status={tab.status} awaitingDba={tab.awaitingDba} runMs={tab.runMs} onExport={exportResult} plan={tab.plan} onToast={pushToast} reqId={tab.reqId}
                   unmasked={resUnmasked} conn={resConn} onStatement={pickStatement} />
               </div>
             </>
@@ -1447,7 +1464,7 @@ function App() {
       {/* `load` is passed in rather than called inside the modal: qh-panels.jsx
           touches no qhApi, so every call site stays in this file. */}
       {reqOpen && <RequestAccessModal onClose={() => setReqOpen(false)} onSubmit={submitRequest} load={() => qhApi.requestable()} />}
-      {autoReqOpen && <RequestAutoApproveModal conns={conns} onClose={() => setAutoReqOpen(false)} onSubmit={submitAutoRequest} />}
+      {autoReqOpen && <RequestAutoApproveModal conns={conns} onClose={() => setAutoReqOpen(false)} onSubmit={submitAutoRequest} load={() => qhApi.autoApproveRequests()} />}
       {feedbackOpen && <FeedbackModal user={user} view={view} onClose={() => setFeedbackOpen(false)} onSubmit={submitFeedback} />}
       {dlModal && <DownloadSqlModal defaultName={dlModal.name} onConfirm={performDownloadSql} onCancel={() => setDlModal(null)} />}
       {confirmRun && <ConfirmRunModal reasons={confirmRun.reasons} target={confirmRun.target} env={confirmRun.env}
@@ -1825,7 +1842,7 @@ function MaskToggle({ unmasked, pii, onUnmask }) {
 }
 
 // ---------- Action bar (target context + security + actions) ----------
-function ActionBar({ why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask }) {
+function ActionBar({ redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask }) {
   const tierLabel = { RO: 'Read-only', RW: 'Read/Write', DDL: 'Schema (DDL)' }[classify.tier];
   const highRisks = (riskHints || []).filter(h => h.level !== 'low');
   const schedBtnRef = useRef(null);
@@ -1936,6 +1953,14 @@ function ActionBar({ why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAl
             <span className="qh-sec-label">{tierLabel}</span>
           </span>
           {classify.multi && <span className="qh-sec-multi">{classify.statements.length} statements</span>}
+          {/* Said before Run, not after a 422 (CODE 2026-09-23 §5). */}
+          {redacted > 0 && (
+            <span className="qh-redact-chip" role="button" tabIndex={0} onClick={onRevealRedacted} onKeyDown={(e) => { if (e.key === 'Enter') onRevealRedacted(); }}
+              title="QueryHub never stores a password. This one was hidden when the statement was saved — type it in again before running.">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></svg>
+              Password hidden — type it again
+            </span>
+          )}
           {highRisks.length > 0 && (
             <span className={'qh-risk-chip risk-' + riskTop} title={highRisks.map(h => h.text).join('\n')} onClick={onExplain}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L14.7 3.9a2 2 0 00-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>

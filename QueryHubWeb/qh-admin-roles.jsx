@@ -205,7 +205,7 @@ function RoleForm({ st, onDone, init }) {
     if (bad || busy || (editing && !changes.length)) return;
     setBusy(true); setErr(null);
     if (!editing) { write(); return; }
-    st.updateRole(init.id, nextRow).then(() => { setBusy(false); onDone(); })
+    st.updateRole(init.id, nextRow, init).then(() => { setBusy(false); onDone(); })
       .catch(e => { setBusy(false); setErr({ msg: (e && e.message) || 'Could not change the role.', code: e && e.code }); });
   };
   // A role is immutable, so narrowing one is revoke-then-create. The 409 hands

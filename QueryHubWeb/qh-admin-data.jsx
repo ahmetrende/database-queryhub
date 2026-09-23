@@ -92,6 +92,8 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const [people, setPeople] = useAdminStateHook([]);
   const [teams, setTeams] = useAdminStateHook([]);
   const [endpointReqs, setEndpointReqs] = useAdminStateHook([]);
+  // What the bot handed to a DBA to run by hand (CODE 2026-09-23 §5).
+  const [manualRuns, setManualRuns] = useAdminStateHook([]);
   const [feedback, setFeedback] = useAdminStateHook([]);
   const [audit, setAudit] = useAdminStateHook([]);
   const [metrics, setMetrics] = useAdminStateHook({});
@@ -119,6 +121,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const loadQueue = useAdminCb(() => qhApi.adminQueue().then(r => setQueue(mapQueue(r.queue))).catch(() => {}), []);
   const loadGrants = useAdminCb(() => qhApi.adminGrants().then(r => { setGrants(mapGrants(r.grants)); setGrantsState('ok'); }).catch(() => setGrantsState('error')), []);
   const loadAutoReqs = useAdminCb(() => qhApi.adminAutoRequests().then(r => setAutoRequests(r.requests || [])).catch(() => {}), []);
+  const loadManualRuns = useAdminCb(() => qhApi.adminManualRuns().then(r => setManualRuns(r.items || [])).catch(() => {}), []);
   const loadAuto = useAdminCb(() => qhApi.adminAutoGrants().then(r => setAutoGrants(r.autoGrants || [])).catch(() => {}), []);
   const loadAudit = useAdminCb(() => qhApi.adminAudit().then(r => setAudit(r.audit || [])).catch(() => {}), []);
   const loadKill = useAdminCb(() => qhApi.adminKillGet().then(r => setKillSwitch({ enabled: !!r.enabled, message: r.message || '', by: r.by || null, at: r.at || null })).catch(() => {}), []);
@@ -141,6 +144,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
       qhApi.adminGrants().then(r => { setGrants(mapGrants(r.grants)); setGrantsState('ok'); }, e => { setGrantsState(e && e.status === 403 ? 'ok' : 'error'); throw e; }),
       qhApi.adminAutoGrants().then(r => setAutoGrants(r.autoGrants || [])),
       qhApi.adminAutoRequests().then(r => setAutoRequests(r.requests || [])),
+      qhApi.adminManualRuns().then(r => setManualRuns(r.items || [])),
       qhApi.adminAudit().then(r => setAudit(r.audit || [])),
       qhApi.adminKillGet().then(r => setKillSwitch({ enabled: !!r.enabled, message: r.message || '', by: r.by || null, at: r.at || null })),
       qhApi.adminScopes().then(r => setScopes(r.scopes || [])),
@@ -247,24 +251,33 @@ function useAdminState(pushToast, active, isAdminViewer) {
   // The team half of the Effective access screen (design 2026-09-22 §1). Same
   // contract: a promise, no shared slot.
   const teamEffectiveAccess = (id) => qhApi.adminTeamEffectiveAccess(id);
-  // One subject, many targets, one Save (design 2026-09-22 §4b). Written in
-  // order and STOPPED at the first refusal: the reply names the target that was
-  // refused and how many landed before it, which is a state an admin can act on
-  // — "saved with 2 errors" is not. RETURNS its promise; the form stays open
-  // on a refusal with the rows that did not land still in it.
-  const addAutoGrants = (user, rows) => {
-    let done = 0;
-    const step = (i) => i >= rows.length ? Promise.resolve() : qhApi.adminAddAutoGrant({ user, connectionId: rows[i].connectionId,
-      databaseId: rows[i].databaseId, tier: rows[i].tier, reason: rows[i].reason || null, expiresAt: rows[i].expiresAt || null })
-      .then(() => { done++; return step(i + 1); });
-    return step(0)
-      .then(() => { loadAuto(); loadAudit(); pushToast && pushToast('Auto-approve created on ' + done + ' target' + (done === 1 ? '' : 's') + '.'); return { written: done }; })
-      .catch(e => { loadAuto(); loadAudit(); const err = new Error((e && e.message) || 'Refused.'); err.written = done; throw err; });
-  };
+  // One subject — a person OR a team — many targets, one Save (design
+  // 2026-09-22 §4b), now ONE call (CODE 2026-09-23 §4). The bulk endpoint is
+  // all or nothing: a refusal writes nothing and names EVERY refused target
+  // (`e.refused`), where the sequential POSTs it replaces stopped midway and
+  // left half a Save behind. RETURNS its promise; the form stays open on a
+  // refusal with the refused rows marked.
+  const addAutoGrants = (body) =>
+    qhApi.adminAddAutoGrantsBulk({ subjectType: body.subjectType === 'team' ? 'team' : 'user', subject: body.subject,
+      targets: body.targets.map(t => ({ connectionId: t.connectionId, databaseId: t.databaseId || null })),
+      tier: body.tier, reason: body.reason || null, expiresAt: body.expiresAt || null, dryRun: false })
+      .then(r => { loadAuto(); loadAudit();
+        const n = (r && r.applied) || body.targets.length;
+        pushToast && pushToast('Auto-approve created on ' + n + ' target' + (n === 1 ? '' : 's') + '.');
+        return r; });
+  // 409 = somebody else decided it first: re-read the list so the card goes.
   const decideAutoRequest = (id, approve) => qhApi.adminDecideAutoRequest(id, { approve: !!approve })
     .then(() => { loadAutoReqs(); loadAuto(); loadAudit();
       pushToast && pushToast(approve ? 'Auto-approve granted. The requester was notified in Slack.' : 'Request declined. The requester was notified in Slack.'); })
-    .catch(e => fail(e, 'Decision failed.'));
+    .catch(e => { if (e && e.status === 409) loadAutoReqs(); fail(e, 'Decision failed.'); });
+  // A DDL the bot handed to a DBA (CODE 2026-09-23 §5). Marking one failed
+  // needs a reason, so — like addRole — a refusal is RETURNED for the form to
+  // show beside the field, not toasted. A 409 means it is not waiting any more.
+  const closeManualRun = (id, completed, reason) =>
+    qhApi.adminCloseManualRun(id, { completed: !!completed, reason: reason || null })
+      .then(r => { loadManualRuns(); loadAudit();
+        pushToast && pushToast(completed ? 'Marked as run by hand.' : 'Marked as failed.'); return r; })
+      .catch(e => { if (e && e.status === 409) loadManualRuns(); throw e; });
   // Is this id someone? (CODE brief 2026-08-22 §3.) Also a promise, and the
   // errors are the CALLER's to render: the subject combo turns a failed lookup
   // into a note, because the grant is still writable — the server resolves the
@@ -312,12 +325,24 @@ function useAdminState(pushToast, active, isAdminViewer) {
       .catch(e => { throw e; });
   // PATCH (design 2026-09-22 §6). Same error contract as addRole: returned, not
   // toasted, so the refusal lands beside the field the open form still shows.
-  const updateRole = (id, r) =>
-    qhApi.adminUpdateRole(id, { role: r.role, scopeTeamId: r.scopeTeamId || null, scopeTargetId: r.scopeTargetId || null,
-      maxTier: r.maxTier || null, validUntil: r.validUntil || null, reason: r.reason })
+  // CODE's semantics (2026-09-23 §4): a field that is SENT is set, a field left
+  // out is kept. So only what moved is sent, and a scope or limit that was
+  // REMOVED goes as its flag — a bare null would read as "not editing" and keep
+  // it, which on a widening is the dangerous direction to be wrong in.
+  const updateRole = (id, r, was) => {
+    const w = was || {}, body = {};
+    const moved = (k) => (r[k] || null) !== (w[k] || null);
+    if (moved('role')) body.role = r.role;
+    if (moved('scopeTeamId')) { if (r.scopeTeamId) body.scopeTeamId = r.scopeTeamId; else body.scopeTeamAll = true; }
+    if (moved('scopeTargetId')) { if (r.scopeTargetId) body.scopeTargetId = r.scopeTargetId; else body.scopeTargetAll = true; }
+    if (moved('maxTier')) { if (r.maxTier) body.maxTier = r.maxTier; else body.clearMaxTier = true; }
+    if ((r.validUntil || '').slice(0, 10) !== (w.validUntil || '').slice(0, 10)) { if (r.validUntil) body.validUntil = r.validUntil; else body.clearValidUntil = true; }
+    if (moved('reason')) body.reason = r.reason || '';
+    return qhApi.adminUpdateRole(id, body)
       .then(res => { loadRoles(); loadAudit();
         pushToast && pushToast(res && res.changed === false ? 'Nothing to change.' : 'Role changed: ' + ((res && res.name) || '') + '.');
         return res; });
+  };
   const removeRole = (id) => {
     return qhApi.adminDelRole(id).then(() => { loadRoles(); loadAudit(); pushToast && pushToast('Role revoked.'); })
       .catch(e => { fail(e, 'Revoke failed.'); throw e; });
@@ -470,6 +495,19 @@ function useAdminState(pushToast, active, isAdminViewer) {
         pushToast && pushToast(r && r.deleted ? ('Connection "' + conn + '" deleted.') : ((r && r.reason) || ('Connection "' + conn + '" disabled.')));
         return true; })
       .catch(e => { fail(e, 'Delete connection failed.'); return false; });
+  // Several connections at once (CODE 2026-09-23 §6b), all or nothing. A dry
+  // run writes nothing, so it neither reloads nor toasts — it is the check the
+  // bulk bar makes before it writes. A refusal (409) carries `e.refused`.
+  const bulkConnections = (body) =>
+    qhApi.adminBulkConnections(body).then(r => {
+      if (body.dryRun) return r;
+      loadConnections(); loadAudit();
+      const n = (r && r.applied) || 0, cr = Object.keys(body.credentials || {});
+      pushToast && pushToast(n + ' connection' + (n === 1 ? '' : 's') + ' '
+        + (body.enabled === true ? 'enabled' : body.enabled === false ? 'disabled' : 'updated')
+        + (cr.length ? ' · ' + cr.map(t => t.toUpperCase()).join('/') + ' credential set' : '') + '.');
+      return r;
+    });
   const setConnectionEnabled = (conn, on) =>
     qhApi.adminUpdateConnection(conn, { enabled: !!on })
       .then(() => { loadConnections(); loadAudit();
@@ -490,18 +528,18 @@ function useAdminState(pushToast, active, isAdminViewer) {
   };
 
   return {
-    queue, grants, grantsState, autoGrants, autoRequests, scopes, roles, rolesEnforced, maskExemptions, maskMeta, people, teams, endpointReqs, feedback, audit, metrics, connections, killSwitch, config, pushToast,
+    queue, manualRuns, grants, grantsState, autoGrants, autoRequests, scopes, roles, rolesEnforced, maskExemptions, maskMeta, people, teams, endpointReqs, feedback, audit, metrics, connections, killSwitch, config, pushToast,
     loadError, loading, reload: reloadAll,
     decide, batchApprove, approveBundle, toggleKill,
     addGrant, updateGrant, revokeGrant, setSubjectGrants,
     effectiveAccess, teamEffectiveAccess, copyAccess, resolvePerson,
-    addAutoGrant, addAutoGrants, updateAutoGrant, revokeAutoGrant, decideAutoRequest,
+    addAutoGrant, addAutoGrants, updateAutoGrant, revokeAutoGrant, decideAutoRequest, closeManualRun,
     reloadGrants: loadGrants,
     saveScope, removeScope, decideEndpoint, saveConfig,
     addRole, updateRole, removeRole,
     addMaskExemption, setMaskExemptionEnabled, removeMaskExemption, updateMaskExemption, maskCatalog, maskPreview,
     addTeam, updateTeam, removeTeam, setPersonTeams,
-    addConnection, updateConnection, removeConnection, setConnectionEnabled,
+    addConnection, updateConnection, removeConnection, setConnectionEnabled, bulkConnections,
     reloadConnections: loadConnections,
   };
 }

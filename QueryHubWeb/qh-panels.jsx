@@ -4,7 +4,13 @@ function TierBadge({ tier, sm }) {
   return <span className={'qh-tier tier-' + tier.toLowerCase() + (sm ? ' is-sm' : '')}>{tier}</span>;
 }
 
-function StatusPill({ status }) {
+// `failed` + `awaitingDba` is its OWN state (CODE 2026-09-23 §5): the bot handed
+// a DDL it may not run to a DBA. Amber, and no spinner — nothing is running, and
+// nothing will until a DBA runs it by hand. Red "Failed" would say it is over.
+function StatusPill({ status, awaitingDba }) {
+  if (status === 'failed' && awaitingDba) {
+    return <span className="qh-status st-dba" title="The bot may not run this statement itself, so a DBA runs it by hand.">Needs a DBA</span>;
+  }
   const map = {
     pending:  ['Pending',  'st-pending'],
     approved: ['Approved', 'st-approved'],
@@ -911,7 +917,7 @@ function Sidebar({ onRequestAuto, onToast, mode, setMode, conns, schemaCache, on
           <button key={h.id} className="qh-hist" onClick={() => onLoadHistory(h)}>
             <div className="qh-hist-top">
               <TierBadge tier={h.tier} sm />
-              <StatusPill status={h.status} />
+              <StatusPill status={h.status} awaitingDba={h.awaitingDba} />
               <span className="qh-hist-when">{h.when}</span>
             </div>
             <div className="qh-hist-sql">{h.sql}</div>
@@ -929,7 +935,7 @@ function Sidebar({ onRequestAuto, onToast, mode, setMode, conns, schemaCache, on
           </button>
           {onRequestAuto && <button className="qh-req-btn is-quiet" onClick={onRequestAuto}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7z"/></svg>
-            Ask to skip review
+            Request auto-approve
           </button>}
         </div>
       )}
@@ -1121,7 +1127,7 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
   );
 }
 
-// ---------- Ask to skip review (design 2026-09-22 §3) ----------
+// ---------- Request auto-approve (design 2026-09-22 §3) ----------
 // The web's first way to ask for an auto-approve window. It is worded as what it
 // is — a request to REMOVE a human review for a while — and not as a setting:
 // the title names the review, the summary says in one sentence what would run
@@ -1130,13 +1136,31 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
 // hold there: an exemption never reaches past a grant. DDL is not offered at all
 // — schema changes are always reviewed, and a choice the server refuses is a
 // choice the form should not show.
+// The windows and the caller's own asks come from GET /auto-approve-requests
+// (`load`, CODE 2026-09-23 §4): day windows send `days`, Slack's hour windows
+// send `windowMinutes`. Until it answers — or if it cannot — the web's four day
+// windows stand in, which is what the endpoint offers for them anyway.
 const QH_AUTO_DAYS = [1, 7, 14, 30];
-function RequestAutoApproveModal({ conns, onClose, onSubmit }) {
+function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
   const list = (conns || []).filter(c => !c.disabled && (c.databases || []).length);
   const [connId, setConnId] = React.useState('');
   const [db, setDb] = React.useState('');
   const [tier, setTier] = React.useState('RO');
-  const [days, setDays] = React.useState(7);
+  const [opts, setOpts] = React.useState(() => QH_AUTO_DAYS.map(d => ({ minutes: d * 1440, label: d === 1 ? '1 day' : d + ' days', days: d })));
+  const [win, setWin] = React.useState({ minutes: 10080, label: '7 days', days: 7 });
+  const [mine, setMine] = React.useState([]);
+  React.useEffect(() => {
+    if (!load) return undefined;
+    let live = true;
+    Promise.resolve(load()).then(r => {
+      if (!live || !r) return;
+      if ((r.windowOptions || []).length) setOpts(r.windowOptions);
+      setMine(r.requests || []);
+    }).catch(() => {});
+    return () => { live = false; };
+  }, []);
+  // An ask already waiting for this database is said before Send, not met as a 409.
+  const waitingOn = (cid, dbid) => mine.find(r => r.status === 'submitted' && r.connectionId === cid && (r.databaseId || null) === (dbid || null));
   const [reason, setReason] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState(null);
@@ -1145,19 +1169,20 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit }) {
   const held = dbRow && dbRow.tier ? String(dbRow.tier).toUpperCase() : null;
   const rwOk = !held || held === 'RW' || held === 'DDL';
   const eff = !rwOk && tier === 'RW' ? 'RO' : tier;
-  const until = new Date(Date.now() + days * 86400000).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
-  const valid = conn && db && reason.trim() && !busy;
+  const waiting = conn && db ? waitingOn(conn.id, db) : null;
+  const valid = conn && db && reason.trim() && !busy && !waiting;
   const send = () => {
     if (!valid) return;
     setBusy(true); setErr(null);
-    Promise.resolve(onSubmit({ connectionId: conn.id, databaseId: db, tier: eff, days, reason: reason.trim() }))
+    Promise.resolve(onSubmit({ connectionId: conn.id, databaseId: db, tier: eff, reason: reason.trim(),
+      ...(win.days ? { days: win.days } : { windowMinutes: win.minutes }) }, win.label))
       .catch(e => { setErr((e && e.message) || 'The request was not sent.'); setBusy(false); });
   };
   return (
     <QhModal onClose={onClose}>
       <div className="qh-modal-head">
         <div>
-          <div className="qh-modal-title">Ask to skip review</div>
+          <div className="qh-modal-title">Request auto-approve</div>
           <div className="qh-modal-sub">For a set time, your matching queries would run without a DBA looking at them first. A DBA decides; you get a DM either way.</div>
         </div>
         <button className="qh-icon-btn" onClick={onClose} aria-label="Close">
@@ -1177,7 +1202,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit }) {
             <span className="qh-field-lbl">Database</span>
             <select className="qh-input" disabled={!conn} value={db} onChange={e => setDb(e.target.value)}>
               <option value="">{conn ? 'Select a database…' : 'Pick a server first'}</option>
-              {(conn ? conn.databases : []).map(d => <option key={d.id || d.name} value={d.id || d.name}>{d.name || d.id}</option>)}
+              {(conn ? conn.databases : []).map(d => <option key={d.id || d.name} value={d.id || d.name}>{(d.name || d.id) + (waitingOn(conn.id, d.id || d.name) ? ' — asked, waiting' : '')}</option>)}
             </select>
           </label>
         </div>
@@ -1194,7 +1219,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit }) {
 
         <div className="qh-field">
           <span className="qh-field-lbl">For how long</span>
-          <div className="qh-seg">{QH_AUTO_DAYS.map(n => <button key={n} className={'qh-seg-opt' + (days === n ? ' is-active' : '')} onClick={() => setDays(n)}>{n === 1 ? '1 day' : n + ' days'}</button>)}</div>
+          <div className="qh-seg qh-seg-wrap">{opts.map(o => <button key={o.minutes} className={'qh-seg-opt' + (win.minutes === o.minutes ? ' is-active' : '')} onClick={() => setWin(o)}>{o.label}</button>)}</div>
         </div>
 
         <label className="qh-field">
@@ -1202,8 +1227,11 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit }) {
           <textarea className="qh-input qh-textarea" rows="3" placeholder="What will you run, how often, and why a review each time is not worth it?" value={reason} onChange={e => { setReason(e.target.value); setErr(null); }} />
         </label>
 
-        {conn && db && (
-          <div className="qh-autoreq-say">If granted, until about <b>{until}</b>, your {eff === 'RO' ? <b>reads</b> : <b>reads and writes</b>} on <b className="qh-mono">{conn.name || conn.id} · {db}</b> run the moment you submit them, with nobody reviewing. Each run is still logged and still masked. The window starts when a DBA grants it.</div>
+        {waiting && (
+          <div className="qh-req-wait">You asked for this {qhAgo(waiting.requestedAt)}{waiting.windowLabel ? ' — ' + waiting.windowLabel : ''}, and it is still waiting for a DBA. You get a DM when they decide.</div>
+        )}
+        {conn && db && !waiting && (
+          <div className="qh-autoreq-say">If granted, for <b>{win.label}</b> from the moment a DBA grants it, your {eff === 'RO' ? <b>reads</b> : <b>reads and writes</b>} on <b className="qh-mono">{conn.name || conn.id} · {db}</b> run the moment you submit them, with nobody reviewing. Each run is still logged and still masked.</div>
         )}
         {err && <div className="qh-req-warn">{err}</div>}
       </div>
@@ -1219,7 +1247,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit }) {
 }
 
 // ---------- Bottom results panel ----------
-function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement }) {
+function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement }) {
   const [exp, setExp] = React.useState(false);
   // Click-away / Escape, not mouse-out: the 6px gap between the button and the
   // menu used to close it mid-reach. See qhUseDismiss.
@@ -1346,7 +1374,7 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, runMs, onE
             </span>
           )}
           {reqId && <span className="qh-res-req" title="Request id — reserved when this tab opened">#{reqId}</span>}
-          {status && <StatusPill status={status} />}
+          {status && <StatusPill status={status} awaitingDba={awaitingDba} />}
           {runMs != null && <span className="qh-res-time">{runMs} ms</span>}
           {total != null && <span className="qh-res-rows">{total.toLocaleString()} rows</span>}
           {result && result.kind === 'table' && (

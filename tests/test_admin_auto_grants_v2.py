@@ -62,7 +62,7 @@ def _bulk(**kw):
 def test_one_person_many_targets_in_one_transaction(env):
     env["cur"].returning = [{"id": 11}, {"id": 12}]
     out = ra.admin_bulk_create_auto_grants(_bulk(subject="U0EXAMPLE002"), claims=CLAIMS)
-    assert out == {"applied": True, "ids": ["11", "12"],
+    assert out == {"applied": 2, "ids": ["11", "12"],
                    "targets": ["prod-ledger/ledger", "prod-orders"]}
     assert all("INSERT INTO auto_approve_grants" in q for q, _ in env["cur"].sql)
     assert [a for a, _ in env["audit"]] == ["auto_approve_granted"] * 2
@@ -110,7 +110,7 @@ def test_duplicate_targets_are_written_once_and_dry_run_writes_nothing(env):
         _bulk(subject="U0EXAMPLE002", dryRun=True,
               targets=[{"connectionId": "prod-ledger"}, {"connectionId": "prod-ledger"}]),
         claims=CLAIMS)
-    assert out == {"applied": False, "targets": ["prod-ledger"]}
+    assert out == {"applied": 0, "targets": ["prod-ledger"]}
     assert env["cur"].sql == []
 
 

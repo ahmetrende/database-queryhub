@@ -45,7 +45,9 @@ function navFromAdminHash() {
 
 function AdminPanel({ st, adminRole, setAdminRole, user }) {
   const [nav, setNav] = useAdm(() => navFromAdminHash() || 'approvals');
-  const pendCount = st.queue.length;
+  // A hand-off waiting on a DBA is the most stuck work in the system — approved,
+  // and nothing will move until someone runs it — so it counts on the badge.
+  const pendCount = st.queue.length + (st.manualRuns || []).length;
   const erCount = st.endpointReqs.filter(e => e.status === 'submitted').length;
 
   const groups = [
@@ -212,7 +214,7 @@ function QueueCard({ it, selected, onSelect, checked, onCheck }) {
       </label>
       <button type="button" className="qh-qcard-main" onClick={() => onSelect(it.id)}
               aria-label={'Review request from ' + who} aria-pressed={!!selected}>
-        {ddl && <div className="qh-qddl-flag"><AdminIcons.ddl />Schema change · DDL{el && el.expiresAt ? <span className="qh-qddl-until">elevation ends {qhFmt(el.expiresAt)}</span> : el ? <span className="qh-qddl-until">elevation has no end date</span> : null}</div>}
+        {ddl && <div className="qh-qddl-flag"><AdminIcons.ddl />Schema change · DDL{el && el.source === 'admin' ? <span className="qh-qddl-until">as a fleet admin</span> : el && el.expiresAt ? <span className="qh-qddl-until">elevation ends {qhFmt(el.expiresAt)}</span> : el ? <span className="qh-qddl-until">elevation has no end date</span> : null}</div>}
         <div className="qh-qcard-top">
           <span className="qh-qavatar">{it.submitter.initials}</span>
           <span className="qh-qname" title={qhIsHandleName(it.submitter.name) ? it.submitter.name : null}>{qhPersonName(it.submitter.name)}</span>
@@ -229,6 +231,71 @@ function QueueCard({ it, selected, onSelect, checked, onCheck }) {
         <div className="qh-qcard-sql">{it.sql.replace(/\n/g, ' ')}</div>
         <div className="qh-qcard-when">{qhAgo(it.submittedAt)}</div>
       </button>
+    </div>
+  );
+}
+
+// ---------- Waiting for a DBA to run by hand (CODE 2026-09-23 §5) ----------
+// DDL the bot handed over because it may not run it itself — a role without
+// the attribute, "must be owner". It is past deciding (it was approved); what
+// is missing is a person with the right role at a prompt. So it sits ABOVE the
+// queue, oldest first, and each card is the next step: copy it, run it, say how
+// it went. Marking it failed needs a reason — the server refuses one without.
+function ManualRunsBlock({ st }) {
+  const items = st.manualRuns || [];
+  const [failing, setFailing] = useAdm(null);   // id whose failure reason is being typed
+  const [why, setWhy] = useAdm('');
+  const [busy, setBusy] = useAdm(null);
+  const [err, setErr] = useAdm(null);           // { id, msg }
+  if (!items.length) return null;
+  const close = (it, completed) => {
+    if (busy) return;
+    setBusy(it.id); setErr(null);
+    st.closeManualRun(it.id, completed, completed ? null : why.trim())
+      .then(() => { setBusy(null); setFailing(null); setWhy(''); })
+      .catch(e => { setBusy(null); setErr({ id: it.id, msg: (e && e.message) || 'Not saved.' }); });
+  };
+  const copy = (it) => {
+    const said = (ok) => st.pushToast && st.pushToast(ok ? 'SQL copied.' : 'Could not copy — select the SQL and copy it by hand.');
+    try { navigator.clipboard.writeText(it.sql || '').then(() => said(true), () => said(false)); } catch (e) { said(false); }
+  };
+  return (
+    <div className="qh-mruns">
+      <div className="qh-mruns-h">Waiting for a DBA to run by hand · {items.length}</div>
+      {items.map(it => {
+        const who = qhPersonName((it.requester || {}).name) || (it.requester || {}).slackId || 'The requester';
+        // The stored text has no password in it (§5) — say so before the DBA
+        // pastes a placeholder into a prompt as if it were one.
+        const hidden = qhRedactedAt(it.sql || '').length > 0;
+        const typing = failing === it.id;
+        return (
+          <div key={it.id} className="qh-mrun">
+            <div className="qh-mrun-top">
+              <span className="qh-mrun-who">{who}</span>
+              <TierBadge tier={it.tier} sm />
+              <span className="qh-mrun-target">{it.connectionId}/{it.databaseId}</span>
+              <span className="qh-mrun-when" title={it.escalatedAt || ''}>{qhAgo(it.escalatedAt || it.createdAt)}</span>
+            </div>
+            <pre className="qh-mrun-sql" dangerouslySetInnerHTML={{ __html: qhHighlight(it.sql || '') }} />
+            {it.refusal && <div className="qh-mrun-line">The database refused the bot: <span className="qh-mono">{it.refusal}</span></div>}
+            {hidden && <div className="qh-mrun-line is-warn">The password was hidden when this was stored. Agree it with {who.split(' ')[0]} before you run it.</div>}
+            {it.reason && <div className="qh-mrun-reason">“{it.reason}”</div>}
+            {typing && <input className="qh-input qh-input-sm qh-mrun-why" autoFocus placeholder="Why it could not be run (required)" value={why}
+              onChange={e => { setWhy(e.target.value); setErr(null); }}
+              onKeyDown={e => { if (e.key === 'Enter' && why.trim()) close(it, false); if (e.key === 'Escape') setFailing(null); }} />}
+            {err && err.id === it.id && <div className="qh-roleform-err">{err.msg}</div>}
+            <div className="qh-mrun-acts">
+              <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => copy(it)}>Copy SQL</button>
+              <div className="qh-flex1" />
+              {typing
+                ? <><button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setFailing(null)}>Cancel</button>
+                    <button className="qh-btn qh-btn-danger qh-btn-sm" disabled={!why.trim() || busy === it.id} onClick={() => close(it, false)}>Mark failed</button></>
+                : <><button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={busy === it.id} onClick={() => { setFailing(it.id); setWhy(''); setErr(null); }}>Mark failed</button>
+                    <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={busy === it.id} onClick={() => close(it, true)}>Mark done</button></>}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -329,6 +396,7 @@ function ApprovalsView({ st, user, role }) {
           </div>
         )}
         <div className="qh-qcards">
+          <ManualRunsBlock st={st} />
           {/* An empty queue is the most likely place to be looking for a
               request that has already been decided, so the sentence naming
               where it went is also the way there. `#admin/audit` is picked up
@@ -405,11 +473,11 @@ function ApprovalsView({ st, user, role }) {
                   <div className="qh-ddlbox-h"><AdminIcons.ddl />Schema change — always reviewed by a person, never auto-approved</div>
                   <div className="qh-ddlbox-grid">
                     <div className="qh-ddlbox-k">DDL rights from</div>
-                    <div className="qh-ddlbox-v">{!el ? <span className="qh-ddlbox-miss">not reported</span> : el.source === 'team' ? <>team <b>{el.team}</b></> : 'their own grant'}</div>
+                    <div className="qh-ddlbox-v">{!el ? <span className="qh-ddlbox-miss">not reported</span> : el.source === 'team' ? <>team <b>{el.team}</b></> : el.source === 'admin' ? <>their <b>admin role</b> — a fleet admin's own standing</> : 'their own grant'}</div>
                     <div className="qh-ddlbox-k">Why they hold it</div>
                     <div className="qh-ddlbox-v">{el && el.reason ? el.reason : <span className="qh-ddlbox-miss">no reason recorded</span>}</div>
                     <div className="qh-ddlbox-k">Lasts</div>
-                    <div className="qh-ddlbox-v">{!el ? <span className="qh-ddlbox-miss">not reported</span> : el.expiresAt ? <>until <b>{qhFmt(el.expiresAt)}</b></> : <span className="qh-ddlbox-warn">no end date — standing schema rights</span>}</div>
+                    <div className="qh-ddlbox-v">{!el ? <span className="qh-ddlbox-miss">not reported</span> : el.expiresAt ? <>until <b>{qhFmt(el.expiresAt)}</b></> : el.source === 'admin' ? 'as long as they are an admin' : <span className="qh-ddlbox-warn">no end date — standing schema rights</span>}</div>
                     <div className="qh-ddlbox-k">Given by</div>
                     <div className="qh-ddlbox-v">{el && (el.grantedByName || el.grantedBy) ? <>{qhPersonName(el.grantedByName || el.grantedBy)}{el.grantedAt ? ' · ' + qhAgo(el.grantedAt) : ''}</> : <span className="qh-ddlbox-miss">not recorded</span>}</div>
                   </div>

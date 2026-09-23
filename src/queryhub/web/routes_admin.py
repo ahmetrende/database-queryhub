@@ -283,7 +283,8 @@ def admin_batch_approve(body: BatchIn,
 # nobody closed stayed open for good -- the oldest found was five weeks old.
 
 def _manual_run_item(r: dict) -> dict:
-    why = (r.get("error_message") or "").split("—", 1)[-1].strip()
+    # error_message reads "requires DBA manual execution — <the refusal>".
+    refusal = (r.get("error_message") or "").split("—", 1)[-1].strip()
     return {
         "id": str(r["id"]),
         "requester": {"slackId": r["requester_slack_id"],
@@ -293,7 +294,9 @@ def _manual_run_item(r: dict) -> dict:
         "databaseId": r["database_name"],
         "tier": (r.get("required_tier") or "ddl").upper(),
         "sql": r["query"],
-        "reason": why or None,
+        # The database's own words, and the requester's: two different reasons.
+        "refusal": refusal or None,
+        "reason": r.get("justification") or None,
         "createdAt": mapping.iso(r.get("created_at")),
         "escalatedAt": mapping.iso(r.get("executed_at")),
         "bundleId": str(r["bundle_id"]) if r.get("bundle_id") else None,
@@ -1209,8 +1212,11 @@ def admin_bulk_update_connections(body: BulkConnectionsIn,
                 "changes": sorted(changes) + [f"credentials:{m}" for m in sorted(creds)],
                 "unchanged": not changes and not creds}
                for row, changes, creds in plans]
+    # `applied` counts what was WRITTEN -- the screen says "3 connections
+    # enabled" from it, and a boolean read as a count printed "true". A dry run
+    # writes nothing, so it is 0.
     if body.dryRun:
-        return {"applied": False, "results": results}
+        return {"applied": 0, "results": results}
 
     with db.transaction() as cur:
         for row, changes, creds in plans:
@@ -1221,7 +1227,7 @@ def admin_bulk_update_connections(body: BulkConnectionsIn,
                       "enabled": body.enabled,
                       "credentials": sorted(body.credentials or {}),
                       "changed": sum(1 for x in results if not x["unchanged"])})
-    return {"applied": True, "results": results,
+    return {"applied": sum(1 for x in results if not x["unchanged"]), "results": results,
             "connections": [_connection_payload(targets.admin_row(r["id"]))
                             for r, _c, _k in plans]}
 
@@ -2764,8 +2770,10 @@ def admin_effective_access(slack_id: str,
 
     if teams_mod.use_v2():
         out, auto_out, admin_out = _effective_access_v2(slack_id)
+        blocked = [] if admins.is_admin(slack_id) else _blocked_v2(slack_id, teams_of)
     else:
         out, auto_out, admin_out = _effective_access_legacy(slack_id)
+        blocked = []
 
     # A per-person result cap, if one is in force. Caps are keyed to the PERSON
     # rather than to a grant, so this is the only place it shows up.
@@ -2787,6 +2795,8 @@ def admin_effective_access(slack_id: str,
         "known": person is not None,
         "teams": [{"id": str(r["id"]), "name": r["name"]} for r in teams_of],
         "access": out,
+        # Where their own ENDED grant is why a team's does not reach them.
+        "blocked": blocked,
         "autoApprove": auto_out,
         "admin": admin_out,
         "rowLimitOverride": None if cap is None else {
@@ -2795,6 +2805,41 @@ def admin_effective_access(slack_id: str,
             "reason": cap["reason"],
         },
     }
+
+
+def _blocked_v2(slack_id: str, teams_of: list[dict]) -> list[dict]:
+    """Databases a team of theirs grants where their own ENDED grant is the
+    answer: no access, not the team's (rule 2).
+
+    The resolver returns nothing for such a database, so the access list alone
+    shows a team granting it and the person not reaching it, with no reason in
+    between -- the exact question the screen is opened to answer. Decided by
+    `_overrides_v2`, the code the team view uses to say the same thing from
+    the team's side, so the two screens cannot disagree about it.
+    """
+    alias = {t.id: t.alias for t in targets.list_all()}
+    out = []
+    for t in teams_of:
+        rows, members, _approvers = _team_rows_v2(t["id"])
+        me = [m for m in members if m.get("slack_id") == slack_id]
+        if not me:
+            continue
+        team_dbs: dict = {}
+        for r in rows:
+            if r["auto_approve"] or not r["target_id"]:
+                continue
+            have = team_dbs.get(r["target_id"], set())
+            if r["all_databases"] or have is None:
+                team_dbs[r["target_id"]] = None       # every database
+            else:
+                have.add(r["database_name"])
+                team_dbs[r["target_id"]] = have
+        for tid, entries in _overrides_v2(me, team_dbs).items():
+            out += [{"connectionId": alias.get(tid) or str(tid),
+                     "databases": e["databases"], "endedAt": e["expiresAt"],
+                     "team": t["name"]}
+                    for e in entries if e["expired"]]
+    return sorted(out, key=lambda x: (x["connectionId"], x["team"]))
 
 
 def _team_rows_v2(team_id: int) -> tuple[list, list, list]:
@@ -3347,8 +3392,9 @@ def admin_bulk_create_auto_grants(body: BulkAutoGrantIn,
             409, "conflict",
             f"{len(refused)} of {len(body.targets)} targets cannot take this waiver; "
             "nothing was written.", refused=refused)
+    # `applied` is a count, as on the connections bulk route: 0 for a dry run.
     if body.dryRun:
-        return {"applied": False, "targets": [label for _t, _d, label in plan]}
+        return {"applied": 0, "targets": [label for _t, _d, label in plan]}
 
     ids = []
     with db.transaction() as cur:
@@ -3367,7 +3413,7 @@ def admin_bulk_create_auto_grants(body: BulkAutoGrantIn,
                           "user": body.subject if team is None else None,
                           "team_id": team["id"] if team is not None else None,
                           "target_id": tid, "database": db_scope, "tier": tier})
-    return {"applied": True, "ids": ids, "targets": [label for _t, _d, label in plan]}
+    return {"applied": len(ids), "ids": ids, "targets": [label for _t, _d, label in plan]}
 
 
 # ---- Endpoint / access requests: decision (super-admin) ---------------------

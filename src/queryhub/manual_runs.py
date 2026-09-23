@@ -97,7 +97,8 @@ def list_open_for(admin_id: str) -> list[dict]:
     rows = db.fetch_all(
         "SELECT r.id, r.requester_slack_id, r.requester_name, "
         "       r.target_server_id, r.database_name, r.query, "
-        "       r.required_tier, r.engine, r.error_message, r.created_at, "
+        "       r.required_tier, r.engine, r.error_message, r.justification, "
+        "       r.created_at, "
         "       r.executed_at, r.bundle_id, t.alias AS target_alias "
         "  FROM requests r JOIN target_servers t ON t.id = r.target_server_id "
         " WHERE r.status = 'awaiting_dba_manual' "

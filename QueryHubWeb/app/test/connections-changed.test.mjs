@@ -30,6 +30,7 @@ for (const [name, call] of [
   ['create', (api) => api.adminCreateConnection({ alias: 'alpha' })],
   ['delete', (api) => api.adminDeleteConnection('alpha')],
   ['schema refresh', (api) => api.adminSchemaRefresh('alpha')],
+  ['bulk enable', (api) => api.adminBulkConnections({ connections: ['alpha'], enabled: true })],
 ]) {
   test(`${name} tells the app the connection list changed`, async () => {
     const { qhApi, events } = client();
@@ -48,5 +49,11 @@ test('reading the list is not a change', async () => {
   const { qhApi, events } = client();
   await qhApi.adminConnections();
   await qhApi.adminTestConnection('alpha');
+  assert.deepEqual(events, []);
+});
+
+test('a bulk dry run checks and announces nothing', async () => {
+  const { qhApi, events } = client();
+  await qhApi.adminBulkConnections({ connections: ['alpha'], enabled: true, dryRun: true });
   assert.deepEqual(events, []);
 });

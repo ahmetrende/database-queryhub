@@ -331,3 +331,33 @@ def test_a_role_scope_accepts_the_alias_or_the_id(monkeypatch):
     with pytest.raises(HTTPException) as e:
         ra._resolve_scope_target("nope")
     assert e.value.status_code == 404
+
+
+# --- where an ended own grant is why a team's does not reach them ----------------
+
+def test_the_person_view_names_an_ended_grant_that_blocks_the_team(monkeypatch):
+    """The resolver returns nothing for such a database, so without this the
+    person screen shows a team granting it and them not reaching it, with no
+    reason between the two. The rule is the team view's, from the other side."""
+    from datetime import datetime, timezone
+    ended = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    me = {"principal_id": 1, "slack_id": "U0EXAMPLE002", "name": "Example One"}
+    monkeypatch.setattr(ra, "_team_rows_v2", lambda tid: (
+        [{"target_id": 53, "database_name": "ledger", "all_databases": False,
+          "tier": "rw", "auto_approve": False, "valid_until": None}], [me], []))
+    monkeypatch.setattr(ra.targets, "list_all", lambda: [T53])
+    monkeypatch.setattr(ra.db, "fetch_all", lambda sql, p=None: [
+        _own(1, 53, db="ledger", expired=True, until=ended)])
+    got = ra._blocked_v2("U0EXAMPLE002", [{"id": 7, "name": "Team Alpha"}])
+    assert got == [{"connectionId": "prod-ledger", "databases": ["ledger"],
+                    "endedAt": "2026-09-01T00:00:00+00:00", "team": "Team Alpha"}]
+
+
+def test_a_live_own_grant_is_not_a_block(monkeypatch):
+    me = {"principal_id": 1, "slack_id": "U0EXAMPLE002", "name": "Example One"}
+    monkeypatch.setattr(ra, "_team_rows_v2", lambda tid: (
+        [{"target_id": 53, "database_name": "ledger", "all_databases": False,
+          "tier": "rw", "auto_approve": False, "valid_until": None}], [me], []))
+    monkeypatch.setattr(ra.targets, "list_all", lambda: [T53])
+    monkeypatch.setattr(ra.db, "fetch_all", lambda sql, p=None: [_own(1, 53, db="ledger")])
+    assert ra._blocked_v2("U0EXAMPLE002", [{"id": 7, "name": "Team Alpha"}]) == []

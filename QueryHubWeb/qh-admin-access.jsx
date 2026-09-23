@@ -538,7 +538,7 @@ function AutoView({ st, user }) {
   return (
     <div className="qh-apad">
       <div className="qh-aview-head">
-        <div><div className="qh-aview-title">Auto-approve</div><div className="qh-aview-sub">Standing exemptions from review — a person's queries up to a tier, on a database, run without a DBA until the window ends.</div></div>
+        <div><div className="qh-aview-title">Auto-approve</div><div className="qh-aview-sub">Standing exemptions from review — a person's or a team's queries up to a tier, on a database, run without a DBA until the window ends.</div></div>
         <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => { setAdding(a => a === '' ? null : ''); setEditId(null); }}><AIcon.plus />New exemption</button>
       </div>
 
@@ -547,19 +547,25 @@ function AutoView({ st, user }) {
       {reqs.length > 0 && (
         <div className="qh-autoreqs">
           <div className="qh-section-label">Asked for · {reqs.length}</div>
-          {reqs.map(r => (
+          {reqs.map(r => {
+            // `windowLabel` ("8h", "7 days"), never `days`: an ask made in Slack
+            // has `days: null`, and this card printed "for null days" (CODE
+            // 2026-09-23 §4). The days fallback is for a payload without a label.
+            const win = r.windowLabel || (r.days ? r.days + (r.days === 1 ? ' day' : ' days') : null);
+            return (
             <div key={r.id} className="qh-autoreq">
               <div className="qh-autoreq-main">
-                <div className="qh-autoreq-say"><b>{qhPersonName(r.requesterName || r.requester)}</b> asks to skip review on <span className="qh-mono">{r.connectionId} · {r.databaseId || 'all databases'}</span> <TierBadge tier={r.tier} sm /> for <b>{r.days} day{r.days === 1 ? '' : 's'}</b></div>
+                <div className="qh-autoreq-say"><b>{qhPersonName(r.requesterName || r.requester)}</b> requests auto-approve on <span className="qh-mono">{r.connectionId} · {r.databaseId || 'all databases'}</span> <TierBadge tier={r.tier} sm />{win && <> for <b>{win}</b></>}</div>
                 <div className="qh-autoreq-why">“{r.reason}”</div>
                 <div className="qh-autoreq-when">{r.requester} · asked {qhAgo(r.requestedAt)} · the window starts when you grant it</div>
               </div>
               <div className="qh-autoreq-acts">
-                <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => st.decideAutoRequest(r.id, true)}>{'Grant for ' + r.days + (r.days === 1 ? ' day' : ' days')}</button>
+                <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => st.decideAutoRequest(r.id, true)}>{win ? 'Grant for ' + win : 'Grant'}</button>
                 <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => st.decideAutoRequest(r.id, false)}>Decline</button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -591,9 +597,10 @@ function AutoView({ st, user }) {
                       {actions(a)}
                     </div>); })())}
               </div>
+              {/* A team can hold auto-approve too (CODE 2026-09-23 §4), so its card gets the same Add. */}
               {adding === s.key
-                ? <AutoBulkForm st={st} actor={actor} lockUser={s.key} lockName={s.name} existing={s.rows} onDone={() => setAdding(null)} />
-                : !s.team && <button className="qh-linkbtn qh-autosub-add" onClick={() => { setAdding(s.key); setEditId(null); }}><AIcon.plus />Add targets for {s.name}</button>}
+                ? <AutoBulkForm st={st} actor={actor} lockType={s.team ? 'team' : 'user'} lockUser={s.team ? s.name : s.key} lockName={s.name} existing={s.rows} onDone={() => setAdding(null)} />
+                : <button className="qh-linkbtn qh-autosub-add" onClick={() => { setAdding(s.key); setEditId(null); }}><AIcon.plus />Add targets for {s.name}</button>}
             </div>
           ))}
           {subjects.length === 0 && <div className="qh-conn-empty">{q.trim() ? 'No exemption matches your filter.' : 'Nobody skips review. Every query is looked at by a DBA.'}</div>}
@@ -645,52 +652,82 @@ function autoSubjects(rows, people) {
 }
 
 // ---------- One subject, many targets, one Save (§4b) ----------
-// The subject is picked ONCE; each row is a connection + database + tier +
-// window. DDL is not offered: schema changes are always reviewed, and a tier
-// the server refuses is a control that lies. Duplicate rows, and rows the
-// subject already holds, are marked before Save rather than refused after it.
+// The subject is picked ONCE — a person or a team, since the write path takes
+// both (CODE 2026-09-23 §4) — then as many targets as they need, with ONE tier
+// and ONE window for all of them: POST /admin/auto-grants/bulk takes one of each
+// and is all or nothing, so the form asks exactly the question the endpoint
+// answers. DDL is not offered: schema changes are always reviewed, and a tier
+// the server refuses is a control that lies. Duplicates, and targets the
+// subject already holds, are marked before Save; whatever the server still
+// refuses comes back on its own row, and nothing is written.
 const AUTO_WINDOWS = [['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['none', 'No end date']];
-function AutoBulkForm({ st, actor, lockUser, lockName, existing, onDone }) {
+function AutoBulkForm({ st, actor, lockType, lockUser, lockName, existing, onDone }) {
   const conns = (st.connections || []).filter(c => c.enabled !== false);
-  const blankRow = () => ({ k: Math.random().toString(36).slice(2), connectionId: (conns[0] || {}).id || '', databaseId: null, tier: 'RO', ttl: '30' });
+  const teams = st.teams || [];
+  const blankRow = () => ({ k: Math.random().toString(36).slice(2), connectionId: (conns[0] || {}).id || '', databaseId: null });
+  const [type, setType] = useAcc(lockType || 'user');
   const [who, setWho] = useAcc(lockUser || '');
   const [rows, setRows] = useAcc(() => [blankRow()]);
+  const [tier, setTier] = useAcc('RO');
+  const [ttl, setTtl] = useAcc('30');
   const [reason, setReason] = useAcc('');
   const [busy, setBusy] = useAcc(false);
   const [err, setErr] = useAcc(null);
-  const set = (k, patch) => { setRows(rs => rs.map(r => r.k === k ? { ...r, ...patch } : r)); setErr(null); };
-  const held = existing || (st.autoGrants || []).filter(a => a.user === who);
+  const [refused, setRefused] = useAcc({});   // row key -> the server's reason
+  const set = (k, patch) => {
+    setRows(rs => rs.map(r => r.k === k ? { ...r, ...patch } : r)); setErr(null);
+    setRefused(x => { if (!x[k]) return x; const n = { ...x }; delete n[k]; return n; });
+  };
+  // A team's rows are stored as `<name> (team)` — the key the list groups by.
+  const held = existing || (st.autoGrants || []).filter(a => a.user === (type === 'team' ? who + ' (team)' : who));
   const keyOf = (r) => r.connectionId + '/' + (r.databaseId || '*');
   const dupeIn = (r, i) => rows.findIndex(x => keyOf(x) === keyOf(r)) !== i;
   const heldBy = (r) => held.find(a => a.connectionId === r.connectionId && (a.databaseId || '*') === (r.databaseId || '*'));
   const bad = !who.trim() || !rows.length || rows.some((r, i) => dupeIn(r, i) || heldBy(r)) || busy;
-  const exp = (r) => r.ttl === 'none' ? null : qhIso(new Date(Date.now() + 86400000 * parseInt(r.ttl, 10)));
-  const open = rows.filter(r => r.ttl === 'none').length;
-  const whoName = lockName || qhPersonName(((st.people || []).find(p => p.handle === who || p.id === who) || {}).name || who);
+  const win = (AUTO_WINDOWS.find(w => w[0] === ttl) || [])[1];
+  const whoName = lockName || (type === 'team' ? who : qhPersonName(((st.people || []).find(p => p.handle === who || p.id === who) || {}).name || who));
+  const pickType = (v) => { setType(v); setWho(''); setErr(null); setRefused({}); };
   const save = () => {
     if (bad) return;
-    setBusy(true); setErr(null);
-    st.addAutoGrants(who.trim(), rows.map(r => ({ ...r, expiresAt: exp(r), reason: reason.trim() || null })))
+    setBusy(true); setErr(null); setRefused({});
+    st.addAutoGrants({ subjectType: type, subject: who.trim(), targets: rows, tier, reason: reason.trim() || null,
+      expiresAt: ttl === 'none' ? null : qhIso(new Date(Date.now() + 86400000 * parseInt(ttl, 10))) })
       .then(() => { setBusy(false); onDone(); })
-      // What landed is removed from the form; what was refused and after it
-      // stays, with the refusal naming the row it stopped at.
-      .catch(e => { const n = e.written || 0; const stop = rows[n]; setRows(rs => rs.slice(n)); setBusy(false);
-        setErr('Stopped at ' + (stop ? keyOf(stop).replace('/*', ' · all databases') : 'a row') + ': ' + e.message + (n ? ' ' + n + ' before it ' + (n === 1 ? 'was' : 'were') + ' created.' : ' Nothing was created.')); });
+      .catch(e => {
+        const list = (e && e.refused) || [], m = {};
+        list.forEach(x => { const t = x.target || {};
+          const r = rows.find(y => y.connectionId === t.connectionId && (y.databaseId || null) === (t.databaseId || null));
+          if (r && !m[r.k]) m[r.k] = x.reason; });
+        setRefused(m); setBusy(false);
+        setErr(list.length
+          ? 'Nothing was created: ' + list.length + ' of ' + rows.length + ' target' + (rows.length === 1 ? ' was' : 's were') + ' refused. Fix or remove ' + (list.length === 1 ? 'it' : 'them') + ', then save again.'
+          : ((e && e.message) || 'Nothing was created.'));
+      });
   };
+  const does = tier === 'RO' ? 'reads' : 'reads and writes';
   return (
     <div className="qh-autobulk">
       {!lockUser && (
         <div className="qh-autobulk-who">
           <span className="qh-rolefield-l">Who</span>
-          <PersonPick people={st.people} value={who} onChange={v => { setWho(v); setErr(null); }} resolve={st.resolvePerson} autoFocus />
+          <div className="qh-seg qh-seg-sm">
+            <button className={'qh-seg-opt' + (type === 'user' ? ' is-active' : '')} onClick={() => pickType('user')}>Person</button>
+            <button className={'qh-seg-opt' + (type === 'team' ? ' is-active' : '')} onClick={() => pickType('team')}>Team</button>
+          </div>
+          {type === 'user'
+            ? <PersonPick people={st.people} value={who} onChange={v => { setWho(v); setErr(null); }} resolve={st.resolvePerson} autoFocus />
+            : <select className="qh-select" value={who} onChange={e => { setWho(e.target.value); setErr(null); }}>
+                <option value="">Pick a team…</option>
+                {teams.map(t => <option key={t.id} value={t.name}>{t.name} · {t.members.length} member{t.members.length === 1 ? '' : 's'}</option>)}
+              </select>}
         </div>
       )}
       {held.length > 0 && who && <div className="qh-autobulk-held">Already skips review on {held.map(a => a.connectionId + ' · ' + (a.databaseId || 'all databases')).join(', ')}.</div>}
       <div className="qh-autobulk-rows">
-        <div className="qh-autobulk-hd"><span>Connection</span><span>Database</span><span>Up to</span><span>Window</span><span></span></div>
+        <div className="qh-autobulk-hd"><span>Connection</span><span>Database</span><span></span></div>
         {rows.map((r, i) => {
           const conn = conns.find(c => c.id === r.connectionId);
-          const flag = dupeIn(r, i) ? 'Listed twice' : heldBy(r) ? 'Already exempt here — edit that row instead' : null;
+          const flag = dupeIn(r, i) ? 'Listed twice' : heldBy(r) ? 'Already exempt here — edit that row instead' : (refused[r.k] || null);
           return (
             <div key={r.k} className={'qh-autobulk-row' + (flag ? ' is-bad' : '')}>
               <select className="qh-select" value={r.connectionId} onChange={e => set(r.k, { connectionId: e.target.value, databaseId: null })}>{conns.map(c => <option key={c.id} value={c.id}>{connLabel(c)}</option>)}</select>
@@ -698,8 +735,6 @@ function AutoBulkForm({ st, actor, lockUser, lockName, existing, onDone }) {
                 <option value="">All databases</option>
                 {(conn ? conn.databases : []).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
               </select>
-              <div className="qh-seg qh-seg-sm">{['RO', 'RW'].map(t => <button key={t} className={'qh-seg-opt' + (r.tier === t ? ' is-active' : '')} onClick={() => set(r.k, { tier: t })}>{t}</button>)}</div>
-              <select className="qh-select" value={r.ttl} onChange={e => set(r.k, { ttl: e.target.value })}>{AUTO_WINDOWS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
               <button className="qh-bulk-chipx" style={rows.length === 1 ? { visibility: 'hidden' } : undefined} disabled={rows.length === 1} onClick={() => setRows(rs => rs.filter(x => x.k !== r.k))} aria-label="Remove this target"><AIcon.x /></button>
               {flag && <div className="qh-autobulk-flag">{flag}</div>}
             </div>
@@ -707,12 +742,19 @@ function AutoBulkForm({ st, actor, lockUser, lockName, existing, onDone }) {
         })}
         <button className="qh-linkbtn" onClick={() => setRows(rs => rs.concat([blankRow()]))}><AIcon.plus />Another target</button>
       </div>
+      <div className="qh-autobulk-opts">
+        <div className="qh-autobulk-opt"><span className="qh-rolefield-l">Up to</span>
+          <div className="qh-seg qh-seg-sm">{['RO', 'RW'].map(t => <button key={t} className={'qh-seg-opt' + (tier === t ? ' is-active' : '')} onClick={() => { setTier(t); setErr(null); }}>{t}</button>)}</div></div>
+        <div className="qh-autobulk-opt"><span className="qh-rolefield-l">For</span>
+          <select className="qh-select" value={ttl} onChange={e => { setTtl(e.target.value); setErr(null); }}>{AUTO_WINDOWS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></div>
+        <span className="qh-autobulk-note">One tier and one window for every target here.</span>
+      </div>
       <input className="qh-input qh-input-sm qh-autobulk-why" placeholder="Why (optional, kept on every row)" value={reason} onChange={e => setReason(e.target.value)} />
       {err && <div className="qh-roleform-err">{err}</div>}
       <div className="qh-autobulk-foot">
-        <span className="qh-autobulk-say">{who
-          ? <><b>{whoName}</b>'s matching queries on {rows.length} target{rows.length === 1 ? '' : 's'} will run without a DBA{open ? <>, <b className="qh-eff-sum-warn">{open} with no end date</b></> : ''}.</>
-          : 'Pick the person first — then as many targets as they need.'}</span>
+        <span className="qh-autobulk-say">{!who
+          ? 'Pick the person or team first — then as many targets as they need.'
+          : <>{type === 'team' ? <>Every member of <b>{whoName}</b>: their</> : <><b>{whoName}</b>'s</>} {does} on {rows.length} target{rows.length === 1 ? '' : 's'} will run without a DBA{ttl === 'none' ? <>, <b className="qh-eff-sum-warn">with no end date</b></> : <> for {win}</>}.</>}</span>
         <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone} disabled={busy}>Cancel</button>
         <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={bad} onClick={save}>{busy ? 'Creating…' : 'Create ' + rows.length + ' exemption' + (rows.length === 1 ? '' : 's')}</button>
       </div>
@@ -1004,6 +1046,21 @@ const QH_CRED_TIERS = [
 // never prefilled with a placeholder: the server does not send passwords back,
 // so a masked value in here would be a lie about what is stored — and leaving
 // it blank is what tells the server "keep the current one".
+// A connection test answers in colour (operator, CODE 2026-09-23 §6a): green
+// for connected, red for refused — on the row's button and in the form alike.
+const CONN_TEST_ICON = {
+  ok: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>,
+  bad: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>,
+};
+// The queue's checkbox, for picking connections to change together (§6b).
+function ConnCheck({ on, some, onChange, label }) {
+  return (
+    <label className="qh-qcheck qh-conncheck">
+      <input type="checkbox" checked={!!on} onChange={onChange} aria-label={label} />
+      <span className={'qh-qcheck-box' + (some ? ' is-some' : '')}>{CONN_TEST_ICON.ok}</span>
+    </label>
+  );
+}
 function ConnCredRow({ label, hint, stored, value, onChange }) {
   const state = stored
     ? (stored.placeholder ? 'not provisioned yet'
@@ -1252,10 +1309,11 @@ function ConnectionForm({ st, init, mode, onDone }) {
                        value={creds[t]} onChange={v => setCreds({ ...creds, [t]: v })} />
         ))}
         {probe && (
-          <div className="qh-fb-meta">
-            {probe.ok
+          <div className={'qh-probe ' + (probe.ok ? 'is-ok' : 'is-bad')} role="status">
+            {probe.ok ? CONN_TEST_ICON.ok : CONN_TEST_ICON.bad}
+            <span>{probe.ok
               ? ('Connected' + (probe.serverVersion ? ' · server ' + probe.serverVersion : '') + (probe.latencyMs != null ? ' · ' + probe.latencyMs + ' ms' : ''))
-              : ('Could not connect — ' + (probe.error || 'unknown error'))}
+              : ('Could not connect — ' + (probe.error || 'unknown error'))}</span>
           </div>
         )}
       </div>
@@ -1285,6 +1343,38 @@ function ConnectionsView({ st, user }) {
   const [form, setForm] = React.useState(null);     // {mode, conn} while a modal is open
   const [testing, setTesting] = React.useState(null);
   const [tested, setTested] = React.useState({});   // alias -> last probe result
+  // Bulk (CODE 2026-09-23 §6b): picked connection ids, the one-credential
+  // panel, and what the server refused. The write is all or nothing, so a
+  // refusal is a LIST, each line naming its connection.
+  const [sel, setSel] = React.useState([]);
+  const [bulk, setBulk] = React.useState(null);        // null | { enable, tier, username, password }
+  const [bulkBusy, setBulkBusy] = React.useState(false);
+  const [refused, setRefused] = React.useState(null);  // null | { body, list, msg }
+  const allConns = st.connections || [];
+  const selRows = allConns.filter(c => sel.indexOf(c.id) >= 0);
+  const refusedNames = refused ? refused.list.map(x => x.connection) : [];
+  const toggleSel = (id) => { setRefused(null); setSel(xs => xs.indexOf(id) >= 0 ? xs.filter(x => x !== id) : xs.concat([id])); };
+  // Dry run first: the write changes all of them or none, so asking before
+  // writing turns "nothing changed" into "these two would have stopped it" —
+  // with a way on from there, instead of a toast.
+  const runBulk = (body) => {
+    if (bulkBusy || !selRows.length) return;
+    setBulkBusy(true); setRefused(null);
+    const req = { connections: selRows.map(c => c.name), ...body };
+    st.bulkConnections({ ...req, dryRun: true })
+      .then(() => st.bulkConnections({ ...req, dryRun: false }))
+      .then(() => { setBulkBusy(false); setSel([]); setBulk(null); })
+      .catch(e => { setBulkBusy(false); setRefused({ body, list: (e && e.refused) || [], msg: (e && e.message) || 'Nothing was changed.' }); });
+  };
+  const bulkDisable = () => {
+    if (!window.confirm('Disable ' + selRows.length + ' connection' + (selRows.length === 1 ? '' : 's') + '? Developers lose access to them until they are enabled again. Running queries are unaffected.')) return;
+    runBulk({ enabled: false });
+  };
+  const bulkCredSave = () => {
+    const b = bulk;
+    if (!b || !b.username.trim() || !b.password) return;
+    runBulk({ ...(b.enable ? { enabled: true } : {}), credentials: { [b.tier]: { username: b.username.trim(), password: b.password } } });
+  };
   const toggleSort = (key) => setSort(s => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }));
   const refreshSchema = (c) => {
     if (refreshing) return;
@@ -1383,16 +1473,68 @@ function ConnectionsView({ st, user }) {
         });
         const arrow = (k) => (sort.key === k ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : '');
         const th = (k, label, cls) => <th className={'qh-sort-th' + (sort.key === k ? ' is-sorted' : '') + (cls || '')} onClick={() => toggleSort(k)}>{label}<span className="qh-sort-arw">{arrow(k)}</span></th>;
+        const vis = rows.map(c => c.id);
+        const allOn = vis.length > 0 && vis.every(id => sel.indexOf(id) >= 0);
+        const someOn = !allOn && vis.some(id => sel.indexOf(id) >= 0);
+        const hidden = sel.filter(id => vis.indexOf(id) < 0).length;
+        const credWord = bulk ? { ro: 'read-only', rw: 'read/write', ddl: 'DDL' }[bulk.tier] : '';
+        const had = bulk ? selRows.filter(c => { const k = (c.credentials || {})[bulk.tier]; return k && k.configured && !k.placeholder; }).length : 0;
+        const nSel = selRows.length;
         return (
+          <>
+          {sel.length > 0 && (
+            <div className="qh-connbulk">
+              <div className="qh-connbulk-bar">
+                <span className="qh-connbulk-n">{sel.length} selected{hidden ? ' · ' + hidden + ' hidden by the filter' : ''}</span>
+                <div className="qh-flex1" />
+                <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={bulkBusy} onClick={() => { setBulk(null); runBulk({ enabled: true }); }}>Enable</button>
+                <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={bulkBusy} onClick={() => { setBulk(null); bulkDisable(); }}>Disable</button>
+                <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={bulkBusy} onClick={() => { setRefused(null); setBulk({ enable: false, tier: 'ro', username: '', password: '' }); }}>Set a credential…</button>
+                <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={bulkBusy} onClick={() => { setSel([]); setBulk(null); setRefused(null); }}>Clear</button>
+                {bulkBusy && <span className="qh-spin" />}
+              </div>
+              {refused && (
+                <div className="qh-connbulk-refused" role="alert">
+                  <div className="qh-connbulk-refused-h">{refused.list.length ? 'Nothing was changed — ' + refused.list.length + ' of ' + nSel + ' would have been refused:' : refused.msg}</div>
+                  {refused.list.map(x => <div key={x.connection} className="qh-connbulk-refused-row"><b className="qh-mono">{x.connection}</b> — {x.reason}</div>)}
+                  {refused.list.length > 0 && (
+                    <div className="qh-connbulk-acts">
+                      {refused.list.length < nSel && <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => { setSel(xs => xs.filter(id => { const c = allConns.find(x => x.id === id); return !c || refusedNames.indexOf(c.name) < 0; })); setRefused(null); }}>Leave {refused.list.length === 1 ? 'it' : 'those ' + refused.list.length} out</button>}
+                      {refused.body.enabled === true && !refused.body.credentials && <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => { setRefused(null); setBulk({ enable: true, tier: 'ro', username: '', password: '' }); }}>Set one read-only credential, then enable</button>}
+                    </div>
+                  )}
+                </div>
+              )}
+              {bulk && (
+                <div className="qh-connbulk-cred">
+                  <div className="qh-connbulk-cred-row">
+                    {bulk.enable
+                      ? <span className="qh-rolefield-l">Read-only credential</span>
+                      : <div className="qh-seg qh-seg-sm">{[['ro', 'Read-only'], ['rw', 'Read/Write'], ['ddl', 'DDL']].map(([t, l]) => <button key={t} className={'qh-seg-opt' + (bulk.tier === t ? ' is-active' : '')} onClick={() => setBulk({ ...bulk, tier: t })}>{l}</button>)}</div>}
+                    <input className="qh-input qh-input-sm" placeholder="username" autoComplete="off" autoFocus value={bulk.username} onChange={e => setBulk({ ...bulk, username: e.target.value })} />
+                    <input className="qh-input qh-input-sm" type="password" placeholder="password" autoComplete="new-password" value={bulk.password} onChange={e => setBulk({ ...bulk, password: e.target.value })} />
+                  </div>
+                  {/* The consequence, said before Save: ONE credential lands on every
+                      selected connection, including the ones that already had one. */}
+                  <div className="qh-connbulk-say">Sets the {credWord} credential on <b>{nSel} connection{nSel === 1 ? '' : 's'}</b>{had ? <>, replacing the one {had === nSel ? (nSel === 1 ? 'it has' : 'each has') : <><b>{had}</b> of them have</>} now</> : ''}{bulk.enable ? ', then enables them' : ''}. Stored encrypted and never shown again.</div>
+                  <div className="qh-connbulk-acts">
+                    <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setBulk(null)} disabled={bulkBusy}>Cancel</button>
+                    <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={bulkBusy || !bulk.username.trim() || !bulk.password} onClick={bulkCredSave}>{(bulk.enable ? 'Set and enable ' : 'Set on ') + nSel}</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           <div className="qh-tablewrap">
           <table className="qh-atable qh-conntable qh-acttable">
-            <thead><tr>{th('name', 'Connection')}{th('engine', 'Engine')}{th('hosting', 'Hosting')}{th('enabled', 'Status')}{th('env', 'Environment')}{th('dbs', 'Databases')}<th className="qh-tright">Actions</th></tr></thead>
+            <thead><tr><th className="qh-conn-selcol"><ConnCheck on={allOn} some={someOn} label={allOn ? 'Deselect every connection shown' : 'Select all ' + vis.length + ' connections shown'} onChange={() => { setRefused(null); setSel(xs => allOn ? xs.filter(id => vis.indexOf(id) < 0) : [...new Set(xs.concat(vis))]); }} /></th>{th('name', 'Connection')}{th('engine', 'Engine')}{th('hosting', 'Hosting')}{th('enabled', 'Status')}{th('env', 'Environment')}{th('dbs', 'Databases')}<th className="qh-tright">Actions</th></tr></thead>
             <tbody>
               {rows.map(c => {
                 const probe = tested[c.id];
                 return (
-                <tr key={c.id}>
-                  <td><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b>{c.name}</b></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}</td>
+                <tr key={c.id} className={(sel.indexOf(c.id) >= 0 ? 'is-sel' : '') + (refusedNames.indexOf(c.name) >= 0 ? ' is-refused' : '')}>
+                  <td className="qh-conn-selcol"><ConnCheck on={sel.indexOf(c.id) >= 0} onChange={() => toggleSel(c.id)} label={'Select ' + c.name} /></td>
+                  <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b>{c.name}</b></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}</td>
                   <td className="qh-muted">{c.engine}</td>
                   {/* Provider + service on one line; the account and any custom
                       tags are on the hover, because this column sits between two
@@ -1414,7 +1556,13 @@ function ConnectionsView({ st, user }) {
                   <td><span className={'qh-envtag env-' + c.env}>{c.env}</span></td>
                   <td><div className="qh-conn-dbcell">{(c.databases || []).map(d => <span key={d.id} className="qh-dbchip">{d.name}{d.tier && <TierBadge tier={d.tier} sm />}</span>)}</div></td>
                   <td className="qh-tright"><div className="qh-rowacts">
-                    <button className="qh-rowbtn" disabled={testing === c.id} onClick={() => testConnection(c)} title="Open one connection with the stored read-only credential">{testing === c.id ? <span className="qh-spin" /> : (probe ? (probe.ok ? 'Test · ok' : 'Test · failed') : 'Test')}</button>
+                    {/* The last answer, in its colour (operator, CODE 2026-09-23 §6a):
+                        green with the latency, red with the error on hover. Still a
+                        button — pressing it tests again. */}
+                    <button className={'qh-rowbtn qh-testbtn' + (probe && testing !== c.id ? (probe.ok ? ' is-ok' : ' is-bad') : '')} disabled={testing === c.id} onClick={() => testConnection(c)}
+                      title={probe ? (probe.ok ? 'Connected' + (probe.serverVersion ? ' · server ' + probe.serverVersion : '') + ' — press to test again' : 'Could not connect — ' + (probe.error || 'unknown error') + ' — press to test again') : 'Open one connection with the stored read-only credential'}>
+                      {testing === c.id ? <span className="qh-spin" /> : probe ? (probe.ok ? <>{CONN_TEST_ICON.ok}{probe.latencyMs != null ? 'OK · ' + probe.latencyMs + ' ms' : 'OK'}</> : <>{CONN_TEST_ICON.bad}Failed</>) : 'Test'}
+                    </button>
                     <button className="qh-rowbtn" onClick={() => setForm({ mode: 'edit', conn: c })}><AIcon.edit />Edit</button>
                     <button className="qh-rowbtn" onClick={() => setForm({ mode: 'rotate', conn: c })}>Rotate</button>
                     <button className="qh-rowbtn" onClick={() => toggleEnabled(c)}>{c.enabled ? 'Disable' : 'Enable'}</button>
@@ -1424,10 +1572,11 @@ function ConnectionsView({ st, user }) {
                 </tr>
                 );
               })}
-              {rows.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No connections match your filter.</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={8} className="qh-conn-empty">No connections match your filter.</td></tr>}
             </tbody>
           </table>
           </div>
+          </>
         );
       })()}
     </div>

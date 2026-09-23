@@ -19,6 +19,18 @@ function qhEscape(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// A password QueryHub did not keep (CODE 2026-09-23 §5): a stored role script
+// holds this literal where the password was — in history, workspaces, templates
+// and favourites alike — and the server refuses to run it (422). The editor
+// marks it, and Run stops on it with the placeholder selected, so the refusal
+// is never the first anyone hears of it.
+const QH_REDACTED_LIT = "'***REDACTED***'";
+function qhRedactedAt(sql) {
+  const s = String(sql || ''), out = [];
+  for (let i = s.indexOf(QH_REDACTED_LIT); i >= 0; i = s.indexOf(QH_REDACTED_LIT, i + QH_REDACTED_LIT.length)) out.push(i);
+  return out;
+}
+
 // Tokenize + return highlighted HTML
 function qhHighlight(code) {
   // master regex: comments | strings | numbers | words | other
@@ -27,7 +39,7 @@ function qhHighlight(code) {
   let m;
   while ((m = re.exec(code)) !== null) {
     if (m[1] != null) out += `<span class="tk-com">${qhEscape(m[1])}</span>`;
-    else if (m[2] != null) out += `<span class="tk-str">${qhEscape(m[2])}</span>`;
+    else if (m[2] != null) out += m[2] === QH_REDACTED_LIT ? `<span class="tk-str tk-redact">${qhEscape(m[2])}</span>` : `<span class="tk-str">${qhEscape(m[2])}</span>`;
     else if (m[3] != null) out += `<span class="tk-num">${qhEscape(m[3])}</span>`;
     else if (m[4] != null) {
       const w = m[4];
@@ -167,7 +179,7 @@ function qhBuildSuggest(value, caret, schema, engineId) {
 }
 const QH_AC_TYPE_LABEL = { keyword: 'kw', table: 'table', column: 'col', database: 'db', system: 'system', function: 'fn', expand: 'all cols' };
 
-function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, schema, engineId, focusSignal }) {
+function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, schema, engineId, focusSignal, revealRange }) {
   const taRef = React.useRef(null);
   const preRef = React.useRef(null);
   const gutRef = React.useRef(null);
@@ -320,6 +332,13 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     if (!focusSignal) return;
     requestAnimationFrame(() => { const ta = taRef.current; if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; } });
   }, [focusSignal]);
+
+  // Select a span the parent points at — the hidden password, when Run stopped
+  // on it — so the next keystroke replaces the placeholder.
+  React.useEffect(() => {
+    if (!revealRange) return;
+    requestAnimationFrame(() => { const ta = taRef.current; if (ta) { ta.focus(); ta.setSelectionRange(revealRange.start, revealRange.end); } });
+  }, [revealRange]);
 
   const sync = () => {
     const ta = taRef.current;
@@ -760,4 +779,4 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
 // qhBuildSuggest is exported so the suggestion rules can be tested directly.
 // It is the one piece of editor behaviour with no visible surface of its own —
 // a wrong pool looks like "autocomplete is being unhelpful", never like a bug.
-Object.assign(window, { SqlEditor, EditorTabs, qhHighlight, qhBuildSuggest });
+Object.assign(window, { SqlEditor, EditorTabs, qhHighlight, qhBuildSuggest, QH_REDACTED_LIT, qhRedactedAt });

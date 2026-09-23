@@ -1805,7 +1805,7 @@
      identifier (2026-08-22), and half of one reads as a different server. The
      host line is not: it ellipsises with the full string on hover, which is
      what keeps the table near its container width instead of ~500px past it. */
-  .qh-conntable td:first-child { max-width: 340px; }
+  .qh-conntable td.qh-conn-name-td { max-width: 340px; }
   .qh-conn-namecell b { overflow-wrap: anywhere; }
   .qh-conn-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .qh-load-error { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 10px 14px; border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); background: var(--danger-adaptive-light); color: var(--fg-danger); font-size: 13px; }
@@ -1938,7 +1938,7 @@
   .qh-autobulk-who { display: flex; align-items: center; gap: 10px; }
   .qh-autobulk-held { font-size: 12px; color: var(--fg-tertiary); }
   .qh-autobulk-rows { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
-  .qh-autobulk-hd, .qh-autobulk-row { display: grid; grid-template-columns: minmax(150px, 1.2fr) minmax(150px, 1fr) auto 130px 24px; gap: 8px; align-items: center; width: 100%; }
+  .qh-autobulk-hd, .qh-autobulk-row { display: grid; grid-template-columns: minmax(150px, 1.2fr) minmax(150px, 1fr) 24px; gap: 8px; align-items: center; width: 100%; }
   .qh-autobulk-hd span { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-tertiary); }
   .qh-autobulk-row .qh-select { width: 100%; }
   .qh-autobulk-row.is-bad .qh-select { border-color: var(--fg-danger); }
@@ -1999,6 +1999,74 @@
   .qh-ddlbox-miss { color: var(--fg-tertiary); font-style: italic; }
   .qh-ddlbox-warn { color: var(--fg-warning); font-weight: 600; }
   @media (max-width: 900px) { .qh-eff { grid-template-columns: minmax(0, 1fr); } .qh-eff-pick { max-height: 280px; border-right: 0; border-bottom: 1px solid var(--stroke-light); } .qh-autosub-row { grid-template-columns: minmax(0, 1fr) auto auto; } .qh-autosub-by { display: none; } }
+
+  /* ---------- Round 2026-09-23 ---------- */
+  /* §3/§4 Effective access: an ended own grant is a row of its own; a team held
+     at several tiers lists its databases; a disabled connection says so. */
+  .qh-eff-row.is-blocked { background: var(--bg-light); border-style: dashed; border-color: var(--stroke-strong); }
+  .qh-eff-noacc, .qh-eff-off { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; color: var(--fg-danger); background: var(--danger-adaptive-light); white-space: nowrap; }
+  .qh-eff-off { font-weight: 600; }
+  .qh-eff-row.is-off .qh-eff-conn { color: var(--fg-tertiary); }
+  .qh-eff-mixed { font-size: 12px; color: var(--fg-secondary); }
+  .qh-eff-per { display: flex; flex-direction: column; gap: 4px; padding: 0 12px 9px 152px; }
+  .qh-eff-per-row { display: flex; align-items: center; gap: 10px; }
+  .qh-eff-note-warn { color: var(--fg-warning); }
+  .qh-eff-note-warn .qh-eff-inlink { color: inherit; font-weight: 600; text-decoration: underline; }
+
+  /* §4 Ask to skip review: the server's windows, and an ask already waiting. */
+  .qh-seg.qh-seg-wrap { flex-wrap: wrap; }
+  .qh-req-wait { padding: 10px 12px; border-radius: var(--r-sm); background: var(--bg-light); border: 1px dashed var(--stroke-strong); font-size: 13px; line-height: 1.5; color: var(--fg-secondary); }
+  /* §4 Auto-approve: person or team, one tier and one window for every target. */
+  .qh-autobulk-who .qh-select { min-width: 220px; }
+  .qh-autobulk-opts { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+  .qh-autobulk-opt { display: flex; align-items: center; gap: 8px; }
+  .qh-autobulk-note { font-size: 12px; color: var(--fg-tertiary); }
+
+  /* §5 A DDL handed to a DBA: its own state — amber, no spinner, no Stop — and
+     the block at the top of the queue where a DBA picks it up. */
+  .st-dba { color: var(--fg-warning); background: var(--warning-adaptive-light); box-shadow: inset 0 0 0 1px var(--warning-solid-light); }
+  .qh-mruns { margin: 4px 0 12px; padding: 10px; border: 1px solid var(--warning-solid-light); background: var(--warning-adaptive-light); border-radius: var(--r-md); display: flex; flex-direction: column; gap: 8px; }
+  .qh-mruns-h { padding: 0 2px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-warning); }
+  .qh-mrun { padding: 10px; background: var(--bg-white); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); display: flex; flex-direction: column; gap: 6px; }
+  .qh-mrun-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .qh-mrun-who { font-size: 13px; font-weight: 600; color: var(--fg-primary); }
+  .qh-mrun-target { font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-secondary); }
+  .qh-mrun-when { margin-left: auto; font-size: 11.5px; color: var(--fg-tertiary); }
+  .qh-mrun-sql { margin: 0; padding: 7px 9px; max-height: 88px; overflow: auto; background: var(--bg-light); border-radius: var(--r-xs); font-family: var(--qh-mono); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--fg-primary); }
+  .qh-mrun-line { font-size: 12px; line-height: 1.45; color: var(--fg-secondary); }
+  .qh-mrun-line.is-warn { color: var(--fg-warning); font-weight: 600; }
+  .qh-mrun-reason { font-size: 12px; color: var(--fg-tertiary); }
+  .qh-mrun-why { width: 100%; }
+  .qh-mrun-acts { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  /* §5 A hidden password: marked in the editor (no metric change, or the overlay
+     drifts off the textarea) and said in the action bar before Run. */
+  .tk-redact { color: var(--fg-warning); background: var(--warning-adaptive-light); border-radius: 3px; box-shadow: inset 0 -1.5px 0 var(--fg-warning); }
+  .qh-redact-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: var(--r-full); font-size: 12px; font-weight: 600; cursor: pointer; color: var(--fg-warning); background: var(--warning-adaptive-light); }
+  .qh-redact-chip:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+
+  /* §6a A connection test answers in colour, on the row and in the form. */
+  .qh-rowbtn.qh-testbtn.is-ok, .qh-rowbtn.qh-testbtn.is-ok:hover { color: var(--fg-accent); border-color: var(--stroke-accent); background: var(--brand-adaptive-light); }
+  .qh-rowbtn.qh-testbtn.is-bad, .qh-rowbtn.qh-testbtn.is-bad:hover { color: var(--fg-danger); border-color: var(--stroke-danger); background: var(--danger-adaptive-light); }
+  .qh-probe { display: flex; align-items: flex-start; gap: 8px; padding: 9px 12px; border-radius: var(--r-sm); font-size: 12.5px; font-weight: 500; line-height: 1.5; }
+  .qh-probe svg { flex-shrink: 0; margin-top: 3px; }
+  .qh-probe.is-ok { color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  .qh-probe.is-bad { color: var(--fg-danger); background: var(--danger-adaptive-light); }
+  /* §6b Several connections at once: a bar over the table, all or nothing. */
+  .qh-conntable .qh-conn-selcol { width: 1%; padding-right: 0; }
+  .qh-conncheck { padding-top: 0; }
+  .qh-conntable tr.is-sel td { background: var(--brand-adaptive-light); }
+  .qh-conntable tr.is-refused td { background: var(--danger-adaptive-light); }
+  .qh-connbulk { margin-bottom: 10px; border: 1px solid var(--stroke-accent); border-radius: var(--r-md); overflow: hidden; }
+  .qh-connbulk-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; background: var(--brand-adaptive-light); }
+  .qh-connbulk-n { font-size: 12.5px; font-weight: 600; color: var(--fg-accent); }
+  .qh-connbulk-refused { padding: 10px 12px; border-top: 1px solid var(--stroke-light); background: var(--danger-adaptive-light); display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--fg-primary); }
+  .qh-connbulk-refused-h { font-weight: 600; color: var(--fg-danger); }
+  .qh-connbulk-cred { padding: 12px; border-top: 1px solid var(--stroke-light); background: var(--bg-white); display: flex; flex-direction: column; gap: 10px; }
+  .qh-connbulk-cred-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .qh-connbulk-cred-row .qh-input { width: 200px; }
+  .qh-connbulk-say { font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); }
+  .qh-connbulk-acts { display: flex; gap: 8px; justify-content: flex-end; }
+  .qh-connbulk-refused .qh-connbulk-acts { justify-content: flex-start; margin-top: 4px; }
 
   /* feedback */
   .qh-fblist { display: flex; flex-direction: column; gap: 10px; }

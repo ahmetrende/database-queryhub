@@ -182,7 +182,10 @@ const qhApi = {
   // Ask a DBA to let some queries skip review for a while (design 2026-09-22 §3).
   // Body {connectionId, databaseId, tier, days, reason}; a refusal names its field.
   requestAutoApprove:(b) => qhFetch('/auto-approve-requests', { method: 'POST', body: JSON.stringify(b) }),
-  myAutoApproveRequests:() => qhFetch('/auto-approve-requests'),
+  // {windowOptions:[{minutes,label,days?}], requests:[...]} -- the window
+  // choices and the caller's own asks, so the modal can mark a database that
+  // already has one waiting (design 2026-09-23).
+  autoApproveRequests:() => qhFetch('/auto-approve-requests'),
   feedback:    (b)     => qhFetch('/feedback', { method: 'POST', body: JSON.stringify(b) }),
   // Developer notifications (approval decisions, scheduled runs, endpoint
   // grants, kill switch). Read state mirrors server-side.
@@ -214,6 +217,9 @@ const qhApi = {
   adminDelGrant:   (id)   => qhFetch('/admin/grants/' + encodeURIComponent(id), { method: 'DELETE' }),
   adminAutoGrants: ()     => qhFetch('/admin/auto-grants'),
   adminAddAutoGrant:(b)   => qhFetch('/admin/auto-grants', { method: 'POST', body: JSON.stringify(b) }),
+  // One subject -- a person or a team -- on many targets, all or nothing: a 409
+  // writes nothing and carries `refused` (design 2026-09-23).
+  adminAddAutoGrantsBulk:(b) => qhFetch('/admin/auto-grants/bulk', { method: 'POST', body: JSON.stringify(b) }),
   adminDelAutoGrant:(id)  => qhFetch('/admin/auto-grants/' + encodeURIComponent(id), { method: 'DELETE' }),
   // One person's resolved reach, and "give them what that person has".
   adminEffectiveAccess:(id) => qhFetch('/admin/people/' + encodeURIComponent(id) + '/effective-access'),
@@ -222,6 +228,9 @@ const qhApi = {
   // Auto-approve window requests, admin side (§3). The decision writes the
   // waiver with its window starting at the decision.
   adminAutoRequests: ()   => qhFetch('/admin/auto-approve-requests'),
+  // What the bot handed to a DBA to run by hand, and closing one out.
+  adminManualRuns: ()     => qhFetch('/admin/manual-runs'),
+  adminCloseManualRun:(id, b) => qhFetch('/admin/manual-runs/' + encodeURIComponent(id) + '/close', { method: 'POST', body: JSON.stringify(b) }),
   adminDecideAutoRequest:(id, b) => qhFetch('/admin/auto-approve-requests/' + encodeURIComponent(id) + '/decision', { method: 'POST', body: JSON.stringify(b) }),
   // Who is this principal id, before anything is written. Granting access is
   // what creates a person, so this is how the subject combo can show a name for
@@ -281,6 +290,12 @@ const qhApi = {
   // Answers {deleted, disabled, reason} — a connection with history or live
   // grants is disabled instead of removed, and that counts as success.
   adminDeleteConnection:(conn)  => qhConnectionsChanged(qhFetch('/admin/connections/' + encodeURIComponent(conn), { method: 'DELETE' })),
+  // Several connections, all or nothing (design 2026-09-23). A dry run writes
+  // nothing, so only a real one announces a change to the connection list.
+  adminBulkConnections:(b) => {
+    const p = qhFetch('/admin/connections/bulk', { method: 'POST', body: JSON.stringify(b) });
+    return (b && b.dryRun) ? p : qhConnectionsChanged(p);
+  },
   // Reachability probes. Both answer {ok, latencyMs, serverVersion, error}
   // with ok:false for a refused connection — an unreachable target is an
   // answer, not a failed request, so neither rejects.

@@ -70,6 +70,9 @@ test('the widest cell is capped rather than left to set the table width', () => 
   // A 36-char name over an 88-char host:port/database line was ~500px of table
   // width on its own. The name wraps whole; the host ellipsises and keeps the
   // full value in a title.
-  assert.match(read('index.css'), /\.qh-conntable td:first-child[^{]*\{[^}]*max-width/);
+  // The name cell by class: a checkbox column leads the table since design
+  // round 2026-09-23, so `td:first-child` is no longer the name.
+  assert.match(read('index.css'), /\.qh-conntable td\.qh-conn-name-td[^{]*\{[^}]*max-width/);
+  assert.match(read('qh-admin-access.jsx'), /<td className="qh-conn-name-td">/);
   assert.match(read('qh-admin-access.jsx'), /className="qh-muted qh-mono qh-conn-host" title=/);
 });

@@ -284,9 +284,11 @@ def test_the_web_list_carries_what_a_dba_needs_to_run_it(monkeypatch, web):
         "id": 8930, "requester_slack_id": OTHER, "requester_name": "Req",
         "target_server_id": 1, "target_alias": "ledger", "database_name": "main",
         "required_tier": "ddl", "query": "CREATE ROLE r", "created_at": None,
-        "executed_at": None, "bundle_id": None,
+        "executed_at": None, "bundle_id": None, "justification": "new service account",
         "error_message": "requires DBA manual execution — Permission denied to create role"}])
     item = ra.admin_manual_runs(CLAIMS)["items"][0]
     assert item["connectionId"] == "ledger" and item["tier"] == "DDL"
     assert item["sql"] == "CREATE ROLE r"
-    assert item["reason"] == "Permission denied to create role"
+    # The database's words and the requester's are two different reasons.
+    assert item["refusal"] == "Permission denied to create role"
+    assert item["reason"] == "new service account"
