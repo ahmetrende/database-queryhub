@@ -138,8 +138,16 @@ def test_no_route_reaches_the_legacy_team_tables_unconditionally():
     """
     import re
     src = inspect.getsource(routes_admin)
-    LEGACY = ("FROM teams", "INTO teams", "UPDATE teams",
-              "FROM team_members", "INTO team_members", "DELETE FROM teams")
+    # `team_target_grants` and a bare JOIN were missing from this list, which
+    # is how the grant list and the grant revoke kept the legacy table after
+    # every other route had moved: both read or wrote it without asking the
+    # switch, and neither matched a pattern here.
+    LEGACY = ("FROM teams", "INTO teams", "UPDATE teams", "JOIN teams",
+              "DELETE FROM teams",
+              "FROM team_members", "INTO team_members", "JOIN team_members",
+              "FROM team_target_grants", "INTO team_target_grants",
+              "UPDATE team_target_grants", "DELETE FROM team_target_grants",
+              "JOIN team_target_grants")
     offenders = []
     # split on top-level defs, keeping each function with its own body
     parts = re.split(r"\n(?=def )", src)

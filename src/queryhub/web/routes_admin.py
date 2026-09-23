@@ -340,11 +340,52 @@ def admin_grants(claims: dict = Depends(deps.current_user)):
         row["_subject_type"] = "user"
         row["_gid"] = f"u:{row['subject']}:{row['target_server_id']}"
         out.append(mapping.grant_entry(row, _alias_of))
-    for row in db.fetch_all(
+    # Team grants come from whichever model is authoritative. After the pod
+    # cutover `team_target_grants` is empty and every team grant is an
+    # `access_grant` row, one per database, so reading only the legacy table
+    # listed none of the 35 and the Teams screen printed "No targets" on all
+    # seven teams that hold access. The legacy join to `teams` failed the same
+    # way, leaving the name NULL.
+    #
+    # The name is COALESCE(display_name, name) because that is the team's
+    # identity everywhere else on the screen: the Teams list shows it,
+    # `mapGrants` keys a team grant on it, and `_resolve_team` accepts it on
+    # the way back in. Change one of the four and the others stop matching.
+    if teams_mod.use_v2():
+        team_rows = db.fetch_all(
+            "SELECT t.id AS team_id, "
+            "       COALESCE(t.display_name, t.name) AS subject_name, "
+            "       g.target_id AS target_server_id, "
+            # NULL is "every database", the convention grant_entry reads.
+            "       CASE WHEN bool_or(g.all_databases) THEN NULL "
+            "            ELSE array_agg(g.database_name ORDER BY g.database_name) "
+            "       END AS allowed_databases, "
+            # The create path writes one tier per (team, target). The highest
+            # RANK is taken rather than max() of the text, which would put
+            # 'rw' above 'ddl'.
+            "       (array_agg(g.tier ORDER BY tr.rank DESC))[1] AS mode, "
+            "       min(g.valid_from) AS granted_at, "
+            # The EARLIEST end, so a grant that stops on one database first is
+            # not shown as lasting as long as its longest row.
+            "       min(g.valid_until) AS expires_at "
+            "  FROM access_grant g "
+            "  JOIN team t ON t.id = g.team_id AND NOT t.is_deleted "
+            "  JOIN tier tr ON tr.name = g.tier "
+            # A waiver grants nothing on its own (access._decide, rule 1); it
+            # belongs on the Auto-approve screen. A fleet-wide team row has no
+            # connection to be listed under, and the create path cannot write
+            # one; the resolver still honours it.
+            " WHERE NOT g.auto_approve AND NOT g.all_targets "
+            "   AND g.revoked_at IS NULL AND NOT g.is_deleted "
+            " GROUP BY t.id, g.target_id "
+            " ORDER BY min(g.valid_from) DESC")
+    else:
+        team_rows = db.fetch_all(
             "SELECT g.team_id, t.name AS subject_name, g.target_server_id, "
             "  g.allowed_databases, g.mode, g.granted_at, g.expires_at "
             "FROM team_target_grants g LEFT JOIN teams t ON t.id = g.team_id "
-            "WHERE g.revoked_at IS NULL ORDER BY g.granted_at DESC"):
+            "WHERE g.revoked_at IS NULL ORDER BY g.granted_at DESC")
+    for row in team_rows:
         row["subject"] = str(row["team_id"])
         row["_subject_type"] = "team"
         row["_gid"] = f"t:{row['team_id']}:{row['target_server_id']}"
@@ -1336,14 +1377,34 @@ def admin_delete_grant(gid: str, claims: dict = Depends(deps.current_user)):
         except ValueError:
             raise deps._error(400, "bad_request", "Bad team grant id.")
         with db.transaction() as cur:
-            cur.execute(
-                "DELETE FROM team_target_grants "
-                "WHERE team_id = %s AND target_server_id = %s RETURNING team_id",
-                (team_id, parsed["target_id"]))
-            if cur.fetchone() is None:
+            if teams_mod.use_v2():
+                # The same seam as the list. The legacy table is empty after
+                # the pod cutover, so a DELETE there matched nothing and every
+                # revoke from the screen answered 404 while the access stayed.
+                # Revoked, not deleted: a grant that existed is a fact. The
+                # waiver rows are left alone -- they are the Auto-approve
+                # screen's to manage, and on their own they grant nothing.
+                cur.execute(
+                    "UPDATE access_grant SET revoked_at = NOW(), "
+                    "       revoked_by = (SELECT p.id FROM principal p "
+                    "         JOIN principal_identity i ON i.principal_id = p.id "
+                    "        WHERE i.provider = 'slack' AND i.external_id = %s "
+                    "          AND NOT i.is_deleted LIMIT 1) "
+                    " WHERE team_id = %s AND target_id = %s AND NOT auto_approve "
+                    "   AND revoked_at IS NULL AND NOT is_deleted "
+                    "RETURNING id", (uid, team_id, parsed["target_id"]))
+                rows = [r["id"] for r in cur.fetchall()]
+            else:
+                cur.execute(
+                    "DELETE FROM team_target_grants "
+                    "WHERE team_id = %s AND target_server_id = %s RETURNING team_id",
+                    (team_id, parsed["target_id"]))
+                rows = [r["team_id"] for r in cur.fetchall()]
+            if not rows:
                 raise deps._error(404, "not_found", "No team grant to revoke.")
             audit.log_in(cur, None, uid, claims.get("name"), "team_grant_removed",
-                         {"team_id": team_id, "target_id": parsed["target_id"]})
+                         {"team_id": team_id, "target_id": parsed["target_id"],
+                          "rows": len(rows)})
         return
     row = grants.revoke(granter_id=uid, granter_name=claims.get("name"),
                         grantee_id=parsed["subject"], target_id=parsed["target_id"],
