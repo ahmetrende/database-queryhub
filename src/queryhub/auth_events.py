@@ -523,7 +523,8 @@ def _team_info(team_id, table: str | None = None) -> tuple[str | None, list[str]
         return None, []
     if table in _NEW_MODEL_TABLES:
         row = db.fetch_one(
-            "SELECT display_name AS name FROM team WHERE id = %s", (team_id,))
+            "SELECT COALESCE(display_name, name) AS name FROM team WHERE id = %s",
+            (team_id,))
         members = db.fetch_all(
             "SELECT i.external_id AS slack_user_id "
             "  FROM team_member tm "

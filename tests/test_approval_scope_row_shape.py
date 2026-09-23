@@ -107,7 +107,7 @@ def test_the_needed_columns_are_exactly_what_the_checks_read():
     """A guard on the guard: if a scope check starts reading a new field, this
     fails and the loaders above have to be revisited."""
     read = set()
-    for fn in (access.can_approve, admins._scope_admits, admins.request_tier):
+    for fn in (access.can_approve, admins._scope_admits_legacy, admins.request_tier):
         read |= set(re.findall(r'request\.get\("(\w+)"\)', inspect.getsource(fn)))
     assert read == NEEDED, f"scope checks now read {sorted(read)}"
 
@@ -120,7 +120,7 @@ def test_an_unreadable_ceiling_admits_nothing_in_either_model():
     `request_rank > 99` is false for every request, so an unparseable ceiling
     approved everything instead of nothing. Migration 116 stops the row
     existing; these keep one that already does from deciding."""
-    for fn in (access.can_approve, admins._scope_admits):
+    for fn in (access.can_approve, admins._scope_admits_legacy):
         src = inspect.getsource(fn)
         assert "ceiling is None" in src, fn.__name__
         assert 'get(r["max_tier"], 99)' not in src

@@ -1,7 +1,7 @@
 """SEC-ENG: the approval scope check derives the request tier with the
 target's engine, and prefers the tier persisted at submit.
 
-The old bug: admins._scope_admits called query_safety.required_mode()
+The old bug: admins._scope_admits_legacy called query_safety.required_mode()
 with no engine, so a non-Postgres query was classified with the
 Postgres parser and could be admitted below its true tier.
 """
@@ -57,11 +57,11 @@ def test_ro_admin_cannot_admit_a_write_request(monkeypatch):
     # required_tier persisted as 'rw' — an RO-scoped admin must be refused.
     monkeypatch.setattr(qs, "required_mode", lambda *a, **k: "ro")  # must not be used
     req = {"required_tier": "rw", "query": "SELECT 1"}
-    assert admins._scope_admits(_scope("ro"), req) is False
-    assert admins._scope_admits(_scope("rw"), req) is True
-    assert admins._scope_admits(_scope("ddl"), req) is True
+    assert admins._scope_admits_legacy(_scope("ro"), req) is False
+    assert admins._scope_admits_legacy(_scope("rw"), req) is True
+    assert admins._scope_admits_legacy(_scope("ddl"), req) is True
 
 
 def test_ro_admin_admits_ro_request():
     req = {"required_tier": "ro", "query": "SELECT 1"}
-    assert admins._scope_admits(_scope("ro"), req) is True
+    assert admins._scope_admits_legacy(_scope("ro"), req) is True

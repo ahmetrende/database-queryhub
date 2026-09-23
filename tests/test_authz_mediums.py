@@ -29,21 +29,21 @@ def _scope(**kw):
 
 
 def test_null_target_scope_is_a_wildcard():
-    assert admins._scope_admits(_scope(), _REQ) is True
+    assert admins._scope_admits_legacy(_scope(), _REQ) is True
 
 
 def test_empty_target_scope_admits_nothing():
     # The fail-open case: `{}` used to behave like "all targets".
-    assert admins._scope_admits(_scope(scope_target_ids=[]), _REQ) is False
+    assert admins._scope_admits_legacy(_scope(scope_target_ids=[]), _REQ) is False
 
 
 def test_empty_team_scope_admits_nothing():
-    assert admins._scope_admits(_scope(scope_team_ids=[]), _REQ) is False
+    assert admins._scope_admits_legacy(_scope(scope_team_ids=[]), _REQ) is False
 
 
 def test_in_and_out_of_target_scope():
-    assert admins._scope_admits(_scope(scope_target_ids=[7]), _REQ) is True
-    assert admins._scope_admits(_scope(scope_target_ids=[9]), _REQ) is False
+    assert admins._scope_admits_legacy(_scope(scope_target_ids=[7]), _REQ) is True
+    assert admins._scope_admits_legacy(_scope(scope_target_ids=[9]), _REQ) is False
 
 
 @pytest.mark.parametrize("pid,ok", [

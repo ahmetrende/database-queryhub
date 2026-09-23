@@ -353,7 +353,7 @@ def test_the_warning_fires_when_the_flag_is_on(monkeypatch):
 #
 # Added 2026-09-08, while sweeping for reads that would not follow the flag.
 # Most of what turned up was fine: the team CRUD in routes_admin.py reads what
-# it writes, and `_scope_admits` is only ever reached from `can_approve`'s
+# it writes, and `_scope_admits_legacy` is only ever reached from `can_approve`'s
 # legacy body. Three were not.
 
 EXECUTOR = (ROOT / "src" / "queryhub" / "executor.py").read_text(encoding="utf-8")

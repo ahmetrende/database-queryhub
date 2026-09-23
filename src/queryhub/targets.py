@@ -500,8 +500,17 @@ def reference_counts(target_id: int) -> dict[str, int]:
         "(SELECT count(*) FROM access_requests WHERE target_server_id = %s) "
         "   AS access_requests, "
         "(SELECT count(*) FROM schema_tables WHERE target_server_id = %s) "
-        "   AS schema_tables",
-        (target_id,) * 7,
+        "   AS schema_tables, "
+        # The new model's rows. Both foreign keys are RESTRICT, so ANY row --
+        # revoked included -- makes the DELETE fail; counting only the legacy
+        # tables let the delete through to a constraint error the admin saw as
+        # a 500 instead of the sentence below. Revoked rows are history, which
+        # is the other reason a target is disabled rather than deleted.
+        "(SELECT count(*) FROM access_grant WHERE target_id = %s) "
+        "   AS access_grants, "
+        "(SELECT count(*) FROM role_assignment WHERE scope_target_id = %s) "
+        "   AS approver_roles",
+        (target_id,) * 9,
     )
     return {k: int(v or 0) for k, v in (row or {}).items()}
 
@@ -517,5 +526,10 @@ def delete_in(cur, target_id: int) -> None:
     `reference_counts()` first, which is what keeps history out of reach.
     """
     cur.execute("DELETE FROM schema_tables WHERE target_server_id = %s",
+                (target_id,))
+    # The routine catalog arrived later with the same kind of key and was never
+    # added here, so any target that had been snapshotted with functions could
+    # not be deleted at all.
+    cur.execute("DELETE FROM schema_functions WHERE target_server_id = %s",
                 (target_id,))
     cur.execute("DELETE FROM target_servers WHERE id = %s", (target_id,))

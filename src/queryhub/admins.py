@@ -189,7 +189,7 @@ def request_tier(request: dict) -> str:
                                       engine=(engine or "postgres"))
 
 
-def _scope_admits(scope: dict, request: dict) -> bool:
+def _scope_admits_legacy(scope: dict, request: dict) -> bool:
     """True iff one (scope_team_ids, scope_target_ids, max_tier) row
     admits the request. Identical semantics as the original admins
     check — just factored out so both permanent and temp rows can
@@ -246,7 +246,7 @@ def can_approve(admin_slack_id: str, request: dict) -> bool:
     candidates = _candidate_scope_rows(admin_slack_id)
     if not candidates:
         return False
-    return any(_scope_admits(c, request) for c in candidates)
+    return any(_scope_admits_legacy(c, request) for c in candidates)
 
 
 def has_approval_authority(slack_id: str) -> bool:

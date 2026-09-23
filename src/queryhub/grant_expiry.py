@@ -133,7 +133,7 @@ def due(threshold_hours: int, floor_hours: int = 0) -> list[dict]:
         UNION ALL
         SELECT 'access', g.id,
                i.external_id AS subject, g.tier AS mode, g.valid_until,
-               COALESCE(t.alias, 'every target'), tm.display_name
+               COALESCE(t.alias, 'every target'), COALESCE(tm.display_name, tm.name)
           FROM access_grant g
           LEFT JOIN target_servers t ON t.id = g.target_id
           LEFT JOIN team tm ON tm.id = g.team_id

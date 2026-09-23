@@ -1117,7 +1117,8 @@ def admin_delete_connection(conn: str,
     refs = targets.reference_counts(target_id)
     blocking = {k: v for k, v in refs.items()
                 if v and k in ("requests", "csv_imports", "user_grants",
-                               "team_grants", "auto_grants")}
+                               "team_grants", "auto_grants",
+                               "access_grants", "approver_roles")}
     if blocking:
         reason = ("This connection has " + ", ".join(
             f"{v} {k.replace('_', ' ')}" for k, v in sorted(blocking.items()))

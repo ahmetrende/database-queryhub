@@ -145,7 +145,8 @@ def _legacy_reach_outside_the_else(tree, patterns):
     aliases: set = set()        # names a function bound to the switch: v2 = use_v2()
 
     def asks_switch(test):
-        if "use_v2()" in ast.unparse(test):
+        # `_v2()` is admins.py's name for the same switch.
+        if "use_v2()" in ast.unparse(test) or "_v2()" in ast.unparse(test):
             return True
         inner = test.operand if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not) else test
         return isinstance(inner, ast.Name) and inner.id in aliases
@@ -281,3 +282,64 @@ def test_the_guard_understands_the_switch_held_in_a_variable():
            "        q('SELECT 1 FROM team_members m')\n"
            "    q('SELECT 1 FROM access_grant' if v2 else 'SELECT 1 FROM teams x')\n")
     assert _legacy_reach_outside_the_else(ast.parse(src), LEGACY) == []
+
+
+
+# --- the whole package ---------------------------------------------------------
+#
+# The same bug class lived outside the admin routes too: the connection delete
+# gate counted only the legacy grant tables, and a metrics panel reported 0 team
+# grants for 35. Two shapes are correct without a branch and are allowed:
+#
+# * one statement that reads BOTH models -- whichever side is empty adds
+#   nothing, so the answer is right on either side of the switch;
+# * a function that picks the model by where its DATA came from, not by the
+#   switch. Listed by name, with the reason, so adding one is a decision.
+
+_NEW_MODEL = ("access_grant", "FROM team ", "JOIN team ", "team_member ")
+
+_CHOSEN_BY_ORIGIN = {
+    # An outbox row names the table it was captured on; a row written before
+    # the switch must still resolve against the model it came from, and the two
+    # number teams independently.
+    ("auth_events.py", "_team_info"),
+    # A warning carries its grant's kind; a legacy team grant's recipients are
+    # in the legacy membership table, a new one's in team_member.
+    ("grant_expiry.py", "recipients_for"),
+}
+
+
+def test_no_module_reaches_the_legacy_team_tables_unconditionally():
+    import ast
+    import pathlib
+    root = pathlib.Path(routes_admin.__file__).resolve().parents[1]
+    offenders = []
+    for f in sorted(root.rglob("*.py")):
+        src = f.read_text(encoding="utf-8")
+        if not any(t in src for t in LEGACY):
+            continue
+        tree = ast.parse(src)
+        both = {n.value for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and any(t in n.value for t in LEGACY)
+                and any(t in n.value for t in _NEW_MODEL)}
+        rel = str(f.relative_to(root))
+        for o in _legacy_reach_outside_the_else(tree, LEGACY):
+            fn, _, text = o.partition(": ")
+            if (rel, fn) in _CHOSEN_BY_ORIGIN:
+                continue
+            if any(b.strip().startswith(text.strip("'\"")[:40]) for b in both):
+                continue
+            offenders.append(f"{rel} {o}")
+    assert not offenders, (
+        "these reach the legacy team tables without asking the switch:\n  "
+        + "\n  ".join(offenders))
+
+
+def test_the_origin_exceptions_still_exist():
+    """An allowance for a function that is gone is an allowance for its
+    replacement, which nobody reviewed."""
+    import pathlib
+    root = pathlib.Path(routes_admin.__file__).resolve().parents[1]
+    for rel, fn in _CHOSEN_BY_ORIGIN:
+        assert f"def {fn}(" in (root / rel).read_text(encoding="utf-8"), (rel, fn)

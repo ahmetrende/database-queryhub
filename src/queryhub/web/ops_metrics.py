@@ -225,9 +225,19 @@ def _control_plane(out: _Out) -> None:
 
     out.metric("queryhub_active_grants", "Active grants, by kind.", "gauge")
     for label, sql in (
-        ("user", "SELECT COUNT(*) AS n FROM user_target_grants "
-                 "WHERE revoked_at IS NULL"),
-        ("team", "SELECT COUNT(*) AS n FROM team_target_grants"),
+        # Both models in one statement: whichever is empty adds nothing, so the
+        # count is right on either side of the switch. After the pod cutover the
+        # legacy team table is empty and this reported 0 team grants for 35.
+        ("user", "SELECT (SELECT COUNT(*) FROM user_target_grants "
+                 "          WHERE revoked_at IS NULL) + "
+                 "       (SELECT COUNT(*) FROM access_grant WHERE principal_id IS NOT NULL "
+                 "          AND NOT auto_approve AND mirrored_from IS NULL "
+                 "          AND revoked_at IS NULL AND NOT is_deleted) AS n"),
+        ("team", "SELECT (SELECT COUNT(*) FROM team_target_grants "
+                 "          WHERE revoked_at IS NULL) + "
+                 "       (SELECT COUNT(*) FROM access_grant WHERE team_id IS NOT NULL "
+                 "          AND NOT auto_approve AND revoked_at IS NULL "
+                 "          AND NOT is_deleted) AS n"),
     ):
         row = db.fetch_one(sql)
         if row:

@@ -237,14 +237,15 @@ def test_a_catalog_snapshot_and_old_access_requests_do_not_block_a_delete(
 
 
 def test_delete_drops_the_catalog_before_the_target(wire):
-    """schema_tables holds a restricting foreign key, so the real delete_in has
-    to clear it first or the statement errors on any target that was ever
-    snapshotted."""
+    """schema_tables and schema_functions hold restricting foreign keys, so the
+    real delete_in has to clear both first or the statement errors on any target
+    that was ever snapshotted -- the routine catalog was missed when it arrived."""
     cur = FakeCursor()
     targets.delete_in(cur, 42)
     order = [sql for sql, _ in cur.calls]
     assert "DELETE FROM schema_tables" in order[0]
-    assert "DELETE FROM target_servers" in order[1]
+    assert "DELETE FROM schema_functions" in order[1]
+    assert "DELETE FROM target_servers" in order[2]
 
 
 # ---------------------------------------------------------------------------
