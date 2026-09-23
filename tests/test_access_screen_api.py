@@ -97,11 +97,15 @@ def test_all_and_none_are_separate_fields():
     reach the client as the shape of one value. A UI that reads meaning from an
     absence is wrong the first day that absence means something else."""
     import inspect
-    src = inspect.getsource(ra.admin_effective_access)
+    src = inspect.getsource(ra._effective_access_legacy)
     assert '"scopeTargetsAll": adm["scope_target_ids"] is None' in src
     assert '"scopeTeamsAll": adm["scope_team_ids"] is None' in src
     # and the raw arrays stay, so nothing that reads them today breaks
     assert '"scopeTargets": adm["scope_target_ids"]' in src
+    # the new model answers the same two questions as their own fields
+    v2 = inspect.getsource(ra._effective_access_v2)
+    assert '"scopeTargetsAll": any(r["all_targets"] for r in appr)' in v2
+    assert '"scopeTeamsAll": any(r["all_teams"] for r in appr)' in v2
 
 
 # --- copy-access modes -------------------------------------------------------

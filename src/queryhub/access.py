@@ -184,19 +184,30 @@ def _decide(rows) -> dict | None:
     implementation. A second copy of an authorization rule is a second place
     for it to be wrong.
     """
+    return _decide_with_row(rows)[0]
+
+
+def _decide_with_row(rows) -> tuple[dict | None, dict | None]:
+    """`_decide`, plus the row whose tier won.
+
+    For a screen that has to say where access comes from -- which team, until
+    when. The row is provenance, never an authorization input: `_decide` is
+    this function with the row thrown away, so the two cannot disagree about
+    the decision.
+    """
     live = _live(rows)
     mine_grants = _mine_grants(live)
 
     if not mine_grants:
         # Rule 2: lapsed rather than absent means no access, not the team's.
         if any(r["mine"] and not r["auto_approve"] and r["expired"] for r in rows):
-            return None
+            return None, None
 
     suppress_team = _suppresses_team(mine_grants)
     pool = mine_grants if suppress_team else \
         mine_grants + [r for r in live if not r["mine"] and not r["auto_approve"]]
     if not pool:
-        return None
+        return None, None
 
     # Rule 1: waivers never enter the pool that decides the tier.
     waivers = [r for r in live
@@ -213,7 +224,7 @@ def _decide(rows) -> dict | None:
         top = max(waivers, key=lambda r: r["rank"])
         auto_tier = best["tier"] if top["rank"] >= best["rank"] else top["tier"]
 
-    return {
+    return ({
         "tier": best["tier"],
         "auto_tier": auto_tier,
         "source": "principal" if best["mine"] else "team",
@@ -222,7 +233,7 @@ def _decide(rows) -> dict | None:
         # two apart, and only the grant knows it was fleet-wide.
         "unrestricted": bool(best["all_targets"] and best["all_databases"]),
         "db_role": best["db_role"],
-    }
+    }, best)
 
 
 def team_waivers_reach(principal_id: str, target_id: int,
@@ -307,8 +318,8 @@ def resolve_target(principal_id: str, target_id: int) -> dict | None:
         return None
 
     live = _live(rows)
-    mine = [r for r in live if r["mine"] and not r["auto_approve"]]
-    pool = mine if any(not r["merge_with_team"] for r in mine) else \
+    mine = _mine_grants(live)
+    pool = mine if _suppresses_team(mine) else \
         mine + [r for r in live if not r["mine"] and not r["auto_approve"]]
     names: set[str] = set()
     for r in pool:
@@ -365,8 +376,8 @@ def resolve_many(principal_id: str,
             out[tid] = None
             continue
         live = _live(group)
-        mine = [r for r in live if r["mine"] and not r["auto_approve"]]
-        pool = mine if any(not r["merge_with_team"] for r in mine) else \
+        mine = _mine_grants(live)
+        pool = mine if _suppresses_team(mine) else \
             mine + [r for r in live if not r["mine"] and not r["auto_approve"]]
         names: set[str] = set()
         unrestricted_dbs = False
@@ -635,6 +646,53 @@ def expired_grant_at(principal_id: str, target_id: int):
 # rewrite of that size is a rewrite with a missed one in it. The translation
 # between the two vocabularies therefore lives here, in one place, rather than
 # once per caller.
+
+
+def resolve_databases(principal_id: str, scopes) -> dict:
+    """`resolve` for many (target, database) pairs, in a fixed number of queries.
+
+    For the effective-access screen, which asks about every database a person
+    can reach; `resolve` per database is a query each. The rows are read once
+    and filtered here the way `_covering` filters them in SQL -- the row is for
+    this target or every target, and for this database or every database --
+    then handed to `_decide_with_row`, so the decision keeps one
+    implementation.
+
+    Returns {(target_id, database): (decision or None, deciding row or None)}.
+    The row carries `team_id` and `valid_until` for provenance. An admin
+    reaches everything without a row, so their decisions carry none, and no
+    waiver tier: this answers "what can they reach", not "do they wait".
+    """
+    pairs = list(dict.fromkeys((int(t), d) for t, d in scopes))
+    if not pairs:
+        return {}
+    if is_admin(principal_id):
+        return {p: ({"tier": "ddl", "auto_tier": None, "source": "admin",
+                     "unrestricted": True, "db_role": None}, None) for p in pairs}
+    ids = sorted({t for t, _ in pairs})
+    rows = db.fetch_all(
+        f"WITH {_ME} "
+        "SELECT ts.id AS target_id, (g.principal_id IS NOT NULL) AS mine, "
+        "       g.tier, t.rank, g.auto_approve, g.merge_with_team, "
+        "       g.all_targets, g.all_databases, g.database_name, g.db_role, "
+        "       g.team_id, g.valid_until, "
+        "       (g.valid_until IS NOT NULL AND g.valid_until <= NOW()) AS expired, "
+        "       (g.valid_from > NOW()) AS not_started "
+        "  FROM access_grant g "
+        "  JOIN tier t ON t.name = g.tier "
+        "  JOIN target_servers ts ON (g.all_targets OR g.target_id = ts.id) "
+        " WHERE NOT g.is_deleted AND g.revoked_at IS NULL "
+        "   AND ts.id = ANY(%(ids)s) "
+        "   AND (g.principal_id IN (SELECT id FROM me) "
+        "        OR g.team_id IN (SELECT team_id FROM my_teams))",
+        {"pid": principal_id, "ids": ids})
+    by_target: dict[int, list] = {tid: [] for tid in ids}
+    for r in rows:
+        by_target[r["target_id"]].append(r)
+    return {(tid, dbn): _decide_with_row(
+                [r for r in by_target[tid]
+                 if r["all_databases"] or r["database_name"] == dbn])
+            for tid, dbn in pairs}
 
 
 def legacy_shape(resolved: dict | None) -> dict | None:

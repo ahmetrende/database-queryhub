@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from .. import (
+    access as access_model,
     access_requests,
     admins,
     audit,
@@ -1969,13 +1970,42 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
               (body.source,))
           src_grants = {r["target_server_id"]: r for r in cur.fetchall()}
 
-          cur.execute(
-              "SELECT g.target_server_id, g.allowed_databases, g.mode "
-              "  FROM team_target_grants g "
-              "  JOIN team_members m ON m.team_id = g.team_id "
-              " WHERE m.slack_user_id = %s AND g.revoked_at IS NULL "
-              "   AND (g.expires_at IS NULL OR g.expires_at > NOW())",
-              (body.source,))
+          # The source's TEAM access, in the legacy row shape the rest of this
+          # route writes from. Under the new model it is `access_grant` rows,
+          # one per database; the legacy read here answered nothing after the
+          # pod cutover, so "copy as explicit grants" dropped every
+          # team-derived target and reported the copy as done.
+          #
+          # A legacy user row holds ONE tier per target. Where the source's
+          # team rows on a target disagree on tier, the LOWEST is written: a
+          # copy must never hand the new person more than the source has on
+          # any database.
+          if teams_mod.use_v2():
+              cur.execute(
+                  "SELECT g.target_id AS target_server_id, "
+                  "       CASE WHEN bool_or(g.all_databases) THEN NULL "
+                  "            ELSE array_agg(DISTINCT g.database_name) END AS allowed_databases, "
+                  "       (array_agg(g.tier ORDER BY tr.rank ASC))[1] AS mode "
+                  "  FROM access_grant g "
+                  "  JOIN tier tr ON tr.name = g.tier "
+                  "  JOIN team_member m ON m.team_id = g.team_id AND NOT m.is_deleted "
+                  "  JOIN principal_identity i ON i.principal_id = m.principal_id "
+                  "   AND i.provider = 'slack' AND NOT i.is_deleted "
+                  " WHERE i.external_id = %s AND g.team_id IS NOT NULL "
+                  "   AND NOT g.auto_approve AND NOT g.all_targets "
+                  "   AND g.revoked_at IS NULL AND NOT g.is_deleted "
+                  "   AND g.valid_from <= NOW() "
+                  "   AND (g.valid_until IS NULL OR g.valid_until > NOW()) "
+                  " GROUP BY g.target_id",
+                  (body.source,))
+          else:
+              cur.execute(
+                  "SELECT g.target_server_id, g.allowed_databases, g.mode "
+                  "  FROM team_target_grants g "
+                  "  JOIN team_members m ON m.team_id = g.team_id "
+                  " WHERE m.slack_user_id = %s AND g.revoked_at IS NULL "
+                  "   AND (g.expires_at IS NULL OR g.expires_at > NOW())",
+                  (body.source,))
           team_grants = list(cur.fetchall())
 
           teams_joined: list[int] = []
@@ -2163,51 +2193,8 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
             "tier": tier}
 
 
-@router.get("/people/{slack_id}/effective-access")
-def admin_effective_access(slack_id: str,
-                           claims: dict = Depends(deps.current_user)):
-    """What this person can actually reach, resolved the way a submission
-    resolves it.
-
-    "Why can they not see that server?" is answered today by reading three
-    tables and applying the precedence rules by hand — user grant beats team
-    grant, an expired grant is not a grant, an admin bypasses the whole
-    question. Getting that wrong in either direction is expensive: a real
-    problem dismissed, or access handed out that was already there.
-
-    So this asks `teams.effective_grant_for_user`, the same resolver the
-    executor uses, rather than re-deriving the answer. It reports; it changes
-    nothing and impersonates nobody, and the audit row names the admin who
-    looked.
-    """
-    uid = admin.require_admin(claims, "access")
-    if not _valid_principal(slack_id):
-        raise deps._error(400, "bad_request",
-                          "Bad principal id (expected a Slack user id or local:<username>).")
-
-    person = db.fetch_one(
-        "SELECT slack_user_id, name, email, enabled, 'requester' AS kind "
-        "  FROM requesters WHERE slack_user_id = %s "
-        "UNION ALL "
-        "SELECT slack_user_id, name, email, enabled, 'admin' "
-        "  FROM admins WHERE slack_user_id = %s",
-        (slack_id, slack_id))
-
-    # Read from the model that holds the memberships. This is a security
-    # screen -- an admin asks it what somebody can reach before deciding -- and
-    # against the legacy tables it answered "no teams" for everybody once the
-    # pod cutover emptied them.
-    teams_of = db.fetch_all(
-        "SELECT t.id, COALESCE(t.display_name, t.name) AS name "
-        "  FROM team_member m JOIN team t ON t.id = m.team_id "
-        "  JOIN principal_identity i ON i.principal_id = m.principal_id "
-        "   AND i.provider = 'slack' AND NOT i.is_deleted "
-        " WHERE i.external_id = %s AND NOT m.is_deleted AND NOT t.is_deleted "
-        " ORDER BY 2"
-        if teams_mod.use_v2() else
-        "SELECT t.id, t.name FROM team_members m JOIN teams t ON t.id = m.team_id "
-        " WHERE m.slack_user_id = %s ORDER BY t.name", (slack_id,))
-
+def _effective_access_legacy(slack_id: str) -> tuple[list, list, dict | None]:
+    """The legacy model's answer, unchanged: grants, auto-approve, approver standing."""
     # Which team supplied a team-sourced grant, and when each one ends. The
     # resolver deliberately answers neither — it runs on every submission and
     # returns the decision, not its provenance. Both are looked up here, in two
@@ -2279,6 +2266,214 @@ def admin_effective_access(slack_id: str,
         "SELECT max_tier, scope_team_ids, scope_target_ids, can_grant, enabled "
         "  FROM admins WHERE slack_user_id = %s", (slack_id,))
 
+    auto_out = [{
+            # A NULL target is an all-targets grant: it covers every connection
+            # they hold a grant on, now and later.
+            "connectionId": (alias_by_id.get(r["target_server_id"])
+                             or _alias_of(r["target_server_id"])),
+            "allTargets": r["target_server_id"] is None,
+            "tier": (r["max_tier"] or "ro").upper(),
+            "databaseId": r["database_name"],
+            "allDatabases": r["database_name"] is None,
+            "expiresAt": mapping.iso(r["expires_at"]),
+        } for r in auto]
+    admin_out = None if adm is None else {
+            "enabled": adm["enabled"],
+            # All three NULL is what makes someone a super-admin — see
+            # admins.is_super_admin. Reported as a flag so the caller does not
+            # have to re-derive the rule.
+            "superAdmin": (adm["max_tier"] is None
+                           and adm["scope_team_ids"] is None
+                           and adm["scope_target_ids"] is None),
+            "maxTier": (adm["max_tier"] or "").upper() or None,
+            "scopeTeams": adm["scope_team_ids"],
+            "scopeTargets": adm["scope_target_ids"],
+            # NULL is the wildcard and an EMPTY array is "none", which is the
+            # difference between an admin who can approve anything and one who
+            # can approve nothing. Reading that from the shape of a value is how
+            # the same distinction was got wrong once already (a scope written
+            # as `{}` was treated as the wildcard), so each half gets a field of
+            # its own and the client never has to tell null from [].
+            "scopeTeamsAll": adm["scope_team_ids"] is None,
+            "scopeTargetsAll": adm["scope_target_ids"] is None,
+            "canGrant": adm["can_grant"],
+        }
+    return out, auto_out, admin_out
+
+
+_TIER_RANK_UI = {"RO": 1, "RW": 2, "DDL": 3}
+
+
+def _effective_access_v2(slack_id: str) -> tuple[list, list, dict | None]:
+    """What this person can reach under the new model, per DATABASE.
+
+    The legacy body answered per connection from `effective_grants_for_user`,
+    whose tier is the highest across the databases it names -- so someone with
+    RW on one database and RO on another read as RW on both, which is the one
+    distinction a pod split exists to make. It also took the granting team and
+    the expiry from the retired team tables (always empty), the waivers from a
+    table that cannot hold a team's, and approver standing from the legacy
+    `admins` row, which a pod lead does not have.
+
+    Each connection row keeps the fields the person panel reads -- `tier` is the
+    highest, as before -- and adds `perDatabase` and `mixedTiers`, so a reader
+    can show where the highest tier does not hold. Every decision comes from
+    `access.resolve_databases`, one read for the whole person.
+    """
+    all_targets = targets.list_all()
+    alias_by_id = {t.id: t.alias for t in all_targets}
+    by_target = teams.effective_grants_for_user(slack_id, [t.id for t in all_targets])
+    have = [t for t in all_targets if by_target.get(t.id) is not None]
+
+    from . import routes_data
+    catalog = routes_data._catalog_databases_map(
+        [t.id for t in have if by_target[t.id].get("source") != "admin_or_bypass"])
+    dbs_of, pairs = {}, []
+    for t in have:
+        g = by_target[t.id]
+        if g.get("source") == "admin_or_bypass":
+            continue                         # reaches everything; nothing to split
+        dbs = (sorted(g["allowed_databases"]) if g.get("allowed_databases")
+               else sorted(catalog.get(t.id) or []))
+        dbs_of[t.id] = dbs
+        pairs += [(t.id, d) for d in dbs]
+    decided = access_model.resolve_databases(slack_id, pairs) if pairs else {}
+    team_ids = sorted({row["team_id"] for _res, row in decided.values()
+                       if row and row.get("team_id")})
+    team_name = {r["id"]: r["name"] for r in db.fetch_all(
+        "SELECT id, COALESCE(display_name, name) AS name FROM team WHERE id = ANY(%s)",
+        (team_ids,))} if team_ids else {}
+
+    out = []
+    for t in have:
+        g = by_target[t.id]
+        entry = {"connectionId": t.alias, "enabled": t.enabled,
+                 "databases": (sorted(g["allowed_databases"])
+                               if g.get("allowed_databases") else None),
+                 "allDatabases": g.get("allowed_databases") is None}
+        per = []
+        for d in dbs_of.get(t.id, []):
+            res, row = decided.get((t.id, d), (None, None))
+            if res is None:
+                continue
+            per.append({"database": d, "tier": res["tier"].upper(),
+                        "source": access_model.legacy_shape(res)["source"],
+                        "sourceTeam": team_name.get(row["team_id"]) if row and row.get("team_id") else None,
+                        "expiresAt": mapping.iso(row["valid_until"]) if row else None})
+        if per:
+            top = max(per, key=lambda x: _TIER_RANK_UI[x["tier"]])
+            ends = sorted(x["expiresAt"] for x in per if x["expiresAt"])
+            entry.update({"tier": top["tier"], "source": top["source"],
+                          "sourceTeam": top["sourceTeam"],
+                          # The EARLIEST end: the first thing that will change.
+                          "expiresAt": ends[0] if ends else None,
+                          "perDatabase": per,
+                          "mixedTiers": len({x["tier"] for x in per}) > 1})
+        else:
+            # An admin, a bypass, or a server with no catalog to enumerate yet.
+            entry.update({"tier": (g.get("mode") or "ro").upper(), "source": g.get("source"),
+                          "sourceTeam": None, "expiresAt": None,
+                          "perDatabase": [], "mixedTiers": False})
+        out.append(entry)
+
+    # Waivers as the submit path sees them: team waivers included, and only
+    # where one reaches this member (the badge in /sql asks the same question).
+    auto_out = []
+    for r in auto_approve.active_grants(slack_id):
+        if r.get("team_id") is not None and not auto_approve._team_waiver_applies(
+                slack_id, r.get("target_server_id"), r.get("database_name")):
+            continue
+        auto_out.append({
+            "connectionId": (alias_by_id.get(r["target_server_id"])
+                             or _alias_of(r["target_server_id"])),
+            "allTargets": r["target_server_id"] is None,
+            "tier": (r["max_tier"] or "ro").upper(),
+            "databaseId": r["database_name"],
+            "allDatabases": r["database_name"] is None,
+            "expiresAt": mapping.iso(r["expires_at"]),
+            "viaTeam": r.get("team_name"),
+        })
+
+    # Approver standing from `role_assignment`, which is where a pod lead's
+    # authority lives. `access.roles` already drops a disabled principal's.
+    rs = access_model.roles(slack_id)
+    appr = [r for r in rs if r["role"] in ("admin", "approver")]
+    admin_out = None
+    if appr:
+        tiers = [r["max_tier"] for r in appr if not r["any_tier"] and r["max_tier"]]
+        top_tier = ("DDL" if any(r["any_tier"] for r in appr) or not tiers
+                    else max(tiers, key=lambda x: _TIER_RANK_UI[x.upper()]).upper())
+        tgt_ids = sorted({r["scope_target_id"] for r in appr
+                          if not r["all_targets"] and r["scope_target_id"]})
+        tm_ids = sorted({r["scope_team_id"] for r in appr
+                         if not r["all_teams"] and r["scope_team_id"]})
+        tm_names = {x["id"]: x["name"] for x in db.fetch_all(
+            "SELECT id, COALESCE(display_name, name) AS name FROM team WHERE id = ANY(%s)",
+            (tm_ids,))} if tm_ids else {}
+        admin_out = {
+            "enabled": True,
+            "superAdmin": access_model.is_super_admin(slack_id),
+            "maxTier": top_tier,
+            # Names, not ids: the panel prints this list.
+            "scopeTeams": [tm_names.get(i, str(i)) for i in tm_ids],
+            "scopeTargets": [alias_by_id.get(i) or _alias_of(i) for i in tgt_ids],
+            "scopeTeamsAll": any(r["all_teams"] for r in appr),
+            "scopeTargetsAll": any(r["all_targets"] for r in appr),
+            "canGrant": grants.authz(slack_id) is not None,
+        }
+    return out, auto_out, admin_out
+
+
+@router.get("/people/{slack_id}/effective-access")
+def admin_effective_access(slack_id: str,
+                           claims: dict = Depends(deps.current_user)):
+    """What this person can actually reach, resolved the way a submission
+    resolves it.
+
+    "Why can they not see that server?" is answered today by reading three
+    tables and applying the precedence rules by hand — user grant beats team
+    grant, an expired grant is not a grant, an admin bypasses the whole
+    question. Getting that wrong in either direction is expensive: a real
+    problem dismissed, or access handed out that was already there.
+
+    So this asks `teams.effective_grant_for_user`, the same resolver the
+    executor uses, rather than re-deriving the answer. It reports; it changes
+    nothing and impersonates nobody, and the audit row names the admin who
+    looked.
+    """
+    uid = admin.require_admin(claims, "access")
+    if not _valid_principal(slack_id):
+        raise deps._error(400, "bad_request",
+                          "Bad principal id (expected a Slack user id or local:<username>).")
+
+    person = db.fetch_one(
+        "SELECT slack_user_id, name, email, enabled, 'requester' AS kind "
+        "  FROM requesters WHERE slack_user_id = %s "
+        "UNION ALL "
+        "SELECT slack_user_id, name, email, enabled, 'admin' "
+        "  FROM admins WHERE slack_user_id = %s",
+        (slack_id, slack_id))
+
+    # Read from the model that holds the memberships. This is a security
+    # screen -- an admin asks it what somebody can reach before deciding -- and
+    # against the legacy tables it answered "no teams" for everybody once the
+    # pod cutover emptied them.
+    teams_of = db.fetch_all(
+        "SELECT t.id, COALESCE(t.display_name, t.name) AS name "
+        "  FROM team_member m JOIN team t ON t.id = m.team_id "
+        "  JOIN principal_identity i ON i.principal_id = m.principal_id "
+        "   AND i.provider = 'slack' AND NOT i.is_deleted "
+        " WHERE i.external_id = %s AND NOT m.is_deleted AND NOT t.is_deleted "
+        " ORDER BY 2"
+        if teams_mod.use_v2() else
+        "SELECT t.id, t.name FROM team_members m JOIN teams t ON t.id = m.team_id "
+        " WHERE m.slack_user_id = %s ORDER BY t.name", (slack_id,))
+
+    if teams_mod.use_v2():
+        out, auto_out, admin_out = _effective_access_v2(slack_id)
+    else:
+        out, auto_out, admin_out = _effective_access_legacy(slack_id)
+
     # A per-person result cap, if one is in force. Caps are keyed to the PERSON
     # rather than to a grant, so this is the only place it shows up.
     cap = db.fetch_one(
@@ -2299,43 +2494,156 @@ def admin_effective_access(slack_id: str,
         "known": person is not None,
         "teams": [{"id": str(r["id"]), "name": r["name"]} for r in teams_of],
         "access": out,
-        "autoApprove": [{
-            # A NULL target is an all-targets grant: it covers every connection
-            # they hold a grant on, now and later.
-            "connectionId": (alias_by_id.get(r["target_server_id"])
-                             or _alias_of(r["target_server_id"])),
-            "allTargets": r["target_server_id"] is None,
-            "tier": (r["max_tier"] or "ro").upper(),
-            "databaseId": r["database_name"],
-            "allDatabases": r["database_name"] is None,
-            "expiresAt": mapping.iso(r["expires_at"]),
-        } for r in auto],
-        "admin": None if adm is None else {
-            "enabled": adm["enabled"],
-            # All three NULL is what makes someone a super-admin — see
-            # admins.is_super_admin. Reported as a flag so the caller does not
-            # have to re-derive the rule.
-            "superAdmin": (adm["max_tier"] is None
-                           and adm["scope_team_ids"] is None
-                           and adm["scope_target_ids"] is None),
-            "maxTier": (adm["max_tier"] or "").upper() or None,
-            "scopeTeams": adm["scope_team_ids"],
-            "scopeTargets": adm["scope_target_ids"],
-            # NULL is the wildcard and an EMPTY array is "none", which is the
-            # difference between an admin who can approve anything and one who
-            # can approve nothing. Reading that from the shape of a value is how
-            # the same distinction was got wrong once already (a scope written
-            # as `{}` was treated as the wildcard), so each half gets a field of
-            # its own and the client never has to tell null from [].
-            "scopeTeamsAll": adm["scope_team_ids"] is None,
-            "scopeTargetsAll": adm["scope_target_ids"] is None,
-            "canGrant": adm["can_grant"],
-        },
+        "autoApprove": auto_out,
+        "admin": admin_out,
         "rowLimitOverride": None if cap is None else {
             "maxRows": cap["max_rows"],
             "expiresAt": mapping.iso(cap["expires_at"]),
             "reason": cap["reason"],
         },
+    }
+
+
+def _team_rows_v2(team_id: int) -> tuple[list, list, list]:
+    grants_ = db.fetch_all(
+        "SELECT g.target_id, g.database_name, g.all_databases, g.tier, "
+        "       g.auto_approve, g.valid_until "
+        "  FROM access_grant g "
+        " WHERE g.team_id = %s AND NOT g.all_targets "
+        "   AND g.revoked_at IS NULL AND NOT g.is_deleted "
+        "   AND g.valid_from <= NOW() "
+        "   AND (g.valid_until IS NULL OR g.valid_until > NOW())", (team_id,))
+    members = db.fetch_all(
+        "SELECT i.external_id AS slack_id, p.display_name AS name, p.enabled "
+        "  FROM team_member m JOIN principal p ON p.id = m.principal_id "
+        "  LEFT JOIN principal_identity i ON i.principal_id = p.id "
+        "   AND i.provider = 'slack' AND NOT i.is_deleted "
+        " WHERE m.team_id = %s AND NOT m.is_deleted "
+        " ORDER BY lower(p.display_name)", (team_id,))
+    approvers = db.fetch_all(
+        "SELECT i.external_id AS slack_id, p.display_name AS name, "
+        "       ra.scope_target_id, ra.all_targets, ra.max_tier, ra.any_tier "
+        "  FROM role_assignment ra "
+        "  JOIN principal p ON p.id = ra.principal_id AND p.enabled "
+        "  LEFT JOIN principal_identity i ON i.principal_id = p.id "
+        "   AND i.provider = 'slack' AND NOT i.is_deleted "
+        " WHERE ra.role = 'approver' AND ra.scope_team_id = %s AND "
+        + access_model._LIVE_ROLE, (team_id,))
+    return grants_, members, approvers
+
+
+def _team_rows_legacy(team_id: int) -> tuple[list, list, list]:
+    grants_ = []
+    for g in db.fetch_all(
+            "SELECT target_server_id, allowed_databases, mode, expires_at "
+            "  FROM team_target_grants WHERE team_id = %s AND revoked_at IS NULL "
+            "   AND (expires_at IS NULL OR expires_at > NOW())", (team_id,)):
+        for dbn in (g["allowed_databases"] or [None]):
+            grants_.append({"target_id": g["target_server_id"], "database_name": dbn,
+                            "all_databases": dbn is None, "tier": g["mode"],
+                            "auto_approve": False, "valid_until": g["expires_at"]})
+    members = db.fetch_all(
+        "SELECT m.slack_user_id AS slack_id, COALESCE(r.name, a.name) AS name, "
+        "       COALESCE(r.enabled, a.enabled, FALSE) AS enabled "
+        "  FROM team_members m "
+        "  LEFT JOIN requesters r ON r.slack_user_id = m.slack_user_id "
+        "  LEFT JOIN admins a ON a.slack_user_id = m.slack_user_id "
+        " WHERE m.team_id = %s ORDER BY 2", (team_id,))
+    approvers = [
+        {"slack_id": a["slack_user_id"], "name": a["name"], "scope_target_id": t,
+         "all_targets": a["scope_target_ids"] is None, "max_tier": a["max_tier"],
+         "any_tier": a["max_tier"] is None}
+        for a in db.fetch_all(
+            "SELECT slack_user_id, name, max_tier, scope_target_ids FROM admins "
+            " WHERE enabled AND scope_team_ids IS NOT NULL AND %s = ANY(scope_team_ids)",
+            (team_id,))
+        for t in (a["scope_target_ids"] or [None])]
+    return grants_, members, approvers
+
+
+@router.get("/teams/{team_id}/effective-access")
+def admin_team_effective_access(team_id: int, claims: dict = Depends(deps.current_user)):
+    """What a team holds: its grants per database, its waivers, its members,
+    and who approves for it.
+
+    The person view answers "what can this one person reach". A pod owner asks
+    a different question -- what does my team have, and who signs off -- and
+    had to open every member to piece it together. A team's own rows involve no
+    precedence (that arises only between a person and their teams), so they
+    are read, not resolved. Approvers are the team-scoped ones: the pod's
+    leads. A fleet-wide admin approves every team and says nothing about this
+    one.
+    """
+    uid = admin.require_admin(claims, "access")
+    team = _team_for_write(team_id)
+    if team is None:
+        raise deps._error(404, "not_found", "No such team.")
+    rows, members, approvers = (_team_rows_v2(team_id) if teams_mod.use_v2()
+                                else _team_rows_legacy(team_id))
+    tids = sorted({r["target_id"] for r in rows if r["target_id"]}
+                  | {a["scope_target_id"] for a in approvers if a.get("scope_target_id")})
+    tmeta = {t.id: t for t in targets.list_all()} if tids else {}
+
+    def alias(tid):
+        t = tmeta.get(tid)
+        return t.alias if t else _alias_of(tid)
+
+    access_by, auto_out = {}, []
+    for r in rows:
+        if r["auto_approve"]:
+            auto_out.append({"connectionId": alias(r["target_id"]),
+                             "databaseId": r["database_name"],
+                             "allDatabases": r["all_databases"],
+                             "tier": r["tier"].upper(),
+                             "expiresAt": mapping.iso(r["valid_until"])})
+            continue
+        e = access_by.setdefault(r["target_id"], {
+            "connectionId": alias(r["target_id"]),
+            "enabled": getattr(tmeta.get(r["target_id"]), "enabled", None),
+            "perDatabase": []})
+        e["perDatabase"].append({"database": None if r["all_databases"] else r["database_name"],
+                                 "tier": r["tier"].upper(),
+                                 "expiresAt": mapping.iso(r["valid_until"])})
+    access_out = []
+    for e in access_by.values():
+        per = sorted(e["perDatabase"], key=lambda x: (x["database"] is not None, x["database"] or ""))
+        tiers = {x["tier"] for x in per}
+        ends = sorted(x["expiresAt"] for x in per if x["expiresAt"])
+        access_out.append({**e, "perDatabase": per,
+                           "tier": max(tiers, key=lambda x: _TIER_RANK_UI[x]),
+                           "allDatabases": any(x["database"] is None for x in per),
+                           "databases": sorted(x["database"] for x in per if x["database"]),
+                           "mixedTiers": len(tiers) > 1,
+                           "expiresAt": ends[0] if ends else None})
+    access_out.sort(key=lambda x: x["connectionId"] or "")
+
+    by_person: dict[str, dict] = {}
+    for a in approvers:
+        p = by_person.setdefault(a["slack_id"], {
+            "slackId": a["slack_id"], "name": a["name"], "maxTier": None,
+            "scopeTargets": [], "scopeTargetsAll": False})
+        if a["all_targets"]:
+            p["scopeTargetsAll"] = True
+        elif a.get("scope_target_id"):
+            p["scopeTargets"].append(alias(a["scope_target_id"]))
+        tier = "DDL" if a["any_tier"] else (a["max_tier"] or "ro").upper()
+        if p["maxTier"] is None or _TIER_RANK_UI[tier] > _TIER_RANK_UI[p["maxTier"]]:
+            p["maxTier"] = tier
+    for p in by_person.values():
+        p["scopeTargets"] = sorted(set(p["scopeTargets"]))
+
+    with db.transaction() as cur:
+        audit.log_in(cur, None, uid, claims.get("name"), "team_effective_access_viewed",
+                     {"team_id": team_id, "targets": len(access_out)})
+    return {
+        "team": {"id": str(team["id"]),
+                 "name": team.get("display_name") or team["name"],
+                 "syncedFrom": team.get("source") if team.get("source") != "manual" else None},
+        "members": [{"slackId": m["slack_id"], "name": m["name"], "enabled": m["enabled"]}
+                    for m in members],
+        "access": access_out,
+        "autoApprove": auto_out,
+        "approvers": sorted(by_person.values(), key=lambda x: (x["name"] or "").lower()),
     }
 
 

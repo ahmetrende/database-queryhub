@@ -128,37 +128,156 @@ def test_copy_access_copies_memberships_from_the_live_model():
     assert "ON CONFLICT (team_id, principal_id) WHERE NOT is_deleted " in src
 
 
-def test_no_route_reaches_the_legacy_team_tables_unconditionally():
-    """The guard that stops a seventh copy appearing.
+def _legacy_reach_outside_the_else(tree, patterns):
+    """Every legacy-table SQL string, and every call to a `*_legacy` helper,
+    that is NOT on the old-model side of a `use_v2()` branch.
 
-    Checked per FUNCTION, not per line: the legacy statements survive inside
-    the `else` branch of a route that asked the switch, and any fixed lookback
-    window is either too short to clear a long v2 branch or long enough to
-    swallow the next function.
+    Scoped by BRANCH, not by function. The first version of this guard passed a
+    function if `use_v2()` appeared anywhere in it, and the effective-access
+    route shows why that was not enough: its memberships asked the switch, and
+    four other reads a few lines below went straight to the retired tables.
+    A `*_legacy` function is the old model's body by name; it may hold legacy
+    SQL freely, and is itself checked at every place it is called.
     """
-    import re
-    src = inspect.getsource(routes_admin)
-    # `team_target_grants` and a bare JOIN were missing from this list, which
-    # is how the grant list and the grant revoke kept the legacy table after
-    # every other route had moved: both read or wrote it without asking the
-    # switch, and neither matched a pattern here.
-    LEGACY = ("FROM teams", "INTO teams", "UPDATE teams", "JOIN teams",
-              "DELETE FROM teams",
-              "FROM team_members", "INTO team_members", "JOIN team_members",
-              "FROM team_target_grants", "INTO team_target_grants",
-              "UPDATE team_target_grants", "DELETE FROM team_target_grants",
-              "JOIN team_target_grants")
+    import ast
     offenders = []
-    # split on top-level defs, keeping each function with its own body
-    parts = re.split(r"\n(?=def )", src)
-    for part in parts:
-        name = part.split("(", 1)[0].removeprefix("def ").strip()
-        body = "\n".join(ln for ln in part.splitlines()
-                          if not ln.lstrip().startswith("#"))
-        if not any(t in body for t in LEGACY):
-            continue
-        if "use_v2()" not in body:
-            offenders.append(name)
+
+    aliases: set = set()        # names a function bound to the switch: v2 = use_v2()
+
+    def asks_switch(test):
+        if "use_v2()" in ast.unparse(test):
+            return True
+        inner = test.operand if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not) else test
+        return isinstance(inner, ast.Name) and inner.id in aliases
+
+    def is_negated(test):
+        return isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not)
+
+    def ends(block):
+        return bool(block) and isinstance(block[-1], (ast.Return, ast.Raise, ast.Continue))
+
+    def walk_block(stmts, legacy_side, fn, parent):
+        # `if use_v2(): ...; return` puts every statement after it in the same
+        # block on the old-model side -- the early-return shape the codebase
+        # uses far more often than an explicit else.
+        after = False
+        for st in stmts:
+            walk(st, legacy_side or after, fn, parent)
+            if isinstance(st, ast.If) and asks_switch(st.test) \
+                    and not is_negated(st.test) and ends(st.body):
+                after = True
+
+    def walk(node, legacy_side, fn, parent):
+        if isinstance(node, (ast.If, ast.IfExp)) and asks_switch(node.test):
+            neg = is_negated(node.test)
+            walk(node.test, legacy_side, fn, node)
+            if isinstance(node, ast.If):
+                walk_block(node.body, legacy_side or neg, fn, node)
+                walk_block(node.orelse, legacy_side or not neg, fn, node)
+            else:
+                walk(node.body, legacy_side or neg, fn, node)
+                walk(node.orelse, legacy_side or not neg, fn, node)
+            return
+        if isinstance(node, ast.FunctionDef):
+            aliases.clear()
+            aliases.update(t.id for a in ast.walk(node) if isinstance(a, ast.Assign)
+                           and "use_v2()" in ast.unparse(a.value)
+                           for t in a.targets if isinstance(t, ast.Name))
+            walk_block(node.body, node.name.endswith("_legacy"), node.name, node)
+            return
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and not isinstance(parent, ast.Expr):          # a docstring is not SQL
+            if not legacy_side and any(t in node.value for t in patterns):
+                offenders.append(f"{fn}: {node.value.strip()[:60]!r}")
+        if isinstance(node, ast.Call):
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", "")
+            if name.endswith("_legacy") and not legacy_side:
+                offenders.append(f"{fn}: calls {name}() outside the else branch")
+        for field, value in ast.iter_fields(node):
+            if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
+                walk_block(value, legacy_side, fn, node)
+            elif isinstance(value, list):
+                for child in value:
+                    if isinstance(child, ast.AST):
+                        walk(child, legacy_side, fn, node)
+            elif isinstance(value, ast.AST):
+                walk(value, legacy_side, fn, node)
+
+    walk_block(tree.body, False, "<module>", tree)
+    return offenders
+
+
+LEGACY = ("FROM teams ", "INTO teams ", "UPDATE teams ", "JOIN teams ", "DELETE FROM teams ",
+          "FROM team_members", "INTO team_members", "JOIN team_members",
+          "FROM team_target_grants", "INTO team_target_grants",
+          "UPDATE team_target_grants", "DELETE FROM team_target_grants",
+          "JOIN team_target_grants")
+
+
+def test_no_route_reaches_the_legacy_team_tables_unconditionally():
+    """The guard that stops the next copy.
+
+    `team_target_grants` and a bare JOIN were missing from the first pattern
+    list, which is how the grant list and the grant revoke kept the legacy
+    table after every other route had moved.
+    """
+    import ast
+    tree = ast.parse(inspect.getsource(routes_admin))
+    offenders = _legacy_reach_outside_the_else(tree, LEGACY)
     assert not offenders, (
-        "these reach the legacy team tables without asking the switch: "
-        f"{offenders}")
+        "these reach the legacy team tables without asking the switch:\n  "
+        + "\n  ".join(offenders))
+
+
+def test_the_guard_catches_a_read_beside_a_guarded_one():
+    """The shape that got through the first guard: one read asks the switch,
+    the next does not."""
+    import ast
+    src = (
+        "def route():\n"
+        "    a = q('SELECT 1 FROM team') if teams_mod.use_v2() else q('SELECT 1 FROM teams x')\n"
+        "    b = q('SELECT 1 FROM team_target_grants g')\n")
+    assert _legacy_reach_outside_the_else(ast.parse(src), LEGACY) == \
+        ["route: 'SELECT 1 FROM team_target_grants g'"]
+
+
+def test_the_guard_accepts_the_else_branch_and_a_legacy_helper():
+    import ast
+    src = (
+        "def _x_legacy():\n"
+        "    return q('SELECT 1 FROM team_target_grants g')\n"
+        "def route():\n"
+        "    if teams_mod.use_v2():\n"
+        "        return q('SELECT 1 FROM access_grant')\n"
+        "    else:\n"
+        "        return _x_legacy()\n")
+    assert _legacy_reach_outside_the_else(ast.parse(src), LEGACY) == []
+
+
+def test_the_guard_refuses_a_legacy_helper_called_unconditionally():
+    import ast
+    src = ("def _x_legacy():\n    return 1\n"
+           "def route():\n    return _x_legacy()\n")
+    assert _legacy_reach_outside_the_else(ast.parse(src), LEGACY) == \
+        ["route: calls _x_legacy() outside the else branch"]
+
+
+def test_the_guard_understands_an_early_return():
+    import ast
+    src = ("def route():\n"
+           "    if teams_mod.use_v2():\n"
+           "        return q('SELECT 1 FROM team')\n"
+           "    return q('SELECT 1 FROM teams x')\n")
+    assert _legacy_reach_outside_the_else(ast.parse(src), LEGACY) == []
+
+
+def test_the_guard_understands_the_switch_held_in_a_variable():
+    import ast
+    src = ("def route():\n"
+           "    v2 = teams_mod.use_v2()\n"
+           "    if v2:\n"
+           "        q('SELECT 1 FROM team')\n"
+           "    else:\n"
+           "        q('SELECT 1 FROM team_members m')\n"
+           "    q('SELECT 1 FROM access_grant' if v2 else 'SELECT 1 FROM teams x')\n")
+    assert _legacy_reach_outside_the_else(ast.parse(src), LEGACY) == []

@@ -196,6 +196,17 @@ def test_a_team_waiver_reaches_an_admin(covering):
 
 
 def test_the_access_decision_and_the_waiver_question_share_one_rule():
-    assert "_suppresses_team(" in inspect.getsource(access._decide)
+    assert "_decide_with_row(rows)[0]" in inspect.getsource(access._decide)
+    assert "_suppresses_team(" in inspect.getsource(access._decide_with_row)
     assert "_suppresses_team(" in inspect.getsource(access.team_waivers_reach)
     assert "merge_with_team" not in inspect.getsource(access.team_waivers_reach)
+
+
+def test_rule_four_is_written_exactly_once():
+    """resolve_target and resolve_many each carried their own inline copy of
+    the suppression rule; a copy is a place for it to drift."""
+    import re
+    src = inspect.getsource(access)
+    body = inspect.getsource(access._suppresses_team)
+    assert len(re.findall(r'not r\["merge_with_team"\]', src)) == \
+        len(re.findall(r'not r\["merge_with_team"\]', body)) == 1
