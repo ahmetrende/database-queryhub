@@ -651,7 +651,7 @@ function OriginBadge({ dest }) {
   );
 }
 
-function Sidebar({ onRequestAuto, onToast, mode, setMode, conns, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
+function Sidebar({ modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
   const [open, setOpen] = React.useState(() => ({ 'prod-main': true, 'prod-replica': true }));
   const [q, setQ] = React.useState('');
   const sqlFileRef = React.useRef(null);
@@ -664,6 +664,14 @@ function Sidebar({ onRequestAuto, onToast, mode, setMode, conns, schemaCache, on
   const [focused, setFocused] = React.useState(false);
   const [reveal, setReveal] = React.useState(null);
   const inRef = React.useRef(null);
+  // "Browse connections" on the Welcome tab (CODE 2026-09-23 (j) §4): the
+  // parent bumps `focusSearch` once the Connections mode is showing, and the
+  // search box takes the caret — so the button visibly does something even
+  // when the sidebar was already open on Connections.
+  React.useEffect(() => {
+    if (!focusSearch) return;
+    requestAnimationFrame(() => { const el = inRef.current; if (el) { el.focus(); el.select && el.select(); } });
+  }, [focusSearch]);
   const modes = [['conns', DBIcons.tree], ['saved', DBIcons.star], ['sessions', DBIcons.layers], ['scheduled', DBIcons.calendar], ['history', DBIcons.clock]];
 
   // flat searchable list of conn/db pairs
@@ -778,6 +786,7 @@ function Sidebar({ onRequestAuto, onToast, mode, setMode, conns, schemaCache, on
   return (
     <div className={'qh-side' + (collapsed ? ' is-collapsed' : '')} style={width ? { width: width + 'px' } : undefined}>
       {onResizerDown && <div className="qh-side-resizer" onMouseDown={onResizerDown} onDoubleClick={onResizerFit} title="Drag to resize · double-click to fit the widest name" />}
+      {modeEntry}
       <div className="qh-side-switch">
         {modes.map(([m, Icon]) => (
           <button key={m} className={'qh-side-tab' + (mode === m ? ' is-active' : '')} onClick={() => setMode(m)} aria-label={m === 'conns' ? 'Connections' : m === 'saved' ? 'Saved' : m === 'sessions' ? 'Sessions' : m === 'scheduled' ? 'Scheduled' : 'History'}>

@@ -2077,6 +2077,23 @@
   .qh-replica-chip { display: inline-block; margin-top: 3px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; color: #15688C; background: var(--sup-blue-light); }
   [data-theme='dark'] .qh-replica-chip { color: #7FD2F5; background: rgba(102,204,255,0.12); }
 
+  /* 2026-09-23 (j): the editor ↔ admin switch heads the left column (sidebar in
+     the editor, section nav in the panel); the kill switch is read-only below
+     super-admin. */
+  .qh-modeentry { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin: 8px 8px 0; padding: 0 10px; height: 36px; border: 1px solid var(--stroke-medium); border-radius: var(--r-md); background: var(--bg-white); cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 600; color: var(--fg-primary); text-align: left; transition: background .15s ease, border-color .15s ease; }
+  .qh-modeentry:hover { background: var(--brand-adaptive-light); border-color: var(--stroke-accent); }
+  .qh-modeentry:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-modeentry > svg:not(.qh-modeentry-arrow) { color: var(--fg-accent); flex-shrink: 0; }
+  .qh-modeentry-l { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qh-modeentry-arrow { flex-shrink: 0; color: var(--fg-tertiary); }
+  .qh-modeentry.is-back { width: 100%; margin: 0 0 10px; }
+  .qh-modeentry.is-back .qh-modeentry-l { color: var(--fg-secondary); }
+  .qh-modeentry-badge { min-width: 20px; height: 20px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; font-size: 11px; font-weight: 700; color: #fff; background: var(--danger-solid-light); flex-shrink: 0; }
+  .qh-modeentry-compact { position: relative; width: 40px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; background: var(--bg-light); border: 0; border-right: 1px solid var(--stroke-light); border-bottom: 1px solid var(--stroke-medium); cursor: pointer; color: var(--fg-accent); }
+  .qh-modeentry-compact:hover { background: var(--brand-adaptive-light); }
+  .qh-modeentry-compact .qh-modeentry-badge { position: absolute; top: 3px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px; font-size: 9.5px; box-shadow: 0 0 0 2px var(--bg-light); }
+  .qh-kill-ro { flex-shrink: 0; font-size: 12.5px; font-weight: 500; color: var(--fg-tertiary); }
+
   /* feedback */
   .qh-fblist { display: flex; flex-direction: column; gap: 10px; }
   .qh-fbcard { border: 1px solid var(--stroke-light); border-radius: var(--r-md); padding: 14px 16px; }

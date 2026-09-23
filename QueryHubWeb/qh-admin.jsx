@@ -1,4 +1,4 @@
-// QueryHub Admin — panel shell (nav + role) + Approvals + Kill switch.
+// QueryHub Admin — panel shell (nav) + Approvals + Kill switch.
 // The separate DDL escalations screen was removed 2026-09-22 (§8): DDL requests
 // sit in the approval queue, flagged, carrying everything that screen carried.
 const { useState: useAdm } = React;
@@ -43,7 +43,10 @@ function navFromAdminHash() {
   return m && QH_ADMIN_SECTIONS.indexOf(m[1].toLowerCase()) !== -1 ? m[1].toLowerCase() : null;
 }
 
-function AdminPanel({ st, adminRole, setAdminRole, user }) {
+// Opens in the caller's REAL role (CODE 2026-09-23 (j) §1): the "Viewing as"
+// DBA / Super-admin switch was never used, and the server enforces the scope
+// whatever it said. `user.role` from GET /me is 'super' or 'dba' here.
+function AdminPanel({ st, user, modeEntry }) {
   const [nav, setNav] = useAdm(() => navFromAdminHash() || 'approvals');
   // A hand-off waiting on a DBA is the most stuck work in the system — approved,
   // and nothing will move until someone runs it — so it counts on the badge.
@@ -83,8 +86,7 @@ function AdminPanel({ st, adminRole, setAdminRole, user }) {
     ]},
   ];
 
-  const canSuper = !!(user && user.role === 'super');
-  const isSuper = canSuper && adminRole === 'super';
+  const isSuper = !!(user && user.role === 'super');
   // DBA can't open super-only sections
   const visibleNav = (id) => {
     if (['effective', 'grants', 'auto', 'scopes', 'teams', 'conns', 'config', 'mask'].includes(id)) return isSuper;
@@ -111,7 +113,12 @@ function AdminPanel({ st, adminRole, setAdminRole, user }) {
   React.useEffect(() => {
     const want = '#admin/' + curNav;
     if (location.hash !== want) {
-      if (navFirst.current) history.replaceState(null, '', want);
+      // A child's effects run BEFORE its parent's, so on the crossing from the
+      // editor this runs ahead of App's '#admin' push and the hash is still the
+      // editor's. Replacing it then overwrote the editor's entry, and Back
+      // stayed in the panel. First pass replaces only an '#admin…' hash (a deep
+      // link, or App's push already made); from anywhere else it pushes.
+      if (navFirst.current && (location.hash || '').indexOf('#admin') === 0) history.replaceState(null, '', want);
       else history.pushState(null, '', want);
     }
     navFirst.current = false;
@@ -125,14 +132,7 @@ function AdminPanel({ st, adminRole, setAdminRole, user }) {
   return (
     <div className="qh-admin">
       <nav className="qh-anav">
-        <div className="qh-anav-role">
-          <div className="qh-anav-role-label">Viewing as</div>
-          <div className="qh-role-seg">
-            <button className={'qh-role-opt' + (adminRole === 'dba' ? ' is-active' : '')} onClick={() => setAdminRole('dba')}>DBA</button>
-            <button className={'qh-role-opt' + (adminRole === 'super' ? ' is-active' : '')} disabled={!canSuper} title={canSuper ? undefined : 'Super-admin only'} onClick={() => canSuper && setAdminRole('super')}>Super-admin</button>
-          </div>
-          <div className="qh-anav-role-hint">{isSuper ? 'Full access: review + access control' : 'Review & insights only'}</div>
-        </div>
+        {modeEntry}
         {groups.map(g => {
           const navBtn = ([id, label, Icon, count]) => (
             <button key={id} className={'qh-anav-item' + (curNav === id ? ' is-active' : '')} onClick={() => setNav(id)}>
@@ -170,8 +170,8 @@ function AdminPanel({ st, adminRole, setAdminRole, user }) {
             <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={st.loading} onClick={() => st.reload && st.reload()}>{st.loading ? 'Retrying…' : 'Retry'}</button>
           </div>
         )}
-        {curNav === 'approvals' && <ApprovalsView st={st} user={user} role={adminRole} />}
-        {curNav === 'kill' && <KillView st={st} user={user} />}
+        {curNav === 'approvals' && <ApprovalsView st={st} user={user} role={isSuper ? 'super' : 'dba'} />}
+        {curNav === 'kill' && <KillView st={st} user={user} canWrite={isSuper} />}
         {curNav === 'effective' && <EffectiveAccessView st={st} user={user} />}
         {curNav === 'grants' && <GrantsView st={st} user={user} />}
         {curNav === 'auto' && <AutoView st={st} user={user} />}
@@ -537,7 +537,12 @@ function ApprovalsView({ st, user, role }) {
 }
 
 // ---------- Kill switch ----------
-function KillView({ st, user }) {
+// Super-admins only, on screen as on the server (CODE 2026-09-23 (j) §2):
+// POST /admin/kill answers 403 to anyone else, and so does /sql kill in Slack.
+// Every admin still READS it — the state, who, why — because "is execution
+// paused, and by whom" is what a DBA is asked first in an incident. What a
+// non-super admin does not get is a button the server would refuse.
+function KillView({ st, user, canWrite }) {
   const k = st.killSwitch;
   const actor = 'dba.' + user.name.split(' ')[0].toLowerCase();
   const [msg, setMsg] = React.useState('');
@@ -551,11 +556,13 @@ function KillView({ st, user }) {
         <div className="qh-kill-body">
           <div className="qh-kill-status">{k.enabled ? 'Execution PAUSED' : 'Execution normal'}</div>
           <div className="qh-kill-note">{k.enabled ? ('Paused by ' + k.by + ' · ' + qhAgo(k.at) + (k.message ? ' · “' + k.message + '”' : '') + '. In-flight runs finish; new submissions are blocked.') : 'All targets accepting queries. Approvals and runs proceed normally.'}</div>
-          {!k.enabled && <input className="qh-input qh-kill-msg" value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Optional reason shown to developers (e.g. incident #4821)" />}
+          {!k.enabled && canWrite && <input className="qh-input qh-kill-msg" value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Optional reason shown to developers (e.g. incident #4821)" />}
         </div>
-        <button className={'qh-btn qh-btn-lg ' + (k.enabled ? 'qh-btn-primary' : 'qh-btn-danger')} onClick={() => { st.toggleKill(!k.enabled, actor, msg); setMsg(''); }}>
-          {k.enabled ? 'Release kill switch' : 'Engage kill switch'}
-        </button>
+        {canWrite
+          ? <button className={'qh-btn qh-btn-lg ' + (k.enabled ? 'qh-btn-primary' : 'qh-btn-danger')} onClick={() => { st.toggleKill(!k.enabled, actor, msg); setMsg(''); }}>
+              {k.enabled ? 'Release kill switch' : 'Engage kill switch'}
+            </button>
+          : <span className="qh-kill-ro">Only a super-admin can {k.enabled ? 'release' : 'engage'} it</span>}
       </div>
       <div className="qh-kill-hint">While engaged: developers see a banner and a disabled Submit, auto-approve is suspended, and scheduled runs hold. Use for incidents (runaway query, credential leak, target under load). Every toggle is audited.</div>
     </div>

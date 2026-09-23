@@ -15,6 +15,16 @@ frontend and the endpoints it calls are explicitly outside it.
   the nav, and the approval queue's detail pane stops at 1120 px. This
   replaces the Audit log's own 1480 px cap from 1.0.33. Nothing changes below
   about 1860 px wide.
+- **The admin panel is one click away at the head of the left column,** with
+  the approval badge on it. The Developer / Admin tabs left the top bar. When
+  the sidebar is hidden, the entry folds into an icon beside its toggle.
+- **The admin panel opens in your real role.** The "Viewing as" switch is gone.
+- **Only a super-admin sees the kill switch's button.** Other admins still see
+  its state, who engaged it and why. The server already refused them.
+- **"Browse connections" on the Welcome page works.** It opens the sidebar if
+  it is hidden, shows Connections and puts the cursor in its search box.
+- **Back from the admin panel returns to the editor.** The panel's first
+  history write replaced the editor's entry.
 - **The admin Connections screen lists each read replica under its primary.**
   It says whether the replica is in rotation, and offers no credential
   rotation for it, since it uses its primary's login. Every other admin picker

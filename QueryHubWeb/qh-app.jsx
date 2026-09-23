@@ -234,11 +234,8 @@ function App() {
   const mounted = useRef(false);
   const [toast, setToast] = useState(null);
   const [view, setView] = useState(() => (typeof location !== 'undefined' && (location.hash || '').indexOf('#admin') === 0) ? 'admin' : 'dev'); // dev | admin (hash-synced)
-  const [adminRole, setAdminRole] = useState('dba'); // dba | super
-  // The admin-panel "Viewing as" role follows the caller's REAL role: a
-  // super-admin defaults to super (and may simulate dba); a scoped "dba" admin
-  // is pinned to dba. The server enforces scope regardless of this toggle.
-  useEffect(() => { setAdminRole(user && user.role === 'super' ? 'super' : 'dba'); }, [user && user.role]);
+  // "Viewing as" is gone (CODE 2026-09-23 (j) §1): the panel opens in the
+  // caller's real role, read from user.role in AdminPanel.
   const pushToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 4200); };
   const admin = useAdminState(pushToast, view === 'admin',
                               !!(user && (user.role === 'dba' || user.role === 'super')));
@@ -1295,6 +1292,15 @@ function App() {
     document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
   };
   const toggleSide = () => setTweak('hideSidebar', !t.hideSidebar);
+  // Welcome → "Browse connections" (CODE 2026-09-23 (j) §4). The sidebar
+  // already opens on Connections, so switching mode alone changed nothing on
+  // screen: open it if hidden, switch, and put the caret in its search box.
+  const [sideFocus, setSideFocus] = useState(0);
+  const browseConnections = () => {
+    if (t.hideSidebar) setTweak('hideSidebar', false);
+    setSideMode('conns');
+    setSideFocus(n => n + 1);
+  };
 
   // §16: re-read the catalogue. The endpoint writes the snapshot synchronously
   // before it returns, so there is nothing to poll — but the client kept showing
@@ -1323,8 +1329,12 @@ function App() {
     } finally { setSchemaBusy(false); }
   };
 
+  // Declared ABOVE sideEl, which calls it (Babel's var hoisting leaves it undefined otherwise).
+  const isAdminUser = !!user && (user.role === 'dba' || user.role === 'super');
+  const adminWaiting = admin.queue.length + (admin.manualRuns || []).length;
+  const modeEntry = (where) => isAdminUser ? <ModeEntry where={where} setView={setView} pendingCount={adminWaiting} /> : null;
   const sideEl = !t.hideSidebar && (
-    <Sidebar mode={sideMode} setMode={setSideMode} conns={conns} schemaCache={schemaCache} onLoadSchema={loadSchema} rolesCache={rolesCache} onLoadRoles={loadRoles}
+    <Sidebar modeEntry={modeEntry('side')} focusSearch={sideFocus} mode={sideMode} setMode={setSideMode} conns={conns} schemaCache={schemaCache} onLoadSchema={loadSchema} rolesCache={rolesCache} onLoadRoles={loadRoles}
       canRefresh={!!(user && user.role !== 'developer')} onRefreshSchema={refreshSchema}
       onToast={pushToast}
       active={{ conn: tab.conn, db: tab.db }} onPick={pickDb}
@@ -1376,9 +1386,11 @@ function App() {
       {pwOpen && <ChangePasswordScreen onCancel={() => setPwOpen(false)} />}
       <TopChrome resolvedDark={resolvedDark} theme={t.theme} setTheme={(v) => setTweak('theme', v)} user={user} onSignOut={signOut}
         onChangePassword={() => setPwOpen(true)} slackEnabled={slackOn}
-        view={view} setView={setView} pendingCount={admin.queue.length} onGoHome={goHome} role={(user && user.role) || 'developer'} lastSync={lastSync} onFeedback={() => setFeedbackOpen(true)} onWhatsNew={openWhatsNew} unseenNews={unseenNews} onDismissNews={markNewsSeen} />
+        view={view} onGoHome={goHome} role={(user && user.role) || 'developer'} lastSync={lastSync} onFeedback={() => setFeedbackOpen(true)} onWhatsNew={openWhatsNew} unseenNews={unseenNews} onDismissNews={markNewsSeen} />
 
-      {view === 'admin' && <AdminPanel st={admin} adminRole={adminRole} setAdminRole={setAdminRole} user={user} />}
+      {/* The editor ↔ admin switch sits at the head of the left column (CODE
+          2026-09-23 (j) §3; see ModeEntry). */}
+      {view === 'admin' && <AdminPanel st={admin} user={user} modeEntry={modeEntry('admin')} />}
 
       {killed && view === 'dev' && (
         <div className="qh-killbanner">
@@ -1400,6 +1412,7 @@ function App() {
             </div>
           )}
           <div className="qh-worktop">
+            {t.hideSidebar && modeEntry('compact')}
             <button className="qh-side-toggle" onClick={toggleSide} title={t.hideSidebar ? 'Show sidebar' : 'Hide sidebar'} aria-label={t.hideSidebar ? 'Show sidebar' : 'Hide sidebar'}>
               {t.hideSidebar
                 ? <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M13.5 9l3 3-3 3"/></svg>
@@ -1419,7 +1432,7 @@ function App() {
               scheduled={scheduled} onOpenScheduled={openScheduled} onCancelScheduled={cancelScheduled}
               history={history} onLoadHistory={loadHistory}
               saved={savedList} onLoadSaved={loadSaved} onDeleteSaved={deleteSaved}
-              onBrowse={() => setSideMode('conns')} onWhatsNew={openWhatsNew} unseenNews={unseenNews} />
+              onBrowse={browseConnections} onWhatsNew={openWhatsNew} unseenNews={unseenNews} />
           ) : isWhatsNew ? (
             <WhatsNew />
           ) : (
@@ -1610,14 +1623,40 @@ function NotificationBell({ unseenNews, onOpenNews, onDismissNews }) {
   );
 }
 
+// ---------- Editor ↔ admin switch (CODE 2026-09-23 (j) §3) ----------
+// Out of the top bar, and NOT a rail of its own: a whole column for two buttons
+// was mostly empty space. It heads the left column that is already there — the
+// sidebar in the editor, the section nav in the panel — so the way back sits
+// exactly where the way in was, one click, never behind a menu. With the
+// sidebar hidden it folds into an icon beside the sidebar toggle, so it is
+// never gone. The approval badge rides on it as it did on the tab. Admins
+// only. It calls the same `setView`, so #admin/<section> and Back/Forward
+// (PR #38) are untouched.
+function ModeEntry({ where, setView, pendingCount }) {
+  const toAdmin = where !== 'admin';
+  const badge = toAdmin && pendingCount > 0 && <span className="qh-modeentry-badge">{pendingCount > 99 ? '99+' : pendingCount}</span>;
+  const title = toAdmin ? 'Admin panel' + (pendingCount ? ' · ' + pendingCount + ' waiting for review' : '') : 'Back to the SQL editor';
+  const icon = toAdmin
+    ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M8 9l3 3-3 3M13 15h3"/><rect x="3" y="4" width="18" height="16" rx="2"/></svg>;
+  if (where === 'compact') {
+    return <button className="qh-modeentry-compact" onClick={() => setView('admin')} title={title} aria-label={title}>{icon}{badge}</button>;
+  }
+  return (
+    <button className={'qh-modeentry' + (toAdmin ? '' : ' is-back')} onClick={() => setView(toAdmin ? 'admin' : 'dev')} title={title}>
+      {!toAdmin && <svg className="qh-modeentry-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 6l-6 6 6 6"/></svg>}
+      {icon}
+      <span className="qh-modeentry-l">{toAdmin ? 'Admin panel' : 'SQL editor'}</span>
+      {badge}
+      {toAdmin && <svg className="qh-modeentry-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>}
+    </button>
+  );
+}
+
 // ---------- Top chrome (logo + theme toggle) ----------
-function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePassword, view, setView, pendingCount, onGoHome, role, lastSync, onFeedback, onWhatsNew, unseenNews, onDismissNews, slackEnabled }) {
+function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePassword, view, onGoHome, role, lastSync, onFeedback, onWhatsNew, unseenNews, onDismissNews, slackEnabled }) {
   const toggle = () => setTheme(resolvedDark ? 'light' : 'dark');
   const [menu, setMenu] = useState(false);
-  // Only admins (dba/super) get the Developer↔Admin switch. A plain developer
-  // has nothing on the Admin side, so the toggle is hidden — their role is
-  // already shown by the role badge on the right.
-  const isAdmin = role === 'dba' || role === 'super';
   return (
     <header className="qh-top">
       <button className="qh-brand" onClick={onGoHome} title="Go to QueryHub home">
@@ -1625,19 +1664,6 @@ function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePas
         <span className="qh-brand-name">QueryHub</span>
         <span className="qh-brand-tag">web</span>
       </button>
-      {isAdmin && (
-      <div className="qh-viewswitch">
-        <button className={'qh-vs-opt' + (view === 'dev' ? ' is-active' : '')} onClick={() => setView('dev')}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M8 9l3 3-3 3M13 15h3"/><rect x="3" y="4" width="18" height="16" rx="2"/></svg>
-          Developer
-        </button>
-        <button className={'qh-vs-opt' + (view === 'admin' ? ' is-active' : '')} onClick={() => setView('admin')}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          Admin
-          {pendingCount > 0 && <span className="qh-vs-badge">{pendingCount}</span>}
-        </button>
-      </div>
-      )}
       <div className="qh-top-right">
         <span className="qh-slack-note">
           <span className="qh-slack-dot" />
