@@ -383,14 +383,13 @@ def test_malformed_identifiers_are_refused(wire, field, value):
 
 
 def test_only_engines_the_bot_can_run_may_be_registered(wire):
-    """'clickhouse' passes the database CHECK constraint — it has a safety
-    profile — but has no execution path, so a connection registered with it
-    would fail closed at submit time with nothing on this screen to explain
-    why."""
+    """An engine without an execution path would fail closed at submit time
+    with nothing on this screen to explain why, so it cannot be registered.
+    (ClickHouse was that example until it was wired, 2026-09-23.)"""
     with pytest.raises(HTTPException) as e:
         ra.admin_create_connection(
             ra.ConnectionIn(alias="alpha-svc", host="db.example.internal",
-                            defaultDatabase="ledger", engine="clickhouse"),
+                            defaultDatabase="ledger", engine="oracle"),
             claims=SUPER)
     assert e.value.status_code == 400
 

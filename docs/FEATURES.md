@@ -11,7 +11,8 @@ your problem. This is the complete inventory, for when it is.
 - **Multiple engines** — **PostgreSQL** and **SQL Server** (both full
   three-tier); a pluggable `engines.py` spec classifies each statement and
   routes the driver (psycopg / pyodbc, incl. SQL Server AG read-only
-  routing). ClickHouse is defined read-only (spec). New engines are added as
+  routing); **Amazon Athena** and **ClickHouse** read-only (ClickHouse over
+  the native protocol, readonly=1, default-deny table functions). New engines are added as
   a spec, not scattered `if`s.
 - Admin DM with **Approve / Reject / Request changes** buttons; one
   approval is enough; all admins see the resolution.

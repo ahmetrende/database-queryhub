@@ -835,6 +835,10 @@ def _probe(engine: str, host: str, port: int, database: str,
                 version = row[0] if row else None
             finally:
                 conn.close()
+        elif engine == "clickhouse":
+            from .. import clickhouse_exec
+            version = clickhouse_exec.probe(host, port, database, username,
+                                            password, timeout_sec=_PROBE_TIMEOUT_SEC)
         else:
             import psycopg
             with psycopg.connect(

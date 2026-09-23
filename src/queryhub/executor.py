@@ -720,6 +720,11 @@ def _run(request: dict, client: WebClient) -> None:
                        unmask=unmask)
             return
 
+        if target.engine == "clickhouse":
+            _run_clickhouse(client, request, target, report, db_user, password,
+                            timeout_sec, max_rows, max_csv_bytes, unmask=unmask)
+            return
+
         app_name = _build_application_name(request)
 
         # Tighter cap on idle-in-transaction so a stalled bot can't hold
@@ -1259,6 +1264,66 @@ def _run_athena(client: WebClient, request: dict, target, mode: str, report,
     csv_paths = [r.csv_path for r in stmt_results if r.csv_path is not None]
     _finalize(client, request, stmt_results, csv_paths,
               max_csv_bytes=max_csv_bytes, target=target, elapsed=elapsed)
+
+
+def _run_clickhouse(client: WebClient, request: dict, target, report,
+                    db_user: str, password: str, timeout_sec: int,
+                    max_rows: int, max_csv_bytes: int,
+                    unmask: bool = False) -> None:
+    """ClickHouse execution path. Reached only for a WIRED clickhouse target.
+
+    Read-only by construction: the engine's spec refuses anything but
+    SELECT/WITH at submit, and the login is readonly=1 on the server. Each
+    statement gets its own cursor -- ClickHouse runs one statement per query --
+    and the cursor sends no settings, because that login refuses every one.
+
+    The time limit is enforced here, not by the server (the login has none and
+    may not set one): the cursor's watchdog closes the connection at the
+    deadline, which on the native protocol cancels the query. The same watchdog
+    reads `cancel_requested_at`, so Stop reaches a query running in this
+    process whichever process the button was pressed in.
+    """
+    from . import clickhouse_exec
+    request_id = request["id"]
+    main_stmts = [s for s in report.statements if s.kind != "set"]
+    result_format = request.get("result_format") or "csv"
+
+    t_start = time.monotonic()
+    stmt_results: list[_StmtResult] = []
+    for i, stmt in enumerate(main_stmts, start=1):
+        cur = clickhouse_exec.ClickHouseCursor(
+            target.host, target.port, request["database_name"], db_user, password,
+            timeout_sec=timeout_sec, request_id=request_id,
+            on_started=lambda qid: _record_execution_id(request_id, qid),
+            is_cancelled=lambda: _cancel_requested(request_id))
+        try:
+            res = _execute_main_statement(
+                cur, stmt, i, request_id,
+                request["wants_result"], max_rows, max_csv_bytes,
+                result_format=result_format,
+                target_id=target.id,
+                database=request["database_name"],
+                engine=target.engine,
+                requester_id=request["requester_slack_id"],
+                unmasked=unmask,
+                capture_plan=False,      # ClickHouse EXPLAIN is not Postgres's
+            )
+        finally:
+            # Also what ends a result read short at the row cap: the server
+            # stops the query when the connection goes.
+            cur.close()
+        stmt_results.append(res)
+    elapsed = time.monotonic() - t_start
+
+    csv_paths = [r.csv_path for r in stmt_results if r.csv_path is not None]
+    _finalize(client, request, stmt_results, csv_paths,
+              max_csv_bytes=max_csv_bytes, target=target, elapsed=elapsed)
+
+
+def _cancel_requested(request_id: int) -> bool:
+    row = db.fetch_one("SELECT cancel_requested_at FROM requests WHERE id = %s",
+                       (request_id,))
+    return bool(row and row.get("cancel_requested_at"))
 
 
 def _record_execution_id(request_id: int, execution_id: str) -> None:

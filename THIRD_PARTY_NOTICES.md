@@ -61,6 +61,7 @@ file-level copyleft and neither is modified here.
 | `slack` | `slack-bolt`, `slack-sdk` | MIT |
 | `mssql` | `pyodbc` | MIT |
 | `aws` | `boto3` | Apache-2.0 |
+| `clickhouse` | `clickhouse-driver` (with `pytz`, `tzlocal`) | MIT |
 | `mcp` | `mcp` | MIT |
 
 `mcp` is the Model Context Protocol SDK, and the extra that brings the

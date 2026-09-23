@@ -23,9 +23,11 @@ Three engines carry a spec today:
     tuning prelude and pre-flight EXPLAIN don't apply.
 
   - **clickhouse** — read-only. Only SELECT/WITH are accepted (no RW/DDL
-    tier), and a set of table/scalar functions that turn a SELECT into
-    SSRF / file read / RCE is blocked. Kept here as a spec (safety data)
-    for a future wiring; it has no execution path yet.
+    tier). Table functions are default-deny (only benign generators pass),
+    the dictionary and remote/file functions are blocked, and so is an
+    inline SETTINGS clause. Executes over the native protocol (9440, TLS)
+    with no settings sent, because the login it runs as is readonly=1 and
+    refuses every one (clickhouse_exec.py).
 
   - **athena** — read-only, and the first engine with no host to connect
     to: a query is an API call against a workgroup, and the identity is a
@@ -305,7 +307,7 @@ MSSQL = EngineSpec(
 
 
 # ---------------------------------------------------------------------------
-# ClickHouse — read-only (spec only; no execution path yet).
+# ClickHouse — read-only, native protocol (clickhouse_exec.py).
 # ---------------------------------------------------------------------------
 
 _CLICKHOUSE_BLOCKED = frozenset({
@@ -322,8 +324,12 @@ _CLICKHOUSE_BLOCKED = frozenset({
     "addresstoline", "addresstolinewithinlines", "addresstosymbol", "demangle",
     "encrypt", "decrypt", "trydecrypt", "aes_encrypt_mysql", "aes_decrypt_mysql",
 })
+# DEFAULT-DENY: a table function not named here is refused, so a new one the
+# server gains is refused too until someone decides it is harmless. These only
+# generate rows; none reads anything outside the query.
 _CLICKHOUSE_TABLE_FN_ALLOW = frozenset({
-    "numbers", "numbers_mt", "generaterandom", "zeros", "values", "null",
+    "numbers", "numbers_mt", "generaterandom", "zeros", "zeros_mt", "values",
+    "null", "generate_series", "generateseries",
 })
 
 CLICKHOUSE = EngineSpec(
@@ -334,7 +340,13 @@ CLICKHOUSE = EngineSpec(
     table_function_allowlist=_CLICKHOUSE_TABLE_FN_ALLOW,
     blocked_schemas=frozenset({"system", "information_schema"}),
     supports_explain=False,
-    default_port=8443,
+    set_local_supported=False,   # readonly=1 refuses every setting
+    routines_sql=None,
+    driver="clickhouse",
+    # Native protocol over TLS. 8443 is the HTTPS port: the native client
+    # there gets UNEXPECTED_PACKET_FROM_SERVER, and HTTP cannot cancel a
+    # readonly query when the client goes away.
+    default_port=9440,
 )
 
 
@@ -410,7 +422,11 @@ def spec(engine: str | None) -> EngineSpec:
 # DISABLED until the archive's own completeness gate and the result-bucket
 # deny policy land. What it stops is the engine failing closed, so the path
 # can be exercised before it is opened.
-WIRED_ENGINES = frozenset({"postgres", "mssql", "athena"})
+# clickhouse: wired 2026-09-23 after the native path was validated live against
+# ClickHouse Cloud (TLS, readonly=1 login, streaming with an early stop, type
+# names, KILL QUERY allowed). Its targets are imported DISABLED; wiring only
+# stops the engine failing closed, so the path can be exercised first.
+WIRED_ENGINES = frozenset({"postgres", "mssql", "athena", "clickhouse"})
 
 
 def is_executable(engine: str | None) -> bool:

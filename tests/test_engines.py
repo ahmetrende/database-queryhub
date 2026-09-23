@@ -52,7 +52,8 @@ def test_is_executable_fail_closed():
     assert engines.is_executable("mssql") is True
     # clickhouse carries a safety spec but has NO wired execution path yet
     # → fail closed (never routed through the Postgres path).
-    assert engines.is_executable("clickhouse") is False
+    assert engines.is_executable("clickhouse") is True     # wired 2026-09-23
+    assert engines.is_executable("oracle") is False       # unknown: fails closed
     # spec still resolves for a not-yet-executable engine.
     assert engines.spec("clickhouse").read_only is True
 

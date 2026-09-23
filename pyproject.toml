@@ -103,6 +103,13 @@ mssql = [
 aws = [
     "boto3>=1.34",
 ]
+# ClickHouse targets (engine = 'clickhouse'). The native-protocol driver, which
+# a readonly=1 login needs: it sends no settings unless given some, and a
+# closed connection cancels the query on the server. Imported only when a
+# ClickHouse target runs. Upper-bounded because a 0.x minor may change the API.
+clickhouse = [
+    "clickhouse-driver>=0.2.11,<0.3",
+]
 
 [project.urls]
 Homepage = "https://github.com/ahmetrende/database-queryhub"

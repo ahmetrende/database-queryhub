@@ -136,6 +136,29 @@ def _stop_athena(request_id: int, target, execution_id: str | None) -> str:
         return CancelOutcome.FAILED
 
 
+def _stop_clickhouse(request_id: int, target, query_id: str | None) -> str:
+    """Stop a ClickHouse query. The process running it does the stopping.
+
+    There is no backend pid, and a KILL QUERY sent from here may land on a
+    different replica of the service than the query. What does reach it is the
+    executing cursor's watchdog: it reads `cancel_requested_at` -- which
+    `cancel()` sets before calling this -- every two seconds and closes the
+    connection, which cancels the query on the server. So the answer is
+    CANCELLED, and the KILL is only a head start where it happens to land.
+    """
+    if query_id and target is not None:
+        try:
+            from . import clickhouse_exec
+            user, password = targets.get_credentials(target.id, "ro")
+            if clickhouse_exec.kill_query(target.host, target.port, user,
+                                          password, query_id):
+                log.info("cancel: KILL QUERY reached request %s", request_id)
+        except Exception:
+            log.info("cancel: KILL QUERY for request %s did not land; the "
+                     "watchdog stops it", request_id, exc_info=True)
+    return CancelOutcome.CANCELLED
+
+
 def stop_backend(request_id: int) -> str:
     """Signal the target backend running `request_id`. Returns a CancelOutcome.
 
@@ -158,6 +181,8 @@ def stop_backend(request_id: int) -> str:
     target = targets.get(row["target_server_id"])
     if (getattr(target, "engine", None) or "postgres") == "athena":
         return _stop_athena(request_id, target, row.get("engine_execution_id"))
+    if (getattr(target, "engine", None) or "postgres") == "clickhouse":
+        return _stop_clickhouse(request_id, target, row.get("engine_execution_id"))
 
     pid = row.get("backend_pid")
     if not pid:

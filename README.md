@@ -19,8 +19,8 @@ every decision audited. Apache-2.0, no enterprise tier.
 </p>
 
 Two surfaces over one core: `/sql` in **Slack**, or the **web UI**. Engines:
-**PostgreSQL**, **SQL Server** and **Amazon Athena** (read-only; ClickHouse has
-a safety spec but no execution path yet).
+**PostgreSQL**, **SQL Server**, **Amazon Athena** and **ClickHouse** (the last
+two read-only).
 
 <p align="center">
   <img src="docs/screenshots/hero.png" alt="A pending RW request in the approval queue: the SQL, its classification, the reason, and Approve / Reject / Request changes" width="900"><br>
@@ -117,14 +117,16 @@ window into it.
 
 ## Engines
 
-Three states, and the middle one is the interesting one.
+An engine is in one of three states. Every engine QueryHub names is in the
+first today; the second is the one a new engine passes through.
 
 | Engine | State | What that means |
 |---|---|---|
 | **PostgreSQL** | **Executes** | Full three-tier model: RO / RW / DDL, per-tier credentials, streamed results, EXPLAIN pre-flight, PII lineage from the planner. The reference engine. |
 | **SQL Server** | **Executes** | Same model. T-SQL safety dialect, cross-catalog and linked-server references refused, AG read-routing for RO. |
 | **Amazon Athena** | **Executes, read-only** | For data that has left the database for object storage. No host and no stored credential — the gateway assumes a role. Only SELECT / WITH: on this engine that is what refuses the statements which would WRITE (`CREATE TABLE AS`, `INSERT`, `UNLOAD`, `MSCK REPAIR`). The schema comes from the data catalog, and every query records what it scanned, because on a pay-per-byte engine that is the risk. |
-| **ClickHouse** | **Parses, refuses to run** | A real safety spec (read-only: only SELECT / WITH are accepted) but no execution path. A target tagged `clickhouse` is rejected **at execution time**, not silently run through the PostgreSQL driver. |
+| **ClickHouse** | **Executes, read-only** | Native protocol over TLS, as a login the server holds at `readonly=1`, which refuses every setting — so the gateway sends none and enforces the time limit itself, closing the connection at the deadline, which cancels the query. Only SELECT / WITH; table functions are default-deny (benign generators only), and dictionary, remote, file and `system.*` reads are refused. The schema catalog never wakes a service that idles to save compute. |
+| *A new engine* | **Parses, refuses to run** | A safety spec but no execution path yet. A target tagged with it is rejected **at execution time**, not silently run through the PostgreSQL driver. |
 | Anything else | **Not started** | No spec, no driver. Nothing to configure. |
 
 That middle row is deliberate, not an unfinished corner. Pointing psycopg at a
@@ -269,6 +271,7 @@ Before installing, you need:
 | **Python 3.11+** | Plus `python3.11-venv`, `libpq-dev`, `git` |
 | **(Optional) Web UI** | To expose the web surface: run `python -m queryhub.web` (FastAPI/uvicorn) behind TLS and serve the `QueryHubWeb/` bundle. Web login is either **Slack OIDC** (a Slack app's client id/secret) or **built-in local accounts** (username/password, no Slack) |
 | **(Optional) SQL Server driver** | For SQL Server targets: Microsoft ODBC driver (`msodbcsql18`) + the `mssql` extra — `pip install '.[mssql]'` (pulls `pyodbc`) |
+| **(Optional) ClickHouse driver** | For ClickHouse targets: the `clickhouse` extra — `pip install '.[clickhouse]'` (pulls `clickhouse-driver`). Native protocol over TLS, port 9440 |
 | **A Postgres superuser (or rds_superuser) for bootstrap** | Used **once** by `deploy/setup_db.sql` to create the bot's metadata DB and login role |
 
 Full pre-install checklist — Slack app scopes, per-target role

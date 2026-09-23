@@ -21,8 +21,8 @@ forward plan lives in [ROADMAP.md](../ROADMAP.md).
 
 - **PostgreSQL is first-class.** SQL Server is supported (safety +
   execution), with cross-database / linked-server references blocked.
-  ClickHouse currently ships only as a safety spec — there is no
-  execution path yet, and an unwired engine fails closed.
+  Amazon Athena and ClickHouse execute read-only (SELECT / WITH). An
+  engine with a spec but no execution path fails closed.
 - Cross-database access is intentionally blocked; a query is scoped to
   the target database it was submitted against.
 

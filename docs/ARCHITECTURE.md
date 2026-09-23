@@ -97,7 +97,8 @@ row's `secrets_provider` column selects which is used, defaulting to
 
 ### 5. Database engine — `engines.py`
 `EngineSpec` describes a target's dialect, tiering and safety rules;
-`_ENGINES` registers `postgres`, `mssql` and `clickhouse`. `WIRED_ENGINES`
+`_ENGINES` registers `postgres`, `mssql`, `clickhouse` and `athena`, and all
+four execute today. `WIRED_ENGINES`
 gates *execution*, so an engine can ship a spec (safety rules understood)
 before its executor path is enabled. `query_safety`/`ast_safety` take the
 engine so a T-SQL statement is never classified by the Postgres parser.

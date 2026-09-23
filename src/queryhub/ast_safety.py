@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from typing import Iterable
 
 import sqlglot
@@ -151,6 +152,14 @@ def check(sql: str, engine: str = "postgres") -> list[str]:
 
     spec = engines.spec(engine)
     dialect = spec.sqlglot_dialect
+    # Read-only engines get a pass that does not depend on the parser first: a
+    # SETTINGS clause and the worst function names are refused even where the
+    # dialect mis-parses. Comments and string literals are blanked before it
+    # looks, so it cannot fire on a note or a value.
+    if spec.read_only:
+        lexical = _read_only_lexical_block(sql)
+        if lexical:
+            return lexical
     try:
         statements = sqlglot.parse(sql, read=dialect)
     except sqlglot.errors.SqlglotError as e:
@@ -184,7 +193,7 @@ def check(sql: str, engine: str = "postgres") -> list[str]:
             "stray quotes, unbalanced parentheses, or non-standard syntax."
         ]
 
-    blocked_funcs = _DANGEROUS_FUNCS | spec.blocked_functions
+    blocked_funcs = _DANGEROUS_FUNCS | spec.blocked_functions | _config_blocked(engine)
     blockers: list[str] = []
     for stmt in statements:
         if stmt is None:
@@ -192,7 +201,76 @@ def check(sql: str, engine: str = "postgres") -> list[str]:
         blockers.extend(_check_stmt(stmt, blocked_funcs, dialect,
                                     block_catalog_refs=spec.block_catalog_refs,
                                     blocked_schemas=spec.blocked_schemas))
+        if spec.read_only:
+            blockers.extend(_check_read_only_engine(stmt, spec))
     return blockers
+
+
+def _config_blocked(engine: str) -> frozenset:
+    """Extra function names an operator blocks at runtime, from bot_config
+    `<engine>_blocked_functions` (comma separated). Tightening only: it adds
+    to what the code blocks and cannot re-enable anything."""
+    try:
+        value = cfg.get_setting(f"{engine}_blocked_functions", "")
+    except Exception:
+        return frozenset()
+    return frozenset(p.strip().lower() for p in (value or "").split(",") if p.strip())
+
+
+# Run on SQL with comments and string literals blanked out.
+_SETTINGS_RE = re.compile(r"\bSETTINGS\s+[\w`\"]+\s*=", re.IGNORECASE)
+_HIGH_SEVERITY_RE = re.compile(
+    r"\b(url|urlcluster|s3|s3cluster|gcs|hdfs|hdfscluster|remote|remotesecure"
+    r"|cluster|clusterallreplicas|file|filecluster|executable|mysql|postgresql"
+    r"|jdbc|odbc|mongodb|redis|sqlite|joinget|dictget\w*|addresstoline\w*"
+    r"|addresstosymbol|demangle)\s*\(", re.IGNORECASE)
+
+
+def _read_only_lexical_block(sql: str) -> list[str]:
+    from .query_safety import code_text
+    text = code_text(sql)
+    if _SETTINGS_RE.search(text):
+        return ["An inline SETTINGS clause is not allowed on a read-only "
+                "target: a query-level setting could relax its limits."]
+    m = _HIGH_SEVERITY_RE.search(text)
+    if m:
+        return [f"`{m.group(1)}` is blocked on a read-only target: it reads "
+                f"outside the database (remote, file, cluster or dictionary "
+                f"access) or runs code."]
+    return []
+
+
+def _check_read_only_engine(stmt: exp.Expression, spec) -> list[str]:
+    """What a read-only engine adds to the shared checks.
+
+    * Table functions are DEFAULT-DENY: only the benign generators on
+      `spec.table_function_allowlist` pass, so a table function the server
+      gains later is refused until someone decides it is harmless.
+    * The dictionary family is blocked by prefix, which covers the typed
+      variants (`dictGetString`, `dictGetUInt64`, ...) a fixed list misses.
+      readonly=1 does not stop these reads; only GRANTs do, and this is the
+      in-app backstop.
+    * A SETTINGS clause, again, from the parse tree.
+    """
+    out: list[str] = []
+    for tbl in stmt.find_all(exp.Table):
+        fn = tbl.this
+        if not isinstance(fn, exp.Func):
+            continue
+        name = anon_name(fn) if isinstance(fn, exp.Anonymous) else (fn.sql_name() or "").lower()
+        if name and name not in spec.table_function_allowlist:
+            out.append(f"Table function `{name}` is not allowed on a read-only "
+                       f"target. Read a real table, or a generator such as "
+                       f"`numbers`.")
+    for name in sorted(_function_names(stmt)):
+        if name.startswith("dictget"):
+            out.append(f"`{name}` reads a dictionary, which is blocked on a "
+                       f"read-only target.")
+    if any(node.args.get("settings") for node in stmt.walk()
+           if isinstance(node, exp.Expression)):
+        out.append("An inline SETTINGS clause is not allowed on a read-only "
+                   "target: a query-level setting could relax its limits.")
+    return list(dict.fromkeys(out))
 
 
 def _check_stmt(stmt: exp.Expression, blocked_funcs: frozenset = _DANGEROUS_FUNCS,

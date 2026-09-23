@@ -83,23 +83,25 @@ def test_the_readme_engine_table_matches_the_code():
     i = readme.index("## Engines")
     table = readme[i:i + 2600]
 
-    assert sorted(engines.WIRED_ENGINES) == ["athena", "mssql", "postgres"], (
+    assert sorted(engines.WIRED_ENGINES) == ["athena", "clickhouse", "mssql", "postgres"], (
         "WIRED_ENGINES changed — the README table needs updating with it")
-    for wired in ("PostgreSQL", "SQL Server", "Amazon Athena"):
+    for wired in ("PostgreSQL", "SQL Server", "Amazon Athena", "ClickHouse"):
         assert wired in table
-    assert "ClickHouse" in table
-    # The middle state has to be stated as a refusal, not as a supported engine.
+    assert "Executes, read-only" in table
+    # The state a new engine passes through is still stated as a refusal.
     assert "refuses to run" in table or "refuse" in table.lower()
 
 
-def test_clickhouse_really_is_spec_only():
-    """The README's middle row is a claim about behaviour; this is the
-    behaviour. A spec exists, and execution is refused."""
+def test_clickhouse_executes_read_only():
+    """The README's ClickHouse row is a claim about behaviour; this is the
+    behaviour. It executes, and nothing but a read is accepted."""
     from queryhub import engines
-    assert engines.spec("clickhouse").name == "clickhouse"
-    assert engines.is_executable("clickhouse") is False
+    assert engines.spec("clickhouse").read_only is True
+    assert engines.is_executable("clickhouse") is True
     assert engines.is_executable("postgres") is True
     assert engines.is_executable("mssql") is True
+    # An engine nobody wired still fails closed.
+    assert engines.is_executable("oracle") is False
 
 
 def test_no_engine_is_claimed_that_has_no_spec():

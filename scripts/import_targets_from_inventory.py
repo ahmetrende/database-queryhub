@@ -122,7 +122,7 @@ def _inventory_servers() -> list[dict]:
     ) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT db_instance_identifier, endpoint, is_deleted, deleted_at, "
-            "       cloud_provider "
+            "       cloud_provider, engine "
             "FROM v_server"
         )
         cols = [d.name for d in cur.description]
@@ -227,6 +227,74 @@ def plan_authoritative_disables(servers: list[dict],
     return plans
 
 
+# ClickHouse Cloud services are listed in v_server (engine = 'clickhouse') but
+# not in v_all_databases, which is Postgres's catalog, so step 1 never sees them.
+# They are imported by their own step, only when asked (--clickhouse): an alias
+# is permanent once people use it, so the first import is a deliberate act.
+CLICKHOUSE_PORT = 9440          # native protocol over TLS; v_server says 8443 (HTTPS)
+CLICKHOUSE_TAGS = {"provider": "aws", "service": "ClickHouse Cloud"}
+
+
+def plan_clickhouse_imports(servers: list[dict], existing_hosts: set[str],
+                            existing_aliases: set[str]) -> list[dict]:
+    """New ClickHouse services to add, as {alias, host, identifier}.
+
+    The alias is the service's own name, which is what people call it. Where
+    that name is already a target's alias -- a service that moved from RDS to
+    ClickHouse Cloud keeps its name, and the old row stays for its history --
+    it gets a `-ch` suffix rather than a number nobody can place. Soft-deleted
+    services are skipped: v_server does not filter them."""
+    taken = {a.lower() for a in existing_aliases}
+    out = []
+    for s in sorted(servers, key=lambda r: r.get("db_instance_identifier") or ""):
+        if (s.get("engine") or "").lower() != "clickhouse" or s.get("is_deleted"):
+            continue
+        host = s.get("endpoint")
+        name = (s.get("db_instance_identifier") or "").strip()
+        if not host or not name or host in existing_hosts:
+            continue
+        alias = name if name.lower() not in taken else f"{name}-ch"
+        if alias.lower() in taken:
+            continue          # both taken: leave it for a person to name
+        taken.add(alias.lower())
+        out.append({"alias": alias, "host": host, "identifier": name})
+    return out
+
+
+def _import_clickhouse(servers: list[dict], sentinel_ct: str, *,
+                       dry_run: bool) -> int:
+    existing = db.fetch_all("SELECT alias, host FROM target_servers")
+    plan = plan_clickhouse_imports(servers, {r["host"] for r in existing},
+                                   {r["alias"] for r in existing})
+    for p in plan:
+        log.info("%s clickhouse %s -> %s:%d", "would add" if dry_run else "added",
+                 p["alias"], p["host"], CLICKHOUSE_PORT)
+        if dry_run:
+            continue
+        db.execute(
+            "INSERT INTO target_servers "
+            "(alias, host, port, default_database, username, "
+            " password_encrypted, enabled, notes, tags, engine) "
+            "VALUES (%s, %s, %s, 'default', %s, %s, FALSE, %s, %s::jsonb, 'clickhouse')",
+            (p["alias"], p["host"], CLICKHOUSE_PORT, DEFAULT_USERNAME, sentinel_ct,
+             f"auto-imported from inventory (ClickHouse Cloud service "
+             f"{p['identifier']}) — fill creds.", json.dumps(CLICKHOUSE_TAGS)))
+    if plan and not dry_run:
+        db.execute(
+            "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
+            "VALUES ('inventory-sync', 'inventory sync', 'targets_imported', %s::jsonb)",
+            (json.dumps({"engine": "clickhouse", "targets": plan}),))
+    return len(plan)
+
+
+def _clickhouse_only(*, dry_run: bool) -> int:
+    """The ClickHouse step on its own -- the first import, or its preview."""
+    added = _import_clickhouse(_inventory_servers(), encrypt(SENTINEL_PASSWORD),
+                               dry_run=dry_run)
+    log.info("done: clickhouse %s=%d", "planned" if dry_run else "added", added)
+    return 0
+
+
 def _notify_admins_disabled(plans: list[dict]) -> None:
     """DM every active admin about auto-disabled targets. Best-effort:
     a Slack hiccup must not fail the sync run (the disable itself is
@@ -255,11 +323,23 @@ def _notify_admins_disabled(plans: list[dict]) -> None:
 
 
 def main() -> int:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--clickhouse", action="store_true",
+                        help="also import the ClickHouse Cloud services in v_server")
+    parser.add_argument("--clickhouse-only", action="store_true",
+                        help="only the ClickHouse step (with --dry-run: a preview)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="with --clickhouse-only: print what would be added")
+    args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     db.init_pool()
+
+    if args.clickhouse_only:
+        return _clickhouse_only(dry_run=args.dry_run)
 
     existing = _existing_hosts()
     log.info("target_servers already has %d hosts", len(existing))
@@ -321,6 +401,15 @@ def main() -> int:
         )
         log.info("added %s -> %s (default db=%s)", alias, endpoint, default_db)
         inserted += 1
+
+    # ---- 1a. ADD ClickHouse services (opt-in, see plan_clickhouse_imports) ----
+    if args.clickhouse and servers:
+        inserted += _import_clickhouse(servers, sentinel_ct, dry_run=False)
+    # Their hosts are inventory hosts too: the placeholder sweep below must not
+    # read "not in v_all_databases" as "gone".
+    inventory_hosts.update(s["endpoint"] for s in servers
+                           if (s.get("engine") or "").lower() == "clickhouse"
+                           and not s.get("is_deleted") and s.get("endpoint"))
 
     # ---- 1b. LABEL: give an untagged target the provider inventory reports ----
     # Merged, never replaced, and only the keys that are absent: a provider a

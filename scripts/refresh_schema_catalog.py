@@ -17,6 +17,18 @@ the admins get one DM, and one more when it recovers.
 
 Run hourly from the host scheduler:
     python3 scripts/refresh_schema_catalog.py [--target ALIAS] [--database DB]
+
+ClickHouse targets are NOT read by the hourly run. A ClickHouse Cloud service
+can sleep when idle and bills compute when woken, and every query resets its
+idle timer: an hourly read would keep the 60-minute services awake for good.
+They are read by a separate mode, run every minute:
+    python3 scripts/refresh_schema_catalog.py --clickhouse-when-fresh
+which reads a service at most once a day, and only when the inventory's state
+for it says `running` in a snapshot a few minutes old. The inventory refreshes
+that state once an hour, a minute or two past the hour; polling for the fresh
+snapshot, rather than running at a fixed minute, is what keeps this aligned
+with it. Nothing records which services idle, so every one is treated as one
+that does.
 """
 import argparse
 import logging
@@ -74,10 +86,53 @@ def refresh_target(target, only_database: str | None = None) -> dict:
     return summary
 
 
+# How old the inventory's ClickHouse snapshot may be and still count as the
+# service's state now. The shortest idle timeout on the fleet is 15 minutes, so
+# a `running` older than a few minutes may already be `idle`, and reading it
+# then would wake it.
+_CH_FRESH_MINUTES = 3
+# At most one read a day per ClickHouse service, attempted or not: a service
+# that failed is not retried every hour, because retrying is what wakes it.
+_CH_EVERY_HOURS = 23
+
+
+def _clickhouse_states() -> dict[str, str] | None:
+    """{endpoint: state} from the inventory when its ClickHouse snapshot is
+    fresh, else None. Read-only, one query."""
+    import psycopg
+    env = cfg.ENV
+    with psycopg.connect(host=env.bot_db_host, port=env.bot_db_port,
+                         dbname="inventory", user=env.bot_db_user,
+                         password=env.bot_db_password, connect_timeout=10,
+                         application_name="queryhub:clickhouse-catalog",
+                         options="-c default_transaction_read_only=on") as conn, \
+            conn.cursor() as cur:
+        cur.execute(
+            "SELECT endpoint, db_instance_status, "
+            "       max(updated_at) OVER () >= now() - make_interval(mins => %s) "
+            "  FROM servers WHERE engine = 'clickhouse' AND NOT is_deleted",
+            (_CH_FRESH_MINUTES,))
+        rows = cur.fetchall()
+    if not rows or not rows[0][2]:
+        return None
+    return {endpoint: (state or "").lower() for endpoint, state, _fresh in rows}
+
+
+def _attempted_within(target_id: int, hours: int) -> bool:
+    row = db.fetch_one(
+        "SELECT 1 AS x FROM schema_refresh_health WHERE target_server_id = %s "
+        "   AND last_attempt_at > now() - make_interval(hours => %s)",
+        (target_id, hours))
+    return row is not None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", help="only this target alias")
     parser.add_argument("--database", help="only this database")
+    parser.add_argument("--clickhouse-when-fresh", action="store_true",
+                        help="read the ClickHouse targets that are due, if the "
+                             "inventory's state for them is fresh")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -85,10 +140,27 @@ def main() -> int:
 
     fleet = targets_mod.list_enabled()
     if args.target:
+        # An operator naming a target reads it whatever its engine: that is a
+        # deliberate wake, not a schedule.
         fleet = [t for t in fleet if t.alias == args.target]
         if not fleet:
             log.error("no enabled target with alias %r", args.target)
             return 1
+    elif args.clickhouse_when_fresh:
+        clickhouse = [t for t in fleet if t.engine == "clickhouse"]
+        if not clickhouse:
+            return 0
+        states = _clickhouse_states()
+        if states is None:
+            log.debug("clickhouse: inventory snapshot not fresh; nothing due")
+            return 0
+        fleet = [t for t in clickhouse
+                 if states.get(t.host) == "running"
+                 and not _attempted_within(t.id, _CH_EVERY_HOURS)]
+        if not fleet:
+            return 0
+    else:
+        fleet = [t for t in fleet if t.engine != "clickhouse"]
 
     failures = 0
     notices: list[tuple[str, str]] = []   # (alias, message)

@@ -141,6 +141,10 @@ def list_target_databases(target, password: str) -> list[str]:
         return mssql_exec.catalog_databases(
             target.host, target.port, target.default_database,
             target.username, password)
+    if engine == "clickhouse":
+        from . import clickhouse_exec
+        return clickhouse_exec.catalog_databases(
+            target.host, target.port, target.username, password)
     with _connect(target, password, target.default_database) as conn:
         with conn.cursor() as cur:
             cur.execute(_DATABASES_SQL, (list(_HIDDEN_DATABASES),))
@@ -222,6 +226,10 @@ def snapshot_database(target, password: str, database: str) -> tuple[int, int]:
     elif engine == "mssql":
         from . import mssql_exec
         tables, columns = mssql_exec.catalog_snapshot(
+            target.host, target.port, database, target.username, password)
+    elif engine == "clickhouse":
+        from . import clickhouse_exec
+        tables, columns = clickhouse_exec.catalog_snapshot(
             target.host, target.port, database, target.username, password)
     else:
         with _connect(target, password, database) as conn:
