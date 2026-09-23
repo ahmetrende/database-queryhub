@@ -5,8 +5,12 @@ exercise, and so anyone who inherits the project can cut one.
 
 ## Before you tag
 
-Everything here is also enforced by CI, so a green build on `main` covers most of
-it. Run the three that CI cannot:
+CI runs all three checks below on every push to `main`: the sdist check in each
+`test` job, the `demo-stack` job (the round trip, masked result asserted), and the
+`frontend` job (a clean `npm ci` + build). So **a green CI run on the commit you
+are about to tag covers them**. Look before you tag:
+`gh run list --commit <full sha>` — a short sha matches nothing. Run them by hand
+only where CI cannot reach:
 
 ```bash
 # 1. The package. Checks the BUILT sdist, in both directions — nothing licensed
