@@ -1094,7 +1094,10 @@ def _log_submission_failure(body: dict, user: dict, mode: str, errors: dict) -> 
             " database_name, query, errors) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)",
             (user.get("id"), user.get("name") or user.get("username"), mode,
-             target_id, database, query, json.dumps(errors)),
+             target_id, database,
+             # Stored, so masked: a refused role script still carries its password.
+             query_safety.mask_password_literals(query) if query else query,
+             json.dumps(errors)),
         )
     except Exception:
         log.exception("failed to log submission failure for user %s",

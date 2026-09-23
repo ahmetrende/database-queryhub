@@ -968,6 +968,19 @@ def mask_password_literals(sql: str | None) -> str:
     return _PASSWORD_LITERAL.sub(lambda m: m.group(1) + PASSWORD_MASK, sql)
 
 
+_MASKED_PASSWORD = re.compile(
+    r"\bPASSWORD\s*=?\s*N?'\*\*\*REDACTED\*\*\*'", re.I)
+
+
+def has_masked_password(sql: str | None) -> bool:
+    """Whether `sql` sets a password to the mask itself.
+
+    What a statement copied back out of QueryHub looks like. Run as it stands,
+    it would make `***REDACTED***` somebody's password.
+    """
+    return bool(sql) and bool(_MASKED_PASSWORD.search(sql))
+
+
 def code_text(sql: str) -> str:
     """`sql` with comments and string literals blanked out.
 

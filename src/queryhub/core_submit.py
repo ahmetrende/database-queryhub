@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import admins, ast_safety, audit, auto_approve, db, pre_flight
 from . import config as cfg
-from . import profile_sync, query_safety, requesters, targets, teams
+from . import profile_sync, query_safety, query_secrets, requesters, targets, teams
 
 log = logging.getLogger(__name__)
 
@@ -203,6 +203,16 @@ def validate_submission(
     if len(query) < min_len:
         return Rejection(
             "query", f"Query must be at least {min_len} characters.")
+
+    # A statement copied back out of QueryHub -- from history, a resubmit, a
+    # request-changes edit -- carries `PASSWORD '***REDACTED***'` where its
+    # password was, because the value was never stored. Run as it stands it
+    # would set the marker as the password.
+    if query_safety.has_masked_password(query):
+        return Rejection(
+            "query",
+            "This statement's password was hidden when QueryHub stored it. "
+            "Type the password in again, then submit.")
 
     # Resolve the target first so the safety pass uses its engine: a
     # non-Postgres engine parses with its own sqlglot dialect + dangerous-
@@ -566,7 +576,9 @@ def _recheck_open_limits(
         "  AND status IN ('pending','changes_requested','approved',"
         "                 'scheduled','executing')" + extra + " "
         "ORDER BY id DESC LIMIT 1",
-        (prep.user_id, prep.target.id, prep.database, prep.query, *exclude),
+        # `query` is stored masked, so the comparison is against the masked text.
+        (prep.user_id, prep.target.id, prep.database,
+         query_safety.mask_password_literals(prep.query), *exclude),
     )
     dup = cur.fetchone()
     if dup is not None:
@@ -729,6 +741,13 @@ def create_request(
     auto_approved = aa_grant is not None or fp_hit is not None or super_auto
     superseded_row: dict | None = None
 
+    # `query` is stored masked; the original, if it had a password, goes to the
+    # executor encrypted (query_secrets.py). The plan is masked too: EXPLAIN
+    # prints a filter's constants, and `password = '...'` is one.
+    stored_query, query_secret = query_secrets.split(prep.query)
+    plan_json = (query_safety.mask_password_literals(json.dumps(prep.explain_plan))
+                 if prep.explain_plan is not None else None)
+
     with db.transaction() as cur:
         # Serialize this requester's concurrent submissions so the rate-limit
         # and duplicate guards cannot be raced between validate_submission()'s
@@ -772,21 +791,21 @@ def create_request(
                 f" query, wants_result, result_format, justification, scheduled_for, "
                 f" explain_plan, risk_summary, query_fingerprint, status, "
                 f" decided_by_slack_id, decided_by_name, decided_at, decision_reason, "
-                f" origin, engine, required_tier, unmasked) "
+                f" origin, engine, required_tier, unmasked, query_secret) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, "
-                f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s) "
+                f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s) "
                 f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
                     prep.user_name,
                     prep.target.id,
                     prep.database,
-                    prep.query,
+                    stored_query,
                     prep.wants_result,
                     prep.result_format,
                     prep.justification,
                     prep.sched_for,
-                    json.dumps(prep.explain_plan) if prep.explain_plan is not None else None,
+                    plan_json,
                     prep.risk_summary,
                     query_fingerprint,
                     new_status,
@@ -797,6 +816,7 @@ def create_request(
                     prep.target.engine,
                     prep.required_mode,
                     prep.unmasked,
+                    query_secret,
                 ),
             )
             row = cur.fetchone()
@@ -851,27 +871,28 @@ def create_request(
                 f"({id_col}requester_slack_id, requester_name, target_server_id, database_name, "
                 f" query, wants_result, result_format, justification, scheduled_for, "
                 f" explain_plan, risk_summary, query_fingerprint, origin, "
-                f" engine, required_tier, unmasked) "
+                f" engine, required_tier, unmasked, query_secret) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, "
-                f"        %s, %s, %s) "
+                f"        %s, %s, %s, %s) "
                 f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
                     prep.user_name,
                     prep.target.id,
                     prep.database,
-                    prep.query,
+                    stored_query,
                     prep.wants_result,
                     prep.result_format,
                     prep.justification,
                     prep.sched_for,
-                    json.dumps(prep.explain_plan) if prep.explain_plan is not None else None,
+                    plan_json,
                     prep.risk_summary,
                     query_fingerprint,
                     prep.origin,
                     prep.target.engine,
                     prep.required_mode,
                     prep.unmasked,
+                    query_secret,
                 ),
             )
             row = cur.fetchone()

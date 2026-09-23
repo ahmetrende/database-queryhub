@@ -9,10 +9,14 @@ The masking is a trigger, not application code, because nineteen places across
 five modules write a terminal status, two processes run the executor, and an
 operator can UPDATE the row from psql. One point every writer goes through.
 
-Timing is the design: at submit the executor still has to send the real
-statement, and an approver has to see what they are approving, so the masking
-waits for a terminal state. `awaiting_dba_manual` is deliberately excluded — it
-means a human still has to run the statement by hand.
+Timing was the design here: at submit the executor still had to send the real
+statement, so the masking waited for a terminal state, and `awaiting_dba_manual`
+was excluded because a human still had to run the statement by hand.
+
+Migration 129 replaced that timing (2026-09-23: a password is not stored at
+all). The statement is written masked, the executor reads an encrypted copy,
+and the trigger masks on every write. These tests keep migration 100's file
+honest; the current behaviour is pinned in test_query_secrets.py.
 """
 import os
 import re
@@ -41,11 +45,14 @@ def test_every_terminal_status_is_covered(status):
     assert f"'{status}'" in _trigger_body()
 
 
-def test_a_request_still_waiting_for_a_human_keeps_its_text():
-    """`awaiting_dba_manual` means the DBA has to run the statement by hand.
-    Masking it there would delete the one thing they need — and request 4116
-    is exactly that case."""
-    assert "awaiting_dba_manual" not in _trigger_body()
+def test_a_later_migration_is_the_trigger_in_force():
+    """100's exclusion of `awaiting_dba_manual` no longer holds: the DBA now sees
+    the masked script and sets a new password. The latest migration defining
+    the trigger function is the one that runs."""
+    defining = sorted(f.name for f in MIGRATION.parent.glob("*.sql")
+                      if "FUNCTION requests_scrub_secrets()" in f.read_text(encoding="utf-8"))
+    assert defining[-1] in ("129_request_query_secret.sql",
+                            "130_fix_scrub_trigger_status.sql")
 
 
 def test_masking_twice_does_not_nest_the_marker():
@@ -73,28 +80,29 @@ def test_the_keyword_is_what_anchors_the_match():
 @pytest.mark.integration
 @pytest.mark.skipif(not os.environ.get("QH_RUN_INTEGRATION"),
                     reason="set QH_RUN_INTEGRATION=1 with a reachable control DB")
-def test_the_trigger_masks_on_completion_and_not_before():
+def test_the_trigger_masks_every_write_and_drops_the_copy_at_the_end():
+    """Migration 129: a cleartext insert is masked on the way in, and the
+    encrypted copy survives only while the request can still run."""
     from queryhub import db
 
     secret = "CREATE ROLE t_probe LOGIN PASSWORD 'Sup3rSecret-not-real-42';"
     with db.transaction() as cur:
         cur.execute("""INSERT INTO requests
             (requester_slack_id, requester_name, target_server_id, database_name,
-             query, wants_result, status, required_tier)
+             query, wants_result, status, required_tier, query_secret)
             VALUES ('U_TEST_PROBE', 'trigger probe', 1, 'queryhub', %s, false,
-                    'approved', 'ddl') RETURNING id""", (secret,))
+                    'approved', 'ddl', 'opaque-token') RETURNING id""", (secret,))
         rid = cur.fetchone()["id"]
     try:
-        def q():
-            return db.fetch_one("SELECT query FROM requests WHERE id=%s", (rid,))["query"]
+        def row():
+            return db.fetch_one("SELECT query, query_secret FROM requests WHERE id=%s", (rid,))
 
-        assert "Sup3rSecret" in q()                    # approved: untouched
+        assert "Sup3rSecret" not in row()["query"]      # masked on INSERT
+        assert "PASSWORD '***REDACTED***'" in row()["query"]
+        assert row()["query_secret"] == "opaque-token"  # approved: still runnable
         db.execute("UPDATE requests SET status='executing' WHERE id=%s", (rid,))
-        assert "Sup3rSecret" in q()                    # executing: still needed
+        assert row()["query_secret"] == "opaque-token"
         db.execute("UPDATE requests SET status='awaiting_dba_manual' WHERE id=%s", (rid,))
-        assert "Sup3rSecret" in q()                    # a human still has to run it
-        db.execute("UPDATE requests SET status='completed' WHERE id=%s", (rid,))
-        assert "Sup3rSecret" not in q()
-        assert "PASSWORD '***REDACTED***'" in q()
+        assert row()["query_secret"] is None            # a DBA sets a new one
     finally:
         db.execute("DELETE FROM requests WHERE id=%s", (rid,))

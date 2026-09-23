@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any, TypedDict
 
 from . import config as cfg
+from . import query_safety, query_secrets
 
 
 class BundleItem(TypedDict):
@@ -85,15 +86,18 @@ def insert_bundle_with_items(
 
     item_rows: list[dict] = []
     for position, item in enumerate(items, start=1):
+        # Stored masked, original encrypted for the executor, as a single
+        # request is (query_secrets.py).
+        stored_query, query_secret = query_secrets.split(item["query"])
         cur.execute(
             """
             INSERT INTO requests
                 (requester_slack_id, requester_name, target_server_id,
                  database_name, query, wants_result, result_format,
                  justification, scheduled_for, explain_plan,
-                 bundle_id, position, origin, risk_summary)
+                 bundle_id, position, origin, risk_summary, query_secret)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
-                    %s, %s)
+                    %s, %s, %s)
             RETURNING id, requester_slack_id, requester_name,
                       target_server_id, database_name, query,
                       wants_result, result_format, justification, status,
@@ -104,7 +108,7 @@ def insert_bundle_with_items(
                 requester_name,
                 item["target_server_id"],
                 item["database_name"],
-                item["query"],
+                stored_query,
                 item["wants_result"],
                 item.get("result_format", "csv"),
                 # Justification stays on the bundle; per-item column gets
@@ -112,7 +116,8 @@ def insert_bundle_with_items(
                 # something useful when filtering by `requests` alone.
                 justification,
                 scheduled_for,
-                None if item["explain_plan"] is None else _json(item["explain_plan"]),
+                None if item["explain_plan"] is None
+                else query_safety.mask_password_literals(_json(item["explain_plan"])),
                 bundle_id,
                 position,
                 # Without origin, the result-routing gate treated web
@@ -121,6 +126,7 @@ def insert_bundle_with_items(
                 # honors "answer on the channel it came from".
                 origin,
                 item.get("risk_summary"),
+                query_secret,
             ),
         )
         row = cur.fetchone()

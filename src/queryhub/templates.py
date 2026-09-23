@@ -14,7 +14,7 @@ The Slack-facing surface lives in `slack_app/subcommands.py`:
 from __future__ import annotations
 
 
-from . import db
+from . import db, query_safety
 
 
 # Name validation pulled out so the modal-submit path and the
@@ -67,7 +67,10 @@ def save(*,
                   database_name, owner_slack_id, is_shared,
                   created_at, updated_at, last_used_at, use_count
         """,
-        (name.strip(), description, query, target_server_id,
+        # Masked: a template is stored and shared, and a password in it would
+        # be both. Running it asks for the password again.
+        (name.strip(), description, query_safety.mask_password_literals(query),
+         target_server_id,
          database_name, owner_slack_id, is_shared),
     )
 

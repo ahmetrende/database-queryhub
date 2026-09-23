@@ -34,7 +34,7 @@ except ModuleNotFoundError:  # vanilla profile: the [slack] extra isn't installe
 if TYPE_CHECKING:  # only a type hint — no runtime dependency on slack_sdk
     from slack_sdk.web import WebClient
 
-from . import access, admins, audit, cancellation, cell_format, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, ratings, requesters, row_limits, stmt_guard, targets, teams
+from . import access, admins, audit, cancellation, cell_format, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, query_secrets, ratings, requesters, row_limits, stmt_guard, targets, teams
 from . import config as cfg
 from .slack_app import notifications
 
@@ -502,6 +502,16 @@ def _run(request: dict, client: WebClient) -> None:
     # new early return above it; the hazard was already there.
     committed = {"mutation": False}
     try:
+        # The row stores the statement with its passwords masked; the one to
+        # send comes from the encrypted copy, and lives in this dict only.
+        try:
+            request = {**request, "query": query_secrets.statement_to_run(request)}
+        except query_secrets.SecretGone:
+            _fail(client, request,
+                  "This statement sets a password, and QueryHub no longer "
+                  "holds it: it keeps a password only until the request can "
+                  "no longer run. Submit it again with the password.")
+            return
         target = targets.get(request["target_server_id"])
         if target is None:
             _fail(client, request, "Target server not found at execution time.")
@@ -1057,7 +1067,9 @@ def _sql_snippet(sql: str) -> str:
     one = " ".join(body.split())
     if not one:
         one = " ".join((sql or "").split())
-    return one[:_SNIPPET_CHARS]
+    # Masked BEFORE the clamp: cut first, a password literal loses its closing
+    # quote, stops matching, and the stored snippet keeps its first characters.
+    return query_safety.mask_password_literals(one)[:_SNIPPET_CHARS]
 
 
 _MAX_NOTICES = 200
@@ -1078,7 +1090,8 @@ def _notice_collector(buf: list):
             buf.append({
                 "severity": (getattr(diag, "severity_nonlocalized", None)
                              or getattr(diag, "severity", None) or "NOTICE"),
-                "text": text[:_MAX_NOTICE_CHARS],
+                # A script can RAISE NOTICE its own statement; stored, so masked.
+                "text": query_safety.mask_password_literals(text)[:_MAX_NOTICE_CHARS],
             })
         except Exception:   # pragma: no cover - defensive
             pass

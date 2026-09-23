@@ -11,7 +11,7 @@ re-starring the same query just bumps last_used_at.
 """
 from __future__ import annotations
 
-from . import db
+from . import db, query_safety
 
 # Keep a user's favorites list bounded so the picker stays usable and the
 # table doesn't grow without limit. When a new favorite pushes past this,
@@ -54,7 +54,9 @@ def add(*,
         RETURNING id, slack_user_id, query, target_server_id, database_name,
                   label, created_at, last_used_at, use_count
         """,
-        (principal_id, query, target_server_id, database_name, label),
+        # Masked: a starred query is stored; running it asks for a password again.
+        (principal_id, query_safety.mask_password_literals(query),
+         target_server_id, database_name, label),
     )
     _trim(principal_id)
     return row

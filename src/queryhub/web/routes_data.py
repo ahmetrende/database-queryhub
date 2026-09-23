@@ -14,7 +14,7 @@ import psycopg
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from .. import admins, auto_approve, db, errors, favorites, people, schema_catalog, targets, teams
+from .. import admins, auto_approve, db, errors, favorites, people, query_safety, schema_catalog, targets, teams
 from .. import config as cfg
 from . import deps, mapping
 
@@ -483,7 +483,9 @@ def sessions_upsert(body: SessionIn, claims: dict = Depends(deps.current_user)):
     # or contract (connectionId/databaseId) keys.
     tabs = [{
         "name": (t.get("name") or "Untitled query"),
-        "sql": t.get("sql") or "",
+        # A saved workspace is stored, so a password in a tab is masked; the
+        # tab asks for it again when it is run (core_submit refuses the mask).
+        "sql": query_safety.mask_password_literals(t.get("sql") or ""),
         "connectionId": t.get("connectionId") or t.get("conn"),
         "databaseId": t.get("databaseId") or t.get("db"),
     } for t in (body.tabs or [])]
