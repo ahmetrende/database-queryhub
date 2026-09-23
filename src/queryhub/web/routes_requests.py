@@ -212,3 +212,72 @@ def endpoint_request(body: EndpointRequestIn,
                           "admins to review it. Contact the DBA team.")
     return {"id": f"er_{row['id']}", "status": "submitted",
             "slackMessageTs": ts}
+
+
+# ---- Auto-approve window requests (requester) --------------------------------
+
+class WindowRequestIn(BaseModel):
+    connectionId: str
+    databaseId: str | None = None
+    windowMinutes: int = 60
+    reason: str
+
+
+def _window_options() -> list[dict]:
+    from ..slack_app import ro_window
+    return [{"minutes": m, "label": lbl} for m, lbl in ro_window.WINDOW_OPTIONS]
+
+
+@router.get("/auto-approve-requests")
+def my_window_requests(claims: dict = Depends(deps.current_user)):
+    """The requester's own read-only window requests, and the lengths on offer.
+
+    Asking for a window was Slack-only; this is the web half. The lengths come
+    from the same list the Slack modal offers, so the two surfaces cannot
+    drift into offering different windows.
+    """
+    uid = claims["sub"]
+    from .. import auto_approve_requests
+    rows = auto_approve_requests.list_for(uid)
+    return {
+        "windowOptions": _window_options(),
+        "requests": [{
+            "id": r["id"], "connectionId": r["alias"], "databaseId": r["database_name"],
+            "tier": (r["max_tier"] or "ro").upper(), "windowMinutes": r["window_minutes"],
+            "reason": r["reason"], "status": r["status"],
+            "decidedByName": r["decided_by_name"],
+            "decidedAt": mapping.iso(r["decided_at"]),
+            "createdAt": mapping.iso(r["created_at"]),
+        } for r in rows],
+    }
+
+
+@router.post("/auto-approve-requests", status_code=201)
+def create_window_request(body: WindowRequestIn,
+                          claims: dict = Depends(deps.current_user)):
+    """Ask for a read-only auto-approve window from the web.
+
+    Granting stays a DBA's decision: this files the request and sends every
+    active admin the same approve / reject card the Slack modal sends, and the
+    approval happens there. The rules are the Slack modal's own
+    (`auto_approve_requests.submit_window`), so a request the one surface
+    refuses the other refuses too.
+    """
+    uid = claims["sub"]
+    from .. import auto_approve_requests, targets
+    t = targets.by_alias(body.connectionId)
+    if t is None:
+        raise deps._error(404, "not_found", "Unknown connection.")
+    try:
+        row, t = auto_approve_requests.submit_window(
+            principal_id=uid, name=claims.get("name"), target_id=t.id,
+            window_minutes=body.windowMinutes, reason=body.reason,
+            database_name=body.databaseId)
+    except auto_approve_requests.WindowRequestRefused as e:
+        raise deps._error(e.status, "window_refused", e.message, field=e.field)
+    from .routes_queries import _bot_client
+    client = _bot_client()
+    reached = auto_approve_requests.notify_admins(client, row, t.alias) if client else 0
+    return {"id": row["id"], "status": row["status"], "connectionId": t.alias,
+            "databaseId": row["database_name"], "tier": "RO",
+            "windowMinutes": row["window_minutes"], "adminsNotified": reached}

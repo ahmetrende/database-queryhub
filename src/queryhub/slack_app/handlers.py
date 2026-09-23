@@ -3265,59 +3265,24 @@ def handle_ro_window_submission(ack: Ack, body: dict, client: WebClient) -> None
     reason = (state.get(ro_window.B_REASON, {})
               .get(ro_window.A_REASON, {})
               .get("value") or "").strip()
-    if len(reason) < 5:
+    # The rules live in one place, shared with the web form.
+    blocks_by_field = {"target": ro_window.B_TARGET, "database": ro_window.B_TARGET,
+                       "window": ro_window.B_WINDOW, "reason": ro_window.B_REASON}
+    try:
+        row, t = auto_approve_requests.submit_window(
+            principal_id=user["id"], name=user.get("name") or user.get("username"),
+            target_id=target_id, window_minutes=window_minutes, reason=reason)
+    except auto_approve_requests.WindowRequestRefused as e:
         ack({"response_action": "errors",
-             "errors": {ro_window.B_REASON: "Please give a meaningful reason (at least 5 characters)."}})
+             "errors": {blocks_by_field.get(e.field, ro_window.B_REASON): e.message}})
         return
-    # Authorization: re-check the picked target against the user's grants.
-    # The picker only lists their targets, but a forged submission must not
-    # be able to request a window on a target they can't reach.
-    if not teams.can_use_target(user["id"], target_id):
-        ack({"response_action": "errors",
-             "errors": {ro_window.B_TARGET: "You don't have access to that target."}})
-        return
-    if auto_approve_requests.find_pending_for(user["id"], target_id) is not None:
-        ack({"response_action": "errors",
-             "errors": {ro_window.B_TARGET: "You already have a pending window request for this target."}})
-        return
-    t = targets.get(target_id)
-    if t is None:
-        ack({"response_action": "errors",
-             "errors": {ro_window.B_TARGET: "That target no longer exists."}})
-        return
-    database_name = None  # target-scoped window (all DBs the user can read there)
     ack()
-    row = auto_approve_requests.create(
-        principal_id=user["id"],
-        name=user.get("name") or user.get("username"),
-        target_server_id=target_id,
-        database_name=database_name,
-        max_tier="ro",
-        window_minutes=window_minutes,
-        reason=reason,
-    )
-    if row is None:
-        notifications.dm_requester(
-            client, user["id"],
-            ":warning: A pending window request for this target already exists.")
-        return
-    active = admins.list_active()
-    if not active:
+    if auto_approve_requests.notify_admins(client, row, t.alias) == 0:
         notifications.dm_requester(
             client, user["id"],
             f":warning: Window request #{row['id']} saved, but no admins are "
             "configured to review it. Contact the DBA team.")
         return
-    blocks = ro_window.admin_dm_blocks(row, t.alias)
-    fallback = (f"RO auto-approve window request from <@{user['id']}> for "
-                f"{t.alias} (#{row['id']})")
-    for a in active:
-        try:
-            opened = client.conversations_open(users=a["slack_user_id"])
-            notifications._post(client, channel=opened["channel"]["id"],
-                                text=fallback, blocks=blocks)
-        except Exception:
-            log.exception("ro_window: admin DM failed for %s", a["slack_user_id"])
     notifications.dm_requester(
         client, user["id"],
         f":hourglass_flowing_sand: Window request *#{row['id']}* sent to the DBA "
