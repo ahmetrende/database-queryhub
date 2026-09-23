@@ -15,6 +15,10 @@ frontend and the endpoints it calls are explicitly outside it.
   the nav, and the approval queue's detail pane stops at 1120 px. This
   replaces the Audit log's own 1480 px cap from 1.0.33. Nothing changes below
   about 1860 px wide.
+- **The admin Connections screen lists each read replica under its primary.**
+  It says whether the replica is in rotation, and offers no credential
+  rotation for it, since it uses its primary's login. Every other admin picker
+  leaves replicas out.
 
 ## [1.0.33] — 2026-09-23
 

@@ -1399,7 +1399,7 @@ function ConnectionsView({ st, user }) {
   const [bulk, setBulk] = React.useState(null);        // null | { enable, tier, username, password }
   const [bulkBusy, setBulkBusy] = React.useState(false);
   const [refused, setRefused] = React.useState(null);  // null | { body, list, msg }
-  const allConns = st.connections || [];
+  const allConns = st.connectionRows || st.connections || [];
   const selRows = allConns.filter(c => sel.indexOf(c.id) >= 0);
   const refusedNames = refused ? refused.list.map(x => x.connection) : [];
   const toggleSel = (id) => { setRefused(null); setSel(xs => xs.indexOf(id) >= 0 ? xs.filter(x => x !== id) : xs.concat([id])); };
@@ -1451,7 +1451,9 @@ function ConnectionsView({ st, user }) {
   const toggleEnabled = (c) => {
     // Disabling pulls a target out of every picker mid-flight, so it asks
     // first; enabling is the reversible direction and does not.
-    if (c.enabled && !window.confirm('Disable “' + c.name + '”? Developers lose access to it until it is enabled again. Running queries are unaffected.')) return;
+    if (c.enabled && !window.confirm(c.replicaOf
+      ? 'Take “' + c.name + '” out of rotation? Read-only queries on ' + c.replicaOf + ' run on the primary until it is enabled again. Nobody loses access.'
+      : 'Disable “' + c.name + '”? Developers lose access to it until it is enabled again. Running queries are unaffected.')) return;
     st.setConnectionEnabled(c.id, !c.enabled);
   };
   const removeConnection = (c) => {
@@ -1486,7 +1488,7 @@ function ConnectionsView({ st, user }) {
         ))}
       </div>
 
-      <div className="qh-section-label">Registered connections · {(st.connections || []).length}</div>
+      <div className="qh-section-label">Registered connections · {allConns.filter(c => !c.replicaOf).length}{allConns.some(c => c.replicaOf) ? <span className="qh-muted"> · {allConns.filter(c => c.replicaOf).length} read replica{allConns.filter(c => c.replicaOf).length === 1 ? '' : 's'}</span> : null}</div>
       <div className="qh-conn-controls">
         <div className="qh-search sm">
           <svg className="qh-search-ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -1508,17 +1510,27 @@ function ConnectionsView({ st, user }) {
       </div>
       {(() => {
         const dir = sort.dir === 'asc' ? 1 : -1;
-        const rows = (st.connections || [])
+        const rows0 = allConns
           .filter(c => envF === 'all' || c.env === envF)
           .filter(c => provF === 'all' || (provF === 'none' ? !qhProvider(c) : qhTags(c).provider === provF))
           .filter(c => { const t = q.trim().toLowerCase(); if (!t) return true; return (c.name + ' ' + c.engine + ' ' + (c.host || '') + ' ' + qhHostingFull(c) + ' ' + (c.databases || []).map(d => d.name).join(' ')).toLowerCase().includes(t); })
           .slice();
-        if (sort.key) rows.sort((a, b) => {
+        if (sort.key) rows0.sort((a, b) => {
           let av, bv;
           if (sort.key === 'dbs') { av = (a.databases || []).length; bv = (b.databases || []).length; }
           else if (sort.key === 'hosting') { av = (qhHosting(a) || 'zzz').toLowerCase(); bv = (qhHosting(b) || 'zzz').toLowerCase(); }
           else { av = String(a[sort.key]).toLowerCase(); bv = String(b[sort.key]).toLowerCase(); }
           return av < bv ? -dir : av > bv ? dir : 0;
+        });
+        // A replica sits UNDER its primary (CODE 2026-09-23 (e)), whatever the
+        // sort: it has no identity of its own anyone queries by. A replica whose
+        // primary the filter hid stays in place, standalone, so it is not lost.
+        const shown = new Set(rows0.map(c => c.name));
+        const rows = [];
+        rows0.forEach(c => {
+          if (c.replicaOf && shown.has(c.replicaOf)) return;
+          rows.push(c);
+          rows0.filter(r => r.replicaOf === c.name).forEach(r => rows.push(r));
         });
         const arrow = (k) => (sort.key === k ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : '');
         const th = (k, label, cls) => <th className={'qh-sort-th' + (sort.key === k ? ' is-sorted' : '') + (cls || '')} onClick={() => toggleSort(k)}>{label}<span className="qh-sort-arw">{arrow(k)}</span></th>;
@@ -1581,7 +1593,7 @@ function ConnectionsView({ st, user }) {
               {rows.map(c => {
                 const probe = tested[c.id];
                 return (
-                <tr key={c.id} className={(sel.indexOf(c.id) >= 0 ? 'is-sel' : '') + (refusedNames.indexOf(c.name) >= 0 ? ' is-refused' : '')}>
+                <tr key={c.id} className={(sel.indexOf(c.id) >= 0 ? 'is-sel' : '') + (refusedNames.indexOf(c.name) >= 0 ? ' is-refused' : '') + (c.replicaOf ? ' is-replica' : '')}>
                   <td className="qh-conn-selcol"><ConnCheck on={sel.indexOf(c.id) >= 0} onChange={() => toggleSel(c.id)} label={'Select ' + c.name} /></td>
                   <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b>{c.name}</b></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}</td>
                   <td className="qh-muted">{c.engine}</td>
@@ -1599,8 +1611,12 @@ function ConnectionsView({ st, user }) {
                       to spot, and unset or placeholder credentials are the
                       reason it usually cannot be enabled yet. */}
                   <td>
-                    <span className={'qh-expiry' + (c.enabled ? '' : ' is-exp')}>{c.enabled ? 'enabled' : 'disabled'}</span>
-                    {credNote(c) && <div className="qh-expiry is-soon">{credNote(c)}</div>}
+                    {/* A replica runs on its primary's login, so it has no
+                        credential to be missing; "enabled" means "in rotation". */}
+                    <span className={'qh-expiry' + (c.enabled ? '' : ' is-exp')}>{c.replicaOf ? (c.enabled ? 'in rotation' : 'out of rotation') : (c.enabled ? 'enabled' : 'disabled')}</span>
+                    {c.replicaOf
+                      ? <div className="qh-replica-chip" title={'Read-only queries on ' + c.replicaOf + ' can run here. It uses ' + c.replicaOf + '’s login, and nobody picks it by name.'}>Read replica of {c.replicaOf}</div>
+                      : credNote(c) && <div className="qh-expiry is-soon">{credNote(c)}</div>}
                   </td>
                   <td><span className={'qh-envtag env-' + c.env}>{c.env}</span></td>
                   <td><div className="qh-conn-dbcell">{(c.databases || []).map(d => <span key={d.id} className="qh-dbchip">{d.name}{d.tier && <TierBadge tier={d.tier} sm />}</span>)}</div></td>
@@ -1613,8 +1629,8 @@ function ConnectionsView({ st, user }) {
                       {testing === c.id ? <span className="qh-spin" /> : probe ? (probe.ok ? <>{CONN_TEST_ICON.ok}{probe.latencyMs != null ? 'OK · ' + probe.latencyMs + ' ms' : 'OK'}</> : <>{CONN_TEST_ICON.bad}Failed</>) : 'Test'}
                     </button>
                     <button className="qh-rowbtn" onClick={() => setForm({ mode: 'edit', conn: c })}><AIcon.edit />Edit</button>
-                    <button className="qh-rowbtn" onClick={() => setForm({ mode: 'rotate', conn: c })}>Rotate</button>
-                    <button className="qh-rowbtn" onClick={() => toggleEnabled(c)}>{c.enabled ? 'Disable' : 'Enable'}</button>
+                    {!c.replicaOf && <button className="qh-rowbtn" onClick={() => setForm({ mode: 'rotate', conn: c })}>Rotate</button>}
+                    <button className="qh-rowbtn" onClick={() => toggleEnabled(c)} title={c.replicaOf ? (c.enabled ? 'Take it out of rotation — reads go to ' + c.replicaOf + ' itself' : 'Put it back in rotation for reads on ' + c.replicaOf) : undefined}>{c.enabled ? 'Disable' : 'Enable'}</button>
                     <button className="qh-icon-btn" disabled={refreshing === c.id} onClick={() => refreshSchema(c)} title="Refresh schema — pull this connection's tables & columns now (otherwise an hourly snapshot)" aria-label="Refresh schema">{refreshing === c.id ? <span className="qh-spin" /> : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 11-2.6-6.3M21 4v5h-5"/></svg>}</button>
                     <button className="qh-revoke" onClick={() => removeConnection(c)}>Delete</button>
                   </div></td>

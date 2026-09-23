@@ -516,10 +516,16 @@ function useAdminState(pushToast, active, isAdminViewer) {
         + (cr.length ? ' · ' + cr.map(t => t.toUpperCase()).join('/') + ' credential set' : '') + '.');
       return r;
     });
+  // A replica is nobody's target (CODE 2026-09-23 (e)): enabling it puts it back
+  // in rotation for its primary's reads, and the toast says that, not "query it".
   const setConnectionEnabled = (conn, on) =>
     qhApi.adminUpdateConnection(conn, { enabled: !!on })
       .then(() => { loadConnections(); loadAudit();
-        pushToast && pushToast('Connection "' + conn + '" ' + (on ? 'enabled — developers with a grant can query it now.' : 'disabled.'));
+        const row = (connections || []).find(c => c.id === conn || c.name === conn);
+        pushToast && pushToast(row && row.replicaOf
+          ? (on ? conn + ' is back in rotation — read-only queries on ' + row.replicaOf + ' can run there.'
+                : conn + ' is out of rotation — read-only queries on ' + row.replicaOf + ' run on the primary.')
+          : 'Connection "' + conn + '" ' + (on ? 'enabled — developers with a grant can query it now.' : 'disabled.'));
         return true; })
       .catch(e => { fail(e, (on ? 'Enable' : 'Disable') + ' failed.'); return false; });
 
@@ -535,8 +541,14 @@ function useAdminState(pushToast, active, isAdminViewer) {
       .catch(e => fail(e, 'Save failed.'));
   };
 
+  // A read replica is a row of the registry, not a target anyone picks (CODE
+  // 2026-09-23 (e)): a read-only query on a primary with a healthy replica runs
+  // there by itself. So `connections` — what every picker, form and grant list
+  // reads — is primaries only, and `connectionRows` is the whole registry for
+  // the one screen that manages it.
+  const primaries = (connections || []).filter(c => !c.replicaOf);
   return {
-    queue, manualRuns, grants, grantsState, autoGrants, autoRequests, scopes, roles, rolesEnforced, maskExemptions, maskMeta, people, teams, endpointReqs, feedback, audit, metrics, connections, killSwitch, config, pushToast,
+    queue, manualRuns, grants, grantsState, autoGrants, autoRequests, scopes, roles, rolesEnforced, maskExemptions, maskMeta, people, teams, endpointReqs, feedback, audit, metrics, connections: primaries, connectionRows: connections, killSwitch, config, pushToast,
     loadError, loading, reload: reloadAll,
     decide, batchApprove, approveBundle, toggleKill,
     addGrant, updateGrant, revokeGrant, setSubjectGrants,

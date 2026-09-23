@@ -2069,6 +2069,14 @@
   .qh-accrow-part { display: flex; align-items: center; gap: 10px; }
   .qh-accrow-dbs { font-family: var(--qh-mono); font-size: 12px; color: var(--fg-secondary); min-width: 160px; }
 
+  /* 2026-09-23 (e): a read replica sits under its primary, indented, and says
+     what it is where the credential badges would be — it has none of its own. */
+  .qh-conntable tr.is-replica td { background: var(--adaptive-light); }
+  .qh-conntable tr.is-replica td.qh-conn-name-td { padding-left: 34px; }
+  .qh-conntable tr.is-replica .qh-conn-namecell b { font-weight: 500; color: var(--fg-secondary); }
+  .qh-replica-chip { display: inline-block; margin-top: 3px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; color: #15688C; background: var(--sup-blue-light); }
+  [data-theme='dark'] .qh-replica-chip { color: #7FD2F5; background: rgba(102,204,255,0.12); }
+
   /* feedback */
   .qh-fblist { display: flex; flex-direction: column; gap: 10px; }
   .qh-fbcard { border: 1px solid var(--stroke-light); border-radius: var(--r-md); padding: 14px 16px; }
