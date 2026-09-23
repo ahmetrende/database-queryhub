@@ -50,7 +50,7 @@ def _kill_switch_message() -> str:
 from slack_bolt import Ack, App
 from slack_sdk.web import WebClient
 
-from .. import access_requests, admins, audit, auto_approve, auto_approve_requests, bundles, csv_import, db, executor, favorites, grants, pre_flight, profile_sync, query_safety, ratings, requesters, schema_catalog, targets, teams, templates
+from .. import access_requests, admins, audit, auto_approve, auto_approve_requests, bundles, csv_import, db, executor, favorites, grants, manual_runs, pre_flight, profile_sync, query_safety, ratings, requesters, schema_catalog, targets, teams, templates
 from .. import config as cfg
 from .. import core_submit
 from .. import core_decide
@@ -2549,41 +2549,12 @@ def handle_dba_mark_completed(ack: Ack, body: dict, client: WebClient) -> None:
         return
     ack()
     user = body["user"]
-    with db.transaction() as cur:
-        cur.execute(
-            "UPDATE requests SET status = 'completed', completed_at = NOW(), "
-            " decision_reason = COALESCE(decision_reason, '') || "
-            f"   CASE WHEN decision_reason IS NULL OR decision_reason = '' "
-            f"        THEN %s ELSE ' / ' || %s END "
-            "WHERE id = %s AND status = 'awaiting_dba_manual' "
-            f"RETURNING {_REQUEST_RETURNING}",
-            (
-                f"manually completed by <@{user['id']}>",
-                f"manually completed by <@{user['id']}>",
-                request_id,
-            ),
-        )
-        updated = cur.fetchone()
-        if updated is None:
-            return  # raced; already closed
-        audit.log_in(cur, request_id, user["id"], user.get("name"),
-                     "completed_manually")
-
-    if _is_bundle_item(updated):
-        notifications.update_bundle_admin_dms(client, updated["bundle_id"])
-        return
-    notifications.update_all_admin_messages(
-        client, updated,
-        f":white_check_mark: Manually completed by <@{user['id']}> "
-        f"(DDL ran out-of-band).",
-    )
-    notifications.dm_requester(
-        client, updated["requester_slack_id"],
-        f":white_check_mark: *SQL query `#{request_id}` completed* — "
-        f"DBA ran it manually with elevated credentials.\n"
-        + notifications.request_context_md(updated),
-    )
-    ratings.maybe_prompt(client, updated)
+    closed = manual_runs.close(request_id, completed=True, actor_id=user["id"],
+                               actor_name=user.get("name"),
+                               returning=_REQUEST_RETURNING)
+    if closed is None:
+        return  # raced; already closed
+    manual_runs.notify_closed(client, closed)
 
 
 def handle_dba_mark_failed(ack: Ack, body: dict, client: WebClient) -> None:
@@ -2629,35 +2600,12 @@ def handle_dba_failed_submission(ack: Ack, body: dict, client: WebClient) -> Non
             .get("value") or ""
     ).strip() or "(no reason given)"
     user = body["user"]
-    with db.transaction() as cur:
-        cur.execute(
-            "UPDATE requests SET status = 'failed', completed_at = NOW(), "
-            " error_message = %s "
-            "WHERE id = %s AND status = 'awaiting_dba_manual' "
-            f"RETURNING {_REQUEST_RETURNING}",
-            (f"manual DBA execution failed: {reason}", request_id),
-        )
-        updated = cur.fetchone()
-        if updated is None:
-            return
-        audit.log_in(cur, request_id, user["id"], user.get("name"),
-                     "failed_manually", {"reason": reason})
-
-    if _is_bundle_item(updated):
-        notifications.update_bundle_admin_dms(client, updated["bundle_id"])
+    closed = manual_runs.close(request_id, completed=False, actor_id=user["id"],
+                               actor_name=user.get("name"), reason=reason,
+                               returning=_REQUEST_RETURNING)
+    if closed is None:
         return
-    notifications.update_all_admin_messages(
-        client, updated,
-        f":x: Marked failed by <@{user['id']}> after manual attempt — {reason}",
-    )
-    notifications.dm_requester(
-        client, updated["requester_slack_id"],
-        f":x: *SQL query `#{request_id}` failed* during DBA manual "
-        f"execution.\n"
-        + notifications.request_context_with_query_md(updated)
-        + f"\n*Reason:* {reason}",
-    )
-    ratings.maybe_prompt(client, updated)
+    manual_runs.notify_closed(client, closed)
 
 
 # =============================================================================
@@ -3298,73 +3246,32 @@ def handle_ro_window_approve(ack: Ack, body: dict, client: WebClient) -> None:
         rid = int(body["actions"][0]["value"])
     except (KeyError, IndexError, ValueError, TypeError):
         return
-    req = auto_approve_requests.get(rid)
-    if req is None or req["status"] != "pending":
-        _ro_window_already_decided(client, body, req)
+    # The decision is shared with the web admin screen: the same scope check,
+    # the same transaction, the same audit row.
+    try:
+        out = auto_approve_requests.decide_window(
+            rid, approve=True, actor_id=actor["id"],
+            actor_name=actor.get("name") or actor.get("username"))
+    except auto_approve_requests.WindowDecisionRefused as e:
+        if e.status == 403:
+            notifications.dm_requester(
+                client, actor["id"],
+                f":no_entry: Window request `#{rid}` is on a target outside your "
+                "admin scope. Ask an admin with broader scope to handle it.")
+        else:
+            _ro_window_already_decided(client, body, auto_approve_requests.get(rid))
         return
-    # Scope check: an RO-window grant hands out auto-approved access
-    # on a target, so hold a scoped admin to their target + team scope (tier
-    # is always RO here, within any max_tier).
-    if not _admin_in_scope(
-            actor["id"], tier=req["max_tier"],
-            target_server_id=req["target_server_id"],
-            requester_slack_id=req["requester_slack_id"]):
-        notifications.dm_requester(
-            client, actor["id"],
-            f":no_entry: Window request `#{rid}` is on a target outside your "
-            "admin scope. Ask an admin with broader scope to handle it.")
-        return
-    actor_name = actor.get("name") or actor.get("username")
-    # Create the target-scoped grant + decide the request + audit, atomically.
-    with db.connection() as conn:
-        with conn.cursor() as cur:
-            # This flow DMs the requester below — suppress the auth-event
-            # outbox so the trigger doesn't double-DM.
-            cur.execute("SET LOCAL app.auth_dm_suppress = 'on'")
-            cur.execute(
-                "INSERT INTO auto_approve_grants "
-                "  (slack_user_id, max_tier, target_server_id, database_name, "
-                "   expires_at, reason, granted_by) "
-                "VALUES (%s, %s, %s, %s, NOW() + make_interval(mins => %s), %s, %s) "
-                "RETURNING id",
-                (req["requester_slack_id"], req["max_tier"], req["target_server_id"],
-                 auto_approve.normalise_scope(req["database_name"]),
-                 req["window_minutes"],
-                 f"window request #{rid}: {req['reason']}", actor["id"]),
-            )
-            grant_id = cur.fetchone()["id"]
-            cur.execute(
-                "UPDATE auto_approve_requests SET status='approved', "
-                "  decided_by_slack_id=%s, decided_by_name=%s, granted_id=%s, "
-                "  decided_at=NOW() WHERE id=%s AND status='pending'",
-                (actor["id"], actor_name, grant_id, rid),
-            )
-            if cur.rowcount == 0:           # lost the race to another admin
-                conn.rollback()
-                _ro_window_already_decided(client, body, auto_approve_requests.get(rid))
-                return
-            cur.execute(
-                "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
-                "VALUES (%s, %s, 'auto_approve_window_approved', %s::jsonb)",
-                (actor["id"], actor_name, json.dumps({
-                    "request_id": rid, "grant_id": grant_id,
-                    "user": req["requester_slack_id"],
-                    "target_server_id": req["target_server_id"],
-                    "database_name": req["database_name"],
-                    "max_tier": req["max_tier"], "window_minutes": req["window_minutes"]})),
-            )
-        conn.commit()
-    t = targets.get(req["target_server_id"])
-    alias = t.alias if t else f"target #{req['target_server_id']}"
+    req, alias = out["request"], out["alias"]
+    win = ro_window.window_label(req["window_minutes"])
     _ro_window_update_admin_msg(
         client, body,
         f":white_check_mark: *Window #{rid} approved* by <@{actor['id']}> — "
-        f"{req['max_tier'].upper()} on `{alias}` for {req['window_minutes']} min.")
+        f"{req['max_tier'].upper()} on `{alias}` for {win}.")
     notifications.dm_requester(
         client, req["requester_slack_id"],
         f":zap: Your *{req['max_tier'].upper()}* auto-approve window on `{alias}` is "
-        f"active for the next {req['window_minutes']} min — matching queries dispatch "
-        "immediately, no approval needed.")
+        f"active for the next {win} — matching queries dispatch immediately, no "
+        "approval needed.")
 
 
 def handle_ro_window_reject(ack: Ack, body: dict, client: WebClient) -> None:
@@ -3376,22 +3283,17 @@ def handle_ro_window_reject(ack: Ack, body: dict, client: WebClient) -> None:
         rid = int(body["actions"][0]["value"])
     except (KeyError, IndexError, ValueError, TypeError):
         return
-    decided = auto_approve_requests.decide(
-        rid, status="rejected", decided_by_slack_id=actor["id"],
-        decided_by_name=actor.get("name") or actor.get("username"))
-    if decided is None:
+    try:
+        out = auto_approve_requests.decide_window(
+            rid, approve=False, actor_id=actor["id"],
+            actor_name=actor.get("name") or actor.get("username"))
+    except auto_approve_requests.WindowDecisionRefused:
         _ro_window_already_decided(client, body, auto_approve_requests.get(rid))
         return
-    db.execute(
-        "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
-        "VALUES (%s, %s, 'auto_approve_window_rejected', %s::jsonb)",
-        (actor["id"], actor.get("name") or actor.get("username"),
-         json.dumps({"request_id": rid, "user": decided["requester_slack_id"]})),
-    )
     _ro_window_update_admin_msg(
         client, body, f":no_entry: *Window #{rid} rejected* by <@{actor['id']}>.")
     notifications.dm_requester(
-        client, decided["requester_slack_id"],
+        client, out["request"]["requester_slack_id"],
         f":no_entry: Your auto-approve window request (#{rid}) was rejected.")
 
 

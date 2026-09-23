@@ -65,6 +65,18 @@ function qhSignInWithSlack() {
   window.location.href = API_BASE + '/auth/slack/start';
 }
 
+// The sidebar and the query tab's connection picker read /connections once, at
+// sign-in, so a connection enabled in Admin stayed out of them until a full
+// reload. Every call that can change what /connections answers says so on
+// success; qh-app.jsx listens and reads it again. A window event, because the
+// admin panel and the app shell share nothing else to call through.
+function qhConnectionsChanged(p) {
+  return p.then(r => {
+    try { window.dispatchEvent(new Event('qh:connections-changed')); } catch (e) {}
+    return r;
+  });
+}
+
 const qhApi = {
   me:          ()      => qhFetch('/me'),
   // Enabled login methods for the sign-in screen: [{id,label,kind}] where
@@ -167,6 +179,10 @@ const qhApi = {
   // authoritative. Nothing to add here for it: the body is posted through
   // unfiltered, so a new field reaches the server the moment a caller sends it.
   requestEndpoint:(b)  => qhFetch('/endpoint-requests', { method: 'POST', body: JSON.stringify(b) }),
+  // Ask a DBA to let some queries skip review for a while (design 2026-09-22 §3).
+  // Body {connectionId, databaseId, tier, days, reason}; a refusal names its field.
+  requestAutoApprove:(b) => qhFetch('/auto-approve-requests', { method: 'POST', body: JSON.stringify(b) }),
+  myAutoApproveRequests:() => qhFetch('/auto-approve-requests'),
   feedback:    (b)     => qhFetch('/feedback', { method: 'POST', body: JSON.stringify(b) }),
   // Developer notifications (approval decisions, scheduled runs, endpoint
   // grants, kill switch). Read state mirrors server-side.
@@ -201,6 +217,12 @@ const qhApi = {
   adminDelAutoGrant:(id)  => qhFetch('/admin/auto-grants/' + encodeURIComponent(id), { method: 'DELETE' }),
   // One person's resolved reach, and "give them what that person has".
   adminEffectiveAccess:(id) => qhFetch('/admin/people/' + encodeURIComponent(id) + '/effective-access'),
+  // The team half of Effective access (design 2026-09-22 §1).
+  adminTeamEffectiveAccess:(id) => qhFetch('/admin/teams/' + encodeURIComponent(id) + '/effective-access'),
+  // Auto-approve window requests, admin side (§3). The decision writes the
+  // waiver with its window starting at the decision.
+  adminAutoRequests: ()   => qhFetch('/admin/auto-approve-requests'),
+  adminDecideAutoRequest:(id, b) => qhFetch('/admin/auto-approve-requests/' + encodeURIComponent(id) + '/decision', { method: 'POST', body: JSON.stringify(b) }),
   // Who is this principal id, before anything is written. Granting access is
   // what creates a person, so this is how the subject combo can show a name for
   // an id QueryHub has never seen — and catch a typo while it is still a typo.
@@ -237,6 +259,8 @@ const qhApi = {
   adminMaskPreview:(b) => qhFetch('/admin/mask-exemptions/preview', { method: 'POST', body: JSON.stringify(b) }),
   adminAddRole:    (b)    => qhFetch('/admin/roles', { method: 'POST', body: JSON.stringify(b) }),
   adminDelRole:    (id)   => qhFetch('/admin/roles/' + encodeURIComponent(id), { method: 'DELETE' }),
+  // A role edit is a revoke and its replacement, in one server transaction (§6).
+  adminUpdateRole: (id, b) => qhFetch('/admin/roles/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify(b) }),
   adminConnections:()     => qhFetch('/admin/connections'),
   // Target-server registry CRUD (super-admin). Passwords travel in the
   // credentials block on create/update and are never returned: a response
@@ -252,11 +276,11 @@ const qhApi = {
   // us — worth checking the client whenever a ported file gains a `qhApi.`
   // method name we do not recognise.
   adminTagKeys:()         => qhFetch('/admin/tag-keys'),
-  adminCreateConnection:(b)     => qhFetch('/admin/connections', { method: 'POST', body: JSON.stringify(b) }),
-  adminUpdateConnection:(conn, b)=> qhFetch('/admin/connections/' + encodeURIComponent(conn), { method: 'PATCH', body: JSON.stringify(b) }),
+  adminCreateConnection:(b)     => qhConnectionsChanged(qhFetch('/admin/connections', { method: 'POST', body: JSON.stringify(b) })),
+  adminUpdateConnection:(conn, b)=> qhConnectionsChanged(qhFetch('/admin/connections/' + encodeURIComponent(conn), { method: 'PATCH', body: JSON.stringify(b) })),
   // Answers {deleted, disabled, reason} — a connection with history or live
   // grants is disabled instead of removed, and that counts as success.
-  adminDeleteConnection:(conn)  => qhFetch('/admin/connections/' + encodeURIComponent(conn), { method: 'DELETE' }),
+  adminDeleteConnection:(conn)  => qhConnectionsChanged(qhFetch('/admin/connections/' + encodeURIComponent(conn), { method: 'DELETE' })),
   // Reachability probes. Both answer {ok, latencyMs, serverVersion, error}
   // with ok:false for a refused connection — an unreachable target is an
   // answer, not a failed request, so neither rejects.
@@ -264,9 +288,10 @@ const qhApi = {
   adminTestConnection:(conn)    => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/test', { method: 'POST' }),
   // `database` narrows the refresh to one instead of re-reading every database
   // on the connection. Also an added parameter, same hazard as `statement`.
-  adminSchemaRefresh:(conn, database) => qhFetch('/admin/connections/' + encodeURIComponent(conn)
+  // A refresh can add or drop databases, which the picker lists.
+  adminSchemaRefresh:(conn, database) => qhConnectionsChanged(qhFetch('/admin/connections/' + encodeURIComponent(conn)
                  + '/schema-refresh' + (database ? '?database=' + encodeURIComponent(database) : ''),
-                 { method: 'POST' }),
+                 { method: 'POST' })),
   adminEndpointReqs:()    => qhFetch('/admin/endpoint-requests'),
   adminDecideEndpoint:(id, approve, note) => qhFetch('/admin/endpoint-requests/' + encodeURIComponent(String(id).replace(/^er_/, '')) + '/decision', { method: 'POST', body: JSON.stringify({ approve: !!approve, note: note || null }) }),
   // Teams + people directory (super-admin).

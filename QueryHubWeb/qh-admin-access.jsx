@@ -516,13 +516,14 @@ function AutoForm({ init, actor, st, onDone }) {
 
 function AutoView({ st, user }) {
   const actor = 'dba.' + user.name.split(' ')[0].toLowerCase();
-  const [adding, setAdding] = useAcc(false);
+  const [adding, setAdding] = useAcc(null);   // null | '' (pick a subject) | a subject key (locked)
   const [editId, setEditId] = useAcc(null);
   const [q, setQ] = useAcc('');
-  const [group, setGroup] = useAcc('none');
-  // A bounded window stays the DEFAULT: auto-approve is the grant that skips a
-  // human, so "forever" is a thing to ask for, not a thing to land on.
-  const blank = { user: '', tier: 'RO', connectionId: ((st.connections || [])[0] || {}).id || '', databaseId: null, ttl: '30' };
+  // By subject is the DEFAULT (design 2026-09-22 §4a): the subject is the unit
+  // an operator thinks in, and a flat table made one person's exemptions read
+  // as unrelated rows. The flat table stays one click away for scanning.
+  const [view, setView] = useAcc('subject');
+  const reqs = st.autoRequests || [];
 
   const rows = st.autoGrants.filter(a => {
     const t = q.trim().toLowerCase(); if (!t) return true;
@@ -530,56 +531,190 @@ function AutoView({ st, user }) {
     // filter reading only the handle finds nothing for a typed first name.
     return (a.user + ' ' + (a.userName || '') + ' ' + a.connectionId + ' ' + (a.databaseId || '') + ' ' + a.tier).toLowerCase().includes(t);
   });
-  const keyFn = group === 'subject' ? (a => a.user) : group === 'server' ? (a => a.connectionId) : null;
-  const grouped = keyFn ? accGroup(rows, keyFn) : [['', rows]];
+  const subjects = autoSubjects(rows, st.people);
 
-  const renderRow = (a) => {
-    if (editId === a.id) return (
-      <tr key={a.id} className="qh-editrow"><td colSpan={6}><AutoForm init={{ ...a, ttl: 'keep' }} actor={actor} st={st} onDone={() => setEditId(null)} /></td></tr>
-    );
-    const ex = expiryLabel(a.expiresAt);
-    return (
-      <tr key={a.id}>
-        {/* The name the API resolved, with the id under it only when the two
-            differ — the handle is still how this row is correlated with Slack,
-            and a team is in neither people table, so `userName` is null there
-            and the id IS the name. */}
-        <td><b>{qhPersonName(a.userName || a.user)}</b>{a.userName && a.userName !== a.user && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{a.user}</div>}</td>
-        <td className="qh-mono">{a.connectionId}{autoAllDbs(a.databaseId) ? <span className="qh-muted"> · all databases</span> : '/' + a.databaseId}</td>
-        <td><TierBadge tier={a.tier} sm /></td>
-        <td><span className={'qh-expiry ' + ex.cls}>{ex.text}</span></td>
-        <td className="qh-muted">{qhPersonName(a.createdByName || a.createdBy) || '—'}</td>
-        <td className="qh-tright"><div className="qh-rowacts"><button className="qh-rowbtn" onClick={() => { setEditId(a.id); setAdding(false); }}><AIcon.edit />Edit</button><button className="qh-revoke" onClick={() => st.revokeAutoGrant(a.id, actor)}>Revoke</button></div></td>
-      </tr>
-    );
-  };
+  const actions = (a) => <div className="qh-rowacts"><button className="qh-rowbtn" onClick={() => { setEditId(a.id); setAdding(null); }}><AIcon.edit />Edit</button><button className="qh-revoke" onClick={() => st.revokeAutoGrant(a.id, actor)}>Revoke</button></div>;
 
   return (
     <div className="qh-apad">
       <div className="qh-aview-head">
-        <div><div className="qh-aview-title">Auto-approve grants</div><div className="qh-aview-sub">Skip DBA review for trusted, bounded queries — one target, one tier, and an end date if it should stop.</div></div>
-        <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => { setAdding(a => !a); setEditId(null); }}><AIcon.plus />New</button>
+        <div><div className="qh-aview-title">Auto-approve</div><div className="qh-aview-sub">Standing exemptions from review — a person's queries up to a tier, on a database, run without a DBA until the window ends.</div></div>
+        <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => { setAdding(a => a === '' ? null : ''); setEditId(null); }}><AIcon.plus />New exemption</button>
       </div>
-      {adding && <AutoForm init={blank} actor={actor} st={st} onDone={() => setAdding(false)} />}
+
+      {/* Asked for from the web (§3). Above the list, because a request is the
+          one thing on this screen waiting on the reader. */}
+      {reqs.length > 0 && (
+        <div className="qh-autoreqs">
+          <div className="qh-section-label">Asked for · {reqs.length}</div>
+          {reqs.map(r => (
+            <div key={r.id} className="qh-autoreq">
+              <div className="qh-autoreq-main">
+                <div className="qh-autoreq-say"><b>{qhPersonName(r.requesterName || r.requester)}</b> asks to skip review on <span className="qh-mono">{r.connectionId} · {r.databaseId || 'all databases'}</span> <TierBadge tier={r.tier} sm /> for <b>{r.days} day{r.days === 1 ? '' : 's'}</b></div>
+                <div className="qh-autoreq-why">“{r.reason}”</div>
+                <div className="qh-autoreq-when">{r.requester} · asked {qhAgo(r.requestedAt)} · the window starts when you grant it</div>
+              </div>
+              <div className="qh-autoreq-acts">
+                <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => st.decideAutoRequest(r.id, true)}>{'Grant for ' + r.days + (r.days === 1 ? ' day' : ' days')}</button>
+                <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => st.decideAutoRequest(r.id, false)}>Decline</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {adding === '' && <AutoBulkForm st={st} actor={actor} onDone={() => setAdding(null)} />}
       <div className="qh-conn-controls">
         <AccSearch q={q} setQ={setQ} placeholder="Filter by person, team, server…" />
-        <AccGroupBy group={group} setGroup={setGroup} options={[['none', 'None'], ['subject', 'Person or team'], ['server', 'Server']]} />
+        <AccGroupBy label="Show" group={view} setGroup={setView} options={[['subject', 'By person or team'], ['flat', 'All rows']]} />
       </div>
+
+      {view === 'subject' ? (
+        <div className="qh-autosubs">
+          {subjects.map(s => (
+            <div key={s.key} className="qh-autosub">
+              <div className="qh-autosub-head">
+                <span className={'qh-peravatar' + (s.team ? ' is-team' : '')}>{s.initials}</span>
+                <div className="qh-autosub-who"><div className="qh-autosub-name">{s.name}{s.team && <span className="qh-subj-type team">team</span>}</div>
+                  {!s.team && s.key !== s.name && <div className="qh-autosub-h">{s.key}</div>}</div>
+                <div className="qh-autosub-sum">Skips review on {s.rows.length} target{s.rows.length === 1 ? '' : 's'}{s.open ? <> · <span className="qh-expiry is-soon">{s.open} with no end date</span></> : null}</div>
+              </div>
+              <div className="qh-autosub-rows">
+                {s.rows.map(a => editId === a.id
+                  ? <div key={a.id} className="qh-autosub-edit"><AutoForm init={{ ...a, ttl: 'keep' }} actor={actor} st={st} onDone={() => setEditId(null)} /></div>
+                  : (() => { const ex = expiryLabel(a.expiresAt); return (
+                    <div key={a.id} className="qh-autosub-row">
+                      <span className="qh-autosub-t">{a.connectionId}<span className="qh-autosub-db">{autoAllDbs(a.databaseId) ? 'all databases' : a.databaseId}</span></span>
+                      <TierBadge tier={a.tier} sm />
+                      <span className={'qh-expiry ' + ex.cls}>{ex.text}</span>
+                      <span className="qh-autosub-by">by {qhPersonName(a.createdByName || a.createdBy) || '—'}</span>
+                      {actions(a)}
+                    </div>); })())}
+              </div>
+              {adding === s.key
+                ? <AutoBulkForm st={st} actor={actor} lockUser={s.key} lockName={s.name} existing={s.rows} onDone={() => setAdding(null)} />
+                : !s.team && <button className="qh-linkbtn qh-autosub-add" onClick={() => { setAdding(s.key); setEditId(null); }}><AIcon.plus />Add targets for {s.name}</button>}
+            </div>
+          ))}
+          {subjects.length === 0 && <div className="qh-conn-empty">{q.trim() ? 'No exemption matches your filter.' : 'Nobody skips review. Every query is looked at by a DBA.'}</div>}
+        </div>
+      ) : (
       <div className="qh-tablewrap">
       <table className="qh-atable qh-acttable">
-        {/* "Subject" was the data model's word for what is a person on screen
-            (CODE brief 2026-08-20 §2). */}
         <thead><tr><th>Person or team</th><th>Scope</th><th>Tier</th><th>Expiry</th><th>Granted by</th><th></th></tr></thead>
         <tbody>
-          {grouped.map(([k, list]) => (
-            <React.Fragment key={k || 'all'}>
-              {k && <tr className="qh-grouphead"><td colSpan={6}>{k}<span className="qh-grouphead-n">{list.length}</span></td></tr>}
-              {list.map(renderRow)}
-            </React.Fragment>
-          ))}
+          {rows.map(a => {
+            if (editId === a.id) return <tr key={a.id} className="qh-editrow"><td colSpan={6}><AutoForm init={{ ...a, ttl: 'keep' }} actor={actor} st={st} onDone={() => setEditId(null)} /></td></tr>;
+            const ex = expiryLabel(a.expiresAt);
+            return (
+              <tr key={a.id}>
+                <td><b>{qhPersonName(a.userName || a.user)}</b>{a.userName && a.userName !== a.user && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{a.user}</div>}</td>
+                <td className="qh-mono">{a.connectionId}{autoAllDbs(a.databaseId) ? <span className="qh-muted"> · all databases</span> : '/' + a.databaseId}</td>
+                <td><TierBadge tier={a.tier} sm /></td>
+                <td><span className={'qh-expiry ' + ex.cls}>{ex.text}</span></td>
+                <td className="qh-muted">{qhPersonName(a.createdByName || a.createdBy) || '—'}</td>
+                <td className="qh-tright">{actions(a)}</td>
+              </tr>
+            );
+          })}
           {rows.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No auto-approve grants match your filter.</td></tr>}
         </tbody>
       </table>
+      </div>
+      )}
+    </div>
+  );
+}
+
+// One card per subject. A team row arrives as `<name> (team)` with no userName
+// (a team is in neither people table), so the suffix is the only thing that
+// says which kind of subject it is — read here, once, for the card.
+function autoSubjects(rows, people) {
+  const m = new Map();
+  rows.forEach(a => {
+    const team = / \(team\)$/.test(a.user || '');
+    if (!m.has(a.user)) {
+      const p = (people || []).find(x => x.handle === a.user || x.id === a.user);
+      const name = team ? a.user.replace(/ \(team\)$/, '') : qhPersonName(a.userName || (p && p.name) || a.user);
+      m.set(a.user, { key: a.user, team, name, initials: team ? name.slice(0, 2).toUpperCase() : ((p && p.initials) || name.slice(0, 1).toUpperCase()), rows: [] });
+    }
+    m.get(a.user).rows.push(a);
+  });
+  return [...m.values()].map(s => ({ ...s, open: s.rows.filter(a => !a.expiresAt).length }))
+    .sort((a, b) => (a.team === b.team ? (a.name < b.name ? -1 : 1) : a.team ? 1 : -1));
+}
+
+// ---------- One subject, many targets, one Save (§4b) ----------
+// The subject is picked ONCE; each row is a connection + database + tier +
+// window. DDL is not offered: schema changes are always reviewed, and a tier
+// the server refuses is a control that lies. Duplicate rows, and rows the
+// subject already holds, are marked before Save rather than refused after it.
+const AUTO_WINDOWS = [['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['none', 'No end date']];
+function AutoBulkForm({ st, actor, lockUser, lockName, existing, onDone }) {
+  const conns = (st.connections || []).filter(c => c.enabled !== false);
+  const blankRow = () => ({ k: Math.random().toString(36).slice(2), connectionId: (conns[0] || {}).id || '', databaseId: null, tier: 'RO', ttl: '30' });
+  const [who, setWho] = useAcc(lockUser || '');
+  const [rows, setRows] = useAcc(() => [blankRow()]);
+  const [reason, setReason] = useAcc('');
+  const [busy, setBusy] = useAcc(false);
+  const [err, setErr] = useAcc(null);
+  const set = (k, patch) => { setRows(rs => rs.map(r => r.k === k ? { ...r, ...patch } : r)); setErr(null); };
+  const held = existing || (st.autoGrants || []).filter(a => a.user === who);
+  const keyOf = (r) => r.connectionId + '/' + (r.databaseId || '*');
+  const dupeIn = (r, i) => rows.findIndex(x => keyOf(x) === keyOf(r)) !== i;
+  const heldBy = (r) => held.find(a => a.connectionId === r.connectionId && (a.databaseId || '*') === (r.databaseId || '*'));
+  const bad = !who.trim() || !rows.length || rows.some((r, i) => dupeIn(r, i) || heldBy(r)) || busy;
+  const exp = (r) => r.ttl === 'none' ? null : qhIso(new Date(Date.now() + 86400000 * parseInt(r.ttl, 10)));
+  const open = rows.filter(r => r.ttl === 'none').length;
+  const whoName = lockName || qhPersonName(((st.people || []).find(p => p.handle === who || p.id === who) || {}).name || who);
+  const save = () => {
+    if (bad) return;
+    setBusy(true); setErr(null);
+    st.addAutoGrants(who.trim(), rows.map(r => ({ ...r, expiresAt: exp(r), reason: reason.trim() || null })))
+      .then(() => { setBusy(false); onDone(); })
+      // What landed is removed from the form; what was refused and after it
+      // stays, with the refusal naming the row it stopped at.
+      .catch(e => { const n = e.written || 0; const stop = rows[n]; setRows(rs => rs.slice(n)); setBusy(false);
+        setErr('Stopped at ' + (stop ? keyOf(stop).replace('/*', ' · all databases') : 'a row') + ': ' + e.message + (n ? ' ' + n + ' before it ' + (n === 1 ? 'was' : 'were') + ' created.' : ' Nothing was created.')); });
+  };
+  return (
+    <div className="qh-autobulk">
+      {!lockUser && (
+        <div className="qh-autobulk-who">
+          <span className="qh-rolefield-l">Who</span>
+          <PersonPick people={st.people} value={who} onChange={v => { setWho(v); setErr(null); }} resolve={st.resolvePerson} autoFocus />
+        </div>
+      )}
+      {held.length > 0 && who && <div className="qh-autobulk-held">Already skips review on {held.map(a => a.connectionId + ' · ' + (a.databaseId || 'all databases')).join(', ')}.</div>}
+      <div className="qh-autobulk-rows">
+        <div className="qh-autobulk-hd"><span>Connection</span><span>Database</span><span>Up to</span><span>Window</span><span></span></div>
+        {rows.map((r, i) => {
+          const conn = conns.find(c => c.id === r.connectionId);
+          const flag = dupeIn(r, i) ? 'Listed twice' : heldBy(r) ? 'Already exempt here — edit that row instead' : null;
+          return (
+            <div key={r.k} className={'qh-autobulk-row' + (flag ? ' is-bad' : '')}>
+              <select className="qh-select" value={r.connectionId} onChange={e => set(r.k, { connectionId: e.target.value, databaseId: null })}>{conns.map(c => <option key={c.id} value={c.id}>{connLabel(c)}</option>)}</select>
+              <select className="qh-select" value={r.databaseId || ''} onChange={e => set(r.k, { databaseId: e.target.value || null })}>
+                <option value="">All databases</option>
+                {(conn ? conn.databases : []).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+              <div className="qh-seg qh-seg-sm">{['RO', 'RW'].map(t => <button key={t} className={'qh-seg-opt' + (r.tier === t ? ' is-active' : '')} onClick={() => set(r.k, { tier: t })}>{t}</button>)}</div>
+              <select className="qh-select" value={r.ttl} onChange={e => set(r.k, { ttl: e.target.value })}>{AUTO_WINDOWS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+              <button className="qh-bulk-chipx" style={rows.length === 1 ? { visibility: 'hidden' } : undefined} disabled={rows.length === 1} onClick={() => setRows(rs => rs.filter(x => x.k !== r.k))} aria-label="Remove this target"><AIcon.x /></button>
+              {flag && <div className="qh-autobulk-flag">{flag}</div>}
+            </div>
+          );
+        })}
+        <button className="qh-linkbtn" onClick={() => setRows(rs => rs.concat([blankRow()]))}><AIcon.plus />Another target</button>
+      </div>
+      <input className="qh-input qh-input-sm qh-autobulk-why" placeholder="Why (optional, kept on every row)" value={reason} onChange={e => setReason(e.target.value)} />
+      {err && <div className="qh-roleform-err">{err}</div>}
+      <div className="qh-autobulk-foot">
+        <span className="qh-autobulk-say">{who
+          ? <><b>{whoName}</b>'s matching queries on {rows.length} target{rows.length === 1 ? '' : 's'} will run without a DBA{open ? <>, <b className="qh-eff-sum-warn">{open} with no end date</b></> : ''}.</>
+          : 'Pick the person first — then as many targets as they need.'}</span>
+        <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone} disabled={busy}>Cancel</button>
+        <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={bad} onClick={save}>{busy ? 'Creating…' : 'Create ' + rows.length + ' exemption' + (rows.length === 1 ? '' : 's')}</button>
       </div>
     </div>
   );
@@ -669,11 +804,51 @@ function ScopesView({ st, user }) {
 }
 
 // ---------- Teams ----------
+// The member editor (design 2026-09-22 §5): one box that scrolls on its own,
+// the team's members first and stacked, everyone else below, and a type-ahead
+// that matches name, handle and Slack id — the operator knows people by both.
+// Enter adds the first "everyone else" match, so a known id is two keystrokes.
+function MemberEditor({ people, members, setMembers }) {
+  const [q, setQ] = useAcc('');
+  const t = q.trim().toLowerCase();
+  const match = (p) => !t || [p.name, p.handle, p.slackId, p.id].filter(Boolean).join(' ').toLowerCase().includes(t);
+  const byH = (h) => people.find(p => p.handle === h) || { handle: h, name: h, initials: '?' };
+  const inRows = members.map(byH).filter(match);
+  const outRows = people.filter(p => members.indexOf(p.handle) < 0).filter(match);
+  const row = (p, on) => (
+    <div key={p.handle} className={'qh-mem-row' + (p.enabled === false ? ' is-off' : '')}>
+      <span className="qh-mini-avatar">{p.initials || '?'}</span>
+      <span className="qh-mem-n">{qhPersonName(p.name)}{p.enabled === false && <span className="qh-perkind is-off">disabled</span>}</span>
+      <span className="qh-mem-h">{p.handle}{p.slackId ? ' · ' + p.slackId : ''}</span>
+      {on
+        ? <button type="button" className="qh-rowbtn" onClick={() => setMembers(members.filter(x => x !== p.handle))}>Remove</button>
+        : <button type="button" className="qh-rowbtn is-add" onClick={() => { setMembers(members.concat([p.handle])); }}><AIcon.plus />Add</button>}
+    </div>
+  );
+  return (
+    <div className="qh-mem">
+      <div className="qh-mem-top">
+        <span className="qh-teamform-label">Members · {members.length}</span>
+        <div className="qh-search sm qh-mem-search">
+          <span className="qh-search-ic"><AIcon.search /></span>
+          <input className="qh-search-in" placeholder="Name, handle or Slack id" value={q} onChange={e => setQ(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && outRows.length) { e.preventDefault(); setMembers(members.concat([outRows[0].handle])); setQ(''); } }} />
+        </div>
+      </div>
+      <div className="qh-mem-box">
+        <div className="qh-mem-glabel">In this team · {inRows.length}{t && inRows.length !== members.length ? ' of ' + members.length : ''}</div>
+        {inRows.length ? inRows.map(p => row(p, true)) : <div className="qh-mem-none">{t ? 'No member matches.' : 'Nobody yet — add people from the list below.'}</div>}
+        <div className="qh-mem-glabel is-rest">Everyone else · {outRows.length}</div>
+        {outRows.length ? outRows.map(p => row(p, false)) : <div className="qh-mem-none">{t ? 'Nobody else matches.' : 'Everyone is already in this team.'}</div>}
+      </div>
+    </div>
+  );
+}
+
 function TeamForm({ people, init, onSave, onCancel }) {
   const [name, setName] = useAcc(init.name || '');
   const [desc, setDesc] = useAcc(init.desc || '');
   const [members, setMembers] = useAcc(init.members || []);
-  const toggle = (h) => setMembers(m => m.includes(h) ? m.filter(x => x !== h) : [...m, h]);
   const submit = () => { if (!name.trim()) return; onSave({ id: init.id, name: name.trim(), desc: desc.trim(), members }); };
   return (
     <div className="qh-teamform">
@@ -681,13 +856,7 @@ function TeamForm({ people, init, onSave, onCancel }) {
         <input className="qh-input qh-input-sm" style={{ width: 200 }} placeholder="Team name (e.g. data-eng)" value={name} onChange={e => setName(e.target.value)} />
         <input className="qh-input qh-input-sm qh-flex1" placeholder="Description (optional)" value={desc} onChange={e => setDesc(e.target.value)} />
       </div>
-      <div className="qh-teamform-label">Members · {members.length}</div>
-      <div className="qh-memberpick">
-        {people.map(p => {
-          const on = members.includes(p.handle);
-          return <button key={p.handle} type="button" className={'qh-memberchip' + (on ? ' is-on' : '')} onClick={() => toggle(p.handle)}><span className="qh-mini-avatar">{p.initials}</span><span className="qh-memberchip-name">{p.name}</span>{on && <span className="qh-memberchip-ck"><AIcon.check /></span>}</button>;
-        })}
-      </div>
+      <MemberEditor people={people} members={members} setMembers={setMembers} />
       <div className="qh-teamform-acts">
         <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onCancel}>Cancel</button>
         <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={submit}>{init.id ? 'Save team' : 'Create team'}</button>
@@ -759,7 +928,18 @@ function TeamsView({ st, user }) {
                     </div>
                     <div className="qh-teamcard-access">
                       <span className="qh-teamcard-access-lbl">Access</span>
-                      {tgts.length === 0 ? <span className="qh-team-none">No targets</span> : tgts.map(g => <span key={g.id} className="qh-acctarget"><span className="qh-acctarget-t">{qhGrantTarget(g)}</span><TierBadge tier={g.tier} sm /></span>)}
+                      {/* Three different sentences, because they are three
+                          different facts (design 2026-09-22 §2). "No targets"
+                          printed for all of them, and a failed read looked
+                          exactly like a team with nothing. `grantsOf` still
+                          matches on the team's NAME — that is the contract. */}
+                      {st.grantsState === 'error'
+                        ? <span className="qh-team-err">Couldn't load this team's grants — its access is unknown, not empty.<button className="qh-linkbtn" onClick={() => st.reloadGrants && st.reloadGrants()}>Try again</button></span>
+                        : st.grantsState === 'loading'
+                          ? <span className="qh-team-none">Loading…</span>
+                          : tgts.length === 0
+                            ? <span className="qh-team-none">No access granted to this team</span>
+                            : tgts.map(g => <span key={g.id} className="qh-acctarget"><span className="qh-acctarget-t">{qhGrantTarget(g)}</span><TierBadge tier={g.tier} sm /></span>)}
                     </div>
                   </div>
                   <div className="qh-teamcard-acts">
@@ -1212,7 +1392,7 @@ function ConnectionsView({ st, user }) {
                 const probe = tested[c.id];
                 return (
                 <tr key={c.id}>
-                  <td><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b>{c.name}</b></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={qhEndpointHover(c)} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}</td>
+                  <td><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b>{c.name}</b></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}</td>
                   <td className="qh-muted">{c.engine}</td>
                   {/* Provider + service on one line; the account and any custom
                       tags are on the hover, because this column sits between two

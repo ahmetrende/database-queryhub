@@ -1,4 +1,6 @@
-// QueryHub Admin — panel shell (nav + role) + Approvals + DDL escalation views.
+// QueryHub Admin — panel shell (nav + role) + Approvals + Kill switch.
+// The separate DDL escalations screen was removed 2026-09-22 (§8): DDL requests
+// sit in the approval queue, flagged, carrying everything that screen carried.
 const { useState: useAdm } = React;
 
 const AdminIcons = {
@@ -15,10 +17,11 @@ const AdminIcons = {
   metrics: () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 3 5-6"/></svg>,
   feedback: () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>,
   kill: () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18.4 6.6a9 9 0 11-12.8 0M12 2v10"/></svg>,
+  effective: () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/><path d="M8.5 11l1.8 1.8L14 9"/></svg>,
   config: () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h7M15 18h5"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="13" cy="18" r="2"/></svg>,
 };
 
-const QH_ADMIN_SECTIONS = ['approvals', 'ddl', 'kill', 'grants', 'auto', 'scopes', 'teams', 'roles', 'mask', 'conns', 'audit', 'metrics', 'feedback', 'config'];
+const QH_ADMIN_SECTIONS = ['approvals', 'kill', 'effective', 'grants', 'auto', 'scopes', 'teams', 'roles', 'mask', 'conns', 'audit', 'metrics', 'feedback', 'config'];
 // Deep-link support: the admin section lives in the URL as #admin/<section>.
 // Which door a request came through. Two values existed when this was written
 // and the chip coerced everything to them — `web`, or else Slack — so a third
@@ -35,24 +38,27 @@ function qhOriginWhere(o) {
 
 function navFromAdminHash() {
   const m = (typeof location !== 'undefined' ? (location.hash || '') : '').match(/^#admin\/([a-z]+)/i);
+  // A bookmark to the retired DDL screen lands on the queue, where DDL now is.
+  if (m && m[1].toLowerCase() === 'ddl') return 'approvals';
   return m && QH_ADMIN_SECTIONS.indexOf(m[1].toLowerCase()) !== -1 ? m[1].toLowerCase() : null;
 }
 
 function AdminPanel({ st, adminRole, setAdminRole, user }) {
   const [nav, setNav] = useAdm(() => navFromAdminHash() || 'approvals');
-  const escCount = st.queue.filter(q => q.escalate).length;
   const pendCount = st.queue.length;
   const erCount = st.endpointReqs.filter(e => e.status === 'submitted').length;
 
   const groups = [
     { label: 'Review', items: [
       ['approvals', 'Approval queue', AdminIcons.approvals, pendCount],
-      ['ddl', 'DDL escalations', AdminIcons.ddl, escCount],
       ['kill', 'Kill switch', AdminIcons.kill, null],
     ]},
     { label: 'Access', super: true, items: [
+      // First in the group: "what can this person reach" is the question the
+      // other Access screens are each a third of the answer to.
+      ['effective', 'Effective access', AdminIcons.effective, null],
       ['grants', 'Grants', AdminIcons.grants, null],
-      ['auto', 'Auto-approve', AdminIcons.auto, null],
+      ['auto', 'Auto-approve', AdminIcons.auto, (st.autoRequests || []).length || null],
       ['scopes', 'Admin scopes', AdminIcons.scopes, null],
       ['teams', 'Teams', AdminIcons.teams, null],
       // The one Access section a scoped (non-super) admin may READ: GET
@@ -66,7 +72,7 @@ function AdminPanel({ st, adminRole, setAdminRole, user }) {
       ['conns', 'Connections', AdminIcons.conns, erCount],
     ]},
     { label: 'Insights', items: [
-      ['audit', 'Audit trail', AdminIcons.audit, null],
+      ['audit', 'Audit log', AdminIcons.audit, null],
       ['metrics', 'Metrics', AdminIcons.metrics, null],
       ['feedback', 'Feedback', AdminIcons.feedback, null],
     ]},
@@ -79,7 +85,7 @@ function AdminPanel({ st, adminRole, setAdminRole, user }) {
   const isSuper = canSuper && adminRole === 'super';
   // DBA can't open super-only sections
   const visibleNav = (id) => {
-    if (['grants', 'auto', 'scopes', 'teams', 'conns', 'config', 'mask'].includes(id)) return isSuper;
+    if (['effective', 'grants', 'auto', 'scopes', 'teams', 'conns', 'config', 'mask'].includes(id)) return isSuper;
     // Roles is readable by any admin; RolesView drops its own controls when
     // `canWrite` is false rather than offering writes that would 403.
     if (id === 'roles') return true;
@@ -163,8 +169,8 @@ function AdminPanel({ st, adminRole, setAdminRole, user }) {
           </div>
         )}
         {curNav === 'approvals' && <ApprovalsView st={st} user={user} role={adminRole} />}
-        {curNav === 'ddl' && <DdlView st={st} user={user} />}
         {curNav === 'kill' && <KillView st={st} user={user} />}
+        {curNav === 'effective' && <EffectiveAccessView st={st} user={user} />}
         {curNav === 'grants' && <GrantsView st={st} user={user} />}
         {curNav === 'auto' && <AutoView st={st} user={user} />}
         {curNav === 'scopes' && <ScopesView st={st} user={user} />}
@@ -192,8 +198,13 @@ const QCHK = <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke=
 function QueueCard({ it, selected, onSelect, checked, onCheck }) {
   const who = qhPersonName(it.submitter.name) + ', ' + it.tier + ' on '
     + it.connectionId + '/' + it.databaseId + ', ' + qhAgo(it.submittedAt);
+  // DDL is the most dangerous tier and must not be mistakable for RO at a
+  // glance: its own card treatment, a flag that leads the row rather than a
+  // badge among badges, and the elevation's end date on the card itself.
+  const ddl = !!it.escalate || it.tier === 'DDL';
+  const el = it.elevation;
   return (
-    <div className={'qh-qcard' + (selected ? ' is-active' : '')}>
+    <div className={'qh-qcard' + (selected ? ' is-active' : '') + (ddl ? ' is-ddl' : '')}>
       <label className="qh-qcheck">
         <input type="checkbox" checked={checked} onChange={() => onCheck(it.id)}
                aria-label={'Select request from ' + who} />
@@ -201,6 +212,7 @@ function QueueCard({ it, selected, onSelect, checked, onCheck }) {
       </label>
       <button type="button" className="qh-qcard-main" onClick={() => onSelect(it.id)}
               aria-label={'Review request from ' + who} aria-pressed={!!selected}>
+        {ddl && <div className="qh-qddl-flag"><AdminIcons.ddl />Schema change · DDL{el && el.expiresAt ? <span className="qh-qddl-until">elevation ends {qhFmt(el.expiresAt)}</span> : el ? <span className="qh-qddl-until">elevation has no end date</span> : null}</div>}
         <div className="qh-qcard-top">
           <span className="qh-qavatar">{it.submitter.initials}</span>
           <span className="qh-qname" title={qhIsHandleName(it.submitter.name) ? it.submitter.name : null}>{qhPersonName(it.submitter.name)}</span>
@@ -231,6 +243,12 @@ function ApprovalsView({ st, user, role }) {
   React.useEffect(() => {   // queue reloaded — the optimistic list can go
     if (decided.length) setDecided([]);
   }, [st.queue]);
+  // The DDL screen's one job — "show me only schema changes" — is a filter
+  // here now. Counted, so the number the old nav badge carried is not lost.
+  const [onlyDdl, setOnlyDdl] = useAdm(false);
+  const isDdl = (x) => !!x.escalate || x.tier === 'DDL';
+  const ddlCount = items.filter(isDdl).length;
+  const shown = onlyDdl ? items.filter(isDdl) : items;
   const [sel, setSel] = useAdm(items[0] ? items[0].id : null);
   const [checked, setChecked] = useAdm([]);
   const [note, setNote] = useAdm('');
@@ -256,16 +274,16 @@ function ApprovalsView({ st, user, role }) {
   // first of its rows, so nothing jumps to the top of the queue.
   const groups = React.useMemo(() => {
     const out = [], seen = {};
-    items.forEach(it => {
+    shown.forEach(it => {
       if (!it.bundleId) { out.push({ solo: it }); return; }
       if (seen[it.bundleId]) return;
       seen[it.bundleId] = 1;
-      const rows = items.filter(x => x.bundleId === it.bundleId)
+      const rows = shown.filter(x => x.bundleId === it.bundleId)
         .slice().sort((a, b) => (a.bundlePosition || 0) - (b.bundlePosition || 0));
       out.push({ bundleId: it.bundleId, rows, size: it.bundleSize || rows.length });
     });
     return out;
-  }, [items]);
+  }, [shown]);
 
   const act = (decision) => {
     if ((decision === 'reject' || decision === 'changes') && noteMode !== decision) { setNoteMode(decision); return; }
@@ -285,6 +303,14 @@ function ApprovalsView({ st, user, role }) {
             <div className="qh-aview-sub">{items.length} pending · you approve as {role === 'super' ? 'super-admin' : 'DBA'}</div>
           </div>
         </div>
+        {ddlCount > 0 && (
+          <div className="qh-qfilter">
+            <div className="qh-seg qh-seg-sm">
+              <button className={'qh-seg-opt' + (!onlyDdl ? ' is-active' : '')} onClick={() => setOnlyDdl(false)}>All · {items.length}</button>
+              <button className={'qh-seg-opt qh-seg-ddl' + (onlyDdl ? ' is-active' : '')} onClick={() => setOnlyDdl(true)}><AdminIcons.ddl />DDL · {ddlCount}</button>
+            </div>
+          </div>
+        )}
         {items.length > 0 && (
           <div className={'qh-batchbar' + (checked.length ? ' is-armed' : '')}>
             <label className="qh-qcheck qh-batchbar-all">
@@ -368,6 +394,29 @@ function ApprovalsView({ st, user, role }) {
               <div className="qh-astat"><div className="qh-astat-k">Submitted</div><div className="qh-astat-v" title={cur.submittedAt || ''}>{cur.submittedAt ? qhFmt(cur.submittedAt) + ' · ' + qhAgo(cur.submittedAt) : '—'}</div></div>
             </div>
 
+            {/* Everything the DDL escalations screen carried, on the request
+                itself: why they hold schema rights, how long for, who gave
+                them. A missing field is SAID missing — a blank here would read
+                as "nothing to worry about" on the tier where that is least true. */}
+            {(cur.escalate || cur.tier === 'DDL') && (() => {
+              const el = cur.elevation || null;
+              return (
+                <div className="qh-ddlbox">
+                  <div className="qh-ddlbox-h"><AdminIcons.ddl />Schema change — always reviewed by a person, never auto-approved</div>
+                  <div className="qh-ddlbox-grid">
+                    <div className="qh-ddlbox-k">DDL rights from</div>
+                    <div className="qh-ddlbox-v">{!el ? <span className="qh-ddlbox-miss">not reported</span> : el.source === 'team' ? <>team <b>{el.team}</b></> : 'their own grant'}</div>
+                    <div className="qh-ddlbox-k">Why they hold it</div>
+                    <div className="qh-ddlbox-v">{el && el.reason ? el.reason : <span className="qh-ddlbox-miss">no reason recorded</span>}</div>
+                    <div className="qh-ddlbox-k">Lasts</div>
+                    <div className="qh-ddlbox-v">{!el ? <span className="qh-ddlbox-miss">not reported</span> : el.expiresAt ? <>until <b>{qhFmt(el.expiresAt)}</b></> : <span className="qh-ddlbox-warn">no end date — standing schema rights</span>}</div>
+                    <div className="qh-ddlbox-k">Given by</div>
+                    <div className="qh-ddlbox-v">{el && (el.grantedByName || el.grantedBy) ? <>{qhPersonName(el.grantedByName || el.grantedBy)}{el.grantedAt ? ' · ' + qhAgo(el.grantedAt) : ''}</> : <span className="qh-ddlbox-miss">not recorded</span>}</div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {cur.piiCols.length > 0 && (
               <div className="qh-adetail-pii">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
@@ -405,7 +454,7 @@ function ApprovalsView({ st, user, role }) {
             <div className="qh-adetail-actions">
               <button className="qh-btn qh-btn-primary" onClick={() => act('approve')}>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-                Approve & run
+                {cur.escalate || cur.tier === 'DDL' ? 'Approve schema change' : 'Approve & run'}
               </button>
               <button className="qh-btn qh-btn-danger" onClick={() => act('reject')}>{noteMode === 'reject' ? 'Confirm reject' : 'Reject'}</button>
               <button className="qh-btn qh-btn-ghost" onClick={() => act('changes')}>{noteMode === 'changes' ? 'Send request' : 'Request changes'}</button>
@@ -415,44 +464,6 @@ function ApprovalsView({ st, user, role }) {
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-// ---------- DDL escalations ----------
-function DdlView({ st, user }) {
-  const items = st.queue.filter(q => q.escalate);
-  return (
-    <div className="qh-apad">
-      <div className="qh-aview-head">
-        <div>
-          <div className="qh-aview-title">DDL escalations</div>
-          <div className="qh-aview-sub">Schema changes always need a human DBA — never auto-approved.</div>
-        </div>
-      </div>
-      {items.length === 0 ? <div className="qh-aempty big"><AdminIcons.ddl /><div>No schema changes waiting.</div></div> : (
-        <div className="qh-ddl-list">
-          {items.map(it => (
-            <div key={it.id} className="qh-ddl-card">
-              <div className="qh-ddl-top">
-                <span className="qh-qavatar">{it.submitter.initials}</span>
-                <span className="qh-qname" title={qhIsHandleName(it.submitter.name) ? it.submitter.name : null}>{qhPersonName(it.submitter.name)}</span>
-                <TierBadge tier="DDL" />
-                <span className={'qh-origin-chip o-' + qhOriginKey(it.origin)} title={'Submitted via ' + qhOriginWhere(it.origin)}>{qhOriginKey(it.origin)}</span>
-                <span className="qh-ddl-target">{it.connectionId}/{it.databaseId}</span>
-                <span className="qh-qcard-when">{qhAgo(it.submittedAt)}</span>
-              </div>
-              <pre className="qh-adetail-sql sm"><code dangerouslySetInnerHTML={{ __html: qhHighlight(it.sql) }} /></pre>
-              <div className="qh-adetail-reason"><span className="qh-reason-k">Reason</span>{it.justification || it.reason}</div>
-              <div className="qh-ddl-actions">
-                <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => st.decide(it.id, 'approve', 'dba.ops')}>Approve schema change</button>
-                <button className="qh-btn qh-btn-danger qh-btn-sm" onClick={() => st.decide(it.id, 'reject', 'dba.ops')}>Reject</button>
-                <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => st.decide(it.id, 'changes', 'dba.ops')}>Request changes</button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

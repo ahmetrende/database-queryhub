@@ -453,6 +453,11 @@ def _upload_with_retry(client: WebClient, **kwargs):
     path, in a worker thread."""
     if not cfg.ENV.slack_enabled:
         return {}  # vanilla profile: no Slack upload
+    if kwargs.get("initial_comment"):
+        # The comment quotes the request, and a quoted role script carries its
+        # password (notifications._mask_secrets does the same for messages).
+        kwargs["initial_comment"] = query_safety.mask_password_literals(
+            kwargs["initial_comment"])
     attempts = len(_UPLOAD_BACKOFF_SEC) + 1
     for attempt in range(1, attempts + 1):
         try:
@@ -2270,22 +2275,32 @@ def _escalate_to_dba(client: WebClient, request: dict, pg_error: str) -> None:
         audit.log_in(cur, request["id"], None, None, "escalated_to_dba",
                      {"pg_error": pg_error})
 
-    if request.get("bundle_id"):
-        # Bundle item — refresh the bundle DM (item card flips to
-        # "awaiting manual DBA execution"). No per-item DM to requester
-        # — bundle summary will cover it once the DBA closes the item.
-        notifications.update_bundle_admin_dms(client, request["bundle_id"])
-        return
-
-    decided_by = request.get("decided_by_slack_id") or "(admin)"
-    notifications.update_all_admin_messages(
-        client, request,
-        f":construction: Approved by <@{decided_by}>{_fmt_approve_ts(request)} — *DDL needs DBA "
+    # An auto-approval has no approving admin to mention -- a waiver's row
+    # carries its own label in decided_by_name instead.
+    decided_by = request.get("decided_by_slack_id")
+    who = (f"<@{decided_by}>" if decided_by and ":" not in decided_by
+           else request.get("decided_by_name") or "an admin")
+    status_line = (
+        f":construction: Approved by {who}{_fmt_approve_ts(request)} — *DDL needs DBA "
         f"manual execution*. Run the query out-of-band with elevated "
         f"creds, then close out below.\n"
-        f"_Reason: {pg_error}_",
-        dba_manual=True,
+        f"_Reason: {pg_error}_"
     )
+    if request.get("bundle_id"):
+        # Bundle item — refresh the bundle DM (item card flips to
+        # "awaiting manual DBA execution").
+        notifications.update_bundle_admin_dms(client, request["bundle_id"])
+    else:
+        notifications.update_all_admin_messages(
+            client, request, status_line, dba_manual=True)
+    if not notifications.has_admin_dms(request):
+        # Auto-approved: no approval DM exists for the buttons to go on, and
+        # without them nothing can ever close this request.
+        notifications.post_dba_manual_dms(client, request, status_line)
+    if request.get("bundle_id"):
+        # No per-item DM to requester — bundle summary will cover it once
+        # the DBA closes the item.
+        return
     if _deliver_result_to_requester(request):
         notifications.dm_requester(
             client, request["requester_slack_id"],

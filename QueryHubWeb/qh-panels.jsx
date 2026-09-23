@@ -645,7 +645,7 @@ function OriginBadge({ dest }) {
   );
 }
 
-function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
+function Sidebar({ onRequestAuto, onToast, mode, setMode, conns, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
   const [open, setOpen] = React.useState(() => ({ 'prod-main': true, 'prod-replica': true }));
   const [q, setQ] = React.useState('');
   const sqlFileRef = React.useRef(null);
@@ -927,6 +927,10 @@ function Sidebar({ onToast, mode, setMode, conns, schemaCache, onLoadSchema, can
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
             Request database access
           </button>
+          {onRequestAuto && <button className="qh-req-btn is-quiet" onClick={onRequestAuto}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7z"/></svg>
+            Ask to skip review
+          </button>}
         </div>
       )}
     </div>
@@ -1111,6 +1115,103 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
         <button className="qh-btn qh-btn-primary is-approval" disabled={!valid} onClick={send}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>
           Send request
+        </button>
+      </div>
+    </QhModal>
+  );
+}
+
+// ---------- Ask to skip review (design 2026-09-22 §3) ----------
+// The web's first way to ask for an auto-approve window. It is worded as what it
+// is — a request to REMOVE a human review for a while — and not as a setting:
+// the title names the review, the summary says in one sentence what would run
+// unseen, and the button asks a DBA rather than "enabling" anything.
+// Only databases the caller already holds are offered, capped at the tier they
+// hold there: an exemption never reaches past a grant. DDL is not offered at all
+// — schema changes are always reviewed, and a choice the server refuses is a
+// choice the form should not show.
+const QH_AUTO_DAYS = [1, 7, 14, 30];
+function RequestAutoApproveModal({ conns, onClose, onSubmit }) {
+  const list = (conns || []).filter(c => !c.disabled && (c.databases || []).length);
+  const [connId, setConnId] = React.useState('');
+  const [db, setDb] = React.useState('');
+  const [tier, setTier] = React.useState('RO');
+  const [days, setDays] = React.useState(7);
+  const [reason, setReason] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState(null);
+  const conn = list.find(c => c.id === connId) || null;
+  const dbRow = conn ? (conn.databases || []).find(d => (d.id || d.name) === db) : null;
+  const held = dbRow && dbRow.tier ? String(dbRow.tier).toUpperCase() : null;
+  const rwOk = !held || held === 'RW' || held === 'DDL';
+  const eff = !rwOk && tier === 'RW' ? 'RO' : tier;
+  const until = new Date(Date.now() + days * 86400000).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
+  const valid = conn && db && reason.trim() && !busy;
+  const send = () => {
+    if (!valid) return;
+    setBusy(true); setErr(null);
+    Promise.resolve(onSubmit({ connectionId: conn.id, databaseId: db, tier: eff, days, reason: reason.trim() }))
+      .catch(e => { setErr((e && e.message) || 'The request was not sent.'); setBusy(false); });
+  };
+  return (
+    <QhModal onClose={onClose}>
+      <div className="qh-modal-head">
+        <div>
+          <div className="qh-modal-title">Ask to skip review</div>
+          <div className="qh-modal-sub">For a set time, your matching queries would run without a DBA looking at them first. A DBA decides; you get a DM either way.</div>
+        </div>
+        <button className="qh-icon-btn" onClick={onClose} aria-label="Close">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <div className="qh-modal-body">
+        <div className="qh-autoreq-2col">
+          <label className="qh-field">
+            <span className="qh-field-lbl">Server</span>
+            <select className="qh-input" autoFocus value={connId} onChange={e => { setConnId(e.target.value); setDb(''); }}>
+              <option value="">Select a server…</option>
+              {list.map(c => <option key={c.id} value={c.id}>{c.name || c.id}</option>)}
+            </select>
+          </label>
+          <label className="qh-field">
+            <span className="qh-field-lbl">Database</span>
+            <select className="qh-input" disabled={!conn} value={db} onChange={e => setDb(e.target.value)}>
+              <option value="">{conn ? 'Select a database…' : 'Pick a server first'}</option>
+              {(conn ? conn.databases : []).map(d => <option key={d.id || d.name} value={d.id || d.name}>{d.name || d.id}</option>)}
+            </select>
+          </label>
+        </div>
+        <span className="qh-req-note">Only databases you can already query are listed. This asks for fewer reviews, not more access.</span>
+
+        <div className="qh-field">
+          <span className="qh-field-lbl">Queries that would skip review</span>
+          <div className="qh-seg">
+            <button className={'qh-seg-opt' + (eff === 'RO' ? ' is-active' : '')} onClick={() => setTier('RO')}><TierBadge tier="RO" sm />Reads only</button>
+            <button className={'qh-seg-opt' + (eff === 'RW' ? ' is-active' : '')} disabled={!rwOk} title={rwOk ? undefined : 'You hold read-only here, so only reads can skip review.'} onClick={() => setTier('RW')}><TierBadge tier="RW" sm />Reads and writes</button>
+          </div>
+          <span className="qh-req-note">Schema changes (DDL) are always reviewed and cannot be asked for.</span>
+        </div>
+
+        <div className="qh-field">
+          <span className="qh-field-lbl">For how long</span>
+          <div className="qh-seg">{QH_AUTO_DAYS.map(n => <button key={n} className={'qh-seg-opt' + (days === n ? ' is-active' : '')} onClick={() => setDays(n)}>{n === 1 ? '1 day' : n + ' days'}</button>)}</div>
+        </div>
+
+        <label className="qh-field">
+          <span className="qh-field-lbl">Why this needs no review</span>
+          <textarea className="qh-input qh-textarea" rows="3" placeholder="What will you run, how often, and why a review each time is not worth it?" value={reason} onChange={e => { setReason(e.target.value); setErr(null); }} />
+        </label>
+
+        {conn && db && (
+          <div className="qh-autoreq-say">If granted, until about <b>{until}</b>, your {eff === 'RO' ? <b>reads</b> : <b>reads and writes</b>} on <b className="qh-mono">{conn.name || conn.id} · {db}</b> run the moment you submit them, with nobody reviewing. Each run is still logged and still masked. The window starts when a DBA grants it.</div>
+        )}
+        {err && <div className="qh-req-warn">{err}</div>}
+      </div>
+      <div className="qh-modal-foot">
+        <button className="qh-btn qh-btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="qh-btn qh-btn-primary is-approval" disabled={!valid} onClick={send}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>
+          {busy ? 'Sending…' : 'Ask a DBA'}
         </button>
       </div>
     </QhModal>
@@ -1872,4 +1973,4 @@ const DBIcons = {
   calendar: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>,
 };
 
-Object.assign(window, { Sidebar, ResultsPanel, ResultsView, TierBadge, StatusPill, DBIcons, RequestAccessModal, OriginBadge });
+Object.assign(window, { Sidebar, ResultsPanel, ResultsView, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge });

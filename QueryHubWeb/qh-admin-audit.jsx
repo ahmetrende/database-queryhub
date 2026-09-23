@@ -1,4 +1,5 @@
-// QueryHub Admin — Audit trail (design brief 2026-09-09 (c)).
+// QueryHub Admin — Audit log (design brief 2026-09-09 (c); renamed from "Audit
+// trail" 2026-09-22 §7 — the operator calls it the audit log).
 //
 // Why this screen was rebuilt: it filtered `audit_log` through a hand-written
 // list of 37 action names while the table held 132. 110 action types were
@@ -334,7 +335,7 @@ function AuditView({ st }) {
   return (
     <div className="qh-apad qh-audwrap">
       <div className="qh-aview-head">
-        <div><div className="qh-aview-title">Audit trail</div>
+        <div><div className="qh-aview-title">Audit log</div>
           <div className="qh-aview-sub">Every action the system recorded, immutable and attributed.</div></div>
       </div>
 

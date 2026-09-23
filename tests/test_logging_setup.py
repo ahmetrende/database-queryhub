@@ -154,3 +154,44 @@ def test_noisy_slack_libraries_stay_at_warning(capture):
     capture("json")
     assert logging.getLogger("slack_bolt").level == logging.WARNING
     assert logging.getLogger("slack_sdk").level == logging.WARNING
+
+
+# --- secrets never reach a line -----------------------------------------------
+#
+# Request 8930 was a role script with a password in it. Postgres quoted the
+# failing CREATE ROLE back in its CONTEXT trailer, the executor logged the
+# error, and the password landed in the web log. The redaction runs on the
+# formatted line, so it holds for the message, a traceback, and either format.
+
+SECRET = "gW6u-not-a-real-one"
+CONTEXT = ('permission denied to create role\nDETAIL:  Only roles with the '
+           'CREATEROLE attribute may create roles.\nCONTEXT:  SQL statement '
+           '"CREATE ROLE dms_user WITH\n    LOGIN\n    PASSWORD \'' + SECRET + '\';"')
+
+
+@pytest.mark.parametrize("fmt", ["text", "json"])
+def test_a_role_password_never_reaches_a_log_line(capture, fmt):
+    lines = capture(fmt)
+    logging.getLogger("queryhub.executor").info(
+        "Request %s needs DBA manual execution: %s", 8930, CONTEXT)
+    try:
+        raise RuntimeError(CONTEXT)
+    except RuntimeError:
+        logging.getLogger("queryhub.executor").exception("failed")
+    text = "\n".join(lines)
+    assert SECRET not in text
+    assert "PASSWORD '***'" in text
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("ALTER ROLE a WITH ENCRYPTED PASSWORD 'it''s' VALID UNTIL 'infinity'",
+     "ALTER ROLE a WITH ENCRYPTED PASSWORD '***' VALID UNTIL 'infinity'"),
+    ("alter role a password E'x\\'y' login", "alter role a password '***' login"),
+    ("CREATE ROLE a PASSWORD $pw$x$pw$ LOGIN", "CREATE ROLE a PASSWORD '***' LOGIN"),
+    ("host=h dbname=d user=u password=S3cr3t", "host=h dbname=d user=u password=***"),
+    # Lines that only mention the word stay as they were.
+    ("password rotated for target 5", "password rotated for target 5"),
+    ("ALTER ROLE a PASSWORD NULL", "ALTER ROLE a PASSWORD NULL"),
+])
+def test_redaction_covers_the_forms_sql_writes_a_password_in(raw, want):
+    assert logging_setup.redact(raw) == want

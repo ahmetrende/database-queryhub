@@ -21,6 +21,11 @@ import './qh-admin-access.jsx';
 // its new default tab. Same failure shape as a stale index.css: the raw
 // prototype is fine and only the built app is broken.
 import './qh-admin-person.jsx';
+// New in the 2026-09-22 round. Same load position as the <script> tag in
+// QueryHub.html: after qh-admin-person.jsx, before qh-admin-roles.jsx. Without
+// this import (and the symlink beside it) the build succeeds and the Effective
+// access screen is undefined the moment the admin panel renders it.
+import './qh-admin-effective.jsx';
 // New in the 2026-09-07 round. After qh-admin-access.jsx, which is where
 // PersonPick, ExpiryPick, expIso, expBad, connLabel and AccGroupBy come
 // from — RolesView reads all six off window and a build that loaded this

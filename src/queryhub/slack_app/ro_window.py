@@ -37,6 +37,16 @@ WINDOW_OPTIONS: list[tuple[int, str]] = [
 _VALID_WINDOW_MINUTES = frozenset(m for m, _ in WINDOW_OPTIONS)
 
 
+def window_label(minutes: int) -> str:
+    """How a window reads to a person: "8h" for the Slack windows, "7 days"
+    for the web's longer ones -- 10080 minutes read as a unit, not a number."""
+    minutes = int(minutes or 0)
+    if minutes and minutes % 1440 == 0:
+        d = minutes // 1440
+        return f"{d} day" + ("" if d == 1 else "s")
+    return f"{minutes // 60}h" if minutes % 60 == 0 else f"{minutes} min"
+
+
 def is_valid_window(minutes: int) -> bool:
     return minutes in _VALID_WINDOW_MINUTES
 
@@ -266,8 +276,7 @@ def request_modal(
 
 def admin_dm_blocks(req: dict, target_alias: str) -> list[dict]:
     """Approve/Reject DM for admins. Button values carry the request id."""
-    win = req["window_minutes"]
-    win_label = f"{int(win/60)}h" if win % 60 == 0 else f"{win} min"
+    win_label = window_label(req["window_minutes"])
     return [
         {
             "type": "section",

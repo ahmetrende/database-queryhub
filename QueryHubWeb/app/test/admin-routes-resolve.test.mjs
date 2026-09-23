@@ -31,6 +31,14 @@ function bundled() {
 test('every admin route names a component the bundle defines', () => {
   const files = bundled();
   const sources = new Map(files.map(f => [f, strip(read(f))]));
+  // Definitions are looked for in the RAW text, anchored to the start of a line.
+  // The comment stripper above is a regex, and it cannot tell a "/*" inside a
+  // string from the start of a comment: a database label '/*' in
+  // qh-admin-access.jsx made it swallow 257 lines up to the next "*/", and the
+  // test reported ScopesView and TeamsView undefined while the bundle held both.
+  // A commented-out definition starts its line with "//" or " *", so the anchor
+  // still refuses it.
+  const raw = new Map(files.map(f => [f, read(f)]));
 
   // `{curNav === 'x' && <SomeView ... />}` — the panel's routing table.
   const panel = sources.get('qh-admin.jsx');
@@ -41,7 +49,7 @@ test('every admin route names a component the bundle defines', () => {
 
   const missing = [];
   for (const r of routes) {
-    const defined = files.some(f => new RegExp('function\\s+' + r.component + '\\s*\\(').test(sources.get(f)));
+    const defined = files.some(f => new RegExp('^function\\s+' + r.component + '\\s*\\(', 'm').test(raw.get(f)));
     if (!defined) missing.push(`#admin/${r.section} -> <${r.component}>`);
   }
   assert.deepEqual(missing, [],

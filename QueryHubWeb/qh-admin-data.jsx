@@ -70,6 +70,12 @@ const QH_METRICS = {
 function useAdminState(pushToast, active, isAdminViewer) {
   const [queue, setQueue] = useAdminStateHook([]);
   const [grants, setGrants] = useAdminStateHook([]);
+  // 'loading' | 'ok' | 'error' (design 2026-09-22 §2). An empty `grants` array
+  // meant both "nobody holds anything" and "the read failed", and the Teams
+  // screen printed the same "No targets" for both — the second one live for
+  // weeks. A team card reads this to say which of the two it is looking at.
+  const [grantsState, setGrantsState] = useAdminStateHook('loading');
+  const [autoRequests, setAutoRequests] = useAdminStateHook([]);
   const [autoGrants, setAutoGrants] = useAdminStateHook([]);
   const [scopes, setScopes] = useAdminStateHook([]);
   const [roles, setRoles] = useAdminStateHook([]);
@@ -111,7 +117,8 @@ function useAdminState(pushToast, active, isAdminViewer) {
   }));
 
   const loadQueue = useAdminCb(() => qhApi.adminQueue().then(r => setQueue(mapQueue(r.queue))).catch(() => {}), []);
-  const loadGrants = useAdminCb(() => qhApi.adminGrants().then(r => setGrants(mapGrants(r.grants))).catch(() => {}), []);
+  const loadGrants = useAdminCb(() => qhApi.adminGrants().then(r => { setGrants(mapGrants(r.grants)); setGrantsState('ok'); }).catch(() => setGrantsState('error')), []);
+  const loadAutoReqs = useAdminCb(() => qhApi.adminAutoRequests().then(r => setAutoRequests(r.requests || [])).catch(() => {}), []);
   const loadAuto = useAdminCb(() => qhApi.adminAutoGrants().then(r => setAutoGrants(r.autoGrants || [])).catch(() => {}), []);
   const loadAudit = useAdminCb(() => qhApi.adminAudit().then(r => setAudit(r.audit || [])).catch(() => {}), []);
   const loadKill = useAdminCb(() => qhApi.adminKillGet().then(r => setKillSwitch({ enabled: !!r.enabled, message: r.message || '', by: r.by || null, at: r.at || null })).catch(() => {}), []);
@@ -131,8 +138,9 @@ function useAdminState(pushToast, active, isAdminViewer) {
     setLoadError(false); setLoading(true);
     const jobs = [
       qhApi.adminQueue().then(r => setQueue(mapQueue(r.queue))),
-      qhApi.adminGrants().then(r => setGrants(mapGrants(r.grants))),
+      qhApi.adminGrants().then(r => { setGrants(mapGrants(r.grants)); setGrantsState('ok'); }, e => { setGrantsState(e && e.status === 403 ? 'ok' : 'error'); throw e; }),
       qhApi.adminAutoGrants().then(r => setAutoGrants(r.autoGrants || [])),
+      qhApi.adminAutoRequests().then(r => setAutoRequests(r.requests || [])),
       qhApi.adminAudit().then(r => setAudit(r.audit || [])),
       qhApi.adminKillGet().then(r => setKillSwitch({ enabled: !!r.enabled, message: r.message || '', by: r.by || null, at: r.at || null })),
       qhApi.adminScopes().then(r => setScopes(r.scopes || [])),
@@ -236,6 +244,27 @@ function useAdminState(pushToast, active, isAdminViewer) {
   // holding state: it is per-person and only its caller wants it, so a shared
   // slot would go stale behind whoever looked last.
   const effectiveAccess = (id) => qhApi.adminEffectiveAccess(id);
+  // The team half of the Effective access screen (design 2026-09-22 §1). Same
+  // contract: a promise, no shared slot.
+  const teamEffectiveAccess = (id) => qhApi.adminTeamEffectiveAccess(id);
+  // One subject, many targets, one Save (design 2026-09-22 §4b). Written in
+  // order and STOPPED at the first refusal: the reply names the target that was
+  // refused and how many landed before it, which is a state an admin can act on
+  // — "saved with 2 errors" is not. RETURNS its promise; the form stays open
+  // on a refusal with the rows that did not land still in it.
+  const addAutoGrants = (user, rows) => {
+    let done = 0;
+    const step = (i) => i >= rows.length ? Promise.resolve() : qhApi.adminAddAutoGrant({ user, connectionId: rows[i].connectionId,
+      databaseId: rows[i].databaseId, tier: rows[i].tier, reason: rows[i].reason || null, expiresAt: rows[i].expiresAt || null })
+      .then(() => { done++; return step(i + 1); });
+    return step(0)
+      .then(() => { loadAuto(); loadAudit(); pushToast && pushToast('Auto-approve created on ' + done + ' target' + (done === 1 ? '' : 's') + '.'); return { written: done }; })
+      .catch(e => { loadAuto(); loadAudit(); const err = new Error((e && e.message) || 'Refused.'); err.written = done; throw err; });
+  };
+  const decideAutoRequest = (id, approve) => qhApi.adminDecideAutoRequest(id, { approve: !!approve })
+    .then(() => { loadAutoReqs(); loadAuto(); loadAudit();
+      pushToast && pushToast(approve ? 'Auto-approve granted. The requester was notified in Slack.' : 'Request declined. The requester was notified in Slack.'); })
+    .catch(e => fail(e, 'Decision failed.'));
   // Is this id someone? (CODE brief 2026-08-22 §3.) Also a promise, and the
   // errors are the CALLER's to render: the subject combo turns a failed lookup
   // into a note, because the grant is still writable — the server resolves the
@@ -281,6 +310,14 @@ function useAdminState(pushToast, active, isAdminViewer) {
         pushToast && pushToast('Role added: ' + ((res && res.name) || r.subject) + ' · ' + r.role + '.');
         return res; })
       .catch(e => { throw e; });
+  // PATCH (design 2026-09-22 §6). Same error contract as addRole: returned, not
+  // toasted, so the refusal lands beside the field the open form still shows.
+  const updateRole = (id, r) =>
+    qhApi.adminUpdateRole(id, { role: r.role, scopeTeamId: r.scopeTeamId || null, scopeTargetId: r.scopeTargetId || null,
+      maxTier: r.maxTier || null, validUntil: r.validUntil || null, reason: r.reason })
+      .then(res => { loadRoles(); loadAudit();
+        pushToast && pushToast(res && res.changed === false ? 'Nothing to change.' : 'Role changed: ' + ((res && res.name) || '') + '.');
+        return res; });
   const removeRole = (id) => {
     return qhApi.adminDelRole(id).then(() => { loadRoles(); loadAudit(); pushToast && pushToast('Role revoked.'); })
       .catch(e => { fail(e, 'Revoke failed.'); throw e; });
@@ -300,14 +337,15 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const removeMaskExemption = (id) => qhApi.adminDelMaskExemption(id)
     .then(() => { loadMask(); loadAudit(); pushToast && pushToast('Exemption removed.'); })
     .catch(e => fail(e, 'Remove failed.'));
-  // `changed: false` is the server saying it wrote nothing — the submitted
-  // values already matched the row. Announcing "updated" there would be this
-  // screen claiming an edit that did not happen, which is the one thing a
-  // screen about reducing protection must never do.
+  // `changed: false` is the server saying the edit was a no-op (CODE, 2026-09-15
+  // (b)) — nothing was written, so saying "updated" would announce an edit that
+  // did not happen. The form already disables Save when nothing is dirty; this
+  // is the backstop for the same fact arriving from the other side.
   const updateMaskExemption = (id, patch) => qhApi.adminUpdateMaskExemption(id, patch)
     .then(res => {
-      if (res && res.changed === false) { pushToast && pushToast('Nothing to change.'); return res; }
-      loadMask(); loadAudit(); pushToast && pushToast('Exemption updated.'); return res;
+      loadMask(); loadAudit();
+      pushToast && pushToast(res && res.changed === false ? 'Nothing to change.' : 'Exemption updated.');
+      return res;
     });
   const maskCatalog = (connectionId, databaseId) => qhApi.adminMaskCatalog(connectionId, databaseId);
   const maskPreview = (b) => qhApi.adminMaskPreview(b);
@@ -452,14 +490,15 @@ function useAdminState(pushToast, active, isAdminViewer) {
   };
 
   return {
-    queue, grants, autoGrants, scopes, roles, rolesEnforced, maskExemptions, maskMeta, people, teams, endpointReqs, feedback, audit, metrics, connections, killSwitch, config, pushToast,
+    queue, grants, grantsState, autoGrants, autoRequests, scopes, roles, rolesEnforced, maskExemptions, maskMeta, people, teams, endpointReqs, feedback, audit, metrics, connections, killSwitch, config, pushToast,
     loadError, loading, reload: reloadAll,
     decide, batchApprove, approveBundle, toggleKill,
     addGrant, updateGrant, revokeGrant, setSubjectGrants,
-    effectiveAccess, copyAccess, resolvePerson,
-    addAutoGrant, updateAutoGrant, revokeAutoGrant,
+    effectiveAccess, teamEffectiveAccess, copyAccess, resolvePerson,
+    addAutoGrant, addAutoGrants, updateAutoGrant, revokeAutoGrant, decideAutoRequest,
+    reloadGrants: loadGrants,
     saveScope, removeScope, decideEndpoint, saveConfig,
-    addRole, removeRole,
+    addRole, updateRole, removeRole,
     addMaskExemption, setMaskExemptionEnabled, removeMaskExemption, updateMaskExemption, maskCatalog, maskPreview,
     addTeam, updateTeam, removeTeam, setPersonTeams,
     addConnection, updateConnection, removeConnection, setConnectionEnabled,

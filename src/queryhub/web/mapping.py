@@ -63,7 +63,12 @@ _STATUS_TO_WEB = {
     "approved": "approved",
     "scheduled": "approved",            # approved, waiting for its run time
     "executing": "running",
-    "awaiting_dba_manual": "running",   # in DBA hands; still in flight
+    # The bot could not run it and a DBA has to. "running" kept the tab on a
+    # spinner forever (request 8930): nothing is running, and the page has no
+    # state of its own for this yet. "failed" is what the bot's attempt was;
+    # the Messages tab says a DBA takes it from here, and `awaitingDba` on the
+    # payload lets the page show it as its own state once it has one.
+    "awaiting_dba_manual": "failed",
     "completed": "done",
     "failed": "failed",
     "rejected": "rejected",
@@ -75,6 +80,12 @@ _STATUS_TO_WEB = {
 
 def status_to_web(status: str) -> str:
     return _STATUS_TO_WEB.get(status, "pending")
+
+
+def awaiting_dba(status: str | None) -> bool:
+    """Handed to a DBA to run by hand. Shown as "failed" (see above), so this
+    is the one field that tells the two apart."""
+    return status == "awaiting_dba_manual"
 
 
 def env_of(alias: str) -> str:
@@ -149,6 +160,7 @@ def history_entry(row: dict, alias_of: "callable",
         "databaseId": row["database_name"],
         "tier": query_safety.required_mode(row["query"]).upper(),
         "status": status_to_web(row["status"]),
+        "awaitingDba": awaiting_dba(row["status"]),
         "rowCount": row.get("row_count"),
         "createdAt": iso(row.get("created_at")),
         "approver": approver_label(row.get("decided_by_slack_id"),
@@ -832,6 +844,16 @@ def status_messages(row: dict) -> list[dict]:
         msgs.append({"time": t(row.get("completed_at") or row.get("executed_at")),
                      "kind": "err",
                      "text": row.get("error_message") or "Execution failed."})
+    elif status == "awaiting_dba_manual":
+        # error_message reads "requires DBA manual execution — <why>".
+        why = (row.get("error_message") or "").split("—", 1)[-1].strip().rstrip(".")
+        msgs.append({"time": t(row.get("executed_at")), "kind": "err",
+                     "text": "QueryHub could not run this"
+                             + (f": {why}" if why else "") + "."})
+        msgs.append({"time": t(row.get("executed_at")), "kind": "info",
+                     "text": "Nothing was applied. A DBA has to run it by hand; "
+                             "the request closes when they mark it done or "
+                             "failed."})
     return msgs
 
 

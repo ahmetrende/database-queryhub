@@ -1017,6 +1017,7 @@ def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
     return {
         "id": str(row["id"]),
         "status": mapping.status_to_web(row["status"]),
+        "awaitingDba": mapping.awaiting_dba(row["status"]),
         "classification": mapping.classification_of(row["query"]),
         "approver": mapping.approver_label(row.get("decided_by_slack_id"),
                                            row.get("decided_by_name"),
@@ -1467,7 +1468,10 @@ def scheduled_cancel(request_id: int, claims: dict = Depends(deps.current_user))
 
 _WS_POLL_SEC = 1.0
 _WS_MAX_TICKS = 900          # ~15 min ceiling per socket
-_WS_TERMINAL = {"failed", "rejected", "cancelled", "expired", "changes_requested"}
+# awaiting_dba_manual too: nothing changes until a person closes it, which can
+# be days, and the socket used to sit open for its full fifteen minutes.
+_WS_TERMINAL = {"failed", "rejected", "cancelled", "expired", "changes_requested",
+                "awaiting_dba_manual"}
 
 
 async def _ws_auth(websocket: WebSocket, request_id: int) -> str | None:

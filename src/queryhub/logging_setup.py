@@ -21,6 +21,7 @@ import datetime as _dt
 import json
 import logging
 import os
+import re
 
 # Attributes LogRecord always carries. Anything outside this set was attached by
 # the caller via `extra=`, and belongs in the JSON output — that is how a
@@ -77,6 +78,45 @@ class JsonFormatter(logging.Formatter):
 TEXT_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
+# A password written into SQL -- CREATE / ALTER ROLE ... PASSWORD '...' --
+# reaches a log line by more than one road: Postgres quotes the failing
+# statement back in its CONTEXT trailer, a traceback carries that same text,
+# and sqlglot's parse warning prints the head of any statement it cannot read.
+# Request 8930 put a new role's password in the web log by the first road.
+# Redacting the formatted line covers all of them, including ones no caller
+# thought about, which a fix at each call site could not.
+_SECRET_PATTERNS = (
+    # SQL literal, with Postgres's '' escape and the E'' form. The gap also
+    # admits an escaped \n, which is how a line break reads in the JSON format.
+    (re.compile(r"(\bPASSWORD(?:\s|\\[nrt])+)"
+                r"(?:E'(?:[^'\\]|\\.|'')*'|'(?:[^']|'')*')", re.I),
+     r"\1'***'"),
+    # Dollar-quoted, which a role script can use as easily.
+    (re.compile(r"(\bPASSWORD(?:\s|\\[nrt])+)(\$[A-Za-z_0-9]*\$).*?\2",
+                re.I | re.S), r"\1'***'"),
+    # libpq keyword form, as in a DSN.
+    (re.compile(r"(\bpassword\s*=\s*)('[^']*'|[^\s'\"]+)", re.I), r"\1***"),
+)
+
+
+def redact(text: str) -> str:
+    for pattern, repl in _SECRET_PATTERNS:
+        text = pattern.sub(repl, text)
+    return text
+
+
+class RedactingFormatter(logging.Formatter):
+    """Wraps another formatter and redacts what it produced, message and
+    traceback alike."""
+
+    def __init__(self, inner: logging.Formatter):
+        super().__init__()
+        self._inner = inner
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact(self._inner.format(record))
+
+
 def configure(level: str | None = None, fmt: str | None = None) -> None:
     """Install the root handler. Idempotent-ish: `force=True` replaces any
     handler already installed, so a second call (or a library that configured
@@ -87,9 +127,9 @@ def configure(level: str | None = None, fmt: str | None = None) -> None:
 
     handler = logging.StreamHandler()
     if fmt in ("json", "structured"):
-        handler.setFormatter(JsonFormatter())
+        handler.setFormatter(RedactingFormatter(JsonFormatter()))
     else:
-        handler.setFormatter(logging.Formatter(TEXT_FORMAT))
+        handler.setFormatter(RedactingFormatter(logging.Formatter(TEXT_FORMAT)))
 
     logging.basicConfig(level=level, handlers=[handler], force=True)
 

@@ -27,7 +27,7 @@ def test_status_mapping_exact_strings():
     assert mapping.status_to_web("approved") == "approved"
     assert mapping.status_to_web("scheduled") == "approved"
     assert mapping.status_to_web("executing") == "running"
-    assert mapping.status_to_web("awaiting_dba_manual") == "running"
+    assert mapping.status_to_web("awaiting_dba_manual") == "failed"
     assert mapping.status_to_web("completed") == "done"
     assert mapping.status_to_web("failed") == "failed"
     assert mapping.status_to_web("rejected") == "rejected"
@@ -75,6 +75,7 @@ def test_history_entry_shape():
         "databaseId": "queryhub",
         "tier": "RO",
         "status": "done",
+        "awaitingDba": False,
         "rowCount": 1,
         "createdAt": "2026-07-14T12:53:00+00:00",
         "approver": "alex.kim",

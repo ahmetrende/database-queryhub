@@ -112,12 +112,33 @@ def _ensure_trailing_divider(blocks: list[dict] | None) -> list[dict] | None:
     return [*blocks, {"type": "divider"}]
 
 
+def _mask_secrets(obj):
+    """Password literals out of everything a Slack message carries.
+
+    A role script's password used to reach every approver's DM, inline or in
+    the .sql snippet, and a Slack message outlives the request: migration 100
+    masks the stored query when the request closes, and the DM keeps the value.
+    Every message this module sends goes through `_post` or `_update`, so this
+    is applied there rather than at each of the places that quote a query.
+    """
+    if isinstance(obj, str):
+        return query_safety.mask_password_literals(obj)
+    if isinstance(obj, list):
+        return [_mask_secrets(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _mask_secrets(v) for k, v in obj.items()}
+    return obj
+
+
 def _post(client, **kwargs):
     """chat.postMessage wrapper that adds a trailing divider to block
     messages. getattr() avoids the literal `_post(client,` so a
     blanket call-site rewrite can't recurse into this helper."""
     if not cfg.ENV.slack_enabled:  # vanilla profile: Slack is off — no-op
         return None
+    for key in ("text", "blocks", "attachments"):
+        if kwargs.get(key):
+            kwargs[key] = _mask_secrets(kwargs[key])
     if kwargs.get("blocks"):
         kwargs["blocks"] = _ensure_trailing_divider(kwargs["blocks"])
     return getattr(client, "chat_postMessage")(**kwargs)
@@ -127,6 +148,9 @@ def _update(client, **kwargs):
     """chat.update wrapper — same trailing-divider treatment as _post."""
     if not cfg.ENV.slack_enabled:  # vanilla profile: Slack is off — no-op
         return None
+    for key in ("text", "blocks", "attachments"):
+        if kwargs.get(key):
+            kwargs[key] = _mask_secrets(kwargs[key])
     if kwargs.get("blocks"):
         kwargs["blocks"] = _ensure_trailing_divider(kwargs["blocks"])
     return getattr(client, "chat_update")(**kwargs)
@@ -498,6 +522,16 @@ def _dba_manual_blocks(
         "type": "section",
         "text": {"type": "mrkdwn", "text": status_line},
     })
+    query = request.get("query") or ""
+    if query_safety.mask_password_literals(query) != query:
+        # Slack never shows the password (see _mask_secrets), and the person
+        # running this by hand needs one.
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text":
+                          ":lock: The password in this script is hidden. Set a new "
+                          "one when you run it, and give it to the requester."}],
+        })
     blocks.append({
         "type": "actions",
         "block_id": f"req_dba_{request['id']}",
@@ -566,7 +600,7 @@ def _upload_query_snippet(
     try:
         client.files_upload_v2(
             channel=channel_id,
-            content=query,
+            content=query_safety.mask_password_literals(query),
             filename=f"request_{request_id}.sql",
             title=f"SQL for request #{request_id}",
             snippet_type="sql",
@@ -1517,6 +1551,79 @@ def update_all_admin_messages(
                 "Failed to update admin DM for request %s (channel=%s ts=%s)",
                 request["id"], r["channel_id"], r["message_ts"],
             )
+
+
+def has_admin_dms(request: dict) -> bool:
+    """Whether any admin DM exists for this request, or for its bundle."""
+    if request.get("bundle_id"):
+        row = db.fetch_one(
+            "SELECT 1 AS x FROM request_notifications "
+            " WHERE request_id = %s OR bundle_id = %s LIMIT 1",
+            (request["id"], request["bundle_id"]))
+    else:
+        row = db.fetch_one(
+            "SELECT 1 AS x FROM request_notifications WHERE request_id = %s "
+            "LIMIT 1", (request["id"],))
+    return row is not None
+
+
+def post_dba_manual_dms(client: WebClient, request: dict, status_line: str) -> int:
+    """Post the Mark completed / Mark failed card to the admins who could
+    close this request, when no approval DM exists to carry it.
+
+    `update_all_admin_messages(dba_manual=True)` only edits DMs that already
+    exist, and an auto-approved request -- a super-admin's, or one an
+    auto-approve waiver covered -- never posted one. Its escalation put the
+    buttons nowhere: the request sat in awaiting_dba_manual with no way to
+    close it, and the web showed it as running. Four were found in that state
+    on 2026-09-23, the oldest five weeks old.
+
+    Recorded like `notify_admins` records its DMs, so the close-out edits these
+    cards in lockstep. Returns how many were posted.
+    """
+    if not cfg.ENV.slack_enabled:  # vanilla profile: Slack is off — no-op
+        return 0
+    target = targets.get(request["target_server_id"])
+    if target is None:
+        return 0
+    blocks = _dba_manual_blocks(request, target, status_line)
+    overrides = _display_overrides()
+    posted_n = 0
+    for admin in admins.list_active():
+        admin_id = admin["slack_user_id"]
+        # The buttons' own guard is can_approve; an admin it would refuse gets
+        # nothing rather than a card they cannot use.
+        if not admins.can_approve(admin_id, request):
+            continue
+        try:
+            opened = client.conversations_open(users=admin_id)
+            channel_id = opened["channel"]["id"]
+            posted = _post(client,
+                channel=channel_id,
+                blocks=blocks,
+                text=f"SQL request #{request['id']} needs manual execution",
+                **overrides,
+            )
+            db.execute(
+                "INSERT INTO request_notifications "
+                "(request_id, admin_slack_id, channel_id, message_ts) "
+                "VALUES (%s, %s, %s, %s)",
+                (request["id"], admin_id, channel_id, posted["ts"]),
+            )
+            # The DBA runs this by hand, so a long query they cannot see in
+            # full is no use: same thread snippet as the approval DM.
+            if len(request.get("query") or "") > INLINE_QUERY_MAX_CHARS:
+                _upload_query_snippet(
+                    client, channel_id, request["id"], request["query"], posted["ts"],
+                )
+            posted_n += 1
+        except Exception:
+            log.exception("Failed to DM admin %s about manual request %s",
+                          admin_id, request["id"])
+    if posted_n == 0:
+        log.warning("Request %s needs manual execution and no admin could be "
+                    "told", request["id"])
+    return posted_n
 
 
 def dm_user_scheduled(client: WebClient, request: dict) -> None:

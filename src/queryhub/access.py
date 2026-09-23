@@ -675,7 +675,7 @@ def resolve_databases(principal_id: str, scopes) -> dict:
         "SELECT ts.id AS target_id, (g.principal_id IS NOT NULL) AS mine, "
         "       g.tier, t.rank, g.auto_approve, g.merge_with_team, "
         "       g.all_targets, g.all_databases, g.database_name, g.db_role, "
-        "       g.team_id, g.valid_until, "
+        "       g.team_id, g.valid_until, g.valid_from, g.reason, g.created_by, "
         "       (g.valid_until IS NOT NULL AND g.valid_until <= NOW()) AS expired, "
         "       (g.valid_from > NOW()) AS not_started "
         "  FROM access_grant g "

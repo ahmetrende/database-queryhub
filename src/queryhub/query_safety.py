@@ -946,6 +946,28 @@ def _extract_where_text(stmt: Statement) -> str | None:
     return None
 
 
+# A password written into SQL -- CREATE / ALTER ROLE ... PASSWORD '...', T-SQL's
+# WITH PASSWORD = N'...' -- is the one literal nobody reading the statement
+# needs: an approver judges the statement, not the password. Same marker as
+# migration 100's trigger, so text masked here and text the trigger masked read
+# the same. The keyword anchors the match, so a literal that merely looks like
+# a password is left alone, and `PASSWORD NULL` has nothing to mask.
+PASSWORD_MASK = "'***REDACTED***'"
+_PASSWORD_LITERAL = re.compile(
+    r"(\b(?:ENCRYPTED\s+)?PASSWORD\s*=?\s*)"
+    r"(?:E'(?:[^'\\]|\\.|'')*'"          # E'..', backslash escapes
+    r"|N?'(?:[^']|'')*'"                  # '..' and T-SQL N'..', '' escapes
+    r"|(\$[A-Za-z_0-9]*\$).*?\2)",         # $tag$..$tag$
+    re.I | re.S)
+
+
+def mask_password_literals(sql: str | None) -> str:
+    """`sql` with every password literal replaced by PASSWORD_MASK."""
+    if not sql:
+        return sql or ""
+    return _PASSWORD_LITERAL.sub(lambda m: m.group(1) + PASSWORD_MASK, sql)
+
+
 def code_text(sql: str) -> str:
     """`sql` with comments and string literals blanked out.
 

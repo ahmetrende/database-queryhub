@@ -90,7 +90,7 @@ function RoleSentence({ r }) {
   );
 }
 
-function RoleRow({ r, people, canWrite, enforced, onRevoke }) {
+function RoleRow({ r, people, canWrite, enforced, onRevoke, onEdit }) {
   const mirrored = r.source === 'mirrored';
   const off = r.enabled === false;
   const p = (people || []).find(x => x.handle === r.subject || x.id === r.subject);
@@ -128,7 +128,7 @@ function RoleRow({ r, people, canWrite, enforced, onRevoke }) {
         {mirrored
           ? <span className="qh-rolelock"><RolIcon.lock />read-only</span>
           : canWrite
-            ? <button className="qh-revoke" onClick={() => onRevoke(r)}>Revoke</button>
+            ? <>{onEdit && <button className="qh-rowbtn" onClick={() => onEdit(r)}>Edit</button>}<button className="qh-revoke" onClick={() => onRevoke(r)}>Revoke</button></>
             : null}
       </div>
     </div>
@@ -136,20 +136,47 @@ function RoleRow({ r, people, canWrite, enforced, onRevoke }) {
 }
 
 // ---------- The form ----------
-// One form for the whole screen: there is no edit endpoint, so a role is created
-// or revoked and nothing in between. Scope RETIRES rather than being rejected
-// when admin is picked (the API answers 400 for an admin role with any scope) —
-// leaving three enabled controls that will be refused is a form that lies.
-function RoleForm({ st, onDone }) {
+// One form for creating AND editing (design 2026-09-22 §6): changing a scope is
+// a privilege change, so it walks through the same fields, the same preview and
+// the same refusals as creating one. Editing adds two things: the person is
+// fixed (a role moved to someone else is a revoke and a grant, and has to read
+// that way in the audit log), and the row as it IS stands beside the row as it
+// WILL BE, with every changed field named and a widening said out loud.
+// Scope RETIRES rather than being rejected when admin is picked (the API
+// answers 400 for an admin role with any scope) — leaving three enabled
+// controls that will be refused is a form that lies.
+const ROL_RANK = { RO: 0, RW: 1, DDL: 2 };
+function rolChanges(a, b, teams, conns) {
+  const tName = (id) => id ? ((teams.find(t => t.id === id) || {}).name || id) : 'everyone';
+  const cName = (id) => id ? ((conns.find(c => c.id === id) || {}).name || id) : 'all connections';
+  const tier = (x) => x ? rolTierWord(x) + ' (' + x + ')' : 'no ceiling';
+  const end = (x) => x ? rolDate(x) : 'no end date';
+  const out = [];
+  if (a.role !== b.role) out.push(['Role', (QH_ROLE_DEFS[a.role] || {}).label, (QH_ROLE_DEFS[b.role] || {}).label, b.role === 'admin']);
+  if ((a.scopeTeamId || '') !== (b.scopeTeamId || '')) out.push(['Team', tName(a.scopeTeamId), tName(b.scopeTeamId), !b.scopeTeamId]);
+  if ((a.scopeTargetId || '') !== (b.scopeTargetId || '')) out.push(['Connection', cName(a.scopeTargetId), cName(b.scopeTargetId), !b.scopeTargetId]);
+  if ((a.maxTier || '') !== (b.maxTier || '')) out.push(['Tier ceiling', tier(a.maxTier), tier(b.maxTier), !b.maxTier || (a.maxTier && ROL_RANK[b.maxTier] > ROL_RANK[a.maxTier])]);
+  if ((a.validUntil || '').slice(0, 10) !== (b.validUntil || '').slice(0, 10)) out.push(['Ends', end(a.validUntil), end(b.validUntil), !b.validUntil || (a.validUntil && b.validUntil > a.validUntil)]);
+  if ((a.reason || '') !== (b.reason || '')) out.push(['Why', a.reason || '—', b.reason || '—', false]);
+  return out;
+}
+function RoleForm({ st, onDone, init }) {
   const conns = (st.connections || []).filter(c => c.enabled !== false);
   const teams = st.teams || [];
-  const [f, setF] = useRol({ subject: '', role: 'approver', scopeTeamId: '', scopeTargetId: '', maxTier: '', ttl: 'none', expDate: '', reason: '' });
+  const editing = !!init;
+  const [f, setF] = useRol(() => init
+    ? { subject: init.subject, role: init.role, scopeTeamId: init.scopeTeamId || '', scopeTargetId: init.scopeTargetId || '', maxTier: init.maxTier || '', ...expForm(init.validUntil), reason: init.reason || '' }
+    : { subject: '', role: 'approver', scopeTeamId: '', scopeTargetId: '', maxTier: '', ttl: 'none', expDate: '', reason: '' });
   const [busy, setBusy] = useRol(false);
   const [err, setErr] = useRol(null);
   const set = (patch) => { setF(x => ({ ...x, ...patch })); setErr(null); };
   const fleetWide = f.role === 'admin';
   const tierOn = rolTierApplies(f.role) && !fleetWide;
   const bad = !f.subject.trim() || expBad(f);
+  const nextRow = { role: f.role, scopeTeamId: fleetWide ? null : (f.scopeTeamId || null), scopeTargetId: fleetWide ? null : (f.scopeTargetId || null),
+    maxTier: tierOn ? (f.maxTier || null) : null, validUntil: expIso(f), reason: f.reason.trim() || null };
+  const changes = editing ? rolChanges(init, nextRow, teams, conns) : [];
+  const widens = changes.some(c => c[3]);
 
   const preview = {
     subject: f.subject, name: qhPersonName((st.people || []).reduce((acc, p) => (p.handle === f.subject || p.id === f.subject ? p.name : acc), f.subject)),
@@ -174,7 +201,13 @@ function RoleForm({ st, onDone }) {
   }).then(() => { setBusy(false); onDone(); })
     .catch(e => { setBusy(false); setErr({ msg: (e && e.message) || 'Could not create the role.', code: e && e.code, roleId: e && e.roleId }); });
 
-  const save = () => { if (bad || busy) return; setBusy(true); setErr(null); write(); };
+  const save = () => {
+    if (bad || busy || (editing && !changes.length)) return;
+    setBusy(true); setErr(null);
+    if (!editing) { write(); return; }
+    st.updateRole(init.id, nextRow).then(() => { setBusy(false); onDone(); })
+      .catch(e => { setBusy(false); setErr({ msg: (e && e.message) || 'Could not change the role.', code: e && e.code }); });
+  };
   // A role is immutable, so narrowing one is revoke-then-create. The 409 hands
   // back the row's id, which is the only reason this can be one button: without
   // it the admin would have to find a row the open form is covering.
@@ -185,9 +218,12 @@ function RoleForm({ st, onDone }) {
   };
 
   return (
-    <div className="qh-roleform">
-      <div className="qh-accedit-label">Who<span className="qh-accedit-hint">A role is one person — teams hold access, not permission to approve.</span></div>
-      <PersonPick people={st.people} value={f.subject} onChange={v => set({ subject: v })} resolve={st.resolvePerson} autoFocus />
+    <div className={'qh-roleform' + (editing ? ' is-editing' : '')}>
+      {editing && <div className="qh-roleform-edit-h">Changing a role</div>}
+      <div className="qh-accedit-label">Who<span className="qh-accedit-hint">{editing ? 'Fixed — giving this role to someone else is a revoke and a new role.' : 'A role is one person — teams hold access, not permission to approve.'}</span></div>
+      {editing
+        ? <div className="qh-roleform-who"><b>{qhPersonName(init.name || init.subject)}</b><span className="qh-rolerow-h">{init.subject}</span></div>
+        : <PersonPick people={st.people} value={f.subject} onChange={v => set({ subject: v })} resolve={st.resolvePerson} autoFocus />}
       {/* 404 is a fact about the person, so it belongs under the picker and
           not in the footer: the id stays typed and the fix is "have them sign
           in", not "try a different value". */}
@@ -243,9 +279,16 @@ function RoleForm({ st, onDone }) {
       <input className="qh-input" style={{ maxWidth: 460 }} placeholder="e.g. team lead, covering for Aylin until October" value={f.reason} onChange={e => set({ reason: e.target.value })} />
 
       {/* What Save writes, in the words the row will use — so the sentence is
-          checked before it exists, not after. */}
+          checked before it exists, not after. Editing shows the row as it is
+          above the row as it will be, and names every field that moved. */}
+      {editing && (
+        <div className="qh-roleprev">
+          <div className="qh-roleprev-h">Now</div>
+          <div className="qh-rolerow is-preview is-before"><div className="qh-rolerow-main"><RoleSentence r={{ ...init, allTeams: !init.scopeTeamId, allTargets: !init.scopeTargetId, anyTier: !init.maxTier }} /></div></div>
+        </div>
+      )}
       <div className="qh-roleprev">
-        <div className="qh-roleprev-h">This writes</div>
+        <div className="qh-roleprev-h">{editing ? 'After saving' : 'This writes'}</div>
         <div className="qh-rolerow is-preview">
           <span className="qh-peravatar sm">{((st.people || []).find(p => p.handle === f.subject) || {}).initials || '?'}</span>
           <div className="qh-rolerow-main">
@@ -256,6 +299,15 @@ function RoleForm({ st, onDone }) {
         </div>
       </div>
 
+      {editing && (changes.length ? (
+        <div className={'qh-rolediff' + (widens ? ' is-wide' : '')}>
+          {widens && <div className="qh-rolediff-h">This widens what {qhPersonName(init.name || init.subject)} may do.</div>}
+          {changes.map(([k, a, b, w]) => (
+            <div key={k} className="qh-rolediff-row"><span className="qh-rolediff-k">{k}</span><span className="qh-rolediff-a">{a}</span><span className="qh-rolediff-arrow">to</span><span className={'qh-rolediff-b' + (w ? ' is-wide' : '')}>{b}</span></div>
+          ))}
+        </div>
+      ) : <div className="qh-rolediff is-none">Nothing changed yet.</div>)}
+
       {err && ['no_account', 'admin_scope', 'tier_scope', 'no_team'].indexOf(err.code) < 0 && (
         <div className="qh-roleform-err">{err.msg}
           {err.roleId && <div className="qh-roleform-act">
@@ -265,7 +317,7 @@ function RoleForm({ st, onDone }) {
       )}
       <div className="qh-accedit-acts">
         <button className="qh-btn qh-btn-sm" onClick={onDone}>Cancel</button>
-        <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={bad || busy} onClick={save}>{busy ? 'Saving…' : 'Create role'}</button>
+        <button className={'qh-btn qh-btn-sm ' + (editing && widens ? 'qh-btn-danger' : 'qh-btn-primary')} disabled={bad || busy || (editing && !changes.length)} onClick={save}>{busy ? 'Saving…' : editing ? (widens ? 'Widen this role' : 'Save ' + changes.length + ' change' + (changes.length === 1 ? '' : 's')) : 'Create role'}</button>
       </div>
       {expBad(f) && <div className="qh-roleform-err">Pick an end date in the future — a role that is already over reads as a role that works.</div>}
     </div>
@@ -320,6 +372,7 @@ function RolesView({ st, user, canWrite }) {
   const [roleF, setRoleF] = useRol('all');
   const [group, setGroup] = useRol('none');
   const [adding, setAdding] = useRol(false);
+  const [editId, setEditId] = useRol(null);
   const roles = st.roles || [];
   const enforced = st.rolesEnforced !== false;
   const direct = roles.filter(r => r.source !== 'mirrored');
@@ -396,7 +449,9 @@ function RolesView({ st, user, canWrite }) {
           {groups.map(([k, list]) => (
             <div key={k || 'flat'}>
               {k && <div className="qh-section-label">{k} · {list.length}</div>}
-              <div className="qh-rolelist">{list.map(r => <RoleRow key={r.id} r={r} people={st.people} canWrite={canWrite} enforced={enforced} onRevoke={revoke} />)}</div>
+              <div className="qh-rolelist">{list.map(r => editId === r.id
+                ? <RoleForm key={r.id} st={st} init={r} onDone={() => setEditId(null)} />
+                : <RoleRow key={r.id} r={r} people={st.people} canWrite={canWrite} enforced={enforced} onRevoke={revoke} onEdit={(x) => { setEditId(x.id); setAdding(false); }} />)}</div>
             </div>
           ))}
           {rows.length === 0 && <div className="qh-conn-empty">No roles match your filter.</div>}

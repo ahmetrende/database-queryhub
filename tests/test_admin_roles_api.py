@@ -414,7 +414,8 @@ def _old(**kw):
     base = {"id": 901, "principal_id": 5, "role": "approver", "scope_team_id": 7,
             "all_teams": False, "scope_target_id": 53, "all_targets": False,
             "max_tier": "ro", "any_tier": False, "valid_until": None, "reason": None,
-            "mirrored_from": None, "source": None, "external_id": "U0EXAMPLE002"}
+            "mirrored_from": None, "source": None, "external_id": "U0EXAMPLE002",
+            "display_name": "Example Person"}
     base.update(kw)
     return base
 
@@ -438,9 +439,9 @@ def edit(monkeypatch):
 def test_raising_the_ceiling_replaces_the_row(edit):
     ra = edit["ra"]
     out = ra.admin_update_role(901, ra.RolePatch(maxTier="RW"), claims={"sub": "x"})
-    assert out == {"id": 902, "replaced": 901, "before": {
-        "role": "approver", "scopeTeamId": 7, "scopeTargetId": 53, "maxTier": "RO",
-        "validUntil": None, "reason": None}}
+    assert out == {"id": 902, "replaced": 901, "changed": True, "name": "Example Person",
+                   "before": {"role": "approver", "scopeTeamId": 7, "scopeTargetId": 53,
+                              "maxTier": "RO", "validUntil": None, "reason": None}}
     action, details = edit["audit"][0]
     assert action == "role_changed" and details["after"]["maxTier"] == "RW"
 
@@ -448,7 +449,7 @@ def test_raising_the_ceiling_replaces_the_row(edit):
 def test_an_edit_that_changes_nothing_writes_nothing(edit):
     ra = edit["ra"]
     out = ra.admin_update_role(901, ra.RolePatch(maxTier="ro"), claims={"sub": "x"})
-    assert out["replaced"] is None and edit["audit"] == []
+    assert out["replaced"] is None and out["changed"] is False and edit["audit"] == []
     assert not any(q.startswith("INSERT") for q in edit["cur"].sql)
 
 
@@ -467,3 +468,24 @@ def test_an_admin_cannot_be_given_a_scope_by_edit(edit):
     with pytest.raises(HTTPException) as e:
         ra.admin_update_role(901, ra.RolePatch(role="admin"), claims={"sub": "x"})
     assert e.value.detail["code"] == "admin_scope"
+
+
+
+def test_a_sent_null_widens_and_a_missing_field_is_not_edited(edit):
+    """The form posts the whole role: `scopeTeamId: null` there means every team.
+    A caller that leaves the field out is not editing it."""
+    ra = edit["ra"]
+    ra.admin_update_role(901, ra.RolePatch(scopeTeamId=None), claims={"sub": "x"})
+    _, details = edit["audit"][0]
+    assert details["after"]["scopeTeamId"] is None
+    edit["audit"].clear()
+    out = ra.admin_update_role(901, ra.RolePatch(reason="team lead"), claims={"sub": "x"})
+    assert edit["audit"][0][1]["after"]["scopeTeamId"] == 7
+
+
+def test_moving_a_role_to_someone_else_is_refused(edit):
+    from fastapi import HTTPException
+    ra = edit["ra"]
+    with pytest.raises(HTTPException) as e:
+        ra.admin_update_role(901, ra.RolePatch(subject="U0EXAMPLE999"), claims={"sub": "x"})
+    assert e.value.detail["code"] == "subject_immutable"

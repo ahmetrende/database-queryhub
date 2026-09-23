@@ -93,9 +93,20 @@ class WindowRequestRefused(Exception):
         self.field, self.message, self.status = field, message, status
 
 
+# The web offers whole days as well as Slack's short windows: a day-long window
+# is for a piece of work, an hour-long one for a burst of reads.
+DAY_WINDOWS = (1, 7, 14, 30)
+_TIER_RANK = {"ro": 1, "rw": 2, "ddl": 3}
+
+
+def valid_window(minutes: int) -> bool:
+    from .slack_app import ro_window
+    return ro_window.is_valid_window(minutes) or minutes in {d * 1440 for d in DAY_WINDOWS}
+
+
 def submit_window(*, principal_id: str, name: str | None, target_id: int,
                   window_minutes: int, reason: str,
-                  database_name: str | None = None):
+                  database_name: str | None = None, tier: str = "ro"):
     """Validate and persist one read-only window request.
 
     The rules the Slack modal always enforced, in one place so the web form
@@ -111,7 +122,13 @@ def submit_window(*, principal_id: str, name: str | None, target_id: int,
     from .slack_app import ro_window
     if core_submit.kill_switch_on():
         raise WindowRequestRefused("reason", core_submit.kill_switch_message(), 503)
-    if not ro_window.is_valid_window(window_minutes):
+    tier = (tier or "ro").strip().lower()
+    if tier == "ddl":
+        raise WindowRequestRefused(
+            "tier", "Schema changes are always reviewed and cannot skip review.")
+    if tier not in ("ro", "rw"):
+        raise WindowRequestRefused("tier", "Pick RO or RW.")
+    if not valid_window(window_minutes):
         raise WindowRequestRefused("window", "Pick a valid window length.")
     reason = (reason or "").strip()
     if len(reason) < 5:
@@ -136,8 +153,18 @@ def submit_window(*, principal_id: str, name: str | None, target_id: int,
     t = targets.get(target_id)
     if t is None:
         raise WindowRequestRefused("target", "That target no longer exists.", 404)
+    if tier == "rw":
+        # A waiver covers what the access allows and no more, so asking to skip
+        # review on writes needs write access to start with. Asked of the
+        # resolver, per database when one is named.
+        held = (teams.effective_mode_for_database(principal_id, target_id, db_scope)
+                if db_scope else
+                ((teams.effective_grant_for_user(principal_id, target_id) or {}).get("mode")))
+        if _TIER_RANK.get((held or "").lower(), 0) < _TIER_RANK["rw"]:
+            raise WindowRequestRefused(
+                "tier", "You hold read-only here, so only reads can skip review.", 403)
     row = create(principal_id=principal_id, name=name, target_server_id=target_id,
-                 database_name=db_scope, max_tier="ro",
+                 database_name=db_scope, max_tier=tier,
                  window_minutes=window_minutes, reason=reason)
     if row is None:              # lost the race with the partial unique index
         raise WindowRequestRefused(
@@ -151,8 +178,8 @@ def notify_admins(client, row: dict, alias: str) -> int:
     from . import admins
     from .slack_app import notifications, ro_window
     blocks = ro_window.admin_dm_blocks(row, alias)
-    fallback = (f"RO auto-approve window request from <@{row['requester_slack_id']}> "
-                f"for {alias} (#{row['id']})")
+    fallback = (f"{(row.get('max_tier') or 'ro').upper()} auto-approve window request "
+                f"from <@{row['requester_slack_id']}> for {alias} (#{row['id']})")
     reached = 0
     for a in admins.list_active():
         try:
@@ -176,3 +203,95 @@ def list_for(principal_id: str, limit: int = 50) -> list[dict]:
         " WHERE r.requester_slack_id = %s "
         " ORDER BY r.created_at DESC LIMIT %s",
         (principal_id, limit))
+
+
+class WindowDecisionRefused(Exception):
+    def __init__(self, message: str, status: int = 409):
+        super().__init__(message)
+        self.message, self.status = message, status
+
+
+def decide_window(request_id: int, *, approve: bool, actor_id: str,
+                  actor_name: str | None) -> dict:
+    """Approve or decline a pending window request -- the Slack card and the web
+    admin screen, one rulebook.
+
+    Approving writes the waiver with its window starting NOW, at the decision,
+    not at the ask. A scoped admin is held to the same tier, target and team
+    scope as a query approval, because the waiver hands out exactly that. Two
+    admins deciding at once: the second finds the request already decided.
+    Returns {status, request, grant_id?, alias}.
+    """
+    import json
+    from . import admins, auto_approve, targets
+    if not admins.is_admin(actor_id):
+        raise WindowDecisionRefused("Admin access required.", 403)
+    req = get(request_id)
+    if req is None:
+        raise WindowDecisionRefused("No such request.", 404)
+    if req["status"] != "pending":
+        raise WindowDecisionRefused(f"Already {req['status']}.")
+    t = targets.get(req["target_server_id"])
+    alias = t.alias if t else f"target #{req['target_server_id']}"
+    if not approve:
+        decided = decide(request_id, status="rejected", decided_by_slack_id=actor_id,
+                         decided_by_name=actor_name)
+        if decided is None:
+            raise WindowDecisionRefused("Already decided.")
+        db.execute(
+            "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
+            "VALUES (%s, %s, 'auto_approve_window_rejected', %s::jsonb)",
+            (actor_id, actor_name, json.dumps({"request_id": request_id,
+                                               "user": decided["requester_slack_id"]})))
+        return {"status": "rejected", "request": req, "alias": alias}
+    if not admins.can_approve(actor_id, {"required_tier": req["max_tier"],
+                                         "target_server_id": req["target_server_id"],
+                                         "requester_slack_id": req["requester_slack_id"]}):
+        raise WindowDecisionRefused(
+            "That request is outside your admin scope. Ask an admin with broader scope.", 403)
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            # The requester is told by the caller, in words about the window;
+            # the auth-event trigger would say it a second time.
+            cur.execute("SET LOCAL app.auth_dm_suppress = 'on'")
+            cur.execute(
+                "INSERT INTO auto_approve_grants "
+                "  (slack_user_id, max_tier, target_server_id, database_name, "
+                "   expires_at, reason, granted_by) "
+                "VALUES (%s, %s, %s, %s, NOW() + make_interval(mins => %s), %s, %s) "
+                "RETURNING id",
+                (req["requester_slack_id"], req["max_tier"], req["target_server_id"],
+                 auto_approve.normalise_scope(req["database_name"]), req["window_minutes"],
+                 f"window request #{request_id}: {req['reason']}", actor_id))
+            grant_id = cur.fetchone()["id"]
+            cur.execute(
+                "UPDATE auto_approve_requests SET status='approved', "
+                "  decided_by_slack_id=%s, decided_by_name=%s, granted_id=%s, "
+                "  decided_at=NOW() WHERE id=%s AND status='pending'",
+                (actor_id, actor_name, grant_id, request_id))
+            if cur.rowcount == 0:
+                conn.rollback()
+                raise WindowDecisionRefused("Already decided.")
+            cur.execute(
+                "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
+                "VALUES (%s, %s, 'auto_approve_window_approved', %s::jsonb)",
+                (actor_id, actor_name, json.dumps({
+                    "request_id": request_id, "grant_id": grant_id,
+                    "user": req["requester_slack_id"],
+                    "target_server_id": req["target_server_id"],
+                    "database_name": req["database_name"],
+                    "max_tier": req["max_tier"], "window_minutes": req["window_minutes"]})))
+        conn.commit()
+    return {"status": "approved", "request": req, "grant_id": grant_id, "alias": alias}
+
+
+def list_pending(limit: int = 200) -> list[dict]:
+    """Every request still waiting for a decision, oldest first -- the order an
+    approver works through them."""
+    return db.fetch_all(
+        "SELECT r.id, r.requester_slack_id, r.requester_name, r.target_server_id, "
+        "       t.alias, r.database_name, r.max_tier, r.window_minutes, r.reason, "
+        "       r.status, r.created_at "
+        "  FROM auto_approve_requests r "
+        "  LEFT JOIN target_servers t ON t.id = r.target_server_id "
+        " WHERE r.status = 'pending' ORDER BY r.created_at LIMIT %s", (limit,))

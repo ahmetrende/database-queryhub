@@ -219,13 +219,23 @@ def endpoint_request(body: EndpointRequestIn,
 class WindowRequestIn(BaseModel):
     connectionId: str
     databaseId: str | None = None
-    windowMinutes: int = 60
+    tier: str = "RO"
+    # Either one of the web's whole-day windows or one of Slack's short ones.
+    days: int | None = None
+    windowMinutes: int | None = None
     reason: str
 
 
 def _window_options() -> list[dict]:
+    from .. import auto_approve_requests
     from ..slack_app import ro_window
-    return [{"minutes": m, "label": lbl} for m, lbl in ro_window.WINDOW_OPTIONS]
+    return ([{"minutes": m, "label": lbl} for m, lbl in ro_window.WINDOW_OPTIONS]
+            + [{"minutes": d * 1440, "label": ro_window.window_label(d * 1440), "days": d}
+               for d in auto_approve_requests.DAY_WINDOWS])
+
+
+def _days(minutes) -> int | None:
+    return minutes // 1440 if minutes and minutes % 1440 == 0 else None
 
 
 @router.get("/auto-approve-requests")
@@ -244,6 +254,7 @@ def my_window_requests(claims: dict = Depends(deps.current_user)):
         "requests": [{
             "id": r["id"], "connectionId": r["alias"], "databaseId": r["database_name"],
             "tier": (r["max_tier"] or "ro").upper(), "windowMinutes": r["window_minutes"],
+            "days": _days(r["window_minutes"]),
             "reason": r["reason"], "status": r["status"],
             "decidedByName": r["decided_by_name"],
             "decidedAt": mapping.iso(r["decided_at"]),
@@ -268,16 +279,19 @@ def create_window_request(body: WindowRequestIn,
     t = targets.by_alias(body.connectionId)
     if t is None:
         raise deps._error(404, "not_found", "Unknown connection.")
+    minutes = (body.days * 1440 if body.days is not None
+               else body.windowMinutes if body.windowMinutes is not None else 60)
     try:
         row, t = auto_approve_requests.submit_window(
             principal_id=uid, name=claims.get("name"), target_id=t.id,
-            window_minutes=body.windowMinutes, reason=body.reason,
-            database_name=body.databaseId)
+            window_minutes=minutes, reason=body.reason,
+            database_name=body.databaseId, tier=body.tier)
     except auto_approve_requests.WindowRequestRefused as e:
         raise deps._error(e.status, "window_refused", e.message, field=e.field)
     from .routes_queries import _bot_client
     client = _bot_client()
     reached = auto_approve_requests.notify_admins(client, row, t.alias) if client else 0
     return {"id": row["id"], "status": row["status"], "connectionId": t.alias,
-            "databaseId": row["database_name"], "tier": "RO",
-            "windowMinutes": row["window_minutes"], "adminsNotified": reached}
+            "databaseId": row["database_name"], "tier": (row["max_tier"] or "ro").upper(),
+            "windowMinutes": row["window_minutes"], "days": _days(row["window_minutes"]),
+            "adminsNotified": reached}

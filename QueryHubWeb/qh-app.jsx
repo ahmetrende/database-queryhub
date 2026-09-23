@@ -215,6 +215,9 @@ function App() {
   const [reasons, setReasons] = useState(qhLoadReasons);
   const whyRef = useRef(null);
   const [reqOpen, setReqOpen] = useState(false);
+  // Asking to skip review from the web (design 2026-09-22 §3). Slack was the
+  // only door; the ask still goes to a DBA — granting stays an admin action.
+  const [autoReqOpen, setAutoReqOpen] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
   const [closePrompt, setClosePrompt] = useState(null);
   const [saveDest, setSaveDest] = useState('server');
@@ -465,6 +468,17 @@ function App() {
   }, [user]);
 
   useEffect(() => { reloadDev(); }, [reloadDev]);
+
+  // An admin change to a connection (enable, disable, add, remove, schema
+  // refresh) re-reads the list, so it shows up here without a page reload.
+  useEffect(() => {
+    if (!user) return undefined;
+    const onChanged = () => {
+      qhApi.connections().then(r => setConns(r.connections || [])).catch(() => {});
+    };
+    window.addEventListener('qh:connections-changed', onChanged);
+    return () => window.removeEventListener('qh:connections-changed', onChanged);
+  }, [user]);
 
   // Point any tab whose connection no longer resolves at the first real one.
   useEffect(() => {
@@ -1303,9 +1317,16 @@ function App() {
       scheduled={scheduled} onOpenScheduled={openScheduled} onCancelScheduled={cancelScheduled}
       history={history} onLoadHistory={loadHistory}
       width={sideWidth} onResizerDown={onResizerDown} onResizerFit={fitSidebar}
-      onRequestEndpoint={() => setReqOpen(true)} onOpenTable={openTable} onNewQuery={newQueryOn} onNewTab={newTab}
+      onRequestEndpoint={() => setReqOpen(true)} onRequestAuto={() => setAutoReqOpen(true)} onOpenTable={openTable} onNewQuery={newQueryOn} onNewTab={newTab}
       onOpenSqlFile={openSqlFile} onDownloadSql={() => requestDownloadSql(activeId)} canDownloadSql={activeHasSql} isSuper={isSuper} />
   );
+
+  // The modal stays open on a refusal (it names the field), so this RETURNS the
+  // promise and only closes on success.
+  const submitAutoRequest = (req) => qhApi.requestAutoApprove(req).then(() => {
+    setAutoReqOpen(false);
+    pushToast('Asked a DBA to let ' + req.tier + ' on ' + req.connectionId + '/' + req.databaseId + ' skip review for ' + req.days + ' day' + (req.days === 1 ? '' : 's') + '. You will get a DM when it is decided.');
+  });
 
   const submitRequest = async (req) => {
     setReqOpen(false);
@@ -1426,6 +1447,7 @@ function App() {
       {/* `load` is passed in rather than called inside the modal: qh-panels.jsx
           touches no qhApi, so every call site stays in this file. */}
       {reqOpen && <RequestAccessModal onClose={() => setReqOpen(false)} onSubmit={submitRequest} load={() => qhApi.requestable()} />}
+      {autoReqOpen && <RequestAutoApproveModal conns={conns} onClose={() => setAutoReqOpen(false)} onSubmit={submitAutoRequest} />}
       {feedbackOpen && <FeedbackModal user={user} view={view} onClose={() => setFeedbackOpen(false)} onSubmit={submitFeedback} />}
       {dlModal && <DownloadSqlModal defaultName={dlModal.name} onConfirm={performDownloadSql} onCancel={() => setDlModal(null)} />}
       {confirmRun && <ConfirmRunModal reasons={confirmRun.reasons} target={confirmRun.target} env={confirmRun.env}

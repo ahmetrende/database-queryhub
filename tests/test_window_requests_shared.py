@@ -22,11 +22,14 @@ T = SimpleNamespace(id=53, alias="prod-ledger")
 def core(monkeypatch):
     st = {"kill": False, "target": True, "db": True, "pending": None, "gone": False,
           "created": {"id": 7, "requester_slack_id": UID, "status": "pending",
-                      "database_name": None, "window_minutes": 60}, "made": []}
+                      "database_name": None, "window_minutes": 60, "max_tier": "ro"},
+          "made": [], "held": "rw"}
     monkeypatch.setattr(core_submit, "kill_switch_on", lambda: st["kill"])
     monkeypatch.setattr(core_submit, "kill_switch_message", lambda: "halted")
     monkeypatch.setattr(teams, "can_use_target", lambda pid, tid: st["target"])
     monkeypatch.setattr(teams, "can_use_database", lambda pid, tid, d: st["db"])
+    monkeypatch.setattr(teams, "effective_mode_for_database", lambda pid, tid, d: st["held"])
+    monkeypatch.setattr(teams, "effective_grant_for_user", lambda pid, tid: {"mode": st["held"]})
     monkeypatch.setattr(auto_approve, "validate_scope", lambda tid, d: None)
     monkeypatch.setattr(aar, "find_pending_for", lambda pid, tid: st["pending"])
     monkeypatch.setattr(targets, "get", lambda tid: None if st["gone"] else T)
@@ -145,4 +148,120 @@ def test_the_lengths_offered_are_the_slack_modals_own(web, monkeypatch):
     rr = web["rr"]
     monkeypatch.setattr(aar, "list_for", lambda pid, limit=50: [])
     out = rr.my_window_requests(claims={"sub": UID})
-    assert [o["minutes"] for o in out["windowOptions"]] == [m for m, _ in ro_window.WINDOW_OPTIONS]
+    mins = [o["minutes"] for o in out["windowOptions"]]
+    assert mins[:3] == [m for m, _ in ro_window.WINDOW_OPTIONS]
+    assert mins[3:] == [d * 1440 for d in aar.DAY_WINDOWS]
+
+
+# --- tiers and day windows (design 2026-09-22 §3) ------------------------------
+
+def test_a_day_window_is_accepted(core):
+    _submit(window_minutes=7 * 1440)
+    assert core["made"][0]["window_minutes"] == 7 * 1440
+
+
+def test_writes_may_be_asked_for_by_someone_who_can_write(core):
+    _submit(tier="RW", database_name="ledger")
+    assert core["made"][0]["max_tier"] == "rw"
+
+
+def test_writes_are_refused_to_someone_who_can_only_read(core):
+    core["held"] = "ro"
+    with pytest.raises(aar.WindowRequestRefused) as e:
+        _submit(tier="rw", database_name="ledger")
+    assert (e.value.field, e.value.status) == ("tier", 403)
+
+
+def test_schema_changes_cannot_be_asked_for(core):
+    with pytest.raises(aar.WindowRequestRefused) as e:
+        _submit(tier="DDL")
+    assert (e.value.field, e.value.status) == ("tier", 400)
+
+
+def test_the_web_turns_days_into_the_window(web, core):
+    rr = web["rr"]
+    core["created"] = {**core["created"], "window_minutes": 14 * 1440, "max_tier": "rw"}
+    out = rr.create_window_request(rr.WindowRequestIn(connectionId="prod-ledger", tier="RW",
+                                                      days=14, reason="migration week",
+                                                      databaseId="ledger"),
+                                   claims={"sub": UID})
+    assert core["made"][0]["window_minutes"] == 14 * 1440
+    assert out["days"] == 14 and out["tier"] == "RW"
+
+
+# --- one decision for Slack and the web ------------------------------------------
+
+@pytest.fixture
+def decision(monkeypatch):
+    from queryhub import admins, db as dbm
+    st = {"req": {"id": 7, "status": "pending", "requester_slack_id": "U0EXAMPLE002",
+                  "target_server_id": 53, "database_name": None, "max_tier": "ro",
+                  "window_minutes": 1440, "reason": "a report"},
+          "admin": True, "scope": True, "sql": [], "rowcount": 1, "decided": {"requester_slack_id": "U0EXAMPLE002"}}
+    monkeypatch.setattr(admins, "is_admin", lambda pid: st["admin"])
+    monkeypatch.setattr(admins, "can_approve", lambda pid, req: st["scope"])
+    monkeypatch.setattr(aar, "get", lambda rid: st["req"])
+    monkeypatch.setattr(aar, "decide", lambda rid, **k: st["decided"])
+    monkeypatch.setattr(targets, "get", lambda tid: T)
+    monkeypatch.setattr(dbm, "execute", lambda sql, params=None: st["sql"].append(sql))
+
+    class Cur:
+        rowcount = 1
+        def execute(self, sql, params=None):
+            st["sql"].append(sql); Cur.rowcount = st["rowcount"]
+        def fetchone(self): return {"id": 99}
+        def __enter__(self): return self
+        def __exit__(self, *e): return False
+
+    class Conn:
+        def cursor(self): return Cur()
+        def commit(self): st["sql"].append("COMMIT")
+        def rollback(self): st["sql"].append("ROLLBACK")
+        def __enter__(self): return self
+        def __exit__(self, *e): return False
+    monkeypatch.setattr(dbm, "connection", lambda: Conn())
+    return st
+
+
+def test_approving_writes_the_waiver_starting_at_the_decision(decision):
+    out = aar.decide_window(7, approve=True, actor_id="U0EXAMPLE001", actor_name="Admin")
+    assert out["status"] == "approved" and out["grant_id"] == 99
+    ins = next(q for q in decision["sql"] if "INSERT INTO auto_approve_grants" in q)
+    assert "NOW() + make_interval(mins => %s)" in ins
+    assert any("auto_approve_window_approved" in q for q in decision["sql"])
+
+
+def test_a_scoped_admin_outside_scope_is_refused(decision):
+    decision["scope"] = False
+    with pytest.raises(aar.WindowDecisionRefused) as e:
+        aar.decide_window(7, approve=True, actor_id="U0EXAMPLE001", actor_name="Admin")
+    assert e.value.status == 403
+
+
+def test_a_second_decision_finds_it_decided(decision):
+    decision["rowcount"] = 0
+    with pytest.raises(aar.WindowDecisionRefused) as e:
+        aar.decide_window(7, approve=True, actor_id="U0EXAMPLE001", actor_name="Admin")
+    assert e.value.status == 409 and "ROLLBACK" in decision["sql"]
+
+
+def test_declining_is_recorded(decision):
+    out = aar.decide_window(7, approve=False, actor_id="U0EXAMPLE001", actor_name="Admin")
+    assert out["status"] == "rejected"
+    assert any("auto_approve_window_rejected" in q for q in decision["sql"])
+
+
+def test_the_slack_card_and_the_web_screen_share_the_decision():
+    import inspect
+    from queryhub.slack_app import handlers
+    from queryhub.web import routes_admin as ra
+    for fn in (handlers.handle_ro_window_approve, handlers.handle_ro_window_reject,
+               ra.admin_decide_window_request):
+        assert "decide_window(" in inspect.getsource(fn), fn.__name__
+
+
+def test_a_day_window_reads_as_days():
+    from queryhub.slack_app import ro_window
+    assert ro_window.window_label(480) == "8h"
+    assert ro_window.window_label(1440) == "1 day"
+    assert ro_window.window_label(7 * 1440) == "7 days"

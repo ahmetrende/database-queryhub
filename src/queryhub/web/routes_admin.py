@@ -29,6 +29,7 @@ from .. import (
     engines,
     errors,
     grants,
+    manual_runs,
     people,
     pii,
     requesters,
@@ -129,7 +130,7 @@ def admin_queue(escalate: bool | None = None,
     # prints the most names and it prints them from a snapshot.
     name_of = people.namer([r.get("requester_name") or r.get("requester_slack_id")
                             for r in rows])
-    out = []
+    out, ddl_rows = [], []
     for r in rows:
         if not admins.can_approve(uid, r):
             continue
@@ -137,7 +138,67 @@ def admin_queue(escalate: bool | None = None,
         if escalate is not None and item["escalate"] != escalate:
             continue
         out.append(item)
+        if item["escalate"]:
+            ddl_rows.append((item, r))
+    if ddl_rows and teams_mod.use_v2():
+        _attach_elevation(ddl_rows)
     return {"queue": out}
+
+
+def _attach_elevation(pairs: list) -> None:
+    """The DDL standing each schema-change request runs under.
+
+    The escalations screen existed because a DDL request carries more than a
+    normal one: WHY this person holds schema rights, until when, and who gave
+    them. That screen is gone, so the queue item carries it: the grant that
+    decides the requester's DDL tier on that database, from the resolver's own
+    deciding row. Provenance only -- nothing here authorizes anything. A missing
+    part stays null for the screen to say "not recorded".
+    """
+    by_person: dict[str, list] = {}
+    for item, r in pairs:
+        by_person.setdefault(r.get("requester_slack_id"), []).append((item, r))
+    decided = {}
+    for pid, rows in by_person.items():
+        if not pid:
+            continue
+        got = access_model.resolve_databases(
+            pid, [(r["target_server_id"], r.get("database_name")) for _i, r in rows])
+        for _i, r in rows:
+            decided[(pid, r["target_server_id"], r.get("database_name"))] = got.get(
+                (int(r["target_server_id"]), r.get("database_name")), (None, None))
+    creators = sorted({row["created_by"] for res, row in decided.values()
+                       if row and row.get("created_by")})
+    who = {c["id"]: c for c in db.fetch_all(
+        "SELECT p.id, p.display_name, i.external_id FROM principal p "
+        "  LEFT JOIN principal_identity i ON i.principal_id = p.id "
+        "   AND i.provider = 'slack' AND NOT i.is_deleted "
+        " WHERE p.id = ANY(%s)", (creators,))} if creators else {}
+    team_ids = sorted({row["team_id"] for res, row in decided.values() if row and row.get("team_id")})
+    team_name = {t["id"]: t["name"] for t in db.fetch_all(
+        "SELECT id, COALESCE(display_name, name) AS name FROM team WHERE id = ANY(%s)",
+        (team_ids,))} if team_ids else {}
+    for item, r in pairs:
+        res, row = decided.get((r.get("requester_slack_id"), r["target_server_id"],
+                                r.get("database_name")), (None, None))
+        if res is None:
+            item["elevation"] = None
+            continue
+        if res.get("source") == "admin":
+            item["elevation"] = {"source": "admin", "team": None,
+                                 "reason": "holds the admin role", "grantedBy": None,
+                                 "grantedByName": None, "grantedAt": None, "expiresAt": None}
+            continue
+        c = who.get((row or {}).get("created_by")) or {}
+        item["elevation"] = {
+            "source": "team" if (row or {}).get("team_id") else "user",
+            "team": team_name.get((row or {}).get("team_id")),
+            "reason": (row or {}).get("reason"),
+            "grantedBy": c.get("external_id"),
+            "grantedByName": c.get("display_name"),
+            "grantedAt": mapping.iso((row or {}).get("valid_from")),
+            "expiresAt": mapping.iso((row or {}).get("valid_until")),
+        }
 
 
 # ---- Review: decision -------------------------------------------------------
@@ -213,6 +274,71 @@ def admin_batch_approve(body: BatchIn,
             core_decide.apply_effects(client, outcome)
             approved += 1
     return {"approved": approved}
+
+
+# ---- Review: requests a DBA has to run by hand -------------------------------
+#
+# The web's copy of the Mark completed / Mark failed card. Without it an admin
+# who works in the web could not see these requests at all, and a request
+# nobody closed stayed open for good -- the oldest found was five weeks old.
+
+def _manual_run_item(r: dict) -> dict:
+    why = (r.get("error_message") or "").split("—", 1)[-1].strip()
+    return {
+        "id": str(r["id"]),
+        "requester": {"slackId": r["requester_slack_id"],
+                      "name": r.get("requester_name")
+                              or people.display_name(r["requester_slack_id"])},
+        "connectionId": r.get("target_alias") or str(r["target_server_id"]),
+        "databaseId": r["database_name"],
+        "tier": (r.get("required_tier") or "ddl").upper(),
+        "sql": r["query"],
+        "reason": why or None,
+        "createdAt": mapping.iso(r.get("created_at")),
+        "escalatedAt": mapping.iso(r.get("executed_at")),
+        "bundleId": str(r["bundle_id"]) if r.get("bundle_id") else None,
+    }
+
+
+@router.get("/manual-runs")
+def admin_manual_runs(claims: dict = Depends(deps.current_user)):
+    """Requests waiting for a DBA to run them by hand, that this admin may
+    close. Oldest first: the one waiting longest is the one to look at."""
+    uid = admin.require_admin(claims, "review")
+    return {"items": [_manual_run_item(r) for r in manual_runs.list_open_for(uid)]}
+
+
+class ManualCloseIn(BaseModel):
+    completed: bool
+    reason: str | None = None
+
+
+@router.post("/manual-runs/{request_id}/close")
+def admin_close_manual_run(request_id: int, body: ManualCloseIn,
+                           claims: dict = Depends(deps.current_user)):
+    """Mark a request completed (you ran it) or failed (with a reason the
+    requester is shown)."""
+    # Plain gate first, so a non-admin reaches neither the lookup nor its 404;
+    # then the scoped one, which needs the row.
+    admin.require_admin(claims, "review")
+    row = db.fetch_one(
+        f"SELECT {_SCOPE_COLS} FROM requests WHERE id = %s", (request_id,))
+    if row is None:
+        raise deps._error(404, "not_found", "No such request.")
+    uid = admin.require_admin(claims, "review", request=row)
+    reason = (body.reason or "").strip()
+    if not body.completed and not reason:
+        raise deps._error(400, "bad_request",
+                          "Say why it failed; the requester is shown the reason.")
+    closed = manual_runs.close(request_id, completed=body.completed,
+                               actor_id=uid, actor_name=claims.get("name"),
+                               reason=reason or None)
+    if closed is None:
+        raise deps._error(409, "conflict",
+                          "This request is not waiting for a DBA any more.")
+    manual_runs.notify_closed(_slack_client(), closed)
+    return {"id": str(request_id),
+            "status": mapping.status_to_web(closed.row["status"])}
 
 
 # ---- Kill switch ------------------------------------------------------------
@@ -2508,18 +2634,36 @@ def _effective_access_v2(slack_id: str) -> tuple[list, list, dict | None]:
                         "sourceTeam": team_name.get(row["team_id"]) if row and row.get("team_id") else None,
                         "expiresAt": mapping.iso(row["valid_until"]) if row else None})
         if per:
+            groups: dict = {}
+            for x in per:
+                groups.setdefault((x["tier"], x["source"], x["sourceTeam"]), []).append(x)
+            mixed = len({x["tier"] for x in per}) > 1
+            if len(groups) > 1:
+                # One connection, two answers -- RW on one database, RO on
+                # another, or one from a team and one of their own. One row
+                # with the highest tier would claim RW on both, so each answer
+                # gets its own row, keyed so a list can tell them apart.
+                for (tier, src, team), xs in sorted(
+                        groups.items(), key=lambda kv: -_TIER_RANK_UI[kv[0][0]]):
+                    ends = sorted(x["expiresAt"] for x in xs if x["expiresAt"])
+                    out.append({**entry, "key": f"{t.alias}:{tier}:{src}:{team or ''}",
+                                "databases": [x["database"] for x in xs],
+                                "allDatabases": False, "tier": tier, "source": src,
+                                "sourceTeam": team, "expiresAt": ends[0] if ends else None,
+                                "perDatabase": xs, "mixedTiers": mixed})
+                continue
             top = max(per, key=lambda x: _TIER_RANK_UI[x["tier"]])
             ends = sorted(x["expiresAt"] for x in per if x["expiresAt"])
-            entry.update({"tier": top["tier"], "source": top["source"],
+            entry.update({"key": t.alias, "tier": top["tier"], "source": top["source"],
                           "sourceTeam": top["sourceTeam"],
                           # The EARLIEST end: the first thing that will change.
                           "expiresAt": ends[0] if ends else None,
                           "perDatabase": per,
-                          "mixedTiers": len({x["tier"] for x in per}) > 1})
+                          "mixedTiers": mixed})
         else:
             # An admin, a bypass, or a server with no catalog to enumerate yet.
-            entry.update({"tier": (g.get("mode") or "ro").upper(), "source": g.get("source"),
-                          "sourceTeam": None, "expiresAt": None,
+            entry.update({"key": t.alias, "tier": (g.get("mode") or "ro").upper(),
+                          "source": g.get("source"), "sourceTeam": None, "expiresAt": None,
                           "perDatabase": [], "mixedTiers": False})
         out.append(entry)
 
@@ -2539,6 +2683,8 @@ def _effective_access_v2(slack_id: str) -> tuple[list, list, dict | None]:
             "allDatabases": r["database_name"] is None,
             "expiresAt": mapping.iso(r["expires_at"]),
             "viaTeam": r.get("team_name"),
+            # The name the effective-access screen reads (design 2026-09-22).
+            "via": r.get("team_name"),
         })
 
     # Approver standing from `role_assignment`, which is where a pod lead's
@@ -2661,7 +2807,8 @@ def _team_rows_v2(team_id: int) -> tuple[list, list, list]:
         "   AND g.valid_from <= NOW() "
         "   AND (g.valid_until IS NULL OR g.valid_until > NOW())", (team_id,))
     members = db.fetch_all(
-        "SELECT i.external_id AS slack_id, p.display_name AS name, p.enabled "
+        "SELECT i.external_id AS slack_id, p.display_name AS name, p.enabled, "
+        "       p.id AS principal_id "
         "  FROM team_member m JOIN principal p ON p.id = m.principal_id "
         "  LEFT JOIN principal_identity i ON i.principal_id = p.id "
         "   AND i.provider = 'slack' AND NOT i.is_deleted "
@@ -2706,6 +2853,117 @@ def _team_rows_legacy(team_id: int) -> tuple[list, list, list]:
             (team_id,))
         for t in (a["scope_target_ids"] or [None])]
     return grants_, members, approvers
+
+
+def _overrides_v2(members: list[dict], team_dbs: dict) -> dict:
+    """{target_id: [member overriding the team there]} under the new model.
+
+    `team_dbs` is {target_id: None for every database, else the set of
+    database names the team's rows name there}.
+
+    Where a member holds their OWN grant, the team's row does not apply to them
+    (rule 4), and a team view that listed only the team's grant would be wrong
+    about that person. Two ways to override, both the resolver's:
+      * a live own grant that does not merge with the team -- theirs applies;
+      * no live own grant but an EXPIRED one -- rule 2: a lapsed personal grant
+        is no access, NOT a fall-through to the team's. A personal row is often
+        written to NARROW what the team allows, so letting its end widen access
+        back to the team's would make an expiry grant access.
+
+    Both are decided PER DATABASE, as `access.resolve` decides them. This used
+    to lump every own row on the connection together, so a member with a
+    personal grant on another database of the same server was listed as
+    overriding the team on a database the team held and they did not.
+    """
+    pids = [m["principal_id"] for m in members if m.get("principal_id")]
+    if not pids or not team_dbs:
+        return {}
+    rows = db.fetch_all(
+        "SELECT g.principal_id, g.target_id, g.all_targets, g.tier, tr.rank, "
+        "       g.database_name, g.all_databases, g.merge_with_team, g.valid_until, "
+        "       (g.valid_until IS NOT NULL AND g.valid_until <= NOW()) AS expired "
+        "  FROM access_grant g JOIN tier tr ON tr.name = g.tier "
+        " WHERE g.principal_id = ANY(%s) AND NOT g.auto_approve "
+        "   AND g.revoked_at IS NULL AND NOT g.is_deleted", (pids,))
+    by_pid = {m["principal_id"]: m for m in members if m.get("principal_id")}
+    out: dict[int, list] = {}
+    for tid, scope in team_dbs.items():
+        for pid, m in by_pid.items():
+            mine = [r for r in rows if r["principal_id"] == pid
+                    and (r["all_targets"] or r["target_id"] == tid)]
+            if not mine:
+                continue
+            # The databases where both the team and this member say something.
+            # "*" stands for every database: the team's rows cover all of them
+            # and so does one of the member's.
+            if scope is None:
+                dbs = ({"*"} if any(r["all_databases"] for r in mine) else set()) \
+                      | {r["database_name"] for r in mine
+                         if not r["all_databases"] and r["database_name"]}
+            else:
+                dbs = set(scope)
+            decided: dict[tuple, dict] = {}
+            for d in sorted(dbs):
+                cover = [r for r in mine
+                         if r["all_databases"] or (d != "*" and r["database_name"] == d)]
+                live = [r for r in cover if not r["expired"]]
+                if live:
+                    if all(r["merge_with_team"] for r in live):
+                        continue
+                    top = max(live, key=lambda r: r["rank"])
+                    end = min((r["valid_until"] for r in live if r["valid_until"]),
+                              default=None)
+                    key = (top["tier"], False, end)
+                elif cover:
+                    last = max(cover, key=lambda r: r["valid_until"])
+                    top, end, key = last, last["valid_until"], (last["tier"], True, last["valid_until"])
+                else:
+                    continue
+                e = decided.setdefault(key, {
+                    "handle": m["slack_id"], "name": m["name"],
+                    "tier": top["tier"].upper(), "databases": [],
+                    "expired": key[1], "expiresAt": mapping.iso(end)})
+                e["databases"].append(d)
+            if decided:
+                out.setdefault(tid, []).extend(
+                    sorted(decided.values(), key=lambda e: (e["expired"], e["databases"])))
+    return out
+
+
+def _overrides_legacy(members: list[dict], target_ids: list[int]) -> dict:
+    """The legacy model: a user row on a target displaces the team's there,
+    and an expired one still does (teams.effective_grant_for_user)."""
+    ids = [m["slack_id"] for m in members if m.get("slack_id")]
+    if not ids or not target_ids:
+        return {}
+    name = {m["slack_id"]: m["name"] for m in members}
+    out: dict[int, list] = {}
+    for g in db.fetch_all(
+            "SELECT slack_user_id, target_server_id, allowed_databases, mode, expires_at, "
+            "       (expires_at IS NOT NULL AND expires_at <= NOW()) AS expired "
+            "  FROM user_target_grants WHERE slack_user_id = ANY(%s) "
+            "   AND target_server_id = ANY(%s) AND revoked_at IS NULL", (ids, target_ids)):
+        out.setdefault(g["target_server_id"], []).append({
+            "handle": g["slack_user_id"], "name": name.get(g["slack_user_id"]),
+            "tier": (g["mode"] or "ro").upper(),
+            "databases": sorted(g["allowed_databases"]) if g["allowed_databases"] else ["*"],
+            "expired": bool(g["expired"]), "expiresAt": mapping.iso(g["expires_at"])})
+    return out
+
+
+def _super_approvers() -> int:
+    """People who approve EVERY team's requests: a team view's approver list is
+    the scoped ones plus these."""
+    if teams_mod.use_v2():
+        row = db.fetch_one(
+            "SELECT count(DISTINCT ra.principal_id) AS n FROM role_assignment ra "
+            "  JOIN principal p ON p.id = ra.principal_id AND p.enabled "
+            " WHERE ra.role IN ('admin', 'approver') AND ra.all_teams AND "
+            + access_model._LIVE_ROLE)
+    else:
+        row = db.fetch_one("SELECT count(*) AS n FROM admins "
+                           " WHERE enabled AND scope_team_ids IS NULL")
+    return int((row or {}).get("n") or 0)
 
 
 @router.get("/teams/{team_id}/effective-access")
@@ -2763,6 +3021,19 @@ def admin_team_effective_access(team_id: int, claims: dict = Depends(deps.curren
                            "mixedTiers": len(tiers) > 1,
                            "expiresAt": ends[0] if ends else None})
     access_out.sort(key=lambda x: x["connectionId"] or "")
+    tname = team.get("display_name") or team["name"]
+    if teams_mod.use_v2():
+        overrides = _overrides_v2(members, {
+            tid: (None if any(x["database"] is None for x in e["perDatabase"])
+                  else {x["database"] for x in e["perDatabase"]})
+            for tid, e in access_by.items()})
+    else:
+        overrides = _overrides_legacy(members, sorted(access_by))
+    for e in access_out:
+        tid = next((k for k, v in access_by.items() if v["connectionId"] == e["connectionId"]), None)
+        e["source"] = "team"
+        e["sourceTeam"] = tname
+        e["overriddenFor"] = overrides.get(tid, [])
 
     by_person: dict[str, dict] = {}
     for a in approvers:
@@ -2782,15 +3053,21 @@ def admin_team_effective_access(team_id: int, claims: dict = Depends(deps.curren
     with db.transaction() as cur:
         audit.log_in(cur, None, uid, claims.get("name"), "team_effective_access_viewed",
                      {"team_id": team_id, "targets": len(access_out)})
+    for p in by_person.values():
+        p["handle"] = p["slackId"]
     return {
-        "team": {"id": str(team["id"]),
-                 "name": team.get("display_name") or team["name"],
+        "kind": "team",
+        "team": {"id": str(team["id"]), "name": tname,
+                 "desc": ((db.fetch_one("SELECT description FROM team WHERE id = %s",
+                                        (team["id"],)) or {}).get("description") or "")
+                         if teams_mod.use_v2() else "",
                  "syncedFrom": team.get("source") if team.get("source") != "manual" else None},
-        "members": [{"slackId": m["slack_id"], "name": m["name"], "enabled": m["enabled"]}
-                    for m in members],
+        "members": [{"handle": m["slack_id"], "slackId": m["slack_id"], "name": m["name"],
+                     "enabled": m["enabled"]} for m in members],
         "access": access_out,
-        "autoApprove": auto_out,
+        "autoApprove": [{**a, "allTargets": False} for a in auto_out],
         "approvers": sorted(by_person.values(), key=lambda x: (x["name"] or "").lower()),
+        "superApprovers": _super_approvers(),
     }
 
 
@@ -2918,6 +3195,71 @@ def admin_delete_auto_grant(grant_id: str,
         audit.log_in(cur, None, uid, claims.get("name"), "auto_approve_revoked",
                      {"grant_id": grant_id, "user": row["slack_user_id"],
                       "target_id": row["target_server_id"]})
+
+
+class WindowDecisionIn(BaseModel):
+    approve: bool
+
+
+@router.get("/auto-approve-requests")
+def admin_window_requests(claims: dict = Depends(deps.current_user)):
+    """Auto-approve window requests waiting for a decision -- the ones this
+    admin may decide, by the same scope the Slack card checks.
+
+    `days` is whole days, null for Slack's short windows; `windowLabel` reads
+    right for both ("8h", "7 days").
+    """
+    uid = admin.require_admin(claims, "review")
+    from .. import auto_approve_requests as aar
+    from ..slack_app import ro_window
+    out = []
+    for r in aar.list_pending():
+        if not admins.can_approve(uid, {"required_tier": r["max_tier"],
+                                        "target_server_id": r["target_server_id"],
+                                        "requester_slack_id": r["requester_slack_id"]}):
+            continue
+        m = r["window_minutes"]
+        out.append({
+            "id": r["id"], "requester": r["requester_slack_id"],
+            "requesterName": r["requester_name"], "connectionId": r["alias"],
+            "databaseId": r["database_name"], "tier": (r["max_tier"] or "ro").upper(),
+            "days": m // 1440 if m and m % 1440 == 0 else None,
+            "windowMinutes": m, "windowLabel": ro_window.window_label(m),
+            "reason": r["reason"], "requestedAt": mapping.iso(r["created_at"]),
+            "status": r["status"]})
+    return {"requests": out}
+
+
+@router.post("/auto-approve-requests/{request_id}/decision")
+def admin_decide_window_request(request_id: int, body: WindowDecisionIn,
+                                claims: dict = Depends(deps.current_user)):
+    """Approve or decline one window request from the web. The rules, the
+    transaction and the audit row are the Slack card's own
+    (`auto_approve_requests.decide_window`); the window starts at this decision.
+    The requester is told in Slack either way."""
+    uid = admin.require_admin(claims, "review")
+    from .. import auto_approve_requests as aar
+    from ..slack_app import ro_window
+    try:
+        out = aar.decide_window(request_id, approve=body.approve, actor_id=uid,
+                                actor_name=claims.get("name"))
+    except aar.WindowDecisionRefused as e:
+        raise deps._error(e.status, "window_decision_refused", e.message)
+    from .routes_queries import _bot_client
+    client = _bot_client()
+    if client is not None:
+        from ..slack_app import notifications
+        req, win = out["request"], ro_window.window_label(out["request"]["window_minutes"])
+        text = (f":zap: Your *{req['max_tier'].upper()}* auto-approve window on "
+                f"`{out['alias']}` is active for the next {win} — matching queries "
+                "dispatch immediately, no approval needed."
+                if out["status"] == "approved" else
+                f":no_entry: Your auto-approve window request (#{request_id}) was declined.")
+        try:
+            notifications.dm_requester(client, req["requester_slack_id"], text)
+        except Exception:
+            log.exception("window decision DM failed for request %s", request_id)
+    return {"id": request_id, "status": out["status"], "grantId": out.get("grant_id")}
 
 
 class AutoGrantTargetIn(BaseModel):
@@ -3188,7 +3530,11 @@ class RoleIn(BaseModel):
     subject: str                       # the person's Slack id
     role: str
     scopeTeamId: int | None = None     # None = every team
-    scopeTargetId: int | None = None   # None = every target
+    # None = every target. The connection's alias or its numeric id: every other
+    # admin screen names a connection by its alias (the connection list's `id`),
+    # so a picker filled from that list sends one -- and this field accepting only
+    # an integer made every connection-scoped role from the web a 422.
+    scopeTargetId: int | str | None = None
     maxTier: str | None = None         # None = no ceiling
     validUntil: datetime | None = None
     reason: str | None = None
@@ -3211,7 +3557,11 @@ def _role_row(r: dict) -> dict:
             "role": r["role"], "enabled": bool(r["enabled"]),
             "scopeTeamId": r["scope_team_id"], "scopeTeamName": r.get("team_name"),
             "allTeams": bool(r["all_teams"]),
-            "scopeTargetId": r["scope_target_id"], "scopeTargetName": r.get("alias"),
+            # The alias, which is the connection list's `id`: a form filled from
+            # that list preselects by it. The numeric id read as "All
+            # connections" in the edit form, because no option matched it.
+            "scopeTargetId": (r.get("alias") or r["scope_target_id"]) if r["scope_target_id"] else None,
+            "scopeTargetName": r.get("alias"),
             "allTargets": bool(r["all_targets"]),
             "maxTier": (r["max_tier"] or "").upper() or None,
             "anyTier": bool(r["any_tier"]),
@@ -3272,6 +3622,18 @@ def admin_roles(claims: dict = Depends(deps.current_user)):
             "enforced": teams.use_v2()}
 
 
+def _resolve_scope_target(value) -> int | None:
+    """A role's connection scope, from an alias or a numeric id."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
+        return int(value)
+    t = targets.by_alias(str(value))
+    if t is None:
+        raise deps._error(404, "no_target", f"No connection named '{value}'.")
+    return t.id
+
+
 def _check_role_spec(role: str, scope_team_id, scope_target_id, max_tier) -> str | None:
     """The rules a role must satisfy, shared by create and edit. Returns the
     tier as the FK stores it."""
@@ -3301,6 +3663,7 @@ def _check_role_spec(role: str, scope_team_id, scope_target_id, max_tier) -> str
 @router.post("/roles", status_code=201)
 def admin_create_role(body: RoleIn, claims: dict = Depends(deps.current_user)):
     uid = admin.require_admin(claims, "access")
+    body.scopeTargetId = _resolve_scope_target(body.scopeTargetId)
     tier = _check_role_spec(body.role, body.scopeTeamId, body.scopeTargetId, body.maxTier)
 
     with db.transaction() as cur:
@@ -3413,13 +3776,18 @@ def admin_revoke_role(role_id: int, claims: dict = Depends(deps.current_user)):
 
 
 class RolePatch(BaseModel):
+    # A field that is SENT is set -- to null means every team / every target /
+    # no ceiling / no end -- and a field left out is not edited. That is what a
+    # form posting the whole role needs; the explicit flags below say the same
+    # for a caller that sends only what changed.
+    subject: str | None = None
     role: str | None = None
     # A scope is changed by sending it; `...All` switches it to every team or
     # every target. The two cannot be told apart from a bare null, which would
     # mean both "not editing this" and "widen it to everything".
     scopeTeamId: int | None = None
     scopeTeamAll: bool = False
-    scopeTargetId: int | None = None
+    scopeTargetId: int | str | None = None
     scopeTargetAll: bool = False
     maxTier: str | None = None
     clearMaxTier: bool = False
@@ -3446,7 +3814,8 @@ def admin_update_role(role_id: int, body: RolePatch,
     uid = admin.require_admin(claims, "access")
     with db.transaction() as cur:
         cur.execute(
-            "SELECT ra.*, i.external_id FROM role_assignment ra "
+            "SELECT ra.*, i.external_id, p.display_name FROM role_assignment ra "
+            "  JOIN principal p ON p.id = ra.principal_id "
             "  JOIN principal_identity i ON i.principal_id = ra.principal_id "
             "   AND i.provider = 'slack' AND NOT i.is_deleted "
             " WHERE ra.id = %s AND ra.revoked_at IS NULL AND NOT ra.is_deleted",
@@ -3464,20 +3833,28 @@ def admin_update_role(role_id: int, body: RolePatch,
                 f"would be undone on its next run. Change the team's lead or what "
                 f"the team owns instead.")
 
+        sent = body.model_fields_set
+        if "subject" in sent and body.subject and body.subject != old["external_id"]:
+            # Moving a role to someone else is a revoke and a new role, and has
+            # to read that way in the audit log -- not as an edit of this row.
+            raise deps._error(400, "subject_immutable",
+                              "A role belongs to one person. Revoke it and create "
+                              "a new one for the other person.")
         role = body.role or old["role"]
         team = (None if body.scopeTeamAll else
-                body.scopeTeamId if body.scopeTeamId is not None else old["scope_team_id"])
+                body.scopeTeamId if "scopeTeamId" in sent else old["scope_team_id"])
         target = (None if body.scopeTargetAll else
-                  body.scopeTargetId if body.scopeTargetId is not None else old["scope_target_id"])
+                  _resolve_scope_target(body.scopeTargetId) if "scopeTargetId" in sent
+                  else old["scope_target_id"])
         if body.clearMaxTier:
             max_tier = None
-        elif body.maxTier is not None:
+        elif "maxTier" in sent:
             max_tier = body.maxTier
         else:
             max_tier = None if role == "admin" and old["role"] != "admin" else old["max_tier"]
         until = (None if body.clearValidUntil else
-                 body.validUntil if body.validUntil is not None else old["valid_until"])
-        reason = body.reason if body.reason is not None else old["reason"]
+                 body.validUntil if "validUntil" in sent else old["valid_until"])
+        reason = body.reason if "reason" in sent else old["reason"]
         tier = _check_role_spec(role, team, target, max_tier)
 
         before = {"role": old["role"], "scopeTeamId": old["scope_team_id"],
@@ -3488,7 +3865,8 @@ def admin_update_role(role_id: int, body: RolePatch,
                  "maxTier": (tier or "").upper() or None,
                  "validUntil": mapping.iso(until), "reason": reason}
         if before == after:
-            return {"id": role_id, "replaced": None, "before": before}
+            return {"id": role_id, "replaced": None, "before": before,
+                    "changed": False, "name": old["display_name"]}
         if team is not None:
             cur.execute("SELECT 1 FROM team WHERE id = %s AND NOT is_deleted", (team,))
             if cur.fetchone() is None:
@@ -3529,7 +3907,8 @@ def admin_update_role(role_id: int, body: RolePatch,
         audit.log_in(cur, None, uid, claims.get("name"), "role_changed",
                      {"subject": old["external_id"], "role_id": role_id,
                       "new_role_id": new_id, "before": before, "after": after})
-    return {"id": new_id, "replaced": role_id, "before": before}
+    return {"id": new_id, "replaced": role_id, "before": before,
+            "changed": True, "name": old["display_name"]}
 
 
 # ---- Insights (review): audit / metrics / feedback --------------------------
