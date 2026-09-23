@@ -28,9 +28,12 @@ failure), the sweep step is skipped entirely to avoid mass-disabling
 everything.
 
 Naming convention:
-    alias = first dotted segment of the endpoint
+    alias = the instance's name in the inventory (v_server.db_instance_identifier),
+            else the first dotted segment of the endpoint
         e.g. acme-prod-orders.<aws-id>.<region>.rds.amazonaws.com
              → acme-prod-orders
+        A Huawei endpoint starts with the instance ID, so the inventory name
+        is the only readable one.
     A name already in use is settled by targets.claim_alias().
 
 For each new row:
@@ -61,6 +64,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -230,6 +234,28 @@ def plan_authoritative_disables(servers: list[dict],
                 "detail": f"now at {live['endpoint']}",
             })
     return plans
+
+
+# What an alias may be (the admin form's rule): 1-63 characters, letters,
+# digits, dot, dash or underscore, starting alphanumeric.
+_ALIAS_OK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
+
+
+def name_for_endpoint(endpoint: str, servers: list[dict]) -> str:
+    """The name a new target is imported under: the instance's own name from
+    the inventory (`v_server.db_instance_identifier`), else the endpoint's
+    first label.
+
+    On AWS the two are the same word. On Huawei they are not: the hostname
+    starts with the instance ID (`<32 hex>in03.internal....`), so importing by
+    hostname named 19 targets like that while the readable name
+    (`<system>-<service>-huawei-<6 hex>`) sat in the inventory unused."""
+    for s in servers:
+        if s.get("endpoint") == endpoint and not s.get("is_deleted"):
+            ident = (s.get("db_instance_identifier") or "").strip()
+            if _ALIAS_OK.fullmatch(ident):
+                return ident
+    return endpoint.split(".", 1)[0]
 
 
 def plan_replica_links(servers: list[dict], rows: list[dict]) -> list[tuple[int, int | None]]:
@@ -417,9 +443,9 @@ def main() -> int:
         if endpoint in existing:
             skipped += 1
             continue
-        # The first label of the endpoint, unless that name is in use -- then
-        # targets.claim_alias() settles it the same way for every importer.
-        claim = targets.claim_alias(endpoint.split(".", 1)[0], "postgres",
+        # The instance's inventory name (see name_for_endpoint). A name in use
+        # is settled by targets.claim_alias() the same way for every importer.
+        claim = targets.claim_alias(name_for_endpoint(endpoint, servers), "postgres",
                                     holders, yield_to_live=True)
         alias = claim.alias
         non_pg = [d for d in db_names if d != "postgres"]
