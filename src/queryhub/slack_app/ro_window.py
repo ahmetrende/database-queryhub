@@ -121,6 +121,35 @@ def nudge_blocks(
     ]
 
 
+def active_waivers_block(scopes: list[dict], limit: int = 3) -> dict:
+    """The auto-approve badge, naming where it applies.
+
+    It used to say "queries at or below this tier dispatch immediately" with no
+    place attached, which read as everywhere to someone covered on one server.
+    `scopes` is what `modal._waiver_scopes` builds: alias (None = every
+    connection), database (None = every database there), tier, until, and the
+    team a waiver comes from, if any.
+    """
+    parts = []
+    for s in scopes[:limit]:
+        where = ("every connection" if s["alias"] is None
+                 else _scope_label(s["alias"], s["database"]))
+        via = f", via {s['team']}" if s.get("team") else ""
+        parts.append(f"{where} (up to *{s['tier'].upper()}*, {s['until']}{via})")
+    more = len(scopes) - limit
+    if more > 0:
+        parts.append(f"and {more} more")
+    return {
+        "type": "context",
+        "elements": [{
+            "type": "mrkdwn",
+            "text": (":zap: *Auto-approve active* on " + "; ".join(parts) + ". "
+                     "Queries there at or below that tier dispatch immediately; "
+                     "anything else still waits for approval."),
+        }],
+    }
+
+
 def request_cta_blocks() -> list[dict]:
     """Modest, ALWAYS-available entry point for requesting an RO
     auto-approve window (shown when the user has no active grant and no

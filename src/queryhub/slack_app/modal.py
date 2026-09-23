@@ -173,35 +173,79 @@ def _recent_ro_burst(principal_id: str) -> dict | None:
     return {"count": len(ro), "target_server_id": tid, "database_name": dbname}
 
 
+def _waiver_scopes(principal_id: str, rows: list[dict]) -> list[dict]:
+    """Where this user's auto-approve actually applies, for the badge.
+
+    A team row is listed only if it reaches this member -- the same question
+    `effective_grant` asks before letting one decide -- so the badge never
+    promises a waiver the submit path would refuse. A team row with no
+    database cannot be asked that question and is left off: the badge may
+    undersell, it must not oversell.
+    """
+    out, seen = [], set()
+    for r in rows:
+        tid, dbn = r.get("target_server_id"), r.get("database_name")
+        if (tid, dbn) in seen:
+            continue
+        if r.get("team_id") is not None and not auto_approve._team_waiver_applies(
+                principal_id, tid, dbn):
+            continue
+        seen.add((tid, dbn))
+        out.append({"tid": tid, "database": dbn, "tier": r["max_tier"],
+                    "until": auto_approve.fmt_until(r.get("expires_at")),
+                    "team": r.get("team_name") if r.get("team_id") is not None else None})
+
+    # A waiver that contains another at the same tier or above makes the
+    # narrower one say nothing: listing three servers for someone covered on
+    # every connection hid the one fact that mattered behind "and 2 more".
+    def contains(a, b):
+        wider = a["tid"] is None or (a["tid"] == b["tid"] and a["database"] is None)
+        return (a is not b and wider
+                and auto_approve._TIER_RANK[a["tier"]] >= auto_approve._TIER_RANK[b["tier"]])
+    out = [b for b in out if not any(contains(a, b) for a in out)]
+    out.sort(key=lambda x: (x["tid"] is not None, x["database"] is not None))
+    for x in out:
+        t = targets.get(x["tid"]) if x["tid"] is not None else None
+        x["alias"] = (t.alias if t else f"target #{x['tid']}") if x["tid"] is not None else None
+    return out
+
+
 def _auto_approve_banner(principal_id: str | None) -> list[dict]:
-    """Top-of-modal banner: the active auto-approve badge (if any) plus the
-    RO-burst nudge (Batch tip, and — when the user has no active grant — a
-    1-hour RO-window request button). Always returns a list; never raises
-    (the modal must open regardless)."""
+    """Top-of-modal banner: where the user's auto-approve applies (if
+    anywhere), the RO-burst nudge, and the window-request button.
+
+    A waiver covers a connection, or one database on it, not the person. This
+    used to ask "does this person hold any waiver" and act on the answer
+    everywhere: the badge told someone covered on one server that every query
+    would dispatch immediately, and the request button was hidden, so a person
+    covered on one server could never ask for a window on another from Slack.
+    The button is now always offered; only the prominent burst nudge stands
+    down, and only when the burst's own database is already covered.
+
+    Always returns a list; never raises (the modal must open regardless)."""
     if not principal_id:
         return []
     blocks: list[dict] = []
-    tier, expires_at, grant_id = auto_approve.best_active_tier(principal_id)
-    has_grant = tier is not None
-    if has_grant:
-        until = auto_approve.fmt_until(expires_at)
-        blocks.append({
-            "type": "context",
-            "elements": [{
-                "type": "mrkdwn",
-                "text": (
-                    f":zap: *Auto-approve active* — up to *{tier.upper()}*, "
-                    f"{until}. Queries at or below this tier dispatch "
-                    "immediately on Submit (no admin approval needed). "
-                    "Higher-tier queries still need admin approval."
-                ),
-            }],
-        })
+    try:
+        rows = auto_approve.active_grants(principal_id)
+        scopes = _waiver_scopes(principal_id, rows)
+    except Exception:
+        rows, scopes = None, []   # the badge is advisory; it must not block the modal
+    if scopes:
+        blocks.append(ro_window.active_waivers_block(scopes))
     try:
         burst = _recent_ro_burst(principal_id)
     except Exception:
         burst = None  # detection must never block the modal
+    covered = False
     if burst:
+        try:
+            covered = auto_approve.effective_grant(
+                principal_id, "ro", target_server_id=burst["target_server_id"],
+                database_name=burst["database_name"], rows=rows) is not None
+        except Exception:
+            covered = False
+    if burst and not covered:
         t = targets.get(burst["target_server_id"])
         alias = t.alias if t else f"target #{burst['target_server_id']}"
         blocks.extend(ro_window.nudge_blocks(
@@ -211,12 +255,11 @@ def _auto_approve_banner(principal_id: str | None) -> list[dict]:
             target_alias=alias,
             target_server_id=burst["target_server_id"],
             database_name=burst["database_name"],
-            has_active_grant=has_grant,
+            has_active_grant=False,
         ))
-    elif not has_grant:
-        # No read-burst and no active grant: the window request is ALWAYS
-        # available, just modest here (the burst branch above is the
-        # prominent, 3rd-request-and-up version).
+    else:
+        # No burst, or a burst on a database that already skips review: the
+        # window request stays available, modest, for everywhere else.
         blocks.extend(ro_window.request_cta_blocks())
     # Separate the banner group from the help tip / form below it.
     if blocks:

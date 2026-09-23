@@ -251,41 +251,6 @@ def effective_grant(
     return None
 
 
-def list_active_grants(principal_id: str) -> list[dict]:
-    """Every currently-active grant for a user (NOW() inside the
-    [starts_at, expires_at) window). Used by the modal banner and by
-    `/sql whoami`."""
-    return db.fetch_all(
-        "SELECT grant_id AS id, max_tier, starts_at, expires_at, "
-        "       reason, granted_by "
-        "  FROM v_active_auto_approve "
-        " WHERE slack_user_id = %s "
-        " ORDER BY max_tier DESC, expires_at NULLS LAST",
-        (principal_id,),
-    )
-
-
-def best_active_tier(principal_id: str) -> tuple[str | None, datetime | None, int | None]:
-    """For modal banner rendering: returns (max_tier, expires_at, grant_id)
-    of the user's most permissive active grant, or (None, None, None) if
-    no active grant exists.
-
-    "Most permissive" = highest max_tier, then latest expires_at (NULL =
-    never)."""
-    grants = list_active_grants(principal_id)
-    if not grants:
-        return None, None, None
-    grants.sort(
-        key=lambda r: (
-            _TIER_RANK[r["max_tier"]],
-            r["expires_at"] or datetime.max.replace(tzinfo=timezone.utc),
-        ),
-        reverse=True,
-    )
-    g = grants[0]
-    return g["max_tier"], g.get("expires_at"), g["id"]
-
-
 def fmt_until(expires_at: datetime | None) -> str:
     """Short human label for the modal banner / DM text."""
     if expires_at is None:

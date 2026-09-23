@@ -1263,8 +1263,8 @@ _FIELD_TO_BLOCK = {
 
 
 def _maybe_dm_ro_burst(client: WebClient, principal_id: str, required_mode: str) -> None:
-    """If this submit just crossed the RO-burst threshold AND the user has no
-    active auto-approve grant, DM them the same nudge the /sql modal banner
+    """If this submit just crossed the RO-burst threshold AND the burst's own
+    database is not already auto-approved, DM them the same nudge the /sql modal banner
     shows. Fires once per crossing (count == threshold, not on every later
     request). Never raises — a nudge failure must not affect the submission."""
     if required_mode != "ro":
@@ -1273,9 +1273,14 @@ def _maybe_dm_ro_burst(client: WebClient, principal_id: str, required_mode: str)
         burst = modal._recent_ro_burst(principal_id)
         if not burst or burst["count"] != cfg.get_int("ro_burst_threshold", 3):
             return
-        tier, _, _ = auto_approve.best_active_tier(principal_id)
-        if tier is not None:
-            return  # already auto-approving RO — the nudge would be noise
+        # Noise only when the burst's OWN database already skips review. A
+        # waiver somewhere else says nothing about this one: asking "any
+        # waiver at all" silenced the nudge for everyone covered on one server
+        # while they queued reads on another.
+        if auto_approve.effective_grant(
+                principal_id, "ro", target_server_id=burst["target_server_id"],
+                database_name=burst["database_name"]) is not None:
+            return
         t = targets.get(burst["target_server_id"])
         alias = t.alias if t else f"target #{burst['target_server_id']}"
         blocks = ro_window.nudge_blocks(
