@@ -9,6 +9,13 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+### Changed
+
+- **Every admin screen stops at 1600 px on a wide monitor,** centred beside
+  the nav, and the approval queue's detail pane stops at 1120 px. This
+  replaces the Audit log's own 1480 px cap from 1.0.33. Nothing changes below
+  about 1860 px wide.
+
 ## [1.0.33] — 2026-09-23
 
 Two engines execute: ClickHouse and Amazon Athena, both read-only. A read-only

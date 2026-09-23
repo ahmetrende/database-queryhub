@@ -892,7 +892,15 @@
   .qh-anav-badge { min-width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; padding: 0 5px; font-size: 10px; font-weight: 700; color: #fff; background: var(--brand-green); border-radius: 999px; }
 
   .qh-aview { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
-  .qh-apad { flex: 1; overflow-y: auto; padding: 24px 28px; }
+  /* Every admin screen is one of these. On a wide monitor the content stops at
+     1600px and sits centred in the space beside the nav, the way Home and
+     What's new already do — rows stretched to the screen edge put a row's
+     actor and id a metre from the thing they describe. Done with padding, not
+     a child max-width: the scroll area (and its scrollbar) stays full width,
+     and a modal or popover rendered inside is not squeezed. The % resolves
+     against .qh-aview, which is exactly this element's width. 1600, not less:
+     the Connections table needs ~1500px with all six row actions. */
+  .qh-apad { flex: 1; overflow-y: auto; padding: 24px max(28px, calc((100% - 1600px) / 2)); }
   .qh-aview-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
   .qh-aview-title { font-size: 19px; font-weight: 600; color: var(--fg-primary); letter-spacing: -0.2px; }
   .qh-aview-sub { font-size: 13px; color: var(--fg-tertiary); margin-top: 3px; }
@@ -946,6 +954,9 @@
   .qh-qcard-when { font-size: 11px; color: var(--fg-tertiary); margin-top: 5px; }
 
   .qh-adetail { flex: 1; overflow-y: auto; padding: 24px 28px; min-width: 0; }
+  /* Master-detail: the request stays beside the list that picked it, capped so
+     a wide monitor does not stretch the SQL and the stats to the window edge. */
+  .qh-adetail > * { max-width: 1120px; }
   .qh-adetail-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 18px; border-bottom: 1px solid var(--stroke-light); }
   .qh-adetail-who { display: flex; align-items: center; gap: 12px; }
   .qh-adetail-name { font-size: 16px; font-weight: 600; color: var(--fg-primary); }
@@ -1252,11 +1263,6 @@
   .qh-roleform-act { margin-top: 9px; }
   /* ---------- Audit trail (redesign 2026-09-09 (b)) ---------- */
   .qh-audwrap { display: flex; flex-direction: column; min-height: 0; }
-  /* A wide monitor stretched every row to the screen edge, so the actor and the
-     request id sat a metre away from the action they belong to. The content
-     stops at 1480px (left-aligned, like every admin screen); the scroll area
-     stays full width so the scrollbar is still at the window edge. */
-  .qh-audwrap > * { width: 100%; max-width: 1480px; }
   /* Search is the primary control, not an afterthought beside the chips: it
      reaches the whole table server-side and it is how most sessions start. */
   .qh-audsearch { display: flex; align-items: center; gap: 10px; padding: 0 12px; height: 42px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-full); color: var(--fg-tertiary); }
