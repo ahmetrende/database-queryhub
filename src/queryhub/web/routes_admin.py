@@ -14,7 +14,7 @@ import logging
 from datetime import datetime, timezone
 import re
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from .. import (
@@ -856,16 +856,12 @@ def admin_create_connection(body: ConnectionIn,
     return _connection_payload(targets.admin_row(new_id))
 
 
-@router.patch("/connections/{conn}")
-def admin_update_connection(conn: str, body: ConnectionPatch,
-                            claims: dict = Depends(deps.current_user)):
-    """Edit one connection: any field, the enabled flag, and any of the three
-    credentials. Absent fields are left alone — this is a patch, not a
-    replace, because the client is never given the passwords it would need to
-    send back on a full replace."""
-    uid = admin.require_admin(claims, "access")
-    row = _require_target_row(conn)
-    target_id = row["id"]
+def _plan_connection_update(row: dict, body: "ConnectionPatch") -> tuple[dict, dict]:
+    """(changes, credentials) for one connection, checked against its stored
+    row with every rule the edit screen has always applied -- above all, that
+    enabling one needs a real read-only credential. Raises the same errors it
+    always has; the bulk route collects them per connection instead of
+    stopping at the first."""
     engine = _clean_engine(body.engine) if body.engine is not None else row["engine"]
     creds = _clean_credentials(body.credentials)
 
@@ -919,6 +915,52 @@ def admin_update_connection(conn: str, body: ConnectionPatch,
                 f"before enabling it.")
         changes["enabled"] = bool(body.enabled)
 
+    return changes, creds
+
+
+def _apply_connection_update(cur, row: dict, changes: dict, creds: dict,
+                             uid: str, actor_name: str | None) -> None:
+    """Write one planned connection change and its audit row, inside the
+    caller's transaction."""
+    target_id = row["id"]
+    written = targets.update_in(cur, target_id, changes)
+    for mode, (username, password) in creds.items():
+        targets.set_credentials_in(cur, target_id, mode, username, password)
+    details: dict = {"connection": row["alias"], "target_id": target_id,
+                     "changed": written, "credentials": sorted(creds)}
+    # The new value is worth recording for the two fields whose change is
+    # the security-relevant event; the rest are named but not quoted, so
+    # the entry stays free of anything that could be a secret.
+    if "enabled" in changes:
+        details["enabled"] = changes["enabled"]
+    if "alias" in changes:
+        details["renamed_to"] = changes["alias"]
+    if "tags" in changes:
+        # Name the tag change, not just the fact that "tags" moved. These
+        # are the words an operator will search the log for six months from
+        # now — "when did prod-main stop saying AWS" — and they are labels,
+        # never credentials, so quoting them costs nothing. Both sides,
+        # because a tag that was REMOVED is the interesting half.
+        details["tags_before"] = row.get("tags") or {}
+        details["tags_after"] = changes["tags"]
+        details["hosting"] = " · ".join(
+            str(changes["tags"][k]) for k in TAG_RESERVED
+            if changes["tags"].get(k)) or None
+    audit.log_in(cur, None, uid, actor_name, "connection_updated",
+                 details)
+
+
+@router.patch("/connections/{conn}")
+def admin_update_connection(conn: str, body: ConnectionPatch,
+                            claims: dict = Depends(deps.current_user)):
+    """Edit one connection: any field, the enabled flag, and any of the three
+    credentials. Absent fields are left alone — this is a patch, not a
+    replace, because the client is never given the passwords it would need to
+    send back on a full replace."""
+    uid = admin.require_admin(claims, "access")
+    row = _require_target_row(conn)
+    changes, creds = _plan_connection_update(row, body)
+
     # A save that changed nothing writes nothing — no empty transaction and,
     # more to the point, no audit row. An audit trail padded with "updated"
     # entries that record no change is one nobody reads.
@@ -926,32 +968,85 @@ def admin_update_connection(conn: str, body: ConnectionPatch,
         return _connection_payload(row)
 
     with db.transaction() as cur:
-        written = targets.update_in(cur, target_id, changes)
-        for mode, (username, password) in creds.items():
-            targets.set_credentials_in(cur, target_id, mode, username, password)
-        details: dict = {"connection": row["alias"], "target_id": target_id,
-                         "changed": written, "credentials": sorted(creds)}
-        # The new value is worth recording for the two fields whose change is
-        # the security-relevant event; the rest are named but not quoted, so
-        # the entry stays free of anything that could be a secret.
-        if "enabled" in changes:
-            details["enabled"] = changes["enabled"]
-        if "alias" in changes:
-            details["renamed_to"] = changes["alias"]
-        if "tags" in changes:
-            # Name the tag change, not just the fact that "tags" moved. These
-            # are the words an operator will search the log for six months from
-            # now — "when did prod-main stop saying AWS" — and they are labels,
-            # never credentials, so quoting them costs nothing. Both sides,
-            # because a tag that was REMOVED is the interesting half.
-            details["tags_before"] = row.get("tags") or {}
-            details["tags_after"] = changes["tags"]
-            details["hosting"] = " · ".join(
-                str(changes["tags"][k]) for k in TAG_RESERVED
-                if changes["tags"].get(k)) or None
-        audit.log_in(cur, None, uid, claims.get("name"), "connection_updated",
-                     details)
-    return _connection_payload(targets.admin_row(target_id))
+        _apply_connection_update(cur, row, changes, creds, uid, claims.get("name"))
+    return _connection_payload(targets.admin_row(row["id"]))
+
+
+class BulkConnectionsIn(BaseModel):
+    connections: list[str]
+    enabled: bool | None = None
+    credentials: dict[str, CredentialIn] = Field(default_factory=dict)
+    dryRun: bool = False
+
+
+_BULK_CONNECTIONS_MAX = 200
+
+
+@router.post("/connections/bulk")
+def admin_bulk_update_connections(body: BulkConnectionsIn,
+                                  claims: dict = Depends(deps.current_user)):
+    """Enable, disable, or set credentials on several connections at once --
+    all or nothing.
+
+    One at a time was the only way, and the case that made it hurt is a fleet
+    sharing one credential: onboarding a batch of Huawei targets meant typing
+    the same password once per server. Every connection is planned first with
+    the single-connection route's own rules -- enabling one still needs a real
+    read-only credential, which can arrive in the same request -- and if ANY is
+    refused, nothing is written and every refusal is returned. A half-applied
+    bulk change leaves a fleet in a state nobody chose.
+
+    Only `enabled` and `credentials`: the fields that are legitimately the same
+    across servers. Host, alias, port and tags differ per server by nature, and
+    a bulk edit of them is a mistake one click away. `dryRun` returns the plan.
+    """
+    uid = admin.require_admin(claims, "access")
+    names = list(dict.fromkeys(c.strip() for c in (body.connections or []) if c and c.strip()))
+    if not names:
+        raise deps._error(400, "bad_request", "Name at least one connection.")
+    if len(names) > _BULK_CONNECTIONS_MAX:
+        raise deps._error(400, "bad_request",
+                          f"At most {_BULK_CONNECTIONS_MAX} connections per request.")
+    if body.enabled is None and not body.credentials:
+        raise deps._error(400, "bad_request",
+                          "Nothing to change: send `enabled`, `credentials`, or both.")
+    patch = ConnectionPatch(enabled=body.enabled, credentials=body.credentials)
+
+    plans, refused = [], []
+    for name in names:
+        try:
+            row = _require_target_row(name)
+            changes, creds = _plan_connection_update(row, patch)
+            plans.append((row, changes, creds))
+        except HTTPException as e:
+            d = e.detail if isinstance(e.detail, dict) else {"message": str(e.detail)}
+            refused.append({"connection": name, "status": e.status_code,
+                            "reason": d.get("message") or d.get("code")})
+    if refused:
+        raise deps._error(
+            409, "conflict",
+            f"{len(refused)} of {len(names)} connections cannot take this change; "
+            "nothing was written.", refused=refused)
+
+    results = [{"connection": row["alias"],
+                "changes": sorted(changes) + [f"credentials:{m}" for m in sorted(creds)],
+                "unchanged": not changes and not creds}
+               for row, changes, creds in plans]
+    if body.dryRun:
+        return {"applied": False, "results": results}
+
+    with db.transaction() as cur:
+        for row, changes, creds in plans:
+            if changes or creds:
+                _apply_connection_update(cur, row, changes, creds, uid, claims.get("name"))
+        audit.log_in(cur, None, uid, claims.get("name"), "connections_bulk_updated",
+                     {"connections": [r["alias"] for r, _c, _k in plans],
+                      "enabled": body.enabled,
+                      "credentials": sorted(body.credentials or {}),
+                      "changed": sum(1 for x in results if not x["unchanged"])})
+    return {"applied": True, "results": results,
+            "connections": [_connection_payload(targets.admin_row(r["id"]))
+                            for r, _c, _k in plans]}
 
 
 @router.delete("/connections/{conn}")
