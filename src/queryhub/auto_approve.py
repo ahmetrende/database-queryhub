@@ -116,7 +116,7 @@ def active_grants(principal_id: str,
     asked per database and issued 79 identical statements to do it.
     """
     at = at or datetime.now(timezone.utc)
-    return db.fetch_all(
+    rows = db.fetch_all(
         """
         SELECT id, slack_user_id, max_tier, target_server_id, database_name,
                starts_at, expires_at, reason, granted_by
@@ -127,6 +127,74 @@ def active_grants(principal_id: str,
         """,
         (principal_id, at, at),
     )
+    from .teams import use_v2      # lazy: teams -> admins would import this module
+    if use_v2():
+        rows = rows + _v2_only_waivers(principal_id, at)
+    return rows
+
+
+def _v2_only_waivers(principal_id: str, at: datetime) -> list[dict]:
+    """The waivers the legacy table cannot hold, in its row shape.
+
+    Under the new model a waiver can be granted to a TEAM, and a team has no
+    `auto_approve_grants` row to put it in: that table is keyed on one person.
+    Reading only the legacy table meant a team waiver showed as "auto-approve"
+    on every screen that asks the new model, and the submit path, which asked
+    here, made every member wait for review anyway.
+
+    Only rows with no legacy source are read. A mirrored row (`mirrored_from`
+    set) is a copy of a legacy row already returned above; reading it twice
+    would hand a decision two ids for one grant.
+
+    The ids carry an `ag:` prefix so the audit trail and the decision label
+    never mistake an `access_grant` id for an `auto_approve_grants` one.
+    `team_id` marks a team waiver, which `effective_grant` confirms with the
+    resolver before trusting -- see `_team_waiver_applies`.
+    """
+    return db.fetch_all(
+        """
+        WITH me AS (
+            SELECT i.principal_id AS id FROM principal_identity i
+             WHERE i.provider = 'slack' AND i.external_id = %(pid)s
+               AND NOT i.is_deleted
+        )
+        SELECT 'ag:' || g.id AS id, %(pid)s AS slack_user_id,
+               g.tier AS max_tier, g.target_id AS target_server_id,
+               g.database_name, g.valid_from AS starts_at,
+               g.valid_until AS expires_at, g.reason, NULL AS granted_by,
+               g.team_id, COALESCE(t.display_name, t.name) AS team_name
+          FROM access_grant g
+          LEFT JOIN team t ON t.id = g.team_id
+         WHERE g.auto_approve AND g.mirrored_from IS NULL
+           AND g.revoked_at IS NULL AND NOT g.is_deleted
+           AND g.valid_from <= %(at)s
+           AND (g.valid_until IS NULL OR g.valid_until > %(at)s)
+           AND (g.principal_id IN (SELECT id FROM me)
+                OR g.team_id IN (SELECT tm.team_id FROM team_member tm
+                                  WHERE tm.principal_id IN (SELECT id FROM me)
+                                    AND NOT tm.is_deleted))
+        """,
+        {"pid": principal_id, "at": at},
+    )
+
+
+def _team_waiver_applies(principal_id: str,
+                         target_server_id: int | None,
+                         database_name: str | None) -> bool:
+    """Whether a team's waiver reaches this member for this database.
+
+    Asked of the access model rather than decided here, because the answer
+    depends on a rule `access` owns: a member's OWN grant on a database
+    displaces their team's rows there, waivers included. A second copy of that
+    rule is a second place for it to be wrong. Only reached when a team waiver
+    is the row that would decide, so the batched callers stay batched. Whether
+    the waiver's tier covers the request is already settled by `grant_covers`
+    on the row itself.
+    """
+    if target_server_id is None or database_name is None:
+        return False
+    from . import access
+    return access.team_waivers_reach(principal_id, target_server_id, database_name)
 
 
 def effective_grant(
@@ -166,7 +234,21 @@ def effective_grant(
         ),
         reverse=True,
     )
-    return candidates[0]
+    # A team waiver is trusted only once the resolver agrees it reaches this
+    # member here. The answer is the same for every team row in the list, so
+    # it is asked at most once. It is asked about NOW: for a run scheduled
+    # later, a team waiver that has not started yet fails closed and the run
+    # waits for review.
+    team_ok = None
+    for c in candidates:
+        if c.get("team_id") is None:
+            return c
+        if team_ok is None:
+            team_ok = _team_waiver_applies(principal_id,
+                                           target_server_id, database_name)
+        if team_ok:
+            return c
+    return None
 
 
 def list_active_grants(principal_id: str) -> list[dict]:
@@ -221,6 +303,9 @@ def decided_by_name_for(grant: dict) -> str:
     """Human-readable label written to requests.decided_by_name when an
     auto-approve grant short-circuits the admin gate."""
     until = fmt_until(grant.get("expires_at"))
+    if grant.get("team_id") is not None:
+        return (f"auto-approved (team {grant.get('team_name') or grant['team_id']} "
+                f"waiver {grant['id']}, max_tier={grant['max_tier']}, {until})")
     return f"auto-approved (grant #{grant['id']}, max_tier={grant['max_tier']}, {until})"
 
 

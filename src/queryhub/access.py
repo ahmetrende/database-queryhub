@@ -163,6 +163,20 @@ def _live(rows):
     return [r for r in rows if not r["expired"] and not r["not_started"]]
 
 
+def _mine_grants(live) -> list:
+    return [r for r in live if r["mine"] and not r["auto_approve"]]
+
+
+def _suppresses_team(mine_grants) -> bool:
+    """Rule 4: only the principal's own GRANT rows displace the team.
+
+    One expression, read by `_decide` and by `team_waivers_reach`, so the rule
+    that decides access and the rule that decides whether a team's waiver
+    reaches a member cannot drift apart.
+    """
+    return any(not r["merge_with_team"] for r in mine_grants)
+
+
 def _decide(rows) -> dict | None:
     """Turn covering rows into an answer, or None for no access.
 
@@ -171,15 +185,14 @@ def _decide(rows) -> dict | None:
     for it to be wrong.
     """
     live = _live(rows)
-    mine_grants = [r for r in live if r["mine"] and not r["auto_approve"]]
+    mine_grants = _mine_grants(live)
 
     if not mine_grants:
         # Rule 2: lapsed rather than absent means no access, not the team's.
         if any(r["mine"] and not r["auto_approve"] and r["expired"] for r in rows):
             return None
 
-    # Rule 4: only the principal's own GRANT rows displace the team.
-    suppress_team = any(not r["merge_with_team"] for r in mine_grants)
+    suppress_team = _suppresses_team(mine_grants)
     pool = mine_grants if suppress_team else \
         mine_grants + [r for r in live if not r["mine"] and not r["auto_approve"]]
     if not pool:
@@ -210,6 +223,29 @@ def _decide(rows) -> dict | None:
         "unrestricted": bool(best["all_targets"] and best["all_databases"]),
         "db_role": best["db_role"],
     }
+
+
+def team_waivers_reach(principal_id: str, target_id: int,
+                       database_name: str) -> bool:
+    """Whether a TEAM's waiver can reach this principal on this database.
+
+    It can when they have access here and no grant of their own displaces the
+    team's rows (rule 4). This is narrower than `resolve(...)["auto_tier"]`,
+    which also counts the principal's own waivers: asked that broader question,
+    a member with a personal waiver and a personal grant would have a team
+    waiver credited in the audit trail for a decision the team did not make,
+    and a run scheduled past the personal waiver's end would skip review on
+    the strength of a team row the rule excludes.
+
+    An admin's waivers are not displaced (`_admin_auto` counts every covering
+    row), so a team waiver reaches an admin.
+    """
+    if is_admin(principal_id):
+        return True
+    rows = _covering(principal_id, target_id, database_name)
+    if _decide(rows) is None:
+        return False
+    return not _suppresses_team(_mine_grants(_live(rows)))
 
 
 def resolve(principal_id: str, target_id: int,
