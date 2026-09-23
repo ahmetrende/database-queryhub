@@ -405,13 +405,21 @@ function useAdminState(pushToast, active, isAdminViewer) {
   };
 
   // Subject-centric access: replace ALL grants for one subject with a new
-  // target set. Each editor row is already per-connection ({connectionId,
-  // databases:[..]|['*'], tier}); duplicate connections collapse — union the
-  // databases ('*' absorbs), most permissive tier wins. POST upserts per
-  // connection; connections no longer present are DELETEd (no PATCH by design).
-  const setSubjectGrants = (subjectType, subject, targets) => {
+  // target set. Each editor row is per-connection ({connectionId,
+  // databases:[..]|['*'], tier}). POST writes ONE tier per (subject,
+  // connection) and replaces what was there (CODE 2026-09-23 (b) §3), so two
+  // rows on one connection at DIFFERENT tiers are refused, never merged:
+  // merging took the higher tier for every database and WIDENED the lower
+  // ones — the one direction an access screen must never be wrong in.
+  // `opts.untouched` = connections whose rows differ in tier by database: the
+  // editor shows them read-only, and they are neither written nor deleted here.
+  const setSubjectGrants = (subjectType, subject, targets, opts) => {
+    const untouched = new Set((opts && opts.untouched) || []);
+    const tierOf = {};
+    const clash = (targets || []).find(t => { const k = t.connectionId; if (tierOf[k] && tierOf[k] !== t.tier) return true; tierOf[k] = t.tier; return false; });
+    if (clash) { pushToast && pushToast('Nothing saved: ' + clash.connectionId + ' is listed at two tiers. One tier per connection here.'); return; }
     const byConn = new Map();
-    (targets || []).forEach(t => {
+    (targets || []).filter(t => !untouched.has(t.connectionId)).forEach(t => {
       const dbs = (t.databases && t.databases.length) ? t.databases : ['*'];
       const ex = byConn.get(t.connectionId);
       if (!ex) byConn.set(t.connectionId, { connectionId: t.connectionId, databases: dbs.includes('*') ? ['*'] : [...dbs], tier: t.tier, expiresAt: t.expiresAt || null });
@@ -427,7 +435,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
     const keep = new Set(desired.map(d => d.connectionId));
     const mine = grants.filter(g => g.subjectType === subjectType && g.subject === subject);
     const jobs = desired.map(d => qhApi.adminAddGrant({ subjectType, subject, connectionId: d.connectionId, databases: d.databases.includes('*') ? null : d.databases, tier: d.tier, expiresAt: d.expiresAt || null }))
-      .concat(mine.filter(g => !keep.has(g.connectionId)).map(g => qhApi.adminDelGrant(g.id)));
+      .concat(mine.filter(g => !keep.has(g.connectionId) && !untouched.has(g.connectionId)).map(g => qhApi.adminDelGrant(g.id)));
     Promise.allSettled(jobs).then(rs => {
       loadGrants(); loadAudit();
       const bad = rs.filter(x => x.status === 'rejected').length;

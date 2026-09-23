@@ -226,9 +226,25 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
   const conns = st.connections || [];
   const [subjectType, setSubjectType] = useAcc(subjectType0 || 'user');
   const [subject, setSubject] = useAcc(subject0 || '');
+  // A connection whose rows differ in tier by database (pod imports, rows
+  // written by hand) opens READ-ONLY: POST /admin/grants writes one tier per
+  // connection, so saving it here would raise the lower databases to the higher
+  // tier (CODE 2026-09-23 (b) §3). It is shown, kept, and left out of the save.
   const rowsForSubject = (stype, subj) => {
     const ex = st.grants.filter(g => g.subjectType === stype && g.subject === subj);
-    return ex.length ? ex.map(g => ({ connectionId: g.connectionId, databases: (g.databases && g.databases.length) ? g.databases : ['*'], tier: g.tier, ...expForm(g.expiresAt) })) : [blankTarget(conns)];
+    if (!ex.length) return [blankTarget(conns)];
+    const out = [], seen = {};
+    ex.forEach(g => {
+      const on = ex.filter(x => x.connectionId === g.connectionId);
+      if (new Set(on.map(x => x.tier)).size > 1) {
+        if (seen[g.connectionId]) return;
+        seen[g.connectionId] = 1;
+        out.push({ locked: true, connectionId: g.connectionId, parts: on.map(x => ({ databases: (x.databases && x.databases.length) ? x.databases : ['*'], tier: x.tier, expiresAt: x.expiresAt || null })) });
+        return;
+      }
+      out.push({ connectionId: g.connectionId, databases: (g.databases && g.databases.length) ? g.databases : ['*'], tier: g.tier, ...expForm(g.expiresAt) });
+    });
+    return out;
   };
   const [rows, setRows] = useAcc(() => subject0 ? rowsForSubject(subjectType0, subject0) : [blankTarget(conns)]);
 
@@ -237,10 +253,16 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
   const setRow = (i, patch) => setRows(rs => rs.map((r, j) => j === i ? { ...r, ...patch } : r));
   const removeRow = (i) => setRows(rs => rs.filter((_, j) => j !== i));
   const addRow = () => setRows(rs => [...rs, blankTarget(conns)]);
+  const lockedConns = rows.filter(r => r.locked).map(r => r.connectionId);
+  // An editable row may not name a read-only connection, nor one another row
+  // already has: either would be a second tier on one connection.
+  const rowFlag = (r, i) => r.locked ? null
+    : lockedConns.indexOf(r.connectionId) >= 0 ? 'The tier on ' + r.connectionId + ' differs by database — it cannot be changed here. Remove this row.'
+    : rows.findIndex(x => !x.locked && x.connectionId === r.connectionId) !== i ? 'Listed twice — one row per connection.' : null;
   const save = () => {
-    if (!subject.trim() || rows.some(expBad)) return;
-    const targets = rows.map(r => ({ connectionId: r.connectionId, databases: r.databases, tier: r.tier, expiresAt: expIso(r) }));
-    st.setSubjectGrants(subjectType, subject.trim(), targets, actor);
+    if (!subject.trim() || rows.some(r => !r.locked && expBad(r)) || rows.some(rowFlag)) return;
+    const targets = rows.filter(r => !r.locked).map(r => ({ connectionId: r.connectionId, databases: r.databases, tier: r.tier, expiresAt: expIso(r) }));
+    st.setSubjectGrants(subjectType, subject.trim(), targets, { untouched: lockedConns });
     onDone();
   };
   // ONE save control, rendered in two places (CODE brief 2026-08-20 §1): a
@@ -250,7 +272,7 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
   // whether the form is savable would be worse than one badly placed.
   // The rule now matches `save`'s own guard: a bad date used to leave the
   // button enabled and the click did nothing.
-  const blocked = !subject.trim() || rows.some(expBad);
+  const blocked = !subject.trim() || rows.some(r => !r.locked && expBad(r)) || rows.some(rowFlag);
   const acts = (where) => (
     <div className={'qh-teamform-acts qh-accedit-acts is-' + where}>
       <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone}>Cancel</button>
@@ -274,8 +296,22 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
 
       <div className="qh-accedit-label">Targets · {rows.length}<span className="qh-accedit-hint">one row per connection — databases (or all), a single tier, and an end date only if the access should stop</span></div>
       <div className="qh-acctargets">
-        {rows.map((r, i) => (
-          <div key={i} className="qh-accrow">
+        {rows.map((r, i) => r.locked ? (
+          <div key={i} className="qh-accrow is-locked">
+            <div className="qh-accrow-head">
+              <span className="qh-accrow-conn">{connLabel(conns.find(c => c.id === r.connectionId) || { name: r.connectionId })}</span>
+              <span className="qh-accrow-lock">Tier differs by database · read-only here</span>
+            </div>
+            <div className="qh-accrow-parts">{r.parts.map((p, j) => (
+              <div key={j} className="qh-accrow-part">
+                <span className="qh-accrow-dbs">{p.databases.includes('*') ? 'All databases' : p.databases.join(', ')}</span>
+                <TierBadge tier={p.tier} sm />
+                <ExpiryChip iso={p.expiresAt} />
+              </div>))}</div>
+            <div className="qh-exp-note">Saving here writes one tier for the whole connection, which would raise the lower databases. This connection is left exactly as it is — change it from Grants, one row at a time.</div>
+          </div>
+        ) : (
+          <div key={i} className={'qh-accrow' + (rowFlag(r, i) ? ' is-bad' : '')}>
             <div className="qh-accrow-head">
               <select className="qh-select" value={r.connectionId} onChange={e => setRow(i, { connectionId: e.target.value, databases: ['*'] })}>{conns.map(c => <option key={c.id} value={c.id}>{connLabel(c)}</option>)}</select>
               <TierSelect value={r.tier} onChange={v => setRow(i, { tier: v })} />
@@ -284,9 +320,11 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
             </div>
             <DbMultiPick conns={conns} connectionId={r.connectionId} databases={r.databases} onChange={dbs => setRow(i, { databases: dbs })} />
             <ExpiryNote f={r} subjectType={subjectType} />
+            {rowFlag(r, i) && <div className="qh-autobulk-flag">{rowFlag(r, i)}</div>}
           </div>
         ))}
         {rows.length === 0 && <div className="qh-acc-none">No targets — saving will remove all access for this subject.</div>}
+        {rows.length > 0 && rows.every(r => r.locked) && <div className="qh-acc-none">Nothing here can be edited — every connection's tier differs by database.</div>}
       </div>
       <button className="qh-acc-addtarget" onClick={addRow}><AIcon.plus />Add connection</button>
 

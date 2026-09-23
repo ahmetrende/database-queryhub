@@ -79,36 +79,24 @@ function effOverruled(st, eff, t) {
     out.push(<>Team <b>{g.subject}</b> grants {g.tier} here too; the resolver merged the two.</>));
   return out;
 }
-// Where an ENDED own grant is the answer. The resolver returns nothing for that
-// database, so without this row the screen would show the team granting it and
-// the person not reaching it, with no reason in between — the exact question an
-// admin opens this screen to answer. Same client read as the notes: the grants
-// table, said as a reason, never as access.
-function effBlocked(st, eff, ids) {
-  const teams = (eff.teams || []).map(x => x.name);
-  const gs = st.grants || [];
-  const mine = (g) => g.subjectType === 'user' && ids.indexOf(g.subject) >= 0;
-  const out = [];
-  gs.filter(g => mine(g) && !effLiveG(g)).forEach(g => {
-    const dbs = effDbsOf(g);
-    if (gs.some(x => x !== g && mine(x) && x.connectionId === g.connectionId && effLiveG(x) && effMeets(effDbsOf(x), dbs))) return;
-    const team = gs.find(x => x.subjectType === 'team' && teams.indexOf(x.subject) >= 0 && x.connectionId === g.connectionId && effLiveG(x) && effMeets(effDbsOf(x), dbs));
-    if (team) out.push({ g, team });
-  });
-  return out;
-}
-function EffBlockedRow({ g, team }) {
-  const dbs = effDbsOf(g);
+// Where an ENDED own grant is the answer: the resolver's `blocked` (CODE
+// 2026-09-23 (b) §2) — decided by the same code as the team view's
+// `overriddenFor` with `expired: true`, so the two screens cannot disagree.
+// Without this row the screen would show the team granting a database and the
+// person not reaching it, with no reason in between. Read, never derived: the
+// grants list does not apply the per-database rule; the resolver does.
+function EffBlockedRow({ b }) {
+  const dbs = b.databases && b.databases.length && b.databases.indexOf('*') < 0 ? b.databases : null;
   return (
     <div className="qh-eff-row is-blocked">
       <div className="qh-eff-row-main">
-        <span className="qh-eff-conn">{g.connectionId}</span>
+        <span className="qh-eff-conn">{b.connectionId}</span>
         <span className="qh-eff-dbs"><EffDbs all={!dbs} dbs={dbs} /></span>
         <span className="qh-eff-noacc">No access</span>
         <span className="qh-eff-src">Own grant ended</span>
-        <EffEnds iso={g.expiresAt} />
+        <EffEnds iso={b.endedAt} />
       </div>
-      <div className="qh-eff-notes"><div className="qh-eff-note">Their own grant ended on {effDate(g.expiresAt)}; team <b>{team.subject}</b>'s {team.tier} does not apply to them. Deleting the ended grant lets the team's apply; renewing it restores their own.</div></div>
+      <div className="qh-eff-notes"><div className="qh-eff-note">Their own grant ended on {effDate(b.endedAt)}{b.team ? <>; team <b>{b.team}</b>'s does not apply to them</> : ''}. Deleting the ended grant lets the team's apply; renewing it restores their own.</div></div>
     </div>
   );
 }
@@ -225,8 +213,7 @@ function EffPerson({ st, subject, onOpenTeam }) {
   // A connection held at two tiers arrives as two rows (CODE 2026-09-23 §4),
   // so the count is of CONNECTIONS, not rows.
   const nConn = new Set(access.map(t => t.connectionId)).size;
-  const ids = [subject.handle, subject.slackId, subject.id].filter(Boolean);
-  const blocked = eff && !bypassAll ? effBlocked(st, eff, ids) : [];
+  const blocked = (eff && eff.blocked) || [];
   const soon = rows.concat(autos).filter(t => t.expiresAt && (new Date(t.expiresAt) - Date.now()) / 86400000 <= 14 && new Date(t.expiresAt) > Date.now()).length;
 
   return (
@@ -265,7 +252,7 @@ function EffPerson({ st, subject, onOpenTeam }) {
                   <div className="qh-eff-notes"><div className="qh-eff-note">No grant is consulted for a super-admin, so none is listed. Their own grants, if any, change nothing.</div></div></div>
               : <div className="qh-eff-list">
                   {rows.map(t => <EffAccessRow key={t.key || t.connectionId + ':' + t.source + ':' + t.tier} t={t} notes={effOverruled(st, eff, t)} />)}
-                  {blocked.map(b => <EffBlockedRow key={b.g.id} g={b.g} team={b.team} />)}
+                  {blocked.map(b => <EffBlockedRow key={b.connectionId + ':' + (b.databases || ['*']).join(',')} b={b} />)}
                 </div>}
           </EffSection>
 
