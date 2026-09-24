@@ -2955,21 +2955,25 @@ def _overrides_v2(members: list[dict], team_dbs: dict) -> dict:
     """{target_id: [member overriding the team there]} under the new model.
 
     `team_dbs` is {target_id: None for every database, else the set of
-    database names the team's rows name there}.
+    database names the team's rows name there}. Only its keys matter here:
+    whether a member's own grants displace the team is decided per server.
 
     Where a member holds their OWN grant, the team's row does not apply to them
     (rule 4), and a team view that listed only the team's grant would be wrong
-    about that person. Two ways to override, both the resolver's:
-      * a live own grant that does not merge with the team -- theirs applies;
+    about that person. Two ways to override, both the resolver's
+    (`access.own_standing`):
+      * a live own grant on the server that does not merge with the team --
+        their own grants apply, on every database of that server;
       * no live own grant but an EXPIRED one -- rule 2: a lapsed personal grant
         is no access, NOT a fall-through to the team's. A personal row is often
         written to NARROW what the team allows, so letting its end widen access
         back to the team's would make an expiry grant access.
 
-    Both are decided PER DATABASE, as `access.resolve` decides them. This used
-    to lump every own row on the connection together, so a member with a
-    personal grant on another database of the same server was listed as
-    overriding the team on a database the team held and they did not.
+    Each entry names what the member gets INSTEAD: their own grants, grouped by
+    tier and end. A personal grant on one database of a server therefore shows
+    beside a team row for another database of it, because the picker lists
+    only their own there. Deciding this per database once hid exactly that
+    case from this screen while the person could not select the database.
     """
     pids = [m["principal_id"] for m in members if m.get("principal_id")]
     if not pids or not team_dbs:
@@ -2977,52 +2981,36 @@ def _overrides_v2(members: list[dict], team_dbs: dict) -> dict:
     rows = db.fetch_all(
         "SELECT g.principal_id, g.target_id, g.all_targets, g.tier, tr.rank, "
         "       g.database_name, g.all_databases, g.merge_with_team, g.valid_until, "
-        "       (g.valid_until IS NOT NULL AND g.valid_until <= NOW()) AS expired "
+        "       (g.valid_until IS NOT NULL AND g.valid_until <= NOW()) AS expired, "
+        "       (g.valid_from > NOW()) AS not_started "
         "  FROM access_grant g JOIN tier tr ON tr.name = g.tier "
         " WHERE g.principal_id = ANY(%s) AND NOT g.auto_approve "
         "   AND g.revoked_at IS NULL AND NOT g.is_deleted", (pids,))
     by_pid = {m["principal_id"]: m for m in members if m.get("principal_id")}
     out: dict[int, list] = {}
-    for tid, scope in team_dbs.items():
+    for tid in team_dbs:
         for pid, m in by_pid.items():
             mine = [r for r in rows if r["principal_id"] == pid
                     and (r["all_targets"] or r["target_id"] == tid)]
-            if not mine:
+            standing = access_model.own_standing(mine)
+            if standing is None:
                 continue
-            # The databases where both the team and this member say something.
-            # "*" stands for every database: the team's rows cover all of them
-            # and so does one of the member's.
-            if scope is None:
-                dbs = ({"*"} if any(r["all_databases"] for r in mine) else set()) \
-                      | {r["database_name"] for r in mine
-                         if not r["all_databases"] and r["database_name"]}
-            else:
-                dbs = set(scope)
+            ended = standing == "lapsed"
+            shown = [r for r in mine if r["expired"]] if ended else \
+                [r for r in mine if not r["expired"] and not r.get("not_started")]
             decided: dict[tuple, dict] = {}
-            for d in sorted(dbs):
-                cover = [r for r in mine
-                         if r["all_databases"] or (d != "*" and r["database_name"] == d)]
-                live = [r for r in cover if not r["expired"]]
-                if live:
-                    if all(r["merge_with_team"] for r in live):
-                        continue
-                    top = max(live, key=lambda r: r["rank"])
-                    end = min((r["valid_until"] for r in live if r["valid_until"]),
-                              default=None)
-                    key = (top["tier"], False, end)
-                elif cover:
-                    last = max(cover, key=lambda r: r["valid_until"])
-                    top, end, key = last, last["valid_until"], (last["tier"], True, last["valid_until"])
-                else:
-                    continue
-                e = decided.setdefault(key, {
+            for r in shown:
+                e = decided.setdefault((r["tier"], r["valid_until"]), {
                     "handle": m["slack_id"], "name": m["name"],
-                    "tier": top["tier"].upper(), "databases": [],
-                    "expired": key[1], "expiresAt": mapping.iso(end)})
-                e["databases"].append(d)
-            if decided:
-                out.setdefault(tid, []).extend(
-                    sorted(decided.values(), key=lambda e: (e["expired"], e["databases"])))
+                    "tier": r["tier"].upper(), "databases": [],
+                    "expired": ended, "expiresAt": mapping.iso(r["valid_until"])})
+                d = "*" if r["all_databases"] else r["database_name"]
+                if d not in e["databases"]:
+                    e["databases"].append(d)
+            for e in decided.values():
+                e["databases"].sort()
+            out.setdefault(tid, []).extend(
+                sorted(decided.values(), key=lambda e: (e["databases"], e["tier"])))
     return out
 
 

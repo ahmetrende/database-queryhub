@@ -252,33 +252,36 @@ def test_an_expired_own_grant_still_overrides_the_team(monkeypatch):
     assert o["handle"] == "U0EXAMPLE003" and o["expired"] is True
 
 
-def test_an_own_grant_on_another_database_leaves_the_team_row_alone(monkeypatch):
-    """Found on a live server with two pods' databases: a member's personal RW
-    on one database was listed as overriding the team's grant on the other.
-    The resolver decides per database; so does this."""
+def test_an_own_grant_on_another_database_overrides_the_team_on_that_server(monkeypatch):
+    """A server holding two pods' databases: a member's personal grant on one
+    database displaces the team's grant on the other, because the picker lists
+    that server's databases from their own grants alone. This screen once
+    decided it per database and showed the team's grant as theirs while they
+    could not select it. The entry names what they get instead."""
     monkeypatch.setattr(ra.db, "fetch_all",
                         lambda sql, p=None: [_own(1, 53, tier="rw", rank=2, db="orders")])
-    assert ra._overrides_v2(_members(), {53: {"ledger"}}) == {}
+    [o] = ra._overrides_v2(_members(), {53: {"ledger"}})[53]
+    assert (o["handle"], o["databases"], o["tier"], o["expired"]) == (
+        "U0EXAMPLE002", ["orders"], "RW", False)
 
 
-def test_an_all_database_team_row_is_overridden_only_where_the_member_has_a_row(monkeypatch):
+def test_an_all_database_team_row_is_overridden_by_any_own_grant_on_the_server(monkeypatch):
     monkeypatch.setattr(ra.db, "fetch_all",
                         lambda sql, p=None: [_own(1, 53, db="orders")])
     [o] = ra._overrides_v2(_members(), {53: None})[53]
     assert o["databases"] == ["orders"]
 
 
-def test_an_own_all_database_row_overrides_each_team_database(monkeypatch):
+def test_an_own_all_database_row_is_named_as_every_database(monkeypatch):
     row = {**_own(1, 53, tier="rw", rank=2), "all_databases": True, "database_name": None}
     monkeypatch.setattr(ra.db, "fetch_all", lambda sql, p=None: [row])
     [o] = ra._overrides_v2(_members(), {53: {"ledger", "audit"}})[53]
-    assert o["databases"] == ["audit", "ledger"] and o["tier"] == "RW"
+    assert o["databases"] == ["*"] and o["tier"] == "RW"
 
 
-def test_overrides_are_grouped_by_what_the_member_gets_instead(monkeypatch):
-    """A live RO on one database and a lapsed grant on another are two
-    different answers, so they are two entries -- not one entry at the higher
-    tier over both."""
+def test_a_live_own_grant_decides_the_server_so_an_ended_one_beside_it_does_not(monkeypatch):
+    """Rule 2 is the answer only when nothing of theirs is live. While one own
+    grant is live, it alone decides the server; the ended one adds nothing."""
     from datetime import datetime, timezone
     ended = datetime(2026, 9, 1, tzinfo=timezone.utc)
     monkeypatch.setattr(ra.db, "fetch_all", lambda sql, p=None: [
@@ -286,7 +289,38 @@ def test_overrides_are_grouped_by_what_the_member_gets_instead(monkeypatch):
         _own(1, 53, tier="rw", rank=2, db="audit", expired=True, until=ended)])
     got = ra._overrides_v2(_members(), {53: {"ledger", "audit"}})[53]
     assert [(o["databases"], o["tier"], o["expired"]) for o in got] == [
-        (["ledger"], "RO", False), (["audit"], "RW", True)]
+        (["ledger"], "RO", False)]
+
+
+def test_own_grants_are_grouped_by_tier_and_end(monkeypatch):
+    """Two databases at one tier with one end are one entry; a second tier is a
+    second entry, not one entry at the higher tier over both."""
+    monkeypatch.setattr(ra.db, "fetch_all", lambda sql, p=None: [
+        _own(1, 53, db="ledger"), _own(1, 53, db="audit"),
+        _own(1, 53, tier="rw", rank=2, db="orders")])
+    got = ra._overrides_v2(_members(), {53: {"payments"}})[53]
+    assert [(o["databases"], o["tier"]) for o in got] == [
+        (["audit", "ledger"], "RO"), (["orders"], "RW")]
+
+
+def test_a_merging_grant_beside_a_narrowing_one_still_overrides(monkeypatch):
+    """One own grant that does not merge is enough (rule 4), and then all of
+    their live own grants are what they get."""
+    monkeypatch.setattr(ra.db, "fetch_all", lambda sql, p=None: [
+        _own(1, 53, db="ledger", merge=True), _own(1, 53, db="orders")])
+    [o] = ra._overrides_v2(_members(), {53: {"payments"}})[53]
+    assert o["databases"] == ["ledger", "orders"]
+
+
+def test_a_grant_that_has_not_started_does_not_override(monkeypatch):
+    monkeypatch.setattr(ra.db, "fetch_all", lambda sql, p=None: [
+        {**_own(1, 53, db="orders"), "not_started": True}])
+    assert ra._overrides_v2(_members(), {53: {"ledger"}}) == {}
+
+
+def test_the_override_rule_is_the_resolvers():
+    src = inspect.getsource(ra._overrides_v2)
+    assert "own_standing(" in src and "merge_with_team\"]" not in src
 
 
 # --- the DDL standing a request runs under ------------------------------------------

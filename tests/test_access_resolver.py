@@ -131,6 +131,94 @@ def test_one_narrowing_row_is_enough_to_displace_the_team():
     assert access._decide(rows)["tier"] == "ro"
 
 
+# --- rule 4 is decided per server ---------------------------------------------
+
+
+def _db(name, **kw):
+    return row(all_databases=False, database_name=name, **kw)
+
+
+def test_an_own_grant_on_one_database_displaces_the_team_on_the_others():
+    """A pod split put two pods' databases on one server: the team kept one,
+    and a member got a personal grant on the other. Decided per database, the
+    team's grant still applied to them for submit and on the effective-access
+    screen, while the picker (which lists the server) hid it. Per server, as
+    the old model did it, the own grant decides the whole server."""
+    server = [_db("ledger", tier="ro"), _db("orders", mine=False, tier="rw")]
+    assert access._decide(access._on_database(server, "orders"), server) is None
+    assert access._decide(access._on_database(server, "ledger"), server)["tier"] == "ro"
+
+
+def test_merging_the_own_grant_keeps_the_team_on_the_other_database():
+    server = [_db("ledger", tier="ro", merge=True), _db("orders", mine=False, tier="rw")]
+    got = access._decide(access._on_database(server, "orders"), server)
+    assert (got["tier"], got["source"]) == ("rw", "team")
+
+
+def test_an_ended_own_grant_leaves_nothing_on_the_whole_server():
+    """Rule 2 per server: nothing of theirs is live and one has ended, so the
+    team's grant on another database does not apply either."""
+    server = [_db("ledger", expired=True), _db("orders", mine=False, tier="rw")]
+    assert access._decide(access._on_database(server, "orders"), server) is None
+
+
+def test_a_waiver_on_another_database_displaces_nothing():
+    server = [_db("ledger", auto=True), _db("orders", mine=False, tier="rw")]
+    assert access._decide(access._on_database(server, "orders"), server)["tier"] == "rw"
+
+
+def _shapes():
+    """Every small server a principal can hold: up to two own rows and up to
+    two team rows, over two databases, each own row live, ended, not started
+    or a waiver, merging or not."""
+    import itertools
+    own = [None]
+    for where in ("a", "b", "*"):
+        for state in ("live", "ended", "later", "waiver"):
+            for merge in (False, True):
+                kw = {"mine": True, "merge": merge, "tier": "ro",
+                      "expired": state == "ended", "not_started": state == "later",
+                      "auto": state == "waiver"}
+                own.append(row(**kw) if where == "*" else _db(where, **kw))
+    team = [[], [_db("a", mine=False, tier="rw")], [_db("b", mine=False, tier="ddl")],
+            [row(mine=False, tier="rw")],
+            [_db("a", mine=False, tier="rw"), _db("b", mine=False, tier="ro")]]
+    for o1, o2 in itertools.combinations_with_replacement(range(len(own)), 2):
+        mine = [own[i] for i in {o1, o2} if own[i] is not None]
+        for t in team:
+            yield mine + t
+
+
+def test_the_list_and_the_tier_authority_never_disagree(monkeypatch):
+    """The invariant this bug broke: a database is reachable by `resolve`
+    exactly when `resolve_target` lists it, and `resolve_databases` (the
+    effective-access screen) answers as `resolve` does. Checked through the
+    public functions, over every shape `_shapes` builds."""
+    state = {}
+    monkeypatch.setattr(access, "is_admin", lambda pid: False)
+    monkeypatch.setattr(access, "_covering", lambda pid, tid, dbn: [
+        r for r in state["rows"]
+        if dbn is None or r["all_databases"] or r["database_name"] == dbn])
+    monkeypatch.setattr(access.db, "fetch_all", lambda sql, params=None: [
+        {**r, "target_id": 53, "team_id": None, "valid_until": None}
+        for r in state["rows"]])
+    checked = 0
+    for rows in _shapes():
+        state["rows"] = rows
+        listed = access.resolve_target("U1", 53)
+        batch = access.resolve_databases("U1", [(53, "a"), (53, "b")])
+        for d in ("a", "b"):
+            one = access.resolve("U1", 53, d)
+            in_list = listed is not None and (listed["databases"] is None
+                                              or d in listed["databases"])
+            assert (one is not None) == in_list, (d, rows)
+            assert (batch[(53, d)][0] is not None) == (one is not None), (d, rows)
+            if one is not None:
+                assert batch[(53, d)][0]["tier"] == one["tier"], (d, rows)
+            checked += 1
+    assert checked > 1000
+
+
 # --- combining ---------------------------------------------------------------
 
 

@@ -196,10 +196,27 @@ def test_a_team_waiver_reaches_an_admin(covering):
 
 
 def test_the_access_decision_and_the_waiver_question_share_one_rule():
-    assert "_decide_with_row(rows)[0]" in inspect.getsource(access._decide)
-    assert "_suppresses_team(" in inspect.getsource(access._decide_with_row)
-    assert "_suppresses_team(" in inspect.getsource(access.team_waivers_reach)
+    assert "_decide_with_row(rows, server_rows)[0]" in inspect.getsource(access._decide)
+    assert "own_standing(" in inspect.getsource(access._decide_with_row)
+    assert "own_standing(" in inspect.getsource(access.team_waivers_reach)
+    assert "_suppresses_team(" in inspect.getsource(access.own_standing)
     assert "merge_with_team" not in inspect.getsource(access.team_waivers_reach)
+
+
+def test_an_own_grant_on_another_database_keeps_the_team_waiver_out(monkeypatch):
+    """Rule 4 is decided per server. A member whose own grant on one database
+    of the server does not merge gets their own rows there, and a team waiver
+    on another database does not reach them: the team's rows are displaced on
+    the whole server, not only where the member has a row."""
+    own_ledger = {**_g(True, merge=True), "database_name": "ledger"}
+    own_orders = {**_g(True), "database_name": "orders"}
+    team_waiver = {**_g(False, auto=True, tier="ro", rank=1), "database_name": "ledger"}
+    rows = [own_ledger, own_orders, team_waiver]
+    monkeypatch.setattr(access, "_covering", lambda pid, tid, dbn: [
+        r for r in rows if dbn is None or r["all_databases"] or r["database_name"] == dbn])
+    monkeypatch.setattr(access, "is_admin", lambda pid: False)
+    assert access.resolve(UID, 53, "ledger") is not None       # their own row
+    assert not access.team_waivers_reach(UID, 53, "ledger")
 
 
 def test_rule_four_is_written_exactly_once():

@@ -178,33 +178,70 @@ def _suppresses_team(mine_grants) -> bool:
     return any(not r["merge_with_team"] for r in mine_grants)
 
 
-def _decide(rows) -> dict | None:
+def own_standing(own_grants) -> str | None:
+    """What a principal's own GRANT rows on one server say about the team's.
+
+    'own'    -- a live one does not merge with the team (rule 4): their own
+                rows decide on this server, and the team's reach them on none
+                of its databases;
+    'lapsed' -- none is live and one has ended (rule 2): no access on this
+                server, and not the team's either;
+    None     -- the team's rows apply, beside any own rows that merge.
+
+    Pass every own grant row on the SERVER, not only the rows for the
+    database being asked about. That is the old model's rule, where a user row
+    replaced the team's on the whole target, and it is what `resolve_target`
+    lists from. When the tier authority asked per database instead, a personal
+    grant on one database left the team's grant on another database in force
+    for submit and for the effective-access screen, while the picker listing
+    that server's databases hid it. The person was told they had access that
+    they could not select.
+    """
+    live = [r for r in own_grants if not r["expired"] and not r.get("not_started")]
+    if live:
+        return "own" if _suppresses_team(live) else None
+    return "lapsed" if any(r["expired"] for r in own_grants) else None
+
+
+def _on_database(rows, database_name: str):
+    """The rows that cover one database: its own, and every-database rows."""
+    return [r for r in rows
+            if r["all_databases"] or r["database_name"] == database_name]
+
+
+def _decide(rows, server_rows=None) -> dict | None:
     """Turn covering rows into an answer, or None for no access.
 
     Shared by `resolve` and `resolve_target` so the five rules have one
     implementation. A second copy of an authorization rule is a second place
     for it to be wrong.
     """
-    return _decide_with_row(rows)[0]
+    return _decide_with_row(rows, server_rows)[0]
 
 
-def _decide_with_row(rows) -> tuple[dict | None, dict | None]:
+def _decide_with_row(rows, server_rows=None) -> tuple[dict | None, dict | None]:
     """`_decide`, plus the row whose tier won.
 
     For a screen that has to say where access comes from -- which team, until
     when. The row is provenance, never an authorization input: `_decide` is
     this function with the row thrown away, so the two cannot disagree about
     the decision.
+
+    `rows` cover the question; `server_rows` are every row on the server, and
+    decide whether the principal's own grants displace the team's there (see
+    `own_standing`). They default to `rows`, which is right when the question
+    is the whole server.
     """
     live = _live(rows)
     mine_grants = _mine_grants(live)
 
-    if not mine_grants:
+    server = rows if server_rows is None else server_rows
+    standing = own_standing([r for r in server if r["mine"] and not r["auto_approve"]])
+    if standing == "lapsed":
         # Rule 2: lapsed rather than absent means no access, not the team's.
-        if any(r["mine"] and not r["auto_approve"] and r["expired"] for r in rows):
-            return None, None
+        return None, None
 
-    suppress_team = _suppresses_team(mine_grants)
+    suppress_team = standing == "own"
     pool = mine_grants if suppress_team else \
         mine_grants + [r for r in live if not r["mine"] and not r["auto_approve"]]
     if not pool:
@@ -254,10 +291,11 @@ def team_waivers_reach(principal_id: str, target_id: int,
     """
     if is_admin(principal_id):
         return True
-    rows = _covering(principal_id, target_id, database_name)
-    if _decide(rows) is None:
+    server = _covering(principal_id, target_id, None)
+    if _decide(_on_database(server, database_name), server) is None:
         return False
-    return not _suppresses_team(_mine_grants(_live(rows)))
+    return own_standing([r for r in server
+                         if r["mine"] and not r["auto_approve"]]) is None
 
 
 def resolve(principal_id: str, target_id: int,
@@ -268,12 +306,17 @@ def resolve(principal_id: str, target_id: int,
     how a read grant on one database and a write grant on another combine into
     write on both — the bug `teams.effective_mode_for_database` was written to
     avoid, and which one row per database removes by construction.
+
+    Whether the principal's own grants displace the team's is the one part
+    decided per SERVER (`own_standing`), so this answers what `resolve_target`
+    lists: a database is reachable here exactly when it is listed there.
     """
     if is_admin(principal_id):
         return {"tier": "ddl", "auto_tier": _admin_auto(principal_id, target_id,
                                                         database_name),
                 "source": "admin", "unrestricted": True, "db_role": None}
-    return _decide(_covering(principal_id, target_id, database_name))
+    server = _covering(principal_id, target_id, None)
+    return _decide(_on_database(server, database_name), server)
 
 
 def _admin_auto(principal_id: str, target_id: int,
@@ -659,8 +702,8 @@ def resolve_databases(principal_id: str, scopes) -> dict:
     can reach; `resolve` per database is a query each. The rows are read once
     and filtered here the way `_covering` filters them in SQL -- the row is for
     this target or every target, and for this database or every database --
-    then handed to `_decide_with_row`, so the decision keeps one
-    implementation.
+    then handed to `_decide_with_row` with the server's rows beside them, as
+    `resolve` does, so the decision keeps one implementation.
 
     Returns {(target_id, database): (decision or None, deciding row or None)}.
     The row carries `team_id` and `valid_until` for provenance. An admin
@@ -693,9 +736,8 @@ def resolve_databases(principal_id: str, scopes) -> dict:
     by_target: dict[int, list] = {tid: [] for tid in ids}
     for r in rows:
         by_target[r["target_id"]].append(r)
-    return {(tid, dbn): _decide_with_row(
-                [r for r in by_target[tid]
-                 if r["all_databases"] or r["database_name"] == dbn])
+    return {(tid, dbn): _decide_with_row(_on_database(by_target[tid], dbn),
+                                         by_target[tid])
             for tid, dbn in pairs}
 
 
