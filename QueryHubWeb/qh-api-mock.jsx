@@ -1212,7 +1212,7 @@ function maskSample(col, h) {
     address: ['bc1qar0srrr7xfkvy5l643lydnw9re59gtzz', '0x71C7656EC7ab88b098defB751B7401B5f6d8976F'],
     iban: ['TR33 0006 1005 1978 6457 8413 26', 'TR64 0001 0021 8712 3456 7890 12'],
     card_no: ['5218 7612 3456 7890', '4506 3477 1234 5678'], tckn: ['12345678901', '98765432109'],
-    phone: ['+90 532 111 22 33', '+90 555 444 33 22'], name: ['Harbour Branch', 'Levent Ofis'],
+    phone: ['+90 532 111 22 33', '+90 555 444 33 22'], name: ['Harbour Branch', 'Hillside Office'],
     table_name: ['pg_class', 'transactions'],
   }[col];
   if (s) return s[h % s.length];
