@@ -4,10 +4,12 @@
 // actually reach, and WHY?" Before it, an admin answered that by reading the
 // grants, auto-approve and scopes tables and applying the precedence rules by
 // hand. So the precedence is the screen, not a footnote:
-//   personal grant  >  team grant  >  nothing, decided PER DATABASE — and an
-//   ENDED personal grant still decides: it is no access, not a fall-through to
-//   the team (CODE 2026-09-23 §3, the resolver's rule 2). An admin bypasses the
-//   question entirely.
+//   personal grant  >  team grant  >  nothing, decided PER SERVER — their own
+//   grant on any database of a server displaces the team's grants on every
+//   database of it, unless it merges with the team (rule 4, CODE 2026-09-24 (b))
+//   — and an ENDED personal grant still decides: it is no access, not a
+//   fall-through to the team (CODE 2026-09-23 §3, rule 2). An admin bypasses
+//   the question entirely.
 // Every row says which of those it came from, and where a lower rung was
 // overruled the row says that too.
 //
@@ -62,8 +64,9 @@ function EffDbs({ all, dbs }) {
 
 // The rungs that did NOT win, for one row. Read from the grants table and said
 // as a note: the row above it is the answer, this is why it is the answer.
-// Per database, as the resolver decides it (CODE 2026-09-23 §4): a team grant
-// on ANOTHER database of the same server did not lose to anything.
+// Per server for their own grant (rule 4, CODE 2026-09-24 (b)): every team
+// grant on the connection lost to it, whichever database it names. Between
+// teams nothing is displaced — they merge — so only overlapping ones are named.
 const effLiveG = (g) => !g.expiresAt || new Date(g.expiresAt).getTime() > Date.now();
 const effDbsOf = (g) => (!g.databases || !g.databases.length || g.databases.indexOf('*') >= 0) ? null : g.databases;   // null = every database
 const effMeets = (a, b) => !a || !b || a.some(d => b.indexOf(d) >= 0);
@@ -71,11 +74,11 @@ function effOverruled(st, eff, t) {
   const teams = (eff.teams || []).map(x => x.name);
   const rowDbs = t.allDatabases ? null : (t.databases || null);
   const onConn = (st.grants || []).filter(g => g.connectionId === t.connectionId && g.subjectType === 'team'
-    && teams.indexOf(g.subject) >= 0 && effLiveG(g) && effMeets(effDbsOf(g), rowDbs));
+    && teams.indexOf(g.subject) >= 0 && effLiveG(g));
   const out = [];
   if (t.source === 'user') onConn.forEach(g =>
     out.push(<>Team <b>{g.subject}</b> also grants {g.tier} here — not used, their own grant takes precedence.</>));
-  if (t.source === 'team') onConn.filter(g => g.subject !== t.sourceTeam).forEach(g =>
+  if (t.source === 'team') onConn.filter(g => g.subject !== t.sourceTeam && effMeets(effDbsOf(g), rowDbs)).forEach(g =>
     out.push(<>Team <b>{g.subject}</b> grants {g.tier} here too; the resolver merged the two.</>));
   return out;
 }
@@ -84,7 +87,7 @@ function effOverruled(st, eff, t) {
 // `overriddenFor` with `expired: true`, so the two screens cannot disagree.
 // Without this row the screen would show the team granting a database and the
 // person not reaching it, with no reason in between. Read, never derived: the
-// grants list does not apply the per-database rule; the resolver does.
+// grants list does not apply the per-server rule (rule 4); the resolver does.
 function EffBlockedRow({ b }) {
   const dbs = b.databases && b.databases.length && b.databases.indexOf('*') < 0 ? b.databases : null;
   return (
@@ -239,12 +242,12 @@ function EffPerson({ st, subject, onOpenTeam }) {
           {/* One line a reader can stop at. Counts only — the names are below. */}
           <div className="qh-eff-sum">
             {bypassAll ? 'Reaches every connection as an admin' : nConn ? 'Can query ' + nConn + ' connection' + (nConn === 1 ? '' : 's') : 'Can query nothing'}
-            {autos.length > 0 && <> · <b className="qh-eff-sum-warn">{autos.length} skip{autos.length === 1 ? 's' : ''} review</b></>}
+            {autos.length > 0 && <> · <b className="qh-eff-sum-warn">{autos.length} auto-approved</b></>}
             {soon > 0 && <> · <b className="qh-eff-sum-soon">{soon} end{soon === 1 ? 's' : ''} within 14 days</b></>}
             {ap && <> · approver</>}
           </div>
 
-          <EffSection title="Can query" sub="Per database, their own grant beats a team grant — and still does once it has ended, as no access. An admin needs neither.">
+          <EffSection title="Can query" sub="Their own grant on a server beats every team grant on that server — and still does once it has ended, as no access. An admin needs neither.">
             {access.length === 0 && autos.length === 0 && !ap && !blocked.length && <EffNone />}
             {access.length === 0 && (autos.length > 0 || ap || blocked.length > 0) && <div className="qh-eff-empty">No grant on any connection.</div>}
             {bypassAll
@@ -315,10 +318,10 @@ function EffTeam({ st, subject, onOpenPerson }) {
         <>
           <div className="qh-eff-sum">
             {nConn ? 'Members can query ' + nConn + ' connection' + (nConn === 1 ? '' : 's') + ' through this team' : 'Grants nothing'}
-            {autos.length > 0 && <> · <b className="qh-eff-sum-warn">{autos.length} skip{autos.length === 1 ? 's' : ''} review</b></>}
+            {autos.length > 0 && <> · <b className="qh-eff-sum-warn">{autos.length} auto-approved</b></>}
           </div>
 
-          <EffSection title="Members can query" sub="What this team gives every member — except where a member holds their own grant on one of these databases. Theirs decides for them, and still does once it has ended.">
+          <EffSection title="Members can query" sub="What this team gives every member — except a member who holds their own grant on the same server. Theirs decides for them there, and still does once it has ended.">
             {access.length === 0
               ? <EffNone team />
               : <div className="qh-eff-list">{access.map(t => (
@@ -329,7 +332,7 @@ function EffTeam({ st, subject, onOpenPerson }) {
                   // is NOT dropped from this list — it is the reason they have nothing.
                   return o.expired
                     ? <span className="qh-eff-note-warn">For {who}, their own grant{on} ended on {effDate(o.expiresAt)}; the team's does not apply to them.</span>
-                    : <>For {who} their own {o.tier} grant{on} applies instead.</>;
+                    : <>For {who} their own {o.tier} grant{on} applies instead; the team's does not reach them on this server.</>;
                 })} />))}</div>}
           </EffSection>
 

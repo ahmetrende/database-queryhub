@@ -2141,6 +2141,22 @@
   .qh-rowmenu-item.is-danger:hover { background: var(--danger-adaptive-light); }
   .qh-rowmenu-hint { font-size: 11.5px; font-weight: 400; color: var(--fg-tertiary); }
 
+  /* Masking exemptions: pickers you can type into (MxCombo) — they filter, and
+     still only accept what the catalog lists. The list is portalled. */
+  .qh-mxcombo { position: relative; display: inline-flex; min-width: 200px; }
+  .qh-mxcombo.is-wide { min-width: 300px; }
+  .qh-mxcombo-in { width: 100%; padding-right: 28px; }
+  .qh-mxcombo-caret { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--fg-tertiary); pointer-events: none; }
+  .qh-mxcombo-list { position: fixed; z-index: 1000; overflow-y: auto; padding: 4px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-md); box-shadow: var(--shadow-medium, 0 6px 20px rgba(0,0,0,.12)); box-sizing: border-box; }
+  .qh-mxcombo-list.is-up { transform: translateY(-100%); }
+  .qh-mxcombo-opt { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 7px 10px; border-radius: var(--r-sm); cursor: pointer; }
+  .qh-mxcombo-opt.is-hi { background: var(--adaptive-light); }
+  .qh-mxcombo-opt.is-cur .qh-mxcombo-l { color: var(--fg-accent); font-weight: 600; }
+  .qh-mxcombo-l { min-width: 0; font-family: var(--qh-mono); font-size: 12.5px; color: var(--fg-primary); overflow-wrap: break-word; }
+  .qh-mxcombo-h { flex-shrink: 0; font-size: 11.5px; color: var(--fg-tertiary); }
+  .qh-mxcombo-h.is-warn { color: var(--fg-warning); }
+  .qh-mxcombo-none { padding: 8px 10px; font-size: 12.5px; color: var(--fg-tertiary); }
+
   /* feedback */
   .qh-fblist { display: flex; flex-direction: column; gap: 10px; }
   .qh-fbcard { border: 1px solid var(--stroke-light); border-radius: var(--r-md); padding: 14px 16px; }

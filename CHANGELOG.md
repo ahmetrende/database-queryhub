@@ -34,6 +34,13 @@ frontend and the endpoints it calls are explicitly outside it.
   moved into a ⋯ menu. Engine and hosting share one column, and the
   environment tag sits beside the name. The pinned actions column no longer
   covers the databases.
+- **The masking exemption form's pickers filter as you type.** Server,
+  database, schema, table and column still accept only what the catalog
+  lists: a typo keeps the previous choice. The column picker clears after
+  each pick.
+- **The effective-access screen describes the per-server rule.** A team's
+  grant names each member whose own grant on that server applies instead. The
+  summaries say "auto-approved".
 
 ### Fixed
 

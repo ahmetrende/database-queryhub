@@ -338,6 +338,78 @@ function MxItem({ e, canWrite, moot, norms, open, onToggleOpen, st, onReplace, o
 // leaving a field blank — that is still the single most important thing about
 // this form, because the text-field version it replaced reached "whole server"
 // exactly that way.
+// ---------- A picker you can type into ----------
+// The server, database, schema, table and column pickers were plain selects:
+// right that they only accept what the catalog holds, slow on a server with
+// hundreds of databases or a table with two hundred columns. This keeps the
+// first property and fixes the second — typing FILTERS the list (starts-with
+// first, then contains), ↑/↓ and Enter pick, Escape puts the last answer back.
+// It still never accepts free text: leaving the field without picking keeps
+// what was there, so a typo cannot become an exemption that matches nothing.
+// The list is portalled and placed from the input, so no scrolling parent
+// clips it, and it opens upward when there is no room below.
+function MxCombo({ value, options, onPick, placeholder, disabled, clearOnPick, wide }) {
+  const [q, setQ] = useMx(null);          // null = not typing; shows the picked label
+  const [hi, setHi] = useMx(0);
+  const [pos, setPos] = useMx(null);
+  const inRef = React.useRef(null), listRef = React.useRef(null);
+  const cur = options.find(o => o.value === value);
+  const open = pos != null;
+  const needle = (q || '').trim().toLowerCase();
+  const shown = !needle ? options : options
+    .map(o => ({ o, i: o.label.toLowerCase().indexOf(needle) }))
+    .filter(x => x.i >= 0).sort((a, b) => ((a.i === 0 ? 0 : 1) - (b.i === 0 ? 0 : 1)) || a.o.label.localeCompare(b.o.label))
+    .map(x => x.o);
+  const CAP = 300;
+  const place = () => {
+    const r = inRef.current.getBoundingClientRect();
+    const below = window.innerHeight - r.bottom, up = below < 240 && r.top > below;
+    setPos({ left: r.left, width: Math.max(r.width, wide ? 380 : 300), top: up ? r.top - 4 : r.bottom + 4, up, max: Math.max(160, Math.min(300, (up ? r.top : below) - 16)) });
+  };
+  const close = () => { setPos(null); setQ(null); setHi(0); };
+  const pick = (o) => { if (!o) return; onPick(o.value); close(); if (clearOnPick && inRef.current) inRef.current.focus(); };
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const off = (e) => { if (!(inRef.current && inRef.current.contains(e.target)) && !(listRef.current && listRef.current.contains(e.target))) close(); };
+    const shut = (e) => { if (!(listRef.current && listRef.current.contains(e.target))) close(); };
+    document.addEventListener('mousedown', off); window.addEventListener('scroll', shut, true); window.addEventListener('resize', close);
+    return () => { document.removeEventListener('mousedown', off); window.removeEventListener('scroll', shut, true); window.removeEventListener('resize', close); };
+  }, [open]);
+  React.useEffect(() => {
+    const el = listRef.current && listRef.current.querySelector('.is-hi');
+    if (el && listRef.current) { const l = listRef.current; if (el.offsetTop < l.scrollTop) l.scrollTop = el.offsetTop; else if (el.offsetTop + el.offsetHeight > l.scrollTop + l.clientHeight) l.scrollTop = el.offsetTop + el.offsetHeight - l.clientHeight; }
+  }, [hi, open]);
+  const key = (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (!open) place(); setHi(h => Math.min(h + 1, Math.min(shown.length, CAP) - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => Math.max(h - 1, 0)); }
+    else if (e.key === 'Enter') { if (open && shown[hi]) { e.preventDefault(); pick(shown[hi]); } }
+    else if (e.key === 'Escape') { if (open) { e.preventDefault(); e.stopPropagation(); close(); } }
+    else if (e.key === 'Tab') close();
+  };
+  return (
+    <span className={'qh-mxcombo' + (wide ? ' is-wide' : '')}>
+      <input ref={inRef} className="qh-input qh-mxcombo-in" disabled={disabled} placeholder={placeholder} spellCheck={false} autoComplete="off"
+        role="combobox" aria-expanded={open} aria-autocomplete="list"
+        value={q != null ? q : (clearOnPick ? '' : (cur ? cur.label : ''))}
+        onFocus={() => { if (!open) place(); }} onClick={() => { if (!open) place(); }}
+        onChange={e => { setQ(e.target.value); setHi(0); if (!open) place(); }} onKeyDown={key} />
+      <svg className="qh-mxcombo-caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+      {open && ReactDOM.createPortal(
+        <div ref={listRef} className={'qh-mxcombo-list' + (pos.up ? ' is-up' : '')} role="listbox" style={{ left: pos.left, top: pos.top, width: pos.width, maxHeight: pos.max }}>
+          {shown.length === 0 && <div className="qh-mxcombo-none">{options.length ? 'Nothing matches “' + q.trim() + '”.' : 'Nothing to pick here.'}</div>}
+          {shown.slice(0, CAP).map((o, i) => (
+            <div key={o.value} role="option" aria-selected={o.value === value}
+              className={'qh-mxcombo-opt' + (i === hi ? ' is-hi' : '') + (o.value === value ? ' is-cur' : '')}
+              onMouseDown={e => { e.preventDefault(); pick(o); }} onMouseEnter={() => setHi(i)}>
+              <span className="qh-mxcombo-l">{o.label}</span>{o.hint && <span className={'qh-mxcombo-h' + (o.hintWarn ? ' is-warn' : '')}>{o.hint}</span>}
+            </div>
+          ))}
+          {shown.length > CAP && <div className="qh-mxcombo-none">{shown.length - CAP} more — keep typing to narrow it.</div>}
+        </div>, document.body)}
+    </span>
+  );
+}
+
 function MxForm({ st, seed, onDone }) {
   const conns = (st.connections || []).filter(c => c.enabled !== false);
   const [f, setF] = useMx(() => ({
@@ -500,30 +572,26 @@ function MxForm({ st, seed, onDone }) {
           this form is meant to be four decisions, not a wall. */}
       <div className="qh-mxfields">
         <label className="qh-rolefield"><span className="qh-rolefield-l">Server</span>
-          <select className="qh-select" disabled={f.scope === 'fleet'} value={f.connectionId} onChange={e => set({ connectionId: e.target.value, databaseId: '', schema: '', table: '', column: '' })}>
-            <option value="">{f.scope === 'fleet' ? 'Every server' : 'Pick a server…'}</option>
-            {conns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select></label>
+          <MxCombo disabled={f.scope === 'fleet'} value={f.connectionId} placeholder={f.scope === 'fleet' ? 'Every server' : 'Type or pick a server…'}
+            options={conns.map(c => ({ value: c.id, label: c.name, hint: c.env || null }))}
+            onPick={v => set({ connectionId: v, databaseId: '', schema: '', table: '', column: '' })} /></label>
         {f.scope !== 'server' && f.scope !== 'fleet' && !!conn && <label className="qh-rolefield"><span className="qh-rolefield-l">Database</span>
-          <select className="qh-select" value={f.databaseId} onChange={e => set({ databaseId: e.target.value, schema: '', table: '', column: '' })}>
-            <option value="">Pick a database…</option>
-            {dbs.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-          </select></label>}
+          <MxCombo value={f.databaseId} placeholder="Type or pick a database…"
+            options={dbs.map(d => ({ value: d.id, label: d.name }))}
+            onPick={v => set({ databaseId: v, schema: '', table: '', column: '' })} /></label>}
         {pickSchema && (f.scope === 'fleet' || !!f.databaseId) && <label className="qh-rolefield"><span className="qh-rolefield-l">Schema{f.scope === 'fleet' && <span className="qh-accedit-hint"> — optional</span>}</span>
           {f.scope === 'fleet'
             // No catalog to read across the fleet, and the live fleet-wide row
             // names a schema (`dba`) that exists on every server — so this one
             // rung takes a typed schema name. The exception the rule earns.
             ? <input className="qh-input" placeholder="e.g. dba — empty for every schema" value={f.schema} onChange={e => set({ schema: e.target.value })} />
-            : <select className="qh-select" disabled={!cat} value={f.schema} onChange={e => set({ schema: e.target.value, table: '', column: '' })}>
-              <option value="">{cat ? 'Pick a schema…' : 'Loading catalog…'}</option>
-              {schemas.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
-            </select>}</label>}
+            : <MxCombo disabled={!cat} value={f.schema} placeholder={cat ? 'Type or pick a schema…' : 'Loading catalog…'}
+              options={schemas.map(x => ({ value: x.name, label: x.name }))}
+              onPick={v => set({ schema: v, table: '', column: '' })} />}</label>}
         {(f.scope === 'column' || f.scope === 'table') && !!schema && <label className="qh-rolefield"><span className="qh-rolefield-l">Table</span>
-          <select className="qh-select" value={f.table} onChange={e => set({ table: e.target.value, column: '' })}>
-            <option value="">Pick a table…</option>
-            {tables.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
-          </select></label>}
+          <MxCombo value={f.table} placeholder="Type or pick a table…"
+            options={tables.map(t => ({ value: t.name, label: t.name }))}
+            onPick={v => set({ table: v, column: '' })} /></label>}
         {f.scope === 'column' && !!table && <div className="qh-rolefield qh-mxcolfield"><span className="qh-rolefield-l">Columns{picked.length > 1 && <span className="qh-accedit-hint"> — one exemption each, same reason</span>}</span>
           {/* Picked from the catalog and never typed — 156,000 known columns, and
               a typo writes an exemption that silently matches nothing. Each
@@ -536,10 +604,9 @@ function MxForm({ st, seed, onDone }) {
                 <button type="button" title={'Remove ' + c} onClick={() => dropCol(c)}><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
               </span>
             ))}
-            <select className="qh-select qh-mxcolsel" value="" onChange={e => addCol(e.target.value)}>
-              <option value="">{picked.length ? '+ add another column…' : 'Pick a column…'}</option>
-              {columns.filter(c => picked.indexOf(c.name) < 0).map(c => <option key={c.name} value={c.name}>{c.name}{c.rule ? ' — masked as ' + c.rule.label : ' — not masked'}</option>)}
-            </select>
+            <MxCombo clearOnPick wide value="" placeholder={picked.length ? 'Add another column…' : 'Type or pick a column…'}
+              options={columns.filter(c => picked.indexOf(c.name) < 0).map(c => ({ value: c.name, label: c.name, hint: c.rule ? 'masked as ' + c.rule.label : 'not masked', hintWarn: !c.rule }))}
+              onPick={addCol} />
           </div></div>}
       </div>
       {catErr && <div className="qh-roleform-err">{catErr} Pick another database, or ask for a catalog snapshot to be taken.</div>}
