@@ -67,14 +67,13 @@ def fetches(monkeypatch):
     """Counts outbound fetches. The SSRF assertions read this, not just the
     status code — a 404 produced AFTER a request to the metadata service would
     still have made the request."""
-    import urllib.request
     calls = []
 
     def spy(req, timeout=None):
         calls.append(getattr(req, "full_url", req))
         return FakeResponse()
 
-    monkeypatch.setattr(urllib.request, "urlopen", spy)
+    monkeypatch.setattr(routes_avatar, "_open", spy)
     return calls
 
 
@@ -158,12 +157,11 @@ def test_host_matching_requires_a_dot_boundary():
 def test_a_non_image_content_type_is_refused(client, monkeypatch):
     """The allow-list bounds WHERE we fetch from; this bounds what we will hand
     to a browser as an image."""
-    import urllib.request
 
     class Html(FakeResponse):
         headers = {"content-type": "text/html"}
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda r, timeout=None: Html())
+    monkeypatch.setattr(routes_avatar, "_open", lambda r, timeout=None: Html())
     _avatar_is(monkeypatch, "https://avatars.slack-edge.com/a.png")
     assert client.get("/api/avatar").status_code == 404
 
@@ -171,9 +169,8 @@ def test_a_non_image_content_type_is_refused(client, monkeypatch):
 def test_an_oversized_body_is_refused_rather_than_truncated(client, monkeypatch):
     """Truncating would hand the browser a corrupt image and look like a render
     bug; refusing falls back to initials, which is honest."""
-    import urllib.request
     big = b"\x89PNG" + b"0" * (routes_avatar._MAX_AVATAR_BYTES + 10)
-    monkeypatch.setattr(urllib.request, "urlopen",
+    monkeypatch.setattr(routes_avatar, "_open",
                         lambda r, timeout=None: FakeResponse(big))
     _avatar_is(monkeypatch, "https://avatars.slack-edge.com/a.png")
     assert client.get("/api/avatar").status_code == 404
@@ -182,12 +179,11 @@ def test_an_oversized_body_is_refused_rather_than_truncated(client, monkeypatch)
 def test_slack_being_unreachable_degrades_to_no_avatar(client, monkeypatch):
     """An air-gapped install, a DNS failure, Slack down. The UI shows initials,
     exactly as it does today — a decoration must not break the page."""
-    import urllib.request
 
     def boom(*a, **k):
         raise OSError("Name or service not known")
 
-    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    monkeypatch.setattr(routes_avatar, "_open", boom)
     _avatar_is(monkeypatch, "https://avatars.slack-edge.com/a.png")
     assert client.get("/api/avatar").status_code == 404
 
@@ -213,3 +209,36 @@ def test_me_hands_the_ui_our_own_url_not_a_cdn_one():
     src = inspect.getsource(app_mod.create_app)
     assert '"avatar": "/api/avatar"' in src
     assert 'claims.get("avatar")' in src, "still gated on having one on file"
+
+
+# ------------------------------------------------- a redirect is a second URL
+
+
+def _redirect_to(newurl):
+    import urllib.request
+    req = urllib.request.Request("https://avatars.slack-edge.com/a.png")
+    return routes_avatar._AllowListedRedirects().redirect_request(
+        req, None, 302, "Found", {}, newurl)
+
+
+@pytest.mark.parametrize("newurl", [
+    "http://169.254.169.254/latest/meta-data/iam/",
+    "https://evil.example.com/a.png",
+    "http://avatars.slack-edge.com/a.png",
+])
+def test_a_redirect_off_the_allow_list_is_not_followed(newurl):
+    """urlopen follows redirects on its own, so checking only the first URL
+    let an allowed host send the fetch anywhere. Every hop is checked now."""
+    assert _redirect_to(newurl) is None
+
+
+def test_a_redirect_between_allowed_hosts_is_followed():
+    nxt = _redirect_to("https://secure.gravatar.com/avatar/abc")
+    assert nxt is not None and nxt.full_url == "https://secure.gravatar.com/avatar/abc"
+
+
+def test_the_fetch_goes_through_the_checking_opener():
+    import inspect
+    assert "build_opener(_AllowListedRedirects)" in inspect.getsource(routes_avatar._open)
+    assert "urlopen(" not in inspect.getsource(routes_avatar.my_avatar)
+    assert routes_avatar._AllowListedRedirects.max_redirections <= 5

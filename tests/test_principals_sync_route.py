@@ -65,9 +65,8 @@ def test_reconcile_enables_and_disables_known_addresses(app_client, monkeypatch)
     monkeypatch.setattr(routes_admin.requesters, "list_enabled_ids",
                         lambda: {"U_GONE"})
     monkeypatch.setattr(
-        routes_admin.requesters, "by_email",
+        routes_admin.requesters, "principal_by_email",
         lambda e: {"slack_user_id": "U_NEW"} if e == "new@example.com" else None)
-    monkeypatch.setattr(routes_admin.admins, "by_email", lambda e: None)
     enabled, disabled = [], []
     monkeypatch.setattr(routes_admin.requesters, "enable",
                         lambda pid: enabled.append(pid))
@@ -90,9 +89,8 @@ def test_an_unknown_address_is_reported_never_created(app_client, monkeypatch):
     monkeypatch.setattr(routes_admin.requesters, "list_enabled_ids",
                         lambda: {"U_KEEP"})
     monkeypatch.setattr(
-        routes_admin.requesters, "by_email",
+        routes_admin.requesters, "principal_by_email",
         lambda e: {"slack_user_id": "U_KEEP"} if e == "keep@example.com" else None)
-    monkeypatch.setattr(routes_admin.admins, "by_email", lambda e: None)
     monkeypatch.setattr(routes_admin.requesters, "enable", lambda pid: None)
     monkeypatch.setattr(
         routes_admin.requesters, "disable",
@@ -134,9 +132,8 @@ def test_the_sync_never_writes_to_the_admins_table(app_client, monkeypatch):
     _as(app, monkeypatch, SYNC)
     monkeypatch.setattr(routes_admin.requesters, "list_enabled_ids", lambda: {"U_KEEP"})
     monkeypatch.setattr(
-        routes_admin.requesters, "by_email",
+        routes_admin.requesters, "principal_by_email",
         lambda e: {"slack_user_id": "U_KEEP"} if e == "keep@example.com" else None)
-    monkeypatch.setattr(routes_admin.admins, "by_email", lambda e: None)
     monkeypatch.setattr(routes_admin.requesters, "enable", lambda pid: None)
     monkeypatch.setattr(routes_admin.requesters, "disable", lambda pid: None)
     monkeypatch.setattr(
@@ -160,12 +157,12 @@ def test_admin_drift_is_reported_for_a_human_to_act_on(app_client, monkeypatch):
     app, client = app_client
     _as(app, monkeypatch, SYNC)
     monkeypatch.setattr(routes_admin.requesters, "list_enabled_ids", lambda: {"U_KEEP"})
+    # One resolver reads both people tables (requesters.principal_by_email).
     monkeypatch.setattr(
-        routes_admin.requesters, "by_email",
-        lambda e: {"slack_user_id": "U_KEEP"} if e == "keep@example.com" else None)
-    monkeypatch.setattr(
-        routes_admin.admins, "by_email",
-        lambda e: {"slack_user_id": "U_WANTS"} if e == "wants@example.com" else None)
+        routes_admin.requesters, "principal_by_email",
+        lambda e: ({"slack_user_id": "U_KEEP"} if e == "keep@example.com"
+                   else {"slack_user_id": "U_WANTS"} if e == "wants@example.com"
+                   else None))
     monkeypatch.setattr(routes_admin.requesters, "enable", lambda pid: None)
     monkeypatch.setattr(routes_admin.requesters, "disable", lambda pid: None)
     monkeypatch.setattr(
@@ -189,9 +186,8 @@ def test_every_reconcile_writes_an_audit_row(app_client, monkeypatch):
     _as(app, monkeypatch, SYNC)
     monkeypatch.setattr(routes_admin.requesters, "list_enabled_ids", lambda: {"U_GONE"})
     monkeypatch.setattr(
-        routes_admin.requesters, "by_email",
+        routes_admin.requesters, "principal_by_email",
         lambda e: {"slack_user_id": "U_NEW"} if e == "new@example.com" else None)
-    monkeypatch.setattr(routes_admin.admins, "by_email", lambda e: None)
     monkeypatch.setattr(routes_admin.requesters, "enable", lambda pid: None)
     monkeypatch.setattr(routes_admin.requesters, "disable", lambda pid: None)
     monkeypatch.setattr(routes_admin.admins, "list_active", lambda: [])

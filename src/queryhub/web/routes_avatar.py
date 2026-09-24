@@ -29,6 +29,7 @@ never supplies the URL: it is read from their own session.
 from __future__ import annotations
 
 import logging
+import urllib.request
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends
@@ -55,8 +56,8 @@ _ALLOWED_CONTENT_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
 
 
 def _host_allowed(url: str) -> bool:
-    """https, and a host on the allow-list. No redirects are followed by the
-    caller, so this check cannot be bypassed by a 302 to somewhere else."""
+    """https, and a host on the allow-list. Every redirect hop is held to this
+    too (`_AllowListedRedirects`), so a 302 cannot take the fetch elsewhere."""
     try:
         parts = urlsplit(url)
     except Exception:
@@ -66,6 +67,31 @@ def _host_allowed(url: str) -> bool:
     host = parts.hostname.lower()
     return any(host == h or host.endswith("." + h)
                for h in _ALLOWED_AVATAR_HOSTS)
+
+
+class _AllowListedRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to another https host on the allow-list.
+
+    The URL comes from the database, so the first hop is checked before any
+    socket opens. A redirect is a second URL, chosen by whoever answers the
+    first one, and it gets the same check: without this, a 302 from an allowed
+    host to an internal address would have been fetched.
+    """
+    max_redirections = 3
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _host_allowed(newurl):
+            log.warning("refusing an avatar redirect to a non-allowed host: %s",
+                        urlsplit(newurl).hostname)
+            return None     # urllib then raises the 3xx as an HTTPError
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open(req):
+    """The one outbound fetch. Not `urlopen`: it follows redirects on its own,
+    so the allow-list would have checked only the first hop. This opener
+    re-checks every hop and stops after a few."""
+    return urllib.request.build_opener(_AllowListedRedirects).open(req, timeout=5)
 
 
 @router.get("/avatar")
@@ -94,11 +120,8 @@ def my_avatar(claims: dict = Depends(deps.current_user)):
         raise deps._error(404, "not_found", "No avatar on file.")
 
     try:
-        import urllib.request
         req = urllib.request.Request(url, headers={"User-Agent": "QueryHub"})
-        # allow_redirects is not a thing for urlopen; a redirect would be
-        # followed automatically, so cap it at zero by rejecting 3xx below.
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with _open(req) as resp:
             if resp.status != 200:
                 raise deps._error(404, "not_found", "No avatar on file.")
             ctype = (resp.headers.get("content-type") or "").split(";")[0].strip()

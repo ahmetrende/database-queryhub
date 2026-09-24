@@ -108,6 +108,32 @@ def by_email(email: str) -> dict | None:
     return rows[0]
 
 
+def principal_by_email(email: str) -> dict | None:
+    """The one principal an address belongs to, across BOTH people tables.
+
+    `by_email` here and `admins.by_email` each refuse two rows sharing an
+    address inside their own table. Chained with `or`, they did not refuse one
+    row in EACH table naming different people: the first table's answer won.
+    Two callers also asked in opposite orders, so the same data resolved to
+    different principals. This reads both tables and answers only when every
+    match is the same principal. The requester row is returned when there is
+    one, since it carries `enabled` for the entry gate. Every external sign-in
+    (OIDC, the IdP assertion) and the principal sync resolve through here.
+    """
+    e = (email or "").strip().lower()
+    if not e:
+        return None
+    req = db.fetch_all(
+        "SELECT slack_user_id, email, name, enabled "
+        "FROM requesters WHERE lower(btrim(email)) = %s", (e,))
+    adm = db.fetch_all(
+        "SELECT slack_user_id, email, name, enabled "
+        "FROM admins WHERE lower(btrim(email)) = %s", (e,))
+    if len({r["slack_user_id"] for r in req + adm}) != 1:
+        return None
+    return (req or adm)[0]
+
+
 def list_enabled_ids() -> set[str]:
     """Every principal with an enabled row — what the Layer-A reconcile
     compares the panel's desired state against."""

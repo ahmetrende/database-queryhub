@@ -204,6 +204,11 @@ def test_web_session_rotation_round_trips_against_real_sql():
     # two-tab race and must rotate again, not revoke.
     again = sessions.rotate_refresh(tok)
     assert again is not None and "reuse" not in again
+    # Both racing refreshes carry the same successor, and it is the live one:
+    # the next refresh with it succeeds instead of finding an orphan.
+    assert again["refresh_token"] == rotated["refresh_token"]
+    nxt = sessions.rotate_refresh(rotated["refresh_token"])
+    assert nxt is not None and "reuse" not in nxt
 
     sessions.revoke_session(sid, "integration test cleanup")
     assert not sessions.session_alive(sid)

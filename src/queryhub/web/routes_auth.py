@@ -352,7 +352,10 @@ def auth_refresh(request: Request):
     if not (admins.is_admin(uid) or requesters.is_allowed(uid)):
         sessions.revoke_session(rotated["id"], "whitelist lost at refresh")
         raise deps._error(401, "unauthenticated", "Access removed.")
-    prof = requesters.get(uid) or {}
+    # An admin need not be a requester, and login let them in on their admin
+    # row; reading only `requesters` here dropped their name and email from
+    # every token after the first refresh.
+    prof = requesters.get(uid) or admins.get(uid) or {}
     access = sessions.mint_access(
         {"slack_user_id": uid, "name": prof.get("name"),
          "email": prof.get("email"), "provider": rotated["auth_provider"],

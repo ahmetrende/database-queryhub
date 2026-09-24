@@ -83,7 +83,10 @@ class AwsSecretsManagerProvider:
     name = "awssm"
 
     def __init__(self) -> None:
-        self._cache: dict[str, tuple[float, dict]] = {}
+        # Keyed by (region, secret id). A short secret NAME is per region, so
+        # the same name in two regions is two secrets: keyed by the name alone,
+        # the second target was handed the first region's credentials.
+        self._cache: dict[tuple[str, str], tuple[float, dict]] = {}
 
     def _cache_ttl(self) -> float:
         from . import config as cfg
@@ -92,7 +95,8 @@ class AwsSecretsManagerProvider:
     def _fetch(self, secret_id: str, region: str | None) -> dict:
         now = time.monotonic()
         ttl = self._cache_ttl()
-        cached = self._cache.get(secret_id)
+        key = (region or "", secret_id)
+        cached = self._cache.get(key)
         if ttl > 0 and cached and cached[0] > now:
             return cached[1]
         try:
@@ -115,7 +119,7 @@ class AwsSecretsManagerProvider:
                 f"secret {secret_id} is not the expected JSON {{tier: {{username, password}}}}"
             ) from e
         if ttl > 0:
-            self._cache[secret_id] = (now + ttl, data)
+            self._cache[key] = (now + ttl, data)
         return data
 
     def get_credentials(self, row: dict, mode: str) -> tuple[str, str]:

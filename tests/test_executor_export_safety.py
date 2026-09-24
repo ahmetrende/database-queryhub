@@ -75,3 +75,35 @@ def test_xlsx_export_neutralizes_formula_cells():
     val = list(ws.iter_rows(values_only=True))[1][0]
     assert val == "'=1+1"                 # stored as literal text, not a formula
     wb.close()
+
+
+# ---- the header row is guarded too (2026-09-24) -----------------------------
+# A column name is text the requester chooses (`AS "=HYPERLINK(...)"`), and the
+# header row went out unguarded on every path while each data cell was guarded.
+
+def test_csv_export_neutralizes_the_header():
+    path, *_ = executor._stream_to_csv(
+        2, ["=1+1", "ok"], _FakeCur([(1, 2)]), max_rows=10, max_csv_bytes=10_000_000)
+    assert list(csvmod.reader(path.open()))[0] == ["'=1+1", "ok"]
+
+
+def test_xlsx_export_writes_the_header_as_text_not_a_formula():
+    openpyxl = pytest.importorskip("openpyxl")
+    path, *_ = executor._stream_to_xlsx(
+        3, ["=1+1", "ok"], _FakeCur([(1, 2)]), max_rows=10, max_csv_bytes=10_000_000)
+    wb = openpyxl.load_workbook(path)          # not read-only: data_type is needed
+    cell = wb["result"]["A1"]
+    assert cell.value == "'=1+1" and cell.data_type != "f"
+    wb.close()
+
+
+def test_the_web_xlsx_conversion_guards_every_cell_including_the_header():
+    """The web converts a stored CSV to XLSX on download. A CSV written before
+    this fix still carries a raw header, so the conversion guards it too, and
+    guarding an already-guarded cell changes nothing."""
+    import inspect
+    from queryhub.web import routes_queries
+    src = inspect.getsource(routes_queries.query_result_xlsx)
+    assert "ws.append([_xlsx_cell(v) for v in rec])" in src
+    assert "ws.append(rec)" not in src
+    assert executor._xlsx_cell(executor._xlsx_cell("=1+1")) == "'=1+1"

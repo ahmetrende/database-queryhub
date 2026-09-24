@@ -363,6 +363,14 @@ def _live_approvers() -> list[dict]:
         " ORDER BY i.external_id, (ra.valid_until IS NOT NULL), ra.valid_until")
 
 
+def get(principal_id: str) -> dict | None:
+    """The admin row's profile fields, for a person who may have no
+    `requesters` row: `requesters.get`'s shape, from `admins`."""
+    return db.fetch_one(
+        "SELECT slack_user_id, email, name, enabled "
+        "FROM admins WHERE slack_user_id = %s", (principal_id,))
+
+
 def by_email(email: str) -> dict | None:
     """Find an admin by address, for an external SSO login to land on.
 

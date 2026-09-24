@@ -52,9 +52,8 @@ def configured(monkeypatch):
         idp_assertion, "_claim_jti",
         lambda jti, exp: False if jti in seen else (seen.add(jti) or True))
     monkeypatch.setattr(
-        idp_assertion.requesters, "by_email",
+        idp_assertion.requesters, "principal_by_email",
         lambda e: {"slack_user_id": "U123"} if e == "dev@example.com" else None)
-    monkeypatch.setattr(idp_assertion.admins, "by_email", lambda e: None)
     return priv
 
 
@@ -74,16 +73,15 @@ def test_valid_assertion_resolves_to_the_row_principal(configured):
 def test_admin_only_address_resolves_too(configured, monkeypatch):
     """A DBA who only ever approves has no requesters row. The OIDC path
     consults admins for exactly this reason, and so must this one."""
-    monkeypatch.setattr(idp_assertion.requesters, "by_email", lambda e: None)
-    monkeypatch.setattr(idp_assertion.admins, "by_email",
+    # The resolver reads the admins table as well (principal_by_email).
+    monkeypatch.setattr(idp_assertion.requesters, "principal_by_email",
                         lambda e: {"slack_user_id": "UADMIN"})
     tok = _token(configured, bh=idp_assertion.body_hash("GET", "/api/queue", b""))
     assert idp_assertion.verify(tok, "GET", "/api/queue", b"").id == "UADMIN"
 
 
 def test_unknown_address_is_refused_not_onboarded(configured, monkeypatch):
-    monkeypatch.setattr(idp_assertion.requesters, "by_email", lambda e: None)
-    monkeypatch.setattr(idp_assertion.admins, "by_email", lambda e: None)
+    monkeypatch.setattr(idp_assertion.requesters, "principal_by_email", lambda e: None)
     tok = _token(configured, sub="stranger@example.com",
                  bh=idp_assertion.body_hash("GET", "/api/queue", b""))
     with pytest.raises(idp_assertion.AssertionError_) as e:

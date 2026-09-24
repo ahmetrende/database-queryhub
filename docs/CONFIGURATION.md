@@ -32,6 +32,7 @@ they are inert in the vanilla (web-only) profile.
 | `web_auth_<id>_label` | `""` | Button text for that provider. Falls back to `OIDC_<ID>_LABEL`, then `Sign in with SSO`. |
 | `web_local_login_max_failures` | `5` | Failed local-login attempts (per username and per IP) tolerated inside the window before a 429 lockout. |
 | `web_local_login_window_minutes` | `15` | Sliding window for the failure counter; the lock lifts as failures age out. |
+| `web_slack_team_id` | `""` | The Slack workspace (team id, `T…`) a Slack sign-in must come from. Empty = the bot's own workspace, found with `auth.test`. When neither can be established the sign-in is refused, so an install that runs Slack sign-in without the bot must set this. **(Slack)** |
 | `web_allowed_email_domain` | `""` | If set, restrict Slack SSO and external-OIDC logins to this email domain (e.g. `example.com`). Empty = no domain gate. |
 | `auth_session_retention_days` | `7` | Expired/revoked login sessions (`web_sessions`) are deleted after this many days. Nothing removed them before, so the table grew for every sign-in. |
 | `auth_outbox_retention_days` | `14` | Processed authorization-change outbox rows are deleted after this many days. |

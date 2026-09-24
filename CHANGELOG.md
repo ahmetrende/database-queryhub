@@ -54,6 +54,34 @@ frontend and the endpoints it calls are explicitly outside it.
   effective-access screen and team auto-approve decided it per database, so
   the screen could show a team grant the person could not pick. To keep the
   team's grants as well, set `merge_with_team` on the person's own grant.
+- **Two browser tabs refreshing at once no longer sign you out.** The second
+  refresh got a different token from the first, and the tab whose token the
+  browser kept could not refresh again. A rotation now always issues the
+  same successor for the same token.
+- **An admin with no requester row keeps their name after a refresh.** The
+  refresh read the profile from the requesters table only.
+
+### Security
+
+- **The header row of an export is guarded against formulas too.** Data
+  cells were. A column alias such as `"=HYPERLINK(...)"` opened as a live
+  formula in CSV and XLSX downloads, including the web's CSV-to-XLSX
+  conversion.
+- **A Slack sign-in is refused when the workspace cannot be checked.** It
+  used to skip the workspace comparison whenever `auth.test` failed. New key
+  `web_slack_team_id` pins the workspace, for an install running Slack
+  sign-in without the bot (migration 132).
+- **The avatar proxy checks every redirect.** `urlopen` follows redirects on
+  its own, so only the first URL met the host allow-list. Each hop is now
+  held to it, and at most three are followed.
+- **An email resolves to one principal across both people tables, or to
+  none.** One row in `requesters` and a different person's row in `admins`
+  sharing an address resolved to whichever table was asked first. Every
+  external sign-in and the principal sync now use one resolver
+  (`requesters.principal_by_email`).
+- **The AWS Secrets Manager cache is keyed by region as well as secret id.**
+  The same secret name in two regions returned the first region's
+  credentials for both.
 
 ## [1.0.33] — 2026-09-23
 

@@ -1843,7 +1843,10 @@ def _stream_to_csv(
         _own_only(path)
 
         header_buf = io.StringIO()
-        csv.writer(header_buf).writerow(columns)
+        # The header is guarded like every data cell: a column alias is text
+        # the requester chose, and `AS "=HYPERLINK(...)"` would otherwise
+        # open as a live formula in the spreadsheet of whoever reads the file.
+        csv.writer(header_buf).writerow([_neutralize_formula(c) for c in columns])
         header_text = header_buf.getvalue()
         if len(header_text.encode("utf-8")) > max_csv_bytes:
             # Pathological wide schema (e.g. 10000 columns). Header alone
@@ -1902,7 +1905,7 @@ def _stream_to_xlsx(
 
     wb = Workbook(write_only=True)
     ws = wb.create_sheet(title="result")
-    ws.append(columns)
+    ws.append([_xlsx_cell(c) for c in columns])   # guarded like the rows below
 
     rows_written = 0
     truncated_rows = False

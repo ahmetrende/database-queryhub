@@ -1413,9 +1413,13 @@ def query_result_xlsx(request_id: int, statement: int | None = None,
     csv.field_size_limit(cfg.get_int("csv_size_mb_ceiling", 100) * 1024 * 1024)
     wb = Workbook(write_only=True)
     ws = wb.create_sheet("Result")
+    # Every cell through the export guard, the header row included. The rows
+    # were guarded when the CSV was written; the header was not before
+    # 2026-09-24, and a file written then is still served from here.
+    from ..executor import _xlsx_cell
     with _open_statement(p, statement or 1) as fh:
         for rec in csv.reader(fh):
-            ws.append(rec)
+            ws.append([_xlsx_cell(v) for v in rec])
     fd, tmp_path = tempfile.mkstemp(prefix=f"qhx_{request_id}_", suffix=".xlsx")
     os.close(fd)
     wb.save(tmp_path)

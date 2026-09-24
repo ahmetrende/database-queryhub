@@ -11,6 +11,7 @@ The SQL is what enforces every one of these properties — `revoked_at IS NULL`,
 tests assert on the statements issued and the rows returned, driven by a fake
 cursor. No DB, no clock dependency.
 """
+import re
 import pytest
 
 from queryhub.web import sessions
@@ -89,22 +90,49 @@ def test_the_new_token_is_not_the_old_one_and_is_long(monkeypatch):
 # ------------------------------------------------------------- grace window
 
 
-def test_a_superseded_token_inside_the_grace_window_rotates_again(monkeypatch):
+def test_a_superseded_token_inside_the_grace_window_gets_the_same_successor(monkeypatch):
     """Two tabs refresh at once, or a response is lost and the client retries.
     Both present a token that was just superseded. Revoking there would sign
-    the user out everywhere for opening a second tab."""
+    the user out everywhere for opening a second tab.
+
+    It used to rotate AGAIN, to a new random token. The tabs share one refresh
+    cookie, so the browser kept whichever response it processed last, and when
+    that was the first one its token was neither current nor prev: the next
+    refresh failed. The successor is derived now, so the second response
+    carries the same token as the first."""
     cur = _wire(monkeypatch, [None, SESSION_ROW], grace=10)
     out = sessions.rotate_refresh("tok-1")
 
     assert out is not None and "reuse" not in out
     assert out["id"] == 3
+    assert out["refresh_token"] == sessions._next_refresh_token("tok-1")
     sql, params = cur.executed[1]
     assert "WHERE prev_refresh_hash = %s" in sql
     assert "last_refresh_at > NOW() - make_interval(secs => %s)" in sql
     assert params[-1] == 10
-    # The presented token stays as prev, so the sibling tab's in-flight retry
-    # also lands inside the window rather than tripping theft detection.
+    # The row keeps the successor as current and the presented token as prev,
+    # and the window is not stretched by the retry.
+    assert params[0] == sessions._hash(out["refresh_token"])
     assert params[1] == sessions._hash("tok-1")
+    assert "SET refresh_hash = %s, prev_refresh_hash = %s WHERE" in sql
+
+
+def test_rotating_one_token_twice_issues_one_successor(monkeypatch):
+    """The two-tab race, end to end in the unit harness: the normal rotation
+    and the grace-window one hand back the same token."""
+    _wire(monkeypatch, [SESSION_ROW], grace=10)
+    first = sessions.rotate_refresh("tok-1")
+    _wire(monkeypatch, [None, SESSION_ROW], grace=10)
+    second = sessions.rotate_refresh("tok-1")
+    assert first["refresh_token"] == second["refresh_token"]
+
+
+def test_a_successor_looks_like_a_fresh_token_and_differs_per_token():
+    a, b = sessions._next_refresh_token("tok-1"), sessions._next_refresh_token("tok-2")
+    assert a != b and a != "tok-1"
+    assert len(a) == 64 and re.fullmatch(r"[A-Za-z0-9_-]{64}", a)
+    # Not the JWT signing secret under another name.
+    assert sessions._rotation_secret() != sessions._signing_secret()
 
 
 def test_grace_window_is_skipped_when_disabled(monkeypatch):

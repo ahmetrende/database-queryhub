@@ -5,8 +5,9 @@ request carries no cookie. It carries instead a 60-second Ed25519 JWT naming
 the VERIFIED corporate address of the human behind it.
 
 That address is resolved the same way an OIDC login resolves one, through
-`requesters.by_email` / `admins.by_email`, so this is a third way to prove an
-existing identity and never a new authorization subject. The assertion says
+`requesters.principal_by_email` (both people tables, one answer or none), so
+this is a third way to prove an existing identity and never a new
+authorization subject. The assertion says
 who, and nothing about what; authority is read from this service's own tables
 afterwards, unchanged.
 
@@ -24,7 +25,6 @@ from typing import NamedTuple
 
 import jwt as pyjwt
 
-from .. import admins
 from .. import config as cfg
 from .. import db, requesters
 
@@ -148,7 +148,7 @@ def verify(token: str, method: str, path: str, body: bytes) -> Principal:
     if domain and not email.endswith("@" + domain.lower()):
         raise AssertionError_("bad_domain", "Address is outside the allowed domain.")
 
-    row = requesters.by_email(email) or admins.by_email(email)
+    row = requesters.principal_by_email(email)
     if row is None:
         # Deliberately not "unknown user": the address may be perfectly well
         # known to the company and simply have no QueryHub standing. Ambiguity

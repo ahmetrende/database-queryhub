@@ -138,3 +138,37 @@ def test_awssm_ttl_zero_always_refetches(monkeypatch):
     sp.resolve_credentials(row, "ro")
     sp.resolve_credentials(row, "ro")
     assert client.calls == 2  # no caching → each lookup hits Secrets Manager
+
+
+def test_awssm_cache_keeps_regions_apart(monkeypatch):
+    """A short secret NAME is per region: the same name in two regions is two
+    secrets. The cache was keyed by the name alone, so the second target got
+    the first region's credentials without AWS ever being asked."""
+    by_region = {"eu-central-1": {"ro": {"username": "eu", "password": "p1"}},
+                 "us-east-1": {"ro": {"username": "us", "password": "p2"}}}
+    calls = []
+    fake = types.ModuleType("boto3")
+
+    def _client(service, **kwargs):
+        region = kwargs.get("region_name")
+
+        class _C:
+            def get_secret_value(self, SecretId):
+                calls.append((region, SecretId))
+                return {"SecretString": json.dumps(by_region[region])}
+        return _C()
+
+    fake.client = _client
+    monkeypatch.setitem(sys.modules, "boto3", fake)
+    prov = sp.AwsSecretsManagerProvider()
+    monkeypatch.setitem(sp._REGISTRY, "awssm", prov)
+    eu = {"id": 1, "secrets_provider": "awssm",
+          "secrets_ref": {"secret_id": "shared-name", "region": "eu-central-1"}}
+    us = {"id": 2, "secrets_provider": "awssm",
+          "secrets_ref": {"secret_id": "shared-name", "region": "us-east-1"}}
+    assert sp.resolve_credentials(eu, "ro") == ("eu", "p1")
+    assert sp.resolve_credentials(us, "ro") == ("us", "p2")
+    assert calls == [("eu-central-1", "shared-name"), ("us-east-1", "shared-name")]
+    # Each region is still cached on its own.
+    assert sp.resolve_credentials(eu, "ro") == ("eu", "p1")
+    assert len(calls) == 2

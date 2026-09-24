@@ -220,7 +220,13 @@ class SlackOIDC:
 
         team_id = claims.get("https://slack.com/team_id")
         expected_team = _workspace_team_id()
-        if expected_team and team_id != expected_team:
+        if not expected_team:
+            # Fail closed. This used to skip the comparison, so whenever
+            # auth.test failed an account from any workspace got past it.
+            raise AuthError("workspace_unknown",
+                            "could not establish which Slack workspace to "
+                            "trust; set web_slack_team_id or check the bot token")
+        if team_id != expected_team:
             raise AuthError("wrong_workspace",
                             f"team {team_id} != workspace {expected_team}")
 
@@ -246,8 +252,16 @@ _TEAM_ID_CACHE: str | None = None
 
 
 def _workspace_team_id() -> str | None:
-    """The bot's own workspace, discovered once via auth.test — the
-    OIDC team gate compares against this, so no extra config key."""
+    """The workspace a Slack sign-in must come from, or None if unknown.
+
+    `web_slack_team_id` pins it, for an install that runs Slack sign-in
+    without the bot. Otherwise it is the bot's own workspace, discovered once
+    via auth.test and kept for the life of the process. None means neither
+    could be established, and the caller refuses the sign-in.
+    """
+    pinned = (cfg.get_setting("web_slack_team_id", "") or "").strip()
+    if pinned:
+        return pinned
     global _TEAM_ID_CACHE
     if _TEAM_ID_CACHE is None:
         try:
@@ -255,7 +269,8 @@ def _workspace_team_id() -> str | None:
             _TEAM_ID_CACHE = WebClient(
                 token=cfg.ENV.slack_bot_token).auth_test()["team_id"]
         except Exception:
-            log.exception("auth.test failed — workspace gate disabled this call")
+            log.exception("auth.test failed — refusing this Slack sign-in, "
+                          "since its workspace cannot be checked")
             return None
     return _TEAM_ID_CACHE
 
@@ -518,8 +533,8 @@ class OIDCProvider:
         if domain and not email.endswith("@" + domain.lower()):
             raise AuthError("email_domain", f"email not in @{domain}")
 
-        from .. import admins, requesters
-        row = requesters.by_email(email) or admins.by_email(email)
+        from .. import requesters
+        row = requesters.principal_by_email(email)
         if row is None:
             # Deliberately not "unknown user": the address may well be known
             # to the company and simply have no QueryHub standing.

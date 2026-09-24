@@ -133,11 +133,13 @@ def _map(corp, monkeypatch, claims, requester=None, admin=None, domain=""):
     """Run only the post-verification half of exchange() — the part that
     turns verified claims into a principal — with the token round-trip and
     signature check stubbed out."""
-    from queryhub import admins, requesters
+    from queryhub import requesters
     monkeypatch.setattr(cfg, "get_setting",
                         lambda k, d=None: domain if k == "web_allowed_email_domain" else d)
-    monkeypatch.setattr(requesters, "by_email", lambda e: requester)
-    monkeypatch.setattr(admins, "by_email", lambda e: admin)
+    # One resolver reads both people tables (requesters.principal_by_email);
+    # the stub hands back the row each case is about.
+    monkeypatch.setattr(requesters, "principal_by_email",
+                        lambda e: requester or admin)
     return corp._identity_from_claims(claims)
 
 
@@ -186,11 +188,10 @@ def test_the_domain_gate_still_applies(corp, monkeypatch):
 
 def test_email_is_normalised_before_lookup(corp, monkeypatch):
     seen = []
-    from queryhub import admins, requesters
+    from queryhub import requesters
     monkeypatch.setattr(cfg, "get_setting", lambda k, d=None: d)
-    monkeypatch.setattr(requesters, "by_email",
+    monkeypatch.setattr(requesters, "principal_by_email",
                         lambda e: (seen.append(e), ROW)[1])
-    monkeypatch.setattr(admins, "by_email", lambda e: None)
     ident = corp._identity_from_claims(_claims(email="  Dev@Example.COM  "))
     assert seen == ["dev@example.com"]
     assert ident.email == "dev@example.com"

@@ -5551,7 +5551,7 @@ def principals_sync(body: PrincipalSyncIn,
     unresolved: list[str] = []
     want: set[str] = set()
     for email in body.emails:
-        row = requesters.by_email(email) or admins.by_email(email)
+        row = requesters.principal_by_email(email)
         if row is None:
             unresolved.append(email)
             continue
@@ -5568,7 +5568,7 @@ def principals_sync(body: PrincipalSyncIn,
     # tells an operator exactly what to reconcile by hand.
     want_admins: set[str] = set()
     for email in body.admin_emails:
-        row = admins.by_email(email) or requesters.by_email(email)
+        row = requesters.principal_by_email(email)
         if row is None:
             if email not in unresolved:
                 unresolved.append(email)

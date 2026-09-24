@@ -35,7 +35,7 @@ forward plan lives in [ROADMAP.md](../ROADMAP.md).
 
 ## Testing & typing
 
-- The **fast** suite (764 tests, ~7s) is pure-logic and hermetic by
+- The **fast** suite is pure-logic and hermetic by
   construction: a unit test that reaches for a real database connection fails
   with a named error rather than hanging. Real-DB behaviour is covered
   separately — `tests/test_integration_db.py` runs against a throwaway

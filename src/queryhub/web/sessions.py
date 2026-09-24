@@ -15,6 +15,7 @@ WEB_SESSION_SECRET to override.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import logging
@@ -30,6 +31,35 @@ from .. import config as cfg
 log = logging.getLogger(__name__)
 
 _ALG = "HS256"
+
+
+def _rotation_secret() -> bytes:
+    """Key for deriving a refresh token's successor (see `_next_refresh_token`).
+
+    From the master key, under its own label, so it is never the JWT signing
+    secret and a WEB_SESSION_SECRET override does not change it.
+    """
+    master = cfg.ENV.master_key_path.read_bytes().strip()
+    return hmac.new(master, b"queryhub-web-refresh-rotation-v1",
+                    hashlib.sha256).digest()
+
+
+def _next_refresh_token(token: str) -> str:
+    """The token that rotating `token` issues: HMAC of it under a server key.
+
+    Derived rather than random, so the same token rotated twice yields the
+    same successor. Two tabs share one refresh cookie. When both refreshed at
+    once, the second arrived inside the grace window and was rotated AGAIN to
+    a different random token. The browser then kept whichever Set-Cookie it
+    processed last, and if that was the first, its token was neither current
+    nor prev: the next refresh failed and the user was signed out. With a
+    derived successor both responses carry the same token, whatever order they
+    land in. No plaintext is stored, and without the master key the successor
+    cannot be computed. Same shape as `token_urlsafe(48)`: 64 url-safe
+    characters.
+    """
+    mac = hmac.new(_rotation_secret(), token.encode("utf-8"), hashlib.sha512).digest()
+    return base64.urlsafe_b64encode(mac[:48]).decode("ascii")
 
 
 def _signing_secret() -> bytes:
@@ -156,7 +186,7 @@ def rotate_refresh(refresh_token: str) -> dict | None:
       - None if the token is unknown / revoked / expired.
     """
     old_hash = _hash(refresh_token)
-    new_token = pysecrets.token_urlsafe(48)
+    new_token = _next_refresh_token(refresh_token)
     with db.transaction() as cur:
         # 1) Normal path: the token is the session's CURRENT refresh hash.
         cur.execute(
@@ -176,14 +206,16 @@ def rotate_refresh(refresh_token: str) -> dict | None:
         #    theft — it is the ordinary race: two browser tabs refreshing at
         #    once, or a client retrying after a lost response. Treating it as
         #    theft revoked the session, so opening a second tab could sign the
-        #    user out everywhere. Rotate again instead, keeping `old_hash` as
-        #    prev so the other tab's in-flight retry also lands in the window.
+        #    user out everywhere. The successor is derived, so this hands back
+        #    the token the first rotation already issued, and both responses
+        #    set the same cookie. The row is written only to repair one that an
+        #    older build rotated to a random token. `last_refresh_at` is left
+        #    alone, so the window stays anchored to the real rotation.
         grace = _refresh_grace_seconds()
         if grace > 0:
             cur.execute(
                 "UPDATE web_sessions "
-                "   SET refresh_hash = %s, prev_refresh_hash = %s, "
-                "       last_refresh_at = NOW() "
+                "   SET refresh_hash = %s, prev_refresh_hash = %s "
                 " WHERE prev_refresh_hash = %s AND revoked_at IS NULL "
                 "   AND expires_at > NOW() "
                 "   AND last_refresh_at > NOW() - make_interval(secs => %s) "

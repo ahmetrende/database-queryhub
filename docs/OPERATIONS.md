@@ -177,10 +177,9 @@ Idempotent SQL files under `migrations/`. Numbered sequentially.
 # Apply all (skips already-applied; commits per file)
 .venv/bin/python scripts/apply_migrations.py
 
-# What's applied (the script doesn't track state itself; rely on
-# migration files being idempotent — INSERT ... ON CONFLICT DO NOTHING,
-# CREATE TABLE IF NOT EXISTS, ALTER TABLE ... ADD COLUMN IF NOT EXISTS).
-ls migrations/
+# What's applied: the runner records each file in the schema_migrations
+# ledger (version + checksum), so a re-run applies only what is pending.
+.venv/bin/python scripts/apply_migrations.py --dry-run
 ```
 
 To add a new migration:
@@ -188,7 +187,9 @@ To add a new migration:
 2. Run `apply_migrations.py`
 3. Commit the file
 
-Current migration count: 35 (last: `035_report_start_date.sql`).
+Files stay idempotent all the same (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF
+NOT EXISTS`, `ON CONFLICT DO NOTHING`), and an applied file is never edited:
+the ledger refuses a changed checksum, so a change is a new file.
 
 ---
 
