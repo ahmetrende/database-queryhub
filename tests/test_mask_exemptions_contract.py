@@ -29,7 +29,10 @@ ROUTE = ROOT / "src" / "queryhub" / "web" / "routes_admin.py"
 # These are the event/error members, so a name arriving here that is not a row
 # field must be added — the test failing on an unfamiliar `e.x` is the safe
 # direction, because the other direction silently stops checking.
-_NOT_ROW_FIELDS = {"preventDefault", "target", "code", "message", "g"}
+# `key` and `stopPropagation` arrived with the type-to-filter pickers
+# (MxCombo, 2026-09-24): its key handler reads the keyboard event.
+_NOT_ROW_FIELDS = {"preventDefault", "target", "code", "message", "g",
+                   "key", "stopPropagation"}
 
 
 def _screen_row_fields() -> set[str]:
