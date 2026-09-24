@@ -167,8 +167,8 @@ Close before the repository goes public or before any "try me" artifact ships.
       approval so tier classification is always engine-correct.
 
 **Result safety**
-- [ ] Neutralize spreadsheet formula injection in CSV/XLSX export (after
-      masking).
+- [x] Neutralize spreadsheet formula injection in CSV/XLSX export (after
+      masking), the header row included (Unreleased).
 - [ ] Fix large-result XLSX export. *(Reproduce first to confirm the exact
       boundary.)*
 
@@ -221,9 +221,9 @@ Close before the repository goes public or before any "try me" artifact ships.
       extra); the base install pulls only what the vanilla profile needs.
 
 **Web, auth & transport hardening**
-- [ ] Production guard: HTTPS base URL, secure cookies, explicit trusted proxy,
-      mandatory identity-provider workspace/tenant id (fail-closed on lookup
-      failure).
+- [ ] Production guard: HTTPS base URL, secure cookies, explicit trusted proxy.
+- [x] The Slack sign-in's workspace check fails closed when the workspace cannot
+      be established; `web_slack_team_id` pins it (Unreleased).
 - [ ] CSRF token / strict Origin on state-changing routes; security headers
       (CSP, HSTS, frame-ancestors, …); WebSocket origin check.
 - [ ] Trusted-proxy-aware client IP for audit (don't trust a raw forwarded
