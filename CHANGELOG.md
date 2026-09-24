@@ -30,6 +30,14 @@ frontend and the endpoints it calls are explicitly outside it.
   rotation for it, since it uses its primary's login. Every other admin picker
   leaves replicas out.
 
+### Fixed
+
+- **A person's own grant replaces their team's on the whole server,
+  everywhere.** The database list already worked this way. Submit, the
+  effective-access screen and team auto-approve decided it per database, so
+  the screen could show a team grant the person could not pick. To keep the
+  team's grants as well, set `merge_with_team` on the person's own grant.
+
 ## [1.0.33] — 2026-09-23
 
 Two engines execute: ClickHouse and Amazon Athena, both read-only. A read-only
