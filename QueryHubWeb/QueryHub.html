@@ -885,20 +885,10 @@
   .qh-tr-run:hover { background: var(--brand-adaptive-medium); color: var(--fg-accent); }
 
   /* ================= ADMIN ================= */
-  .qh-viewswitch { display: flex; gap: 3px; padding: 3px; background: var(--bg-light); border: 1px solid var(--stroke-medium); border-radius: var(--r-full); }
-  .qh-vs-opt { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 14px; border: 0; background: transparent; border-radius: var(--r-full); cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 600; color: var(--fg-tertiary); }
-  .qh-vs-opt:hover { color: var(--fg-secondary); }
-  .qh-vs-opt.is-active { background: var(--bg-white); color: var(--fg-primary); box-shadow: var(--shadow-small); }
   .qh-vs-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 4px; font-size: 10px; font-weight: 700; color: #fff; background: var(--brand-green); border-radius: 999px; }
 
   .qh-admin { flex: 1; display: flex; min-height: 0; background: var(--bg-white); }
   .qh-anav { width: 234px; flex-shrink: 0; background: var(--bg-light); border-right: 1px solid var(--stroke-medium); overflow-y: auto; padding: 10px; }
-  .qh-anav-role { padding: 10px 10px 12px; margin-bottom: 6px; border-bottom: 1px solid var(--stroke-light); }
-  .qh-anav-role-label { font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-tertiary); margin-bottom: 7px; }
-  .qh-role-seg { display: flex; gap: 3px; padding: 3px; background: var(--adaptive-medium); border-radius: var(--r-sm); }
-  .qh-role-opt { flex: 1; height: 28px; border: 0; background: transparent; border-radius: var(--r-xs); cursor: pointer; font-family: inherit; font-size: 11.5px; font-weight: 600; color: var(--fg-tertiary); }
-  .qh-role-opt.is-active { background: var(--bg-white); color: var(--fg-accent); box-shadow: var(--shadow-small); }
-  .qh-anav-role-hint { font-size: 11px; color: var(--fg-tertiary); margin-top: 8px; line-height: 1.4; }
   .qh-anav-group { margin-bottom: 12px; }
   .qh-anav-glabel { display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-tertiary); padding: 4px 10px; }
   .qh-anav-group.is-locked { opacity: 0.55; }
@@ -2113,6 +2103,43 @@
   .qh-modeentry-compact:hover { background: var(--brand-adaptive-light); }
   .qh-modeentry-compact .qh-modeentry-badge { position: absolute; top: 3px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px; font-size: 9.5px; box-shadow: 0 0 0 2px var(--bg-light); }
   .qh-kill-ro { flex-shrink: 0; font-size: 12.5px; font-weight: 500; color: var(--fg-tertiary); }
+
+  /* Connections fits its panel (2026-09-24). Fixed layout: the columns share
+     the panel's width instead of each asking for its widest line. Identity
+     text — name, engine, hosting, the replica chip, database chips — wraps
+     inside its column and never ellipsises (a replica's "-r1" is the part
+     that matters); only the host:port line is cut, full string on hover. */
+  .qh-conntable { table-layout: fixed; width: 100%; }
+  .qh-conntable th.qh-conn-selcol, .qh-conntable td.qh-conn-selcol { width: 36px; }
+  .qh-conntable th:nth-child(2) { width: 27%; }
+  .qh-conntable th:nth-child(3) { width: 15%; }
+  .qh-conntable th:nth-child(4) { width: 14%; }
+  .qh-conntable td { overflow: hidden; }
+  .qh-conntable td.qh-conn-name-td { max-width: none; }
+  .qh-conn-namecell { min-width: 0; }
+  .qh-conntable .qh-conn-namecell b { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  .qh-conntable .qh-conn-namecell .qh-envtag { flex-shrink: 0; }
+  .qh-conn-eng { font-size: 13px; color: var(--fg-secondary); margin-bottom: 2px; overflow-wrap: anywhere; }
+  .qh-conn-engtd .qh-hostcell { display: flex; min-width: 0; font-size: 12px; color: var(--fg-tertiary); overflow-wrap: anywhere; }
+  .qh-conntable .qh-replica-chip { display: inline-block; max-width: 100%; box-sizing: border-box; vertical-align: top; white-space: normal; overflow-wrap: anywhere; border-radius: var(--r-sm); }
+  .qh-conntable .qh-conn-dbcell { min-width: 0; max-width: none; }
+  .qh-conntable .qh-dbchip { max-width: 100%; box-sizing: border-box; white-space: normal; overflow-wrap: anywhere; }
+  /* Actions: Test and Edit on the row, the rest in the ⋯ menu. The column is
+     sized for Test's ANSWER ("OK · 21 ms"), not its label, and the buttons
+     never wrap — three short buttons are one line. */
+  .qh-conntable th.qh-tright { width: 244px; }
+  .qh-conntable td.qh-tright .qh-rowacts { flex-wrap: nowrap; }
+  .qh-conntable td.qh-tright .qh-rowbtn { white-space: nowrap; flex-shrink: 0; }
+  .qh-rowmenu-btn { padding-left: 7px; padding-right: 7px; }
+  .qh-rowmenu-btn.is-open { border-color: var(--brand-green); color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  /* Portalled to <body>, placed from the button (ConnRowMenu). */
+  .qh-rowmenu-pop { position: fixed; z-index: 1000; min-width: 200px; padding: 4px; display: flex; flex-direction: column; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-md); box-shadow: var(--shadow-medium, 0 6px 20px rgba(0,0,0,.12)); }
+  .qh-rowmenu-pop.is-up { transform: translateY(-100%); }
+  .qh-rowmenu-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 0; background: transparent; border-radius: var(--r-sm); cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 500; color: var(--fg-primary); text-align: left; white-space: nowrap; }
+  .qh-rowmenu-item:hover, .qh-rowmenu-item:focus-visible { background: var(--adaptive-light); outline: none; }
+  .qh-rowmenu-item.is-danger { color: var(--fg-danger); }
+  .qh-rowmenu-item.is-danger:hover { background: var(--danger-adaptive-light); }
+  .qh-rowmenu-hint { font-size: 11.5px; font-weight: 400; color: var(--fg-tertiary); }
 
   /* feedback */
   .qh-fblist { display: flex; flex-direction: column; gap: 10px; }

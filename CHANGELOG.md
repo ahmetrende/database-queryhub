@@ -29,6 +29,11 @@ frontend and the endpoints it calls are explicitly outside it.
   It says whether the replica is in rotation, and offers no credential
   rotation for it, since it uses its primary's login. Every other admin picker
   leaves replicas out.
+- **The admin Connections table fits its panel.** Test and Edit stay on each
+  row. Rotating credentials, disabling, refreshing the schema and deleting
+  moved into a ⋯ menu. Engine and hosting share one column, and the
+  environment tag sits beside the name. The pinned actions column no longer
+  covers the databases.
 
 ### Fixed
 

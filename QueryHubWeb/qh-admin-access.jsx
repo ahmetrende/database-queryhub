@@ -1099,6 +1099,51 @@ const CONN_TEST_ICON = {
   ok: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>,
   bad: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>,
 };
+// A row's less-used actions, behind one button. The menu is PORTALLED to
+// <body> and placed with position: fixed from the button's rect: inside the
+// row it would sit in the pinned actions cell — a sticky box, so its own
+// stacking context, painted over by the next rows' pinned cells — and inside
+// .qh-tablewrap, whose overflow-x: auto clips it below the last row (CODE
+// 2026-09-24). Same shape as the editor's autocomplete. It opens upward when
+// there is no room below, and closes on pick, outside click, Escape, and any
+// scroll or resize, because a fixed box would otherwise drift off its row.
+function ConnRowMenu({ items, busy }) {
+  const [pos, setPos] = React.useState(null);   // null = closed | { top, left, up }
+  const btnRef = React.useRef(null), popRef = React.useRef(null);
+  const place = () => {
+    const r = btnRef.current.getBoundingClientRect();
+    const h = 4 * 34 + 10, below = window.innerHeight - r.bottom;
+    const up = below < h + 8 && r.top > below;
+    setPos({ top: up ? r.top - 4 : r.bottom + 4, right: Math.max(8, window.innerWidth - r.right), up });
+  };
+  React.useEffect(() => {
+    if (!pos) return undefined;
+    const off = (e) => { if (!(btnRef.current && btnRef.current.contains(e.target)) && !(popRef.current && popRef.current.contains(e.target))) setPos(null); };
+    const esc = (e) => { if (e.key === 'Escape') { setPos(null); btnRef.current && btnRef.current.focus(); } };
+    const shut = (e) => { if (!(popRef.current && popRef.current.contains(e.target))) setPos(null); };
+    const shutAll = () => setPos(null);
+    document.addEventListener('mousedown', off); document.addEventListener('keydown', esc);
+    window.addEventListener('scroll', shut, true); window.addEventListener('resize', shutAll);
+    return () => { document.removeEventListener('mousedown', off); document.removeEventListener('keydown', esc);
+      window.removeEventListener('scroll', shut, true); window.removeEventListener('resize', shutAll); };
+  }, [pos]);
+  const open = !!pos;
+  return (
+    <>
+      <button ref={btnRef} className={'qh-rowbtn qh-rowmenu-btn' + (open ? ' is-open' : '')} onClick={() => (open ? setPos(null) : place())} aria-haspopup="menu" aria-expanded={open} aria-label="More actions" title="More actions">
+        {busy ? <span className="qh-spin" /> : <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>}
+      </button>
+      {open && ReactDOM.createPortal(
+        <div ref={popRef} className={'qh-rowmenu-pop' + (pos.up ? ' is-up' : '')} role="menu" style={{ top: pos.top, right: pos.right }}>
+          {items.map(it => (
+            <button key={it.label} role="menuitem" className={'qh-rowmenu-item' + (it.danger ? ' is-danger' : '')} onClick={() => { setPos(null); it.on(); }}>
+              <span>{it.label}</span>{it.hint && <span className="qh-rowmenu-hint">{it.hint}</span>}
+            </button>
+          ))}
+        </div>, document.body)}
+    </>
+  );
+}
 // The queue's checkbox, for picking connections to change together (§6b).
 function ConnCheck({ on, some, onChange, label }) {
   return (
@@ -1588,19 +1633,20 @@ function ConnectionsView({ st, user }) {
           )}
           <div className="qh-tablewrap">
           <table className="qh-atable qh-conntable qh-acttable">
-            <thead><tr><th className="qh-conn-selcol"><ConnCheck on={allOn} some={someOn} label={allOn ? 'Deselect every connection shown' : 'Select all ' + vis.length + ' connections shown'} onChange={() => { setRefused(null); setSel(xs => allOn ? xs.filter(id => vis.indexOf(id) < 0) : [...new Set(xs.concat(vis))]); }} /></th>{th('name', 'Connection')}{th('engine', 'Engine')}{th('hosting', 'Hosting')}{th('enabled', 'Status')}{th('env', 'Environment')}{th('dbs', 'Databases')}<th className="qh-tright">Actions</th></tr></thead>
+            <thead><tr><th className="qh-conn-selcol"><ConnCheck on={allOn} some={someOn} label={allOn ? 'Deselect every connection shown' : 'Select all ' + vis.length + ' connections shown'} onChange={() => { setRefused(null); setSel(xs => allOn ? xs.filter(id => vis.indexOf(id) < 0) : [...new Set(xs.concat(vis))]); }} /></th>{th('name', 'Connection')}{th('engine', 'Engine · hosting')}{th('enabled', 'Status')}{th('dbs', 'Databases')}<th className="qh-tright">Actions</th></tr></thead>
             <tbody>
               {rows.map(c => {
                 const probe = tested[c.id];
                 return (
                 <tr key={c.id} className={(sel.indexOf(c.id) >= 0 ? 'is-sel' : '') + (refusedNames.indexOf(c.name) >= 0 ? ' is-refused' : '') + (c.replicaOf ? ' is-replica' : '')}>
                   <td className="qh-conn-selcol"><ConnCheck on={sel.indexOf(c.id) >= 0} onChange={() => toggleSel(c.id)} label={'Select ' + c.name} /></td>
-                  <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b>{c.name}</b></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}</td>
-                  <td className="qh-muted">{c.engine}</td>
-                  {/* Provider + service on one line; the account and any custom
-                      tags are on the hover, because this column sits between two
-                      identity columns and must not widen the table. */}
-                  <td>
+                  <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b><span className={'qh-envtag env-' + c.env}>{c.env}</span></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}</td>
+                  {/* Engine over hosting in ONE column, and the environment beside
+                      the name: seven columns plus pinned actions were ~400px wider
+                      than the panel, so Databases sat under the actions. The
+                      account and custom tags stay on the hover. */}
+                  <td className="qh-conn-engtd">
+                    <div className="qh-conn-eng">{c.engine}</div>
                     {qhProvider(c)
                       ? <div className="qh-conn-namecell qh-hostcell" title={qhHostingFull(c)}><img className="qh-prov-logo" src={qhProviderLogo(qhTags(c).provider)} alt="" draggable={false} />{qhHosting(c)}</div>
                       : <span className="qh-expiry is-soon" title="No provider tag — nothing here says where this server runs.">untagged</span>}
@@ -1615,10 +1661,9 @@ function ConnectionsView({ st, user }) {
                         credential to be missing; "enabled" means "in rotation". */}
                     <span className={'qh-expiry' + (c.enabled ? '' : ' is-exp')}>{c.replicaOf ? (c.enabled ? 'in rotation' : 'out of rotation') : (c.enabled ? 'enabled' : 'disabled')}</span>
                     {c.replicaOf
-                      ? <div className="qh-replica-chip" title={'Read-only queries on ' + c.replicaOf + ' can run here. It uses ' + c.replicaOf + '’s login, and nobody picks it by name.'}>Read replica of {c.replicaOf}</div>
+                      ? <div className="qh-replica-chip" title={'Read-only queries on ' + c.replicaOf + ' can run here. It uses ' + c.replicaOf + '’s login, and nobody picks it by name.'}>Replica of {c.replicaOf}</div>
                       : credNote(c) && <div className="qh-expiry is-soon">{credNote(c)}</div>}
                   </td>
-                  <td><span className={'qh-envtag env-' + c.env}>{c.env}</span></td>
                   <td><div className="qh-conn-dbcell">{(c.databases || []).map(d => <span key={d.id} className="qh-dbchip">{d.name}{d.tier && <TierBadge tier={d.tier} sm />}</span>)}</div></td>
                   <td className="qh-tright"><div className="qh-rowacts">
                     {/* The last answer, in its colour (operator, CODE 2026-09-23 §6a):
@@ -1629,15 +1674,20 @@ function ConnectionsView({ st, user }) {
                       {testing === c.id ? <span className="qh-spin" /> : probe ? (probe.ok ? <>{CONN_TEST_ICON.ok}{probe.latencyMs != null ? 'OK · ' + probe.latencyMs + ' ms' : 'OK'}</> : <>{CONN_TEST_ICON.bad}Failed</>) : 'Test'}
                     </button>
                     <button className="qh-rowbtn" onClick={() => setForm({ mode: 'edit', conn: c })}><AIcon.edit />Edit</button>
-                    {!c.replicaOf && <button className="qh-rowbtn" onClick={() => setForm({ mode: 'rotate', conn: c })}>Rotate</button>}
-                    <button className="qh-rowbtn" onClick={() => toggleEnabled(c)} title={c.replicaOf ? (c.enabled ? 'Take it out of rotation — reads go to ' + c.replicaOf + ' itself' : 'Put it back in rotation for reads on ' + c.replicaOf) : undefined}>{c.enabled ? 'Disable' : 'Enable'}</button>
-                    <button className="qh-icon-btn" disabled={refreshing === c.id} onClick={() => refreshSchema(c)} title="Refresh schema — pull this connection's tables & columns now (otherwise an hourly snapshot)" aria-label="Refresh schema">{refreshing === c.id ? <span className="qh-spin" /> : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 11-2.6-6.3M21 4v5h-5"/></svg>}</button>
-                    <button className="qh-revoke" onClick={() => removeConnection(c)}>Delete</button>
+                    {/* Six buttons per row made the pinned actions column wider than
+                        the Databases column it sat on top of. The two used most stay
+                        out; the rest are one click further, in the row's menu. */}
+                    <ConnRowMenu busy={refreshing === c.id} items={[
+                      !c.replicaOf && { label: 'Rotate credentials', on: () => setForm({ mode: 'rotate', conn: c }) },
+                      { label: c.replicaOf ? (c.enabled ? 'Take out of rotation' : 'Put back in rotation') : (c.enabled ? 'Disable' : 'Enable'), on: () => toggleEnabled(c) },
+                      { label: 'Refresh schema', hint: 'otherwise hourly', on: () => refreshSchema(c) },
+                      { label: 'Delete', danger: true, on: () => removeConnection(c) },
+                    ].filter(Boolean)} />
                   </div></td>
                 </tr>
                 );
               })}
-              {rows.length === 0 && <tr><td colSpan={8} className="qh-conn-empty">No connections match your filter.</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No connections match your filter.</td></tr>}
             </tbody>
           </table>
           </div>
