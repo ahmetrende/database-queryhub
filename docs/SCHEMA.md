@@ -138,6 +138,122 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
 
 ---
 
+## Access model
+
+Who may run what is resolved from the tables migrations 105–115 added. The
+resolver reads them while `bot_config.access_model_v2 = 'on'`; with the key
+off, the older tables under [Tables](#tables) answer instead. The key is read
+per call, so turning it back is the rollback.
+
+### The tables
+
+| Table | What it holds |
+|-------|---------------|
+| `tier` | The tier vocabulary as data: `ro` (rank 10), `rw` (20), `ddl` (30). "The most permissive wins" compares `rank`. |
+| `principal` | Who exists: a person or a service account (`kind`). `enabled` defaults to false, so a sync may create a principal but never enable one; for people it is mirrored from the requester and admin lists. Soft-deleted with `is_deleted`. |
+| `principal_identity` | How a principal signs in: `provider` (`slack`, `local`, `oidc:<id>`, `idp`) and `external_id` (the Slack user id, the username or the OIDC `sub`). One person can have several. |
+| `principal_credential` | A local password hash, an API key or a portal's public key (`kind`). |
+| `principal_setting` | Per-person dials as key/value (`max_rows`, `exclude_from_metrics`), each with an optional `valid_until`. |
+| `team` | A group. `name` is the stable code and `display_name` what people read. `source` names the sync that owns the membership; anything but `manual` is read-only in the UI. |
+| `team_member` | Membership. `is_lead` marks a lead and grants nothing by itself. |
+| `target_team` | Which team owns a target, many-to-many. It grants nothing: it is what lets a team lead approve their own team's requests (see `scripts/sync_team_approvers.py`). |
+| `access_grant` | The one access matrix: who (a principal or a team), where (a target or every target, a database or every database), which tier, for how long, and whether the row is a waiver. |
+| `role_assignment` | Who approves, grants, imports or administers, with an optional team, target and tier scope and a validity window. |
+
+### `access_grant`
+
+| Column | Notes |
+|--------|-------|
+| `principal_id` / `team_id` | The subject. Exactly one is set (`access_grant_one_subject`). |
+| `target_id` / `all_targets` | One target, or every target. The flag and the NULL are one fact and cannot disagree (`access_grant_target_wildcard`). |
+| `database_name` / `all_databases` | One database, or every database on the target: one row per database. A database name across every target is refused. |
+| `tier` | `ro` / `rw` / `ddl`, from `tier`. |
+| `auto_approve` | True makes the row a waiver. It skips the review for queries up to its tier and makes nothing reachable on its own. |
+| `merge_with_team` | Principal rows only. False, the default, means the person's own grants replace their teams' grants on that server. True keeps the team's grants beside them (rule 4 below). |
+| `db_role` | A database role the session assumes after connecting. No row sets it today. |
+| `valid_from`, `valid_until` | The planned window. |
+| `revoked_at`, `revoked_by` | The unplanned end. Scope and tier are never edited in place: a change is a revoke plus a new row, so each request keeps pointing at the rule it ran under (`requests.access_grant_id`). |
+| `mirrored_from` | The older table this row is a projection of (see [Who writes where](#who-writes-where)), or NULL when the row was written here directly. |
+| `reason`, `created_by`, `is_deleted`, `deleted_at` | Audit and soft delete. |
+
+`access_grant_live_uq` allows one live row per (subject, target, database,
+tier, `auto_approve`), with the wildcard NULLs compared as equal.
+
+### `role_assignment`
+
+`role` is `approver`, `granter`, `importer` or `admin`.
+
+- **`admin`** is the only role that carries access, to everything, so it must be unscoped.
+- **The other three** grant no access.
+- **A team lead** is an `approver` row with `scope_team_id` set and `max_tier = 'rw'`: they approve their own team's requests, up to RW.
+- **A temporary admin** is an `admin` row with a `valid_until`.
+
+`source` names the sync that owns a row, or is NULL when a person wrote it. A sync touches only its own rows.
+
+### How a request is resolved
+
+`src/queryhub/access.py` implements these rules once, and every surface
+asks it: the database pickers in Slack and on the web, submit, the executor's
+re-check, auto-approve and the effective-access screen.
+
+1. **Admins reach everything.** A live `admin` role answers every question
+   with `ddl`.
+2. **A row covers a question** when `all_targets` is set or its target
+   matches, `all_databases` is set or its database matches, and it is live:
+   not revoked, not deleted, inside its `valid_from` / `valid_until` window.
+3. **Waivers are not grants.** An `auto_approve` row never makes anything
+   reachable. It only skips the review, capped at the tier the access
+   allows.
+4. **A person's own grant displaces the team on the whole server.** Suppose a
+   person holds a live grant of their own anywhere on a server and it does not
+   merge (`merge_with_team = false`). Then their own rows decide every
+   database on that server, and their teams' rows do not apply to them there.
+   To keep the team's grants as well, set `merge_with_team = true` on the
+   person's own grant. This is the older model's rule, where a user row
+   replaced the team's on the whole target.
+5. **An ended own grant leaves nothing.** Suppose none of a person's own
+   grants on a server is live and one has expired (`valid_until` passed).
+   Then they have no access there, and the team's grant does not come back:
+   such a row is usually written to narrow what a team allows. A revoked own
+   grant is simply gone, and the team's grants apply again.
+6. **The tier is decided per database.** Among the rows that decide, the most
+   permissive row covering that database wins. A read grant on one database
+   and a write grant on another never add up to write on both.
+
+Visibility follows the same rows. A person who is not an admin sees an enabled
+target when a covering grant (not a waiver) exists. A read replica is never
+listed: it serves its primary's read-only queries under the primary's name.
+
+### Who writes where
+
+The older tables are still written by some paths. A mirror keeps the two
+models in step: migration 109, switched by `bot_config.access_model_mirror`
+(on by default).
+
+- **Written to these tables directly:** team grants and team waivers, team
+  membership, and roles set on the Roles screen.
+- **Written to the older tables, then mirrored:**
+  - a person's own grants (`user_target_grants`);
+  - a person's waivers (`auto_approve_grants`);
+  - the requester and admin lists (`requesters`, `admins`);
+  - the per-person settings (`user_row_limit_overrides`, `report_excluded_users`).
+
+The mirror is a set of AFTER triggers. On each write it recomputes that
+person's mirrored rows from the older tables:
+
+- it revokes rows that no longer have a source;
+- it inserts missing ones;
+- on the rest, it updates only `valid_until` and `db_role`.
+
+So a flag set directly on a mirrored row, such as `merge_with_team`, stays
+until that person's older-table row changes scope or tier. Then the row is
+replaced without the flag.
+
+Auth-event triggers on both sets of tables (migrations 060 and 108) notify the
+people a change affects, including a change made in psql.
+
+---
+
 ## Tables
 
 ### `bot_config`
@@ -240,6 +356,10 @@ own trail.
 
 ### `admins`
 
+> **Older model.** While `access_model_v2` is on, the resolver reads admins from
+> `role_assignment` (`role = 'admin'`); writes here are mirrored there. See
+> [Access model](#access-model).
+
 Slack users authorized to approve/reject `/sql` requests. Admins also
 **bypass** the requester allowlist (`requesters`) and team grants
 (`team_target_grants`) — they can submit `/sql` against any target.
@@ -266,6 +386,10 @@ a button click is re-validated server-side).
 
 ### `requesters`
 
+> **Still the entry gate.** `/sql` and the web check this table directly,
+> whatever `access_model_v2` says. Writes here are mirrored into `principal`
+> (name, email, `enabled`). See [Access model](#access-model).
+
 Allowlist of Slack users who may invoke `/sql`. The first authorization
 layer (kill-switch). Behavior:
 
@@ -286,6 +410,9 @@ layer (kill-switch). Behavior:
 
 ### `teams`
 
+> **Older model.** While `access_model_v2` is on, the resolver reads `team`;
+> writes here are mirrored there. See [Access model](#access-model).
+
 Logical grouping of users. A team is granted access to one or more targets
 (via `team_target_grants`); members of the team inherit those grants.
 
@@ -298,6 +425,9 @@ Logical grouping of users. A team is granted access to one or more targets
 
 ### `team_members`
 
+> **Older model.** While `access_model_v2` is on, the resolver reads
+> `team_member`; writes here are mirrored there. See [Access model](#access-model).
+
 Many-to-many: which Slack users belong to which teams.
 
 | Column | Notes |
@@ -309,6 +439,10 @@ Many-to-many: which Slack users belong to which teams.
 PK is `(team_id, slack_user_id)`. A user can be in multiple teams.
 
 ### `team_target_grants`
+
+> **Older model.** While `access_model_v2` is on, the resolver reads
+> `access_grant`, and the admin panel writes team grants there directly; writes
+> here are still mirrored. See [Access model](#access-model).
 
 Which targets (and which databases on each target) a team can reach, and
 optionally which Postgres role on the target to impersonate.
@@ -340,6 +474,11 @@ targets; for a given target, the array narrows down which DBs and
    `cur.execute(user_query)`. Auto-resets at COMMIT.
 
 ### `user_target_grants`
+
+> **Older model, still written.** While `access_model_v2` is on, the resolver
+> reads `access_grant`. A person's own grants are still written here and
+> mirrored there (`mirrored_from = 'user_target_grants'`). See
+> [Who writes where](#who-writes-where).
 
 Per-user overrides on top of team grants. If a row exists here for
 `(slack_user_id, target_server_id)`, it **entirely supersedes** any team
@@ -564,6 +703,10 @@ Bundle status rules (computed by the trigger):
 - otherwise (all completed, all rejected, all failed) → `decided`
 
 ### `auto_approve_grants`
+
+> **Older model, still written.** While `access_model_v2` is on, the resolver
+> reads waivers from `access_grant` (`auto_approve = true`). A person's waivers
+> are still written here and mirrored there. See [Access model](#access-model).
 
 Per-user, time-bounded, tier-scoped exemption from the admin approval
 gate. A query whose `required_mode` is ≤ `grant.max_tier`, submitted

@@ -482,6 +482,35 @@ ON CONFLICT (slack_user_id, target_server_id) DO UPDATE
 DELETE FROM user_target_grants WHERE slack_user_id = 'U01ABCDEFG';
 ```
 
+**With `access_model_v2` on** (the live model, see
+[SCHEMA.md → Access model](SCHEMA.md#access-model)), the resolver does not read
+this table. Every write above is mirrored into `access_grant`, one row per
+database, marked `mirrored_from = 'user_target_grants'`. The resolver reads that
+row, so the statements above still work.
+
+A person's own grant replaces their teams' grants **on the whole server**, not
+only on the databases it names. Giving someone a personal grant on one
+database of a server therefore hides a team grant they have on another database
+there. To keep the team's grants as well, set `merge_with_team` on the mirrored
+row:
+
+```sql
+-- Keep a person's team grants beside their own grant on one server
+-- (dry-run it as a SELECT first, and write an audit_log row in the same
+-- transaction)
+UPDATE access_grant g SET merge_with_team = TRUE
+  FROM principal_identity i
+ WHERE i.provider = 'slack' AND i.external_id = 'U01ABCDEFG' AND NOT i.is_deleted
+   AND g.principal_id = i.principal_id
+   AND g.target_id = (SELECT id FROM target_servers WHERE alias = 'acme-prod-orders')
+   AND NOT g.auto_approve AND g.revoked_at IS NULL AND NOT g.is_deleted;
+```
+
+The flag stays until the person's `user_target_grants` row changes scope or
+tier. Then the mirror replaces the row without it, so set it again after such
+a change. The Effective access screen shows the result: under the team's grant
+it names each member whose own grant applies instead.
+
 ---
 
 ## 10. Audit / inspection queries
