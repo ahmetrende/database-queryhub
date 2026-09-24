@@ -450,7 +450,11 @@ def test_a_scoped_approver_was_never_told_a_request_was_waiting():
     the one person the scoped-approver feature exists for — a pod lead who
     approves their own team — never appeared in the list the DM fan-out walks,
     and learned nothing about a request they could approve."""
-    assert "ra.role = 'approver'" in _body(ADMINS, "notify_list")
+    # The approver query is shared with the batch fan-out, so it has its own
+    # function and both lists read it.
+    assert "ra.role = 'approver'" in _body(ADMINS, "_live_approvers")
+    assert "_live_approvers()" in _body(ADMINS, "notify_list")
+    assert "_live_approvers()" in _body(ADMINS, "notify_list_bundle")
     assert "ra.role = 'admin'" in _body(ACCESS, "list_admins")
 
 
@@ -480,16 +484,19 @@ def test_it_is_a_no_op_while_the_flag_is_off():
     assert "if not _v2():" in body[i:i + 120]
 
 
-def test_the_bundle_fan_out_is_deliberately_left_alone():
-    """`notify_admins_bundle` offers `act_bundle_approve_all` — one click for
-    every item in the bundle. Listing a scoped approver there would hand them
-    a button that approves items outside their scope, so widening it needs a
-    per-item scope model first. Left as admins-only, on purpose."""
+def test_the_bundle_fan_out_reaches_an_approver_only_for_a_batch_they_can_clear():
+    """It was admins-only on purpose: a scoped approver handed the batch's
+    bulk Approve all could have cleared items outside their scope. The
+    operator asked (2026-09-24) that an all-RO batch reach the pod captain
+    like a single RO request does. So the fan-out lists an approver only when
+    they can approve EVERY item, and the bulk buttons admit the same people
+    (see tests/test_bundle_reaches_captains.py)."""
     notif = (ROOT / "src" / "queryhub" / "slack_app"
              / "notifications.py").read_text(encoding="utf-8")
     i = notif.index("def notify_admins_bundle")
-    assert "admins.list_active()" in notif[i:i + 1200]
-    assert "ACTION_BUNDLE_APPROVE_ALL" in notif
+    assert "admins.notify_list_bundle(" in notif[i:i + 1600]
+    assert "admins.list_active()" not in notif[i:i + 1600]
+    assert "all(can_approve(uid, it) for it in items)" in _body(ADMINS, "notify_list_bundle")
 
 
 def test_the_web_teams_screen_follows_the_switch_too():

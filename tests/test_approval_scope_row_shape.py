@@ -64,7 +64,7 @@ def test_a_row_with_no_tier_column_is_still_answered():
 
 @pytest.mark.parametrize("module,func", [
     ("queryhub.slack_app.handlers", "_guard_admin"),
-    ("queryhub.slack_app.handlers", "_bundle_pending_items_in_scope"),
+    ("queryhub.slack_app.handlers", "_bundle_pending_items"),
 ])
 def test_the_slack_loaders_select_what_the_scope_check_reads(module, func):
     """Belt as well as braces. The derivation makes a short row work; loading

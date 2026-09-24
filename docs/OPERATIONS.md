@@ -1026,6 +1026,15 @@ collapse a single admin's pending items in one click. A single
 summary DM lands once the whole bundle is decided + executed, with
 every completed item's CSV attached.
 
+Every admin gets the batch DM. A scoped approver, such as a pod
+captain, gets it too when they can approve every item on its own.
+For a captain, whose role reaches RO on their own pod's servers, that
+means an all-RO batch from their pod: the same rule that brings them a
+single RO request. The bulk buttons admit the same people, and act
+only on the items in the presser's scope. A batch with one item
+outside a captain's scope, such as a write or another pod's server,
+stays with the admins.
+
 ### Feature flag
 
 ```sql

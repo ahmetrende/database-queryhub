@@ -871,7 +871,12 @@ def notify_admins_bundle(client: WebClient, bundle_id: int) -> None:
         return
 
     overrides = display_overrides()
-    for admin in admins.list_active():
+    # Admins, plus any scoped approver who can approve every item: a pod
+    # captain gets an all-RO batch from their own pod, as they get a single
+    # RO request (admins.notify_list_bundle).
+    recipients = admins.notify_list_bundle(
+        [_bundle_scope_item(bundle, it) for it in items])
+    for admin in recipients:
         admin_id = admin["slack_user_id"]
         blocks = _build_bundle_dm_blocks(bundle, items, admin_id)
         try:
@@ -1158,6 +1163,27 @@ def _bundle_bulk_action_blocks(bundle_id: int,
     }]
 
 
+def _bundle_scope_item(bundle: dict, it: dict) -> dict:
+    """One batch item in the shape `admins.can_approve` reads.
+
+    `bundles.list_items` does not carry the requester, since every item has
+    the batch's, so it comes from the bundle row. `required_tier` and `engine`
+    are not decoration: a role row with a tier ceiling is SKIPPED when the
+    tier is absent, and leaving them out once showed every ceiling-bearing
+    admin a view-only bundle. One builder, used by the fan-out and by each
+    DM's buttons, so the two cannot disagree about who may approve what.
+    """
+    item_for_scope = {
+        "id": it["id"],
+        "query": it["query"],
+        "target_server_id": it["target_server_id"],
+        "requester_slack_id": bundle["requester_slack_id"],
+        "required_tier": it.get("required_tier"),
+        "engine": it.get("engine"),
+    }
+    return item_for_scope
+
+
 def _build_bundle_dm_blocks(bundle: dict, items: list[dict],
                             admin_id: str) -> list[dict]:
     """Render the bundle DM as seen by one admin. Per-item buttons are
@@ -1195,18 +1221,7 @@ def _build_bundle_dm_blocks(bundle: dict, items: list[dict],
     any_pending_in_scope = False
     item_blocks: list[dict] = []
     for it in items:
-        # `required_tier` and `engine` are not decoration: a role row with a
-        # tier ceiling is SKIPPED when the tier is absent, so leaving them out
-        # showed every ceiling-bearing admin a view-only bundle.
-        item_for_scope = {
-            "id": it["id"],
-            "query": it["query"],
-            "target_server_id": it["target_server_id"],
-            "requester_slack_id": bundle["requester_slack_id"],
-            "required_tier": it.get("required_tier"),
-            "engine": it.get("engine"),
-        }
-        in_scope = admins.can_approve(admin_id, item_for_scope)
+        in_scope = admins.can_approve(admin_id, _bundle_scope_item(bundle, it))
         if it["status"] == "pending":
             any_pending = True
             if in_scope:

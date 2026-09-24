@@ -307,7 +307,47 @@ def notify_list(request: dict) -> list[dict]:
     if not _v2():
         return people
     seen = {p["slack_user_id"] for p in people}
-    rows = db.fetch_all(
+    for r in _live_approvers():
+        uid = r["slack_user_id"]
+        if uid in seen:
+            continue
+        if can_approve(uid, request):
+            people.append(r)
+            seen.add(uid)
+    return people
+
+
+def notify_list_bundle(items: list[dict]) -> list[dict]:
+    """Everyone who should be DM'd about one pending BATCH.
+
+    Admins, as for a single request. A scoped approver is listed when they can
+    approve EVERY item on its own. A pod captain's role reaches RO on their
+    own pod's servers, so for them that means a batch that is all RO and all
+    in their pod (the operator's rule, 2026-09-24). Such a batch arrives with
+    a button on each item, and the bulk Approve all clears the whole of it.
+    One item outside their scope, a write or another pod's server, keeps the
+    batch with the admins, who see every batch anyway.
+
+    Each item must carry what `can_approve` reads, `requester_slack_id`
+    included: `notifications._bundle_scope_item` builds that row.
+    """
+    people = list_active()
+    if not _v2() or not items:
+        return people
+    seen = {p["slack_user_id"] for p in people}
+    for r in _live_approvers():
+        uid = r["slack_user_id"]
+        if uid in seen:
+            continue
+        if all(can_approve(uid, it) for it in items):
+            people.append(r)
+            seen.add(uid)
+    return people
+
+
+def _live_approvers() -> list[dict]:
+    """Every live `approver` role holder, in `list_active`'s row shape."""
+    return db.fetch_all(
         "SELECT DISTINCT ON (i.external_id) "
         "       i.external_id AS slack_user_id, p.display_name AS name, "
         "       CASE WHEN ra.valid_until IS NULL THEN 'permanent' "
@@ -321,14 +361,6 @@ def notify_list(request: dict) -> list[dict]:
         "   AND NOT ra.is_deleted AND ra.revoked_at IS NULL "
         "   AND (ra.valid_until IS NULL OR ra.valid_until > NOW()) "
         " ORDER BY i.external_id, (ra.valid_until IS NOT NULL), ra.valid_until")
-    for r in rows:
-        uid = r["slack_user_id"]
-        if uid in seen:
-            continue
-        if can_approve(uid, request):
-            people.append(r)
-            seen.add(uid)
-    return people
 
 
 def by_email(email: str) -> dict | None:

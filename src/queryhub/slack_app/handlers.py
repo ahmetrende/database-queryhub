@@ -2616,14 +2616,11 @@ def handle_dba_failed_submission(ack: Ack, body: dict, client: WebClient) -> Non
 # =============================================================================
 
 
-def _bundle_pending_items_in_scope(bundle_id: int, admin_id: str) -> list[dict]:
-    """Pending items in a bundle that this admin's scope allows.
-
-    Loads each item with the fields `admins.can_approve()` looks at -- which
-    this docstring already claimed while omitting `required_tier`, the one
-    whose absence makes a tier ceiling admit nothing.
-    """
-    rows = db.fetch_all(
+def _bundle_pending_items(bundle_id: int) -> list[dict]:
+    """Every pending item in a bundle, with the fields `admins.can_approve()`
+    reads: `required_tier` and `engine` included, the ones whose absence makes
+    a tier ceiling admit nothing."""
+    return db.fetch_all(
         "SELECT id, query, target_server_id, requester_slack_id, "
         "       required_tier, engine, scheduled_for, bundle_id "
         "  FROM requests "
@@ -2631,7 +2628,46 @@ def _bundle_pending_items_in_scope(bundle_id: int, admin_id: str) -> list[dict]:
         " ORDER BY position",
         (bundle_id,),
     )
-    return [r for r in rows if admins.can_approve(admin_id, r)]
+
+
+def _bundle_pending_items_in_scope(bundle_id: int, admin_id: str) -> list[dict]:
+    """Pending items in a bundle that this admin's scope allows.
+
+    Each item comes from `_bundle_pending_items`, with the fields
+    `admins.can_approve()` looks at, `required_tier` among them.
+    """
+    return [r for r in _bundle_pending_items(bundle_id)
+            if admins.can_approve(admin_id, r)]
+
+
+def _guard_bundle(ack: Ack, client: WebClient, body: dict,
+                  bundle_id: int) -> bool:
+    """Who may press a batch DM's bulk buttons.
+
+    An admin, as before. A scoped approver, such as a pod captain, passes
+    when every pending item is theirs to approve. That is the same test that
+    put the batch in their DMs (`admins.notify_list_bundle`). Without it the
+    fan-out would reach a captain and the bulk buttons would refuse them,
+    the mismatch `_guard_admin` describes for single requests.
+
+    Nothing wider than their scope is ever approved either way:
+    `_bundle_pending_items_in_scope` filters the items the handler walks.
+    """
+    user_id = body["user"]["id"]
+    if not admins.is_admin(user_id):
+        pending = _bundle_pending_items(bundle_id)
+        if not (pending and all(admins.can_approve(user_id, r) for r in pending)):
+            ack()
+            notifications.dm_requester(
+                client, user_id,
+                ":no_entry: Part of this batch is outside your approval scope "
+                "(tier / target / team restriction), so an admin handles it."
+                if admins.has_approval_authority(user_id)
+                else ":no_entry: You are not an authorized admin for the SQL bot.",
+            )
+            return False
+    profile_sync.maybe_backfill_user_profile(client, user_id)
+    return True
 
 
 def handle_bundle_approve_all(ack: Ack, body: dict, client: WebClient) -> None:
@@ -2640,11 +2676,11 @@ def handle_bundle_approve_all(ack: Ack, body: dict, client: WebClient) -> None:
     per-item handle_approve transition (status → approved or scheduled
     depending on bundle.scheduled_for, executor.submit for immediate
     items)."""
-    if not _guard_admin(ack, client, body):
+    bundle_id = int(body["actions"][0]["value"])
+    if not _guard_bundle(ack, client, body, bundle_id):
         return
     ack()
     user = body["user"]
-    bundle_id = int(body["actions"][0]["value"])
 
     items = _bundle_pending_items_in_scope(bundle_id, user["id"])
     if not items:
@@ -2703,10 +2739,10 @@ def handle_bundle_reject_all(ack: Ack, body: dict, client: WebClient) -> None:
     """[Reject all remaining (in scope)]. Opens a single reason-modal;
     on submit, every pending item in scope flips to rejected with the
     same reason."""
-    if not _guard_admin(ack, client, body):
+    bundle_id = body["actions"][0]["value"]
+    if not _guard_bundle(ack, client, body, int(bundle_id)):
         return
     ack()
-    bundle_id = body["actions"][0]["value"]
     client.views_open(
         trigger_id=body["trigger_id"],
         view={

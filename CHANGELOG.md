@@ -45,6 +45,10 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Fixed
 
+- **An all-RO batch reaches the pod captain, as a single RO request does.**
+  The batch DM went to admins alone, and its bulk buttons were admin-only.
+  A scoped approver now gets the batch when they can approve every item,
+  and the bulk buttons admit the same people.
 - **A person's own grant replaces their team's on the whole server,
   everywhere.** The database list already worked this way. Submit, the
   effective-access screen and team auto-approve decided it per database, so
