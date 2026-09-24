@@ -2109,7 +2109,10 @@
      text — name, engine, hosting, the replica chip, database chips — wraps
      inside its column and never ellipsises (a replica's "-r1" is the part
      that matters); only the host:port line is cut, full string on hover. */
-  .qh-conntable { table-layout: fixed; width: 100%; }
+  /* Below ~980px of panel the shares would squeeze Databases to one letter a
+     line (CODE 2026-09-24 (c), 43px at a 1024px window); under that the table
+     holds its width and the wrapper scrolls instead. Wide screens are unchanged. */
+  .qh-conntable { table-layout: fixed; width: 100%; min-width: 980px; }
   .qh-conntable th.qh-conn-selcol, .qh-conntable td.qh-conn-selcol { width: 36px; }
   .qh-conntable th:nth-child(2) { width: 27%; }
   .qh-conntable th:nth-child(3) { width: 15%; }

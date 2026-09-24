@@ -33,7 +33,8 @@ frontend and the endpoints it calls are explicitly outside it.
   row. Rotating credentials, disabling, refreshing the schema and deleting
   moved into a ⋯ menu. Engine and hosting share one column, and the
   environment tag sits beside the name. The pinned actions column no longer
-  covers the databases.
+  covers the databases. In a narrow window the table scrolls sideways instead
+  of squeezing the database names.
 - **The masking exemption form's pickers filter as you type.** Server,
   database, schema, table and column still accept only what the catalog
   lists: a typo keeps the previous choice. The column picker clears after
