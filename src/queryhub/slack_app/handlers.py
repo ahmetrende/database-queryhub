@@ -2929,7 +2929,9 @@ def _process_import(client: WebClient, user: dict, parsed: dict, target) -> None
         ro_user, ro_pw = targets.get_credentials(target.id, "ro")
         with psycopg.connect(host=target.host, port=target.port,
                              dbname=parsed["database"], user=ro_user, password=ro_pw,
-                             sslmode="require", connect_timeout=10) as conn, conn.cursor() as cur:
+                             connect_timeout=10,
+                             **cfg.target_ssl_kwargs(target.host)) as conn, \
+                conn.cursor() as cur:
             cur.execute("SELECT 1 FROM information_schema.tables "
                         "WHERE table_schema='dba' AND table_name=%s", (table,))
             exists = cur.fetchone() is not None

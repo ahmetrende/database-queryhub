@@ -657,7 +657,7 @@ def connection_roles(conn: str, claims: dict = Depends(deps.current_user)):
         with psycopg.connect(
             host=t.host, port=t.port, dbname=t.default_database,
             user=db_user, password=password, connect_timeout=3,
-            sslmode="require", application_name="dba-slack-bot:web-roles",
+            **cfg.target_ssl_kwargs(t.host), application_name="dba-slack-bot:web-roles",
             options="-c statement_timeout=3000",
         ) as cn, cn.cursor() as cur:
             cur.execute("SET TRANSACTION READ ONLY")

@@ -1,8 +1,10 @@
 """Environment + DB-backed runtime configuration."""
 from __future__ import annotations
 
+import fnmatch
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -51,6 +53,21 @@ class EnvConfig:
     bot_db_password: str
     master_key_path: Path
     log_level: str
+    # TLS for the metadata DB (and the inventory DB on the same server). Empty
+    # leaves libpq's default. Named settings rather than PGSSLROOTCERT: libpq
+    # would apply that variable to target connections too, and a root file
+    # turns their `require` into verify-ca against the wrong CA.
+    bot_db_sslmode: str = ""
+    bot_db_sslrootcert: str = ""
+
+    def bot_db_ssl_kwargs(self) -> dict:
+        """psycopg kwargs for a connection to the metadata DB's server."""
+        kw = {}
+        if self.bot_db_sslmode:
+            kw["sslmode"] = self.bot_db_sslmode
+        if self.bot_db_sslrootcert:
+            kw["sslrootcert"] = self.bot_db_sslrootcert
+        return kw
 
     @property
     def slack_enabled(self) -> bool:
@@ -84,6 +101,8 @@ class EnvConfig:
             # before the DB pool is open). All OTHER tunables live in
             # bot_config — see migration 007 and `queryhub.config.get_setting`.
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
+            bot_db_sslmode=os.environ.get("BOT_DB_SSLMODE", "").strip(),
+            bot_db_sslrootcert=os.environ.get("BOT_DB_SSLROOTCERT", "").strip(),
         )
 
 
@@ -144,18 +163,64 @@ def get_bool(key: str, default: bool) -> bool:
     }
 
 
-def target_ssl_kwargs() -> dict:
-    """psycopg SSL connect kwargs for connections to *target* databases.
+# The sslmodes under which libpq checks the server certificate.
+_VERIFYING_MODES = frozenset({"verify-ca", "verify-full"})
 
-    Defaults to sslmode=require: the link is encrypted but the server
-    certificate is NOT authenticated (no MITM protection) — the historical
-    behavior. A security-conscious deployment sets bot_config
-    `target_ssl_mode=verify-full` and points `target_ssl_rootcert` at a CA
-    bundle (e.g. the RDS global bundle) to also authenticate the server.
+
+def _host_globs(key: str) -> list[str]:
+    raw = get_setting(key, "") or ""
+    return [p.lower() for p in re.split(r"[,\s]+", raw.strip()) if p]
+
+
+def target_tls_rule(host: str | None) -> bool | None:
+    """What the TLS host lists say about `host`: True when it must verify the
+    server certificate, False when it is exempt, None when neither list names
+    it (the engine's own default applies). Exempt beats verify."""
+    if not host:
+        return None
+    name = host.strip().lower()
+    if any(fnmatch.fnmatchcase(name, g)
+           for g in _host_globs("target_ssl_verify_exempt_hosts")):
+        return False
+    if any(fnmatch.fnmatchcase(name, g)
+           for g in _host_globs("target_ssl_verify_hosts")):
+        return True
+    return None
+
+
+def target_ssl_kwargs(host: str | None = None) -> dict:
+    """psycopg SSL connect kwargs for a connection to a *target* database.
+
+    `target_ssl_mode` (default require) is the fleet-wide mode. require
+    encrypts the link but does not check who answered. Two host-glob lists
+    (comma or space separated, like the target policy keys) change it per
+    server, so a fleet can move to verification one cloud, or one host, at a
+    time:
+
+      target_ssl_verify_hosts          these hosts use verify-full, checked
+                                       against the CA file in
+                                       `target_ssl_rootcert`
+      target_ssl_verify_exempt_hosts   these never verify: a server whose
+                                       certificate cannot be checked. Exempt
+                                       beats verify, and beats a fleet-wide
+                                       verifying mode
+
+    `host` is the name the connection goes to. For a query sent to a read
+    replica that is the replica's host, not the primary's. A caller that
+    passes no host gets the fleet-wide mode.
+
+    The CA file is passed only with a verifying mode. libpq treats `require`
+    plus a root file as verify-ca, so handing one cloud's bundle to a server
+    that runs `require` would fail every connection to it.
     Returns only the keys that are set, so it spreads cleanly into connect()."""
     mode = (get_setting("target_ssl_mode", "require") or "require").strip()
+    rule = target_tls_rule(host)
+    if rule is False and mode in _VERIFYING_MODES:
+        mode = "require"
+    elif rule is True:
+        mode = "verify-full"
     kwargs: dict = {"sslmode": mode}
     rootcert = (get_setting("target_ssl_rootcert", "") or "").strip()
-    if rootcert:
+    if rootcert and mode in _VERIFYING_MODES:
         kwargs["sslrootcert"] = rootcert
     return kwargs

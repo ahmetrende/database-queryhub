@@ -10,7 +10,7 @@ import threading
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from . import auth_events, db, executor, lifecycle
+from . import auth_events, db, executor, lifecycle, targets
 from .config import ENV
 from .slack_app import handlers, notifications
 
@@ -50,6 +50,7 @@ def main() -> int:
         return 2
 
     db.init_pool()
+    targets.log_tls_posture()
 
     # Sweep lease-expired 'executing' rows (orphaned from a dead process — a
     # query can't survive its connection dying) to failed. Lease-gated so a

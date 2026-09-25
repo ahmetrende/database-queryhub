@@ -97,7 +97,7 @@ def wired(monkeypatch):
                             "id": tid, "host": "db.example.test", "port": 5432,
                             "username": "reader"})())
     monkeypatch.setattr(cancellation.targets, "get_password", lambda tid: "pw")
-    monkeypatch.setattr(cancellation.cfg, "target_ssl_kwargs", lambda: {})
+    monkeypatch.setattr(cancellation.cfg, "target_ssl_kwargs", lambda host=None: {})
     monkeypatch.setattr(cancellation.cfg, "get_int",
                         lambda k, d=None: 1 if k == "cancel_escalate_sec" else (d or 0))
 

@@ -885,7 +885,7 @@ def _probe(engine: str, host: str, port: int, database: str,
             with psycopg.connect(
                     host=host, port=port, dbname=database, user=username,
                     password=password, connect_timeout=_PROBE_TIMEOUT_SEC,
-                    **cfg.target_ssl_kwargs(),
+                    **cfg.target_ssl_kwargs(host),
                     application_name="queryhub-connection-test",
                     options="-c statement_timeout=5000 "
                             "-c default_transaction_read_only=on") as conn:
@@ -4894,7 +4894,7 @@ def admin_mask_preview(body: MaskPreviewIn,
         with psycopg.connect(
             host=target.host, port=target.port, dbname=database,
             user=db_user, password=password, connect_timeout=5,
-            **cfg.target_ssl_kwargs(),
+            **cfg.target_ssl_kwargs(target.host),
             application_name=f"queryhub:mask-preview target={target.alias}"[:63],
             options=f"-c statement_timeout={_MASK_PREVIEW_TIMEOUT_MS} "
                     f"-c idle_in_transaction_session_timeout="

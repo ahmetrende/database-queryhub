@@ -125,8 +125,9 @@ The Postgres servers your developers actually want to query.
 ### Requirements
 
 - Postgres **14+** on every cluster.
-- Network reachable from the bot host on port 5432 (TLS recommended
-  — the bot uses `sslmode=require` on every target connection).
+- Network reachable from the bot host on port 5432, with TLS. The bot
+  uses `sslmode=require` by default and can verify the server certificate
+  per host (`target_ssl_verify_hosts`, see CONFIGURATION.md "Target TLS").
 - Ability to **create login roles** on each cluster (or have an admin
   who can run the bootstrap SQL once per target).
 

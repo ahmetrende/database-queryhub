@@ -127,17 +127,20 @@ def _wrote_recently(requester: str, target_id: int, minutes: int) -> bool:
 def _probe(primary, replica: dict, user: str, password: str) -> Health:
     """Measure one replica. The primary is read FIRST: a replica that has
     replayed past that position by the time it is asked is caught up."""
+    # TLS is decided per host: a replica can live under a different name, or a
+    # different cloud's certificate, than its primary.
     kw = dict(dbname=primary.default_database, user=user, password=password,
               connect_timeout=_CONNECT_TIMEOUT_SEC, autocommit=True,
               application_name="queryhub:replica-health",
-              options=f"-c statement_timeout={_PROBE_TIMEOUT_MS}",
-              **cfg.target_ssl_kwargs())
+              options=f"-c statement_timeout={_PROBE_TIMEOUT_MS}")
     try:
-        with psycopg.connect(host=primary.host, port=primary.port, **kw) as pc, \
+        with psycopg.connect(host=primary.host, port=primary.port, **kw,
+                             **cfg.target_ssl_kwargs(primary.host)) as pc, \
                 pc.cursor() as cur:
             cur.execute("SELECT pg_current_wal_lsn()::text")
             primary_lsn = cur.fetchone()[0]
-        with psycopg.connect(host=replica["host"], port=replica["port"], **kw) as rc, \
+        with psycopg.connect(host=replica["host"], port=replica["port"], **kw,
+                             **cfg.target_ssl_kwargs(replica["host"])) as rc, \
                 rc.cursor() as cur:
             cur.execute(
                 "SELECT pg_is_in_recovery(), "

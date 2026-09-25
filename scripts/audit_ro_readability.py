@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import psycopg  # noqa: E402
 
+from queryhub import config as cfg  # noqa: E402
 from queryhub import schema_catalog, targets  # noqa: E402
 
 log = logging.getLogger("audit-ro")
@@ -61,7 +62,7 @@ ORDER BY 1
 def _connect(host: str, dbname: str, user: str):
     return psycopg.connect(
         host=host, port=5432, dbname=dbname, user=user,
-        connect_timeout=10, sslmode="require",
+        connect_timeout=10, **cfg.target_ssl_kwargs(host),
         application_name="queryhub-ro-audit",
         options="-c statement_timeout=120000",
     )

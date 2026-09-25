@@ -263,6 +263,18 @@ def passthrough_or_hex(value):
     return value
 
 
+def trusts_server_cert(host: str | None) -> bool:
+    """True when a connection to `host` skips the certificate check.
+
+    The TLS host lists (config.target_tls_rule) name servers one at a time;
+    `mssql_trust_server_cert` is the default for the rest. With an IP address
+    for a host, verification needs the certificate to name that address."""
+    rule = cfg.target_tls_rule(host)
+    if rule is None:
+        return cfg.get_bool("mssql_trust_server_cert", False)
+    return not rule
+
+
 def connect(
     host: str,
     port: int,
@@ -285,7 +297,7 @@ def connect(
     import pyodbc  # lazy: optional dependency, only on MSSQL-serving hosts
 
     if trust_server_cert is None:
-        trust_server_cert = cfg.get_bool("mssql_trust_server_cert", False)
+        trust_server_cert = trusts_server_cert(host)
     if multi_subnet_failover is None:
         multi_subnet_failover = cfg.get_bool("mssql_multi_subnet_failover", True)
     conn = pyodbc.connect(

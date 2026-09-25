@@ -174,7 +174,7 @@ def _fake_connect(results, calls):
 
 def _probe_with(monkeypatch, replica_answer, primary_answer=("3B4F/FA6EE000",)):
     calls = []
-    monkeypatch.setattr(replicas.cfg, "target_ssl_kwargs", lambda: {})
+    monkeypatch.setattr(replicas.cfg, "target_ssl_kwargs", lambda host=None: {})
     monkeypatch.setattr(replicas.cfg, "get_int", lambda k, d=None: d)
     monkeypatch.setattr(replicas.log, "info", lambda *a, **k: None)
     monkeypatch.setattr(replicas.psycopg, "connect", _fake_connect(
@@ -272,7 +272,7 @@ def run_env(monkeypatch):
                         lambda rid, why: box["unhealthy"].append(rid))
     monkeypatch.setattr(executor.cfg, "get_int", lambda k, d=None: d)
     monkeypatch.setattr(executor.cfg, "get_setting", lambda k, d=None: d)
-    monkeypatch.setattr(executor.cfg, "target_ssl_kwargs", lambda: {})
+    monkeypatch.setattr(executor.cfg, "target_ssl_kwargs", lambda host=None: {})
     monkeypatch.setattr(executor.row_limits, "effective_caps", lambda uid: (1000, 10 ** 6))
     monkeypatch.setattr(executor, "_super_role_for", lambda *a: None)
     monkeypatch.setattr(executor, "_team_role_for", lambda *a: None)
@@ -408,7 +408,7 @@ def test_a_cancel_reaches_the_replica_with_the_primarys_login(monkeypatch):
                         lambda tid: PRIMARY if tid == 7 else replica)
     monkeypatch.setattr(cancellation.targets, "get_password",
                         lambda tid: "primary-pw" if tid == 7 else "sentinel")
-    monkeypatch.setattr(cancellation.cfg, "target_ssl_kwargs", lambda: {})
+    monkeypatch.setattr(cancellation.cfg, "target_ssl_kwargs", lambda host=None: {})
     monkeypatch.setattr(cancellation.cfg, "get_int", lambda k, d=None: 1)
     seen = []
 

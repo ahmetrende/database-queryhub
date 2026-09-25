@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import psycopg  # noqa: E402
 from psycopg import sql as pgsql  # noqa: E402
 
+from queryhub import config as cfg  # noqa: E402
 from queryhub import db  # noqa: E402
 from queryhub import targets as targets_mod  # noqa: E402
 
@@ -100,7 +101,7 @@ def _connect(host: str, dbname: str):
     # No password argument: libpq falls back to ~/.pgpass (wallet).
     return psycopg.connect(
         host=host, port=5432, dbname=dbname, user=WALLET_USER,
-        connect_timeout=8, sslmode="require",
+        connect_timeout=8, **cfg.target_ssl_kwargs(host),
         application_name="queryhub-breakglass-provision",
         options="-c statement_timeout=30000",
     )

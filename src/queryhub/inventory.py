@@ -33,6 +33,7 @@ def list_databases_for_endpoint(endpoint: str) -> list[str]:
             password=ENV.bot_db_password,
             connect_timeout=5,
             application_name="dba-slack-bot:inventory-lookup",
+            **ENV.bot_db_ssl_kwargs(),
         ) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT database_name FROM v_all_databases "

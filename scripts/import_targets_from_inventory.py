@@ -99,6 +99,7 @@ def _inventory_endpoints() -> list[tuple[str, list[str]]]:
         password=ENV.bot_db_password,
         connect_timeout=10,
         application_name="dba-slack-bot:bulk-import",
+        **ENV.bot_db_ssl_kwargs(),
     ) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT endpoint, database_name FROM v_all_databases "
@@ -128,6 +129,7 @@ def _inventory_servers() -> list[dict]:
         password=ENV.bot_db_password,
         connect_timeout=10,
         application_name="dba-slack-bot:bulk-import",
+        **ENV.bot_db_ssl_kwargs(),
     ) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT db_instance_identifier, endpoint, is_deleted, deleted_at, "

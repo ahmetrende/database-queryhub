@@ -83,6 +83,7 @@ def init_pool(min_size: int | None = None, max_size: int | None = None) -> None:
                 "row_factory": dict_row,
                 "autocommit": False,
                 "password": ENV.bot_db_password,
+                **ENV.bot_db_ssl_kwargs(),
                 # Cap any individual statement at 10s and any
                 # idle-in-transaction at 30s so a stuck metadata-DB query
                 # can't block the connection pool indefinitely. All bot
@@ -101,6 +102,12 @@ def close_pool() -> None:
     if _pool is not None:
         _pool.close()
         _pool = None
+
+
+def pool_ready() -> bool:
+    """True once the pool exists. For startup work that should be skipped,
+    not retried, when the control DB was unreachable at boot."""
+    return _pool is not None
 
 
 @contextmanager

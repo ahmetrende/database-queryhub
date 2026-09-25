@@ -205,7 +205,7 @@ def stop_backend(request_id: int) -> str:
         dsn = (f"host={where.host} port={where.port} "
                f"dbname={row['database_name']} user={target.username} "
                f"password={targets.get_password(target.id)}")
-        conn_kwargs = dict(cfg.target_ssl_kwargs())
+        conn_kwargs = dict(cfg.target_ssl_kwargs(where.host))
         # autocommit, and it matters. `pg_stat_activity`'s backend-status data is
         # cached for the duration of a TRANSACTION, so polling it inside one
         # returns the same snapshot every time: the cancel landed within 0.3s

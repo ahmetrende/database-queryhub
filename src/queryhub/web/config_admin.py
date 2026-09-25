@@ -12,6 +12,7 @@ in the code never breaks) and audited per save. Most keys are runtime-effective;
 """
 from __future__ import annotations
 
+import os
 from zoneinfo import available_timezones
 
 from .. import db
@@ -53,7 +54,9 @@ _TYPES = {
     "bot_display_name": "str", "kill_switch_message": "str", "log_level": "str",
     "report_start_date": "str", "report_timezone": "str",
     "set_allowed_params": "str", "target_alias_allow_patterns": "str",
-    "target_host_allow_patterns": "str", "web_base_url": "str",
+    "target_host_allow_patterns": "str", "target_ssl_mode": "str",
+    "target_ssl_rootcert": "str", "target_ssl_verify_hosts": "str",
+    "target_ssl_verify_exempt_hosts": "str", "web_base_url": "str",
     "web_repo_slug": "str",
     # tz — a validated IANA timezone name, rendered as a searchable dropdown.
     "web_display_timezone": "tz",
@@ -82,7 +85,8 @@ _GROUPS = [
     ("pii", "Data protection (PII)", ["pii_masking_enabled"]),
     ("targets", "Targets & fleet policy", [
         "target_alias_allow_patterns", "target_host_allow_patterns",
-        "mssql_trust_server_cert"]),
+        "target_ssl_mode", "target_ssl_rootcert", "target_ssl_verify_hosts",
+        "target_ssl_verify_exempt_hosts", "mssql_trust_server_cert"]),
     ("csv", "CSV import", [
         "csv_import_enabled", "csv_size_mb", "import_max_mb", "import_max_rows",
         "import_timeout_sec", "import_csv_ttl_hours"]),
@@ -187,7 +191,36 @@ def _coerce(raw, kind: str, current: str | None, key: str | None = None) -> str 
         # Only a real IANA zone can be saved — a bad value would break the
         # client's Intl.DateTimeFormat. Reject (None = skip) anything else.
         return s if s in _TZSET else None
+    if key == "target_ssl_mode":
+        # libpq refuses any other word, and this one reaches every connection.
+        return s if s in _SSLMODES else None
     return s
+
+
+_SSLMODES = frozenset({"disable", "allow", "prefer", "require", "verify-ca",
+                       "verify-full"})
+_TLS_KEYS = frozenset({"target_ssl_mode", "target_ssl_rootcert",
+                       "target_ssl_verify_hosts"})
+
+
+def _tls_settings_hold(pending: dict) -> str | None:
+    """Refuse a TLS change that would fail connections on the next query.
+
+    A verifying mode, or a host on the verify list, checks certificates against
+    `target_ssl_rootcert`. Without that file libpq looks for one in the service
+    user's home and, finding none, refuses every connection it was asked to
+    verify. The file is looked up on this host, where both services run."""
+    mode = (pending.get("target_ssl_mode") or "require").strip()
+    hosts = (pending.get("target_ssl_verify_hosts") or "").strip()
+    if mode not in ("verify-ca", "verify-full") and not hosts:
+        return None
+    path = (pending.get("target_ssl_rootcert") or "").strip()
+    if not path:
+        return ("target_ssl_rootcert must name a CA file before certificates "
+                "can be verified.")
+    if not (os.path.isfile(path) and os.access(path, os.R_OK)):
+        return f"target_ssl_rootcert: {path} is not a readable file on this host."
+    return None
 
 
 def _lease_covers_timeout(pending: dict) -> str | None:
@@ -233,6 +266,8 @@ def apply_config(changes: dict, cur) -> list[dict]:
             if v is not None:
                 post[k] = v
     problem = _lease_covers_timeout(post)
+    if not problem and _TLS_KEYS & set(changes or {}):
+        problem = _tls_settings_hold(post)
     if problem:
         raise ValueError(problem)
 

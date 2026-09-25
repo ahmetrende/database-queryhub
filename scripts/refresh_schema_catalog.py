@@ -107,7 +107,8 @@ def _clickhouse_states() -> dict[str, str] | None:
                          dbname="inventory", user=env.bot_db_user,
                          password=env.bot_db_password, connect_timeout=10,
                          application_name="queryhub:clickhouse-catalog",
-                         options="-c default_transaction_read_only=on") as conn, \
+                         options="-c default_transaction_read_only=on",
+                         **env.bot_db_ssl_kwargs()) as conn, \
             conn.cursor() as cur:
         # v_server, not `servers`: the bot's login may read the view only.
         # The view does not filter soft-deleted rows, so this does.

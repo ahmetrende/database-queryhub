@@ -177,7 +177,7 @@ def explain(
             user=db_user,
             password=password,
             connect_timeout=2,
-            **cfg.target_ssl_kwargs(),
+            **cfg.target_ssl_kwargs(target.host),
             application_name=f"dba-slack-bot:explain target={target.alias}"[:63],
             # Tight 2s caps so the whole pre-flight fits inside Slack's
             # 3s ack() deadline on view_submission. Planner-slow queries
@@ -293,7 +293,7 @@ def explain_write_estimate(
             user=db_user,
             password=password,
             connect_timeout=2,
-            **cfg.target_ssl_kwargs(),
+            **cfg.target_ssl_kwargs(target.host),
             application_name=f"dba-slack-bot:explain-write target={target.alias}"[:63],
             options="-c statement_timeout=2000 -c idle_in_transaction_session_timeout=3000",
         ) as conn, conn.cursor() as cur:

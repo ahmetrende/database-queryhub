@@ -159,7 +159,7 @@ def _connect(target, password: str, database: str):
         user=target.username,
         password=password,
         connect_timeout=8,
-        **cfg.target_ssl_kwargs(),
+        **cfg.target_ssl_kwargs(target.host),
         application_name="queryhub-schema-snapshot",
         options="-c statement_timeout=60000 -c default_transaction_read_only=on",
     )

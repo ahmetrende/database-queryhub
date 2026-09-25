@@ -823,7 +823,7 @@ def _run(request: dict, client: WebClient) -> None:
                     password=password,
                     connect_timeout=15,
                     application_name=app_name,
-                    **cfg.target_ssl_kwargs(),
+                    **cfg.target_ssl_kwargs(route.host if route else target.host),
                     autocommit=autocommit,
                     options=options,
                 ) as conn:
@@ -2852,7 +2852,8 @@ def _import_run(imp: dict, client: WebClient) -> None:
         with psycopg.connect(
             host=target.host, port=target.port, dbname=imp["database_name"],
             user=db_user, password=password, connect_timeout=15,
-            application_name=app_name, **cfg.target_ssl_kwargs(), options=options,
+            application_name=app_name, **cfg.target_ssl_kwargs(target.host),
+            options=options,
         ) as conn:
             with conn.cursor() as cur:
                 # Pin to the dba schema; speed knob for the bulk load.

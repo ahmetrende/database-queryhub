@@ -146,6 +146,8 @@ def fleet(args) -> list[dict]:
             "  LEFT JOIN target_servers p ON p.id = t.replica_of "
             f"{'' if args.include_disabled else 'WHERE t.enabled '}"
             " ORDER BY t.alias")]
+        for r in rows:
+            r["ssl"] = cfg.target_ssl_kwargs(r["host"])
     if args.alias:
         rows = [r for r in rows if fnmatch.fnmatch(r["alias"], args.alias)]
     # Replicas last: the NOLOGIN reaches them by replication from their
@@ -165,7 +167,8 @@ def dump_plan(rows: list[dict], path: str, ssl: dict) -> int:
          "super_ddl_role": r.get("super_ddl_role"),
          "replica_of": r.get("replica_of"),
          "username": r.get("username"), "username_rw": r.get("username_rw"),
-         "username_ddl": r.get("username_ddl")}
+         "username_ddl": r.get("username_ddl"),
+         "ssl": r.get("ssl") or ssl}
         for r in rows], "ssl": ssl}
     Path(path).write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
     os.chmod(path, 0o600)
@@ -200,7 +203,9 @@ def _connect(row: dict, args) -> psycopg.Connection:
         host=row["host"], port=row["port"], dbname=row["database"],
         user=user, password=password, connect_timeout=args.timeout,
         application_name="queryhub:breakglass",
-        **getattr(args, "ssl", None) or {"sslmode": "require"})
+        # Per host when the row carries it (a plan dumped by this version, or a
+        # fleet read from the metadata DB); the plan's fleet-wide mode if not.
+        **row.get("ssl") or getattr(args, "ssl", None) or {"sslmode": "require"})
     conn.autocommit = True
     return conn
 

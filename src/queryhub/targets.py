@@ -1,6 +1,7 @@
 """Target Postgres RDS server registry."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from . import db, secrets_providers
@@ -8,6 +9,7 @@ from psycopg.types.json import Json
 
 from .crypto import decrypt, encrypt
 
+log = logging.getLogger(__name__)
 
 # Placeholder password written when a target is registered before its database
 # user exists. The executor, the schema snapshot and the admin panel all read it
@@ -113,6 +115,52 @@ def list_enabled() -> list[TargetServer]:
         "FROM target_servers WHERE enabled = TRUE AND replica_of IS NULL ORDER BY alias"
     )
     return [_row_to_target(r) for r in rows]
+
+
+def tls_posture() -> dict[str, int]:
+    """Enabled targets, read replicas included, split by whether a connection
+    to them checks the server certificate under the settings as they are now.
+
+    ClickHouse always verifies (clickhouse_exec.client). Athena is the AWS SDK
+    over HTTPS and is not counted."""
+    from . import config as cfg
+    from . import mssql_exec
+    out = {"verified": 0, "unverified": 0}
+    for r in db.fetch_all(
+            "SELECT host, COALESCE(engine, 'postgres') AS engine "
+            "  FROM target_servers WHERE enabled"):
+        if r["engine"] == "postgres":
+            ok = cfg.target_ssl_kwargs(r["host"])["sslmode"] in (
+                "verify-ca", "verify-full")
+        elif r["engine"] == "mssql":
+            ok = not mssql_exec.trusts_server_cert(r["host"])
+        elif r["engine"] == "clickhouse":
+            ok = True
+        else:
+            continue
+        out["verified" if ok else "unverified"] += 1
+    return out
+
+
+def log_tls_posture() -> None:
+    """One startup line saying how many targets are reached without a
+    certificate check. It must never stop a process from starting, and it
+    does not retry a pool that failed at boot."""
+    if not db.pool_ready():
+        return
+    try:
+        p = tls_posture()
+    except Exception:
+        log.warning("target TLS posture unavailable", exc_info=True)
+        return
+    total = p["verified"] + p["unverified"]
+    if p["unverified"]:
+        log.warning("target TLS: %d of %d enabled targets are encrypted but do "
+                    "not check the server certificate (target_ssl_verify_hosts, "
+                    "docs/OPERATIONS.md)", p["unverified"], total)
+    else:
+        log.info("target TLS: all %d enabled targets check the server "
+                 "certificate", total)
 
 
 def list_all() -> list[TargetServer]:

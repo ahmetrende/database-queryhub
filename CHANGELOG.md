@@ -63,6 +63,15 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Security
 
+- **Target certificates can be verified one host, or one cloud, at a time.**
+  `target_ssl_verify_hosts` switches the listed hosts to `verify-full`
+  against `target_ssl_rootcert`; `target_ssl_verify_exempt_hosts` keeps a
+  server that cannot verify on `require`. SQL Server follows the same lists.
+  The CA file now goes only with a verifying mode, because libpq reads
+  `require` plus a root file as `verify-ca`. Two connections that hardcoded
+  `require` (the CSV import's table check and the web roles list) follow the
+  settings too. The metadata DB takes `BOT_DB_SSLMODE` and
+  `BOT_DB_SSLROOTCERT`. Nothing changes until a key is set (migration 133).
 - **The header row of an export is guarded against formulas too.** Data
   cells were. A column alias such as `"=HYPERLINK(...)"` opened as a live
   formula in CSV and XLSX downloads, including the web's CSV-to-XLSX

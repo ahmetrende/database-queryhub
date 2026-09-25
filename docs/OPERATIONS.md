@@ -39,6 +39,7 @@ self-contained — read what you need, skip the rest.
 24. [Monitoring: /metrics and structured logs](#24-monitoring-metrics-and-structured-logs)
 25. [Super-admin elevation on a target](#25-super-admin-elevation-on-a-target)
 26. [Read replicas](#26-read-replicas)
+27. [Verifying target certificates](#27-verifying-target-certificates)
 
 ---
 
@@ -1814,3 +1815,57 @@ the query (`executed_target_id`), with the primary's login.
 writes no role change there: the NOLOGIN reaches a replica through replication.
 Replicas are processed after the primaries.
 
+## 27. Verifying target certificates
+
+`sslmode=require` encrypts a target connection but accepts any certificate,
+so a machine in the network path could answer in the server's place and read
+the login and the results. Verification is switched on per host, so a fleet
+spread over two clouds, which means two certificate authorities, moves one
+cloud at a time. The keys are in CONFIGURATION.md, "Target TLS".
+
+**1. Measure without logging in.** A TLS handshake is enough to see whether a
+CA file verifies a server, host name included:
+
+```bash
+openssl s_client -starttls postgres -connect <host>:5432 -servername <host> \
+  -verify_hostname <host> -CAfile <ca-file.pem> </dev/null 2>/dev/null \
+  | grep "Verify return code"
+```
+
+`0 (ok)` means `verify-full` will connect to that host with that file.
+
+**2. Install the CA file** on the QueryHub host, readable by the service user.
+For AWS RDS it is the global bundle, which covers every region:
+`https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem`. For
+another cloud, take the provider's database CA from its console or API, never
+from the server itself: a certificate the server hands you proves nothing
+about who the server is. When two clouds verify, put both CAs in one file.
+
+```bash
+sudo install -D -m 0644 global-bundle.pem /etc/queryhub/tls/target-ca.pem
+```
+
+**3. One host first.** Set `target_ssl_rootcert` to the file and
+`target_ssl_verify_hosts` to one host. The settings screen refuses the change
+while the file cannot be read. Run a query there, and leave it a day.
+
+**4. Then the whole cloud,** for example `*.rds.amazonaws.com`. Each process
+logs one line at startup with the number of enabled targets still unverified.
+
+**5. A server that cannot verify** goes on `target_ssl_verify_exempt_hosts`,
+with the reason in its connection notes.
+
+**Undo:** clear `target_ssl_verify_hosts`. The change applies to the next
+connection, with no restart.
+
+SQL Server reads the same two lists (`TrustServerCertificate=no` for a listed
+host); `mssql_trust_server_cert` covers the hosts neither list names. A target
+reached by IP address verifies only if its certificate names that address.
+ClickHouse always verifies, against the public CA bundle.
+
+The metadata DB is not a target and has its own two settings,
+`BOT_DB_SSLMODE` and `BOT_DB_SSLROOTCERT`, in the service environment. A
+change there needs a restart of both services, and a wrong value stops both,
+so measure it with the command above first. Do not set libpq's `PGSSLROOTCERT`
+instead: libpq applies it to every connection that names no root file, which
+turns each target's `require` into `verify-ca` against the wrong CA.

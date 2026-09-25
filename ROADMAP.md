@@ -232,8 +232,10 @@ Close before the repository goes public or before any "try me" artifact ships.
 - [ ] Separate metadata roles: owner / migrator / runtime / audit-writer — the
       runtime role cannot mutate the audit trail; the app does not run
       migrations.
-- [ ] Transport identity: PostgreSQL `verify-full` + per-target CA; SQL Server
-      certificate hostname validation.
+- [x] Transport identity: PostgreSQL `verify-full` + per-target CA; SQL Server
+      certificate hostname validation. Per-host lists
+      (`target_ssl_verify_hosts`); turning it on is a rollout step
+      (docs/OPERATIONS.md §27).
 - [ ] Ship the built frontend as the production artifact; disable the raw
       CDN/prototype fallback unless an explicit dev flag is set.
 

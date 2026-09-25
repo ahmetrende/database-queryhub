@@ -59,6 +59,8 @@ requires the database connection they configure:
 | --- | --- | --- |
 | `QH_DB_POOL_MIN` | `1` | Minimum metadata connections held open. |
 | `QH_DB_POOL_MAX` | `10` | Maximum metadata connections. Raise if web latency climbs while the target databases are idle — that is request threads queueing for a metadata connection. Every web route is synchronous, so uvicorn's threadpool (40 by default) is the upstream ceiling. |
+| `BOT_DB_SSLMODE` | *(unset)* | libpq `sslmode` for the metadata DB and the inventory DB on the same server. Unset keeps libpq's default (`prefer`). `verify-full` needs `BOT_DB_SSLROOTCERT`. |
+| `BOT_DB_SSLROOTCERT` | *(unset)* | CA file for `BOT_DB_SSLMODE`. Do not use libpq's `PGSSLROOTCERT` instead: libpq applies it to target connections too, and a root file turns their `require` into `verify-ca` against the wrong CA. |
 | `QH_WEB_STATIC_DIR` | *(unset)* | Serve the frontend from this directory instead of `QueryHubWeb/app/dist`. |
 | `WEB_BASE_URL` | *(unset)* | Per-process override for `web_base_url`, for a second instance on the same database. |
 | `LOG_LEVEL` | `INFO` | Root log level. Read once at process start — a change needs a restart. |
@@ -171,13 +173,33 @@ target (`target_servers.replica_of`); see OPERATIONS.md, "Read replicas".
 | `replica_health_ttl_seconds` | `15` | How long one health check of a replica is trusted, per process. |
 | `replica_read_your_writes_minutes` | `5` | After a requester's own RW/DDL request on a target, their reads there stay on the primary this long. `0` = off. |
 
+## Target TLS
+
+Whether a connection to a target checks the server's certificate. The two host
+lists take globs, comma or space separated, matched without regard to case
+against the host the connection goes to (a read replica's own host when a query
+runs there). A rollout recipe is in [OPERATIONS.md §27](OPERATIONS.md#27-verifying-target-certificates).
+
+| Key | Default | What it does |
+|---|---|---|
+| `target_ssl_mode` | `require` | libpq `sslmode` for PostgreSQL targets that no host list names. `require` encrypts but does not check who answered. `verify-full` checks the certificate against `target_ssl_rootcert`, host name included. |
+| `target_ssl_rootcert` | `""` | CA file on the QueryHub host that verification uses. One file may hold several CAs, one per cloud. Passed only with a verifying mode: libpq would read `require` plus a root file as `verify-ca`. |
+| `target_ssl_verify_hosts` | `""` | Hosts whose connections check the certificate: `verify-full` for PostgreSQL, `TrustServerCertificate=no` for SQL Server. Example: `*.rds.amazonaws.com`. |
+| `target_ssl_verify_exempt_hosts` | `""` | Hosts that never check it, for a server whose certificate cannot be verified. Beats the verify list and a verifying `target_ssl_mode`. |
+
+ClickHouse targets always verify, against the public CA bundle, host name
+included. The settings screen refuses a verifying setting whose CA file is not
+readable on the host, and a `target_ssl_mode` libpq does not know. Each
+process logs one line at startup counting the enabled targets that encrypt
+without a certificate check.
+
 ## SQL Server (MSSQL) targets
 
 | Key | Default | What it does |
 |---|---|---|
 | `mssql_odbc_driver` | `""` | ODBC driver name (e.g. `ODBC Driver 18 for SQL Server`). Required for MSSQL targets. |
 | `mssql_multi_subnet_failover` | `true` | Set `MultiSubnetFailover=yes` on the connection. |
-| `mssql_trust_server_cert` | `false` | Trust a self-signed server certificate. |
+| `mssql_trust_server_cert` | `false` | Trust a self-signed server certificate, for SQL Server targets that neither TLS host list names. |
 
 ---
 

@@ -148,8 +148,9 @@ def create_app() -> FastAPI:
             _b = build_info.build()
             log.info("QueryHub Web API started (base_url=%s, build=%s sha=%s)",
                      base_url(), _b.get("version", "?"), _b.get("sha", "?"))
-            from .. import access
+            from .. import access, targets
             access.warn_if_access_model_v2()
+            targets.log_tls_posture()
         except Exception:
             log.warning("QueryHub Web API started (build/base_url unavailable)",
                         exc_info=True)
