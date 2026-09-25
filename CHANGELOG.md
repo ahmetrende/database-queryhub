@@ -11,6 +11,15 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **The MCP `describe_database` search picks its tables in SQL.** A loose
+  filter read every column of every matching table and kept 25. On the
+  largest catalogue here: 31,412 rows in 124 ms before, 353 in 4 ms now.
+- **An Excel download of a CSV result is converted once.** The workbook is
+  kept beside the result and removed with it.
+- **The container image shows its build.** The build stamp was empty in the
+  image, which has no `.git`. The release stamps the commit and version, and
+  `QH_IMAGE_DIGEST` adds the image digest.
+
 - **Every admin screen stops at 1600 px on a wide monitor,** centred beside
   the nav, and the approval queue's detail pane stops at 1120 px. This
   replaces the Audit log's own 1480 px cap from 1.0.33. Nothing changes below

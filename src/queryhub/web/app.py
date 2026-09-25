@@ -151,8 +151,9 @@ def create_app() -> FastAPI:
         # the service boots.
         try:
             _b = build_info.build()
-            log.info("QueryHub Web API started (base_url=%s, build=%s sha=%s)",
-                     base_url(), _b.get("version", "?"), _b.get("sha", "?"))
+            log.info("QueryHub Web API started (base_url=%s, build=%s sha=%s%s)",
+                     base_url(), _b.get("version", "?"), _b.get("sha", "?"),
+                     f" image={_b['image']}" if _b.get("image") else "")
             from .. import access, targets
             access.warn_if_access_model_v2()
             targets.log_tls_posture()

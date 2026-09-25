@@ -103,7 +103,7 @@ def test_the_web_xlsx_conversion_guards_every_cell_including_the_header():
     guarding an already-guarded cell changes nothing."""
     import inspect
     from queryhub.web import routes_queries
-    src = inspect.getsource(routes_queries.query_result_xlsx)
+    src = inspect.getsource(routes_queries._write_xlsx)
     assert "ws.append([_xlsx_cell(v) for v in rec])" in src
     assert "ws.append(rec)" not in src
     assert executor._xlsx_cell(executor._xlsx_cell("=1+1")) == "'=1+1"

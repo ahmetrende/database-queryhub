@@ -173,6 +173,10 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          # The installed package has no .git, so the build stamp reads these.
+          build-args: |
+            QH_BUILD_SHA=${{ github.sha }}
+            QH_BUILD_VERSION=${{ steps.meta.outputs.version }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}

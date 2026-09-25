@@ -262,7 +262,7 @@ def test_listing_a_database_returns_names_not_every_column():
     src = inspect.getsource(tools.describe_database)
     head = src[:src.index("if not want:")]
     assert "table: str | None = None" in head
-    listing = src[src.index("if not want:"):src.index("rows = db.fetch_all(\n        \"SELECT st.schema_name, st.table_name, st.relkind, \"\n        \"       sc.column_name")]
+    listing = src[src.index("if not want:"):src.index("WITH hit AS (")]
     assert "COUNT(sc.id)" in listing, "the listing counts columns, it does not fetch them"
     assert "sc.column_name" not in listing
 
@@ -276,11 +276,50 @@ def test_both_halves_are_capped_and_say_when_they_truncate():
     assert "Narrow the" in src
 
 
-def test_a_loose_filter_cannot_pull_hundreds_of_tables_in_full():
+def test_a_loose_filter_cannot_pull_hundreds_of_tables_in_full(monkeypatch):
     """`table="a"` matched 2,073 tables on the largest database. Each one
-    carries every column."""
-    src = inspect.getsource(tools.describe_database)
-    assert "len(tables) >= MAX_DETAIL_TABLES" in src
+    carries every column. The cap is in the SQL, so the columns of the tables
+    past it are never read; the count of what matched is a separate query that
+    reads no columns, and only runs when the page is full."""
+    calls = []
+
+    def fetch_all(sql, params=None):
+        calls.append(("all", sql, params))
+        return [{"schema_name": "public", "table_name": f"t{i:03d}", "relkind": "table",
+                 "column_name": "id", "data_type": "bigint", "is_pk": True}
+                for i in range(tools.MAX_DETAIL_TABLES)]
+
+    def fetch_one(sql, params=None):
+        calls.append(("one", sql, params))
+        return {"n": 2073}
+
+    class _T:
+        id, alias = 7, "prod-main"
+    monkeypatch.setattr(tools, "_me", lambda: "U0EXAMPLE001")
+    monkeypatch.setattr(tools, "_target_or_refuse", lambda uid, c: _T())
+    monkeypatch.setattr(tools.db, "fetch_all", fetch_all)
+    monkeypatch.setattr(tools.db, "fetch_one", fetch_one)
+    out = tools.describe_database("prod-main", "app", table="a")
+    kind, sql, params = calls[0]
+    assert "LIMIT %s" in sql and params[-1] == tools.MAX_DETAIL_TABLES
+    assert sql.index("LIMIT %s") < sql.index("JOIN schema_columns sc")
+    assert calls[1][0] == "one" and "sc.column_name" not in calls[1][1]
+    assert len(out["tables"]) == tools.MAX_DETAIL_TABLES
+    assert out["truncated"] and "2073 tables matched" in out["note"]
+
+
+def test_a_short_answer_needs_no_count(monkeypatch):
+    calls = []
+    monkeypatch.setattr(tools, "_me", lambda: "U0EXAMPLE001")
+    monkeypatch.setattr(tools, "_target_or_refuse",
+                        lambda uid, c: type("T", (), {"id": 7, "alias": "prod-main"})())
+    monkeypatch.setattr(tools.db, "fetch_all", lambda sql, params=None: [
+        {"schema_name": "public", "table_name": "users", "relkind": "table",
+         "column_name": c, "data_type": "text", "is_pk": c == "id"} for c in ("email", "id")])
+    monkeypatch.setattr(tools.db, "fetch_one", lambda *a: calls.append(a))
+    out = tools.describe_database("prod-main", "app", table="users")
+    assert calls == [] and out["truncated"] is False
+    assert [c["name"] for c in out["tables"][0]["columns"]] == ["email", "id"]
 
 
 def test_submitting_waits_for_an_auto_approved_result():

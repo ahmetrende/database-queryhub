@@ -63,6 +63,8 @@ requires the database connection they configure:
 | `BOT_DB_SSLMODE` | *(unset)* | libpq `sslmode` for the metadata DB and the inventory DB on the same server. Unset keeps libpq's default (`prefer`). `verify-full` needs `BOT_DB_SSLROOTCERT`. |
 | `BOT_DB_SSLROOTCERT` | *(unset)* | CA file for `BOT_DB_SSLMODE`. Do not use libpq's `PGSSLROOTCERT` instead: libpq applies it to target connections too, and a root file turns their `require` into `verify-ca` against the wrong CA. |
 | `QH_WEB_STATIC_DIR` | *(unset)* | Serve the frontend from this directory instead of `QueryHubWeb/app/dist`. |
+| `QH_BUILD_SHA`, `QH_BUILD_VERSION` | *(unset)* | Build identity for the build stamp when there is no `.git` to ask, as in the container image. The release workflow sets both. |
+| `QH_IMAGE_DIGEST` | *(unset)* | Shown in the build stamp and the startup log line. Set it where the image runs, from `docker inspect`: the image cannot know its own digest. |
 | `WEB_SESSION_SECRET` | *(unset)* | Session signing key. Unset derives one from the master key, which is the right default. An override shorter than 32 bytes stops the web process at startup. |
 | `QH_SECRETS_PLAINTEXT_FALLBACK` | *(unset)* | `1` lets a process start from the plaintext environment when `secrets.enc` exists but cannot be read. Without it that is fatal. For the move to the encrypted file only. |
 | `WEB_BASE_URL` | *(unset)* | Per-process override for `web_base_url`, for a second instance on the same database. |

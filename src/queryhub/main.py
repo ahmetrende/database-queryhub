@@ -32,8 +32,9 @@ def main() -> int:
     try:
         from .web import build_info
         _b = build_info.build()
-        log.info("Starting QueryHub (build %s sha %s)",
-                 _b.get("version", "?"), _b.get("sha", "?"))
+        log.info("Starting QueryHub (build %s sha %s%s)",
+                 _b.get("version", "?"), _b.get("sha", "?"),
+                 f" image {_b['image']}" if _b.get("image") else "")
     except Exception:
         log.info("Starting QueryHub")
 

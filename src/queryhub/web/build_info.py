@@ -100,5 +100,26 @@ def build() -> dict:
     except Exception:
         b = {"version": "", "date": "", "sha": "", "branch": "", "repo": "",
              "dirty": False}
+    if not b["sha"]:
+        b.update(_stamped())
+    # Set by whoever runs the image (`docker inspect` knows it; the image
+    # itself cannot: its digest is computed after it is built).
+    b["image"] = (os.environ.get("QH_IMAGE_DIGEST") or "").strip()
     _bcache["v"], _bcache["t"] = b, now
     return b
+
+
+def _stamped() -> dict:
+    """The identity the image build stamped (Dockerfile, release workflow).
+
+    An installed package has no .git beside it, so in the container image
+    every git call above comes back empty and the stamp read as nothing at
+    all. Only what is set is returned."""
+    out = {}
+    sha = (os.environ.get("QH_BUILD_SHA") or "").strip()
+    if sha:
+        out["sha"] = sha[:7]
+    version = (os.environ.get("QH_BUILD_VERSION") or "").strip()
+    if version:
+        out["version"] = version if version.startswith("v") else "v" + version
+    return out

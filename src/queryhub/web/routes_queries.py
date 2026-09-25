@@ -10,6 +10,7 @@ raw PII never reaches the browser.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import csv
 import io
 import json
@@ -1418,6 +1419,56 @@ def query_result_xlsx(request_id: int, statement: int | None = None,
     if p.suffix.lower() not in (".csv", ".zip"):
         raise deps._error(409, "conflict",
                           "Stored result can't be exported as Excel — download it directly.")
+    name = f"queryhub_result_{request_id}.xlsx"
+    cached = _xlsx_cache_path(p, statement or 1)
+    if _xlsx_cache_fresh(cached, p):
+        return FileResponse(cached, media_type=xlsx_media, filename=name)
+    try:
+        # Built beside the result, then renamed into place, so two downloads
+        # at once never serve a half-written file.
+        fd, tmp_path = tempfile.mkstemp(dir=p.parent, prefix=f".{cached.stem}.",
+                                        suffix=".xlsx")
+        os.close(fd)
+    except OSError:
+        fd, tmp_path = tempfile.mkstemp(prefix=f"qhx_{request_id}_", suffix=".xlsx")
+        os.close(fd)
+        _write_xlsx(p, statement or 1, tmp_path)
+        # No room beside the result: stream a temp file and delete it after.
+        return FileResponse(tmp_path, media_type=xlsx_media, filename=name,
+                            background=BackgroundTask(os.remove, tmp_path))
+    try:
+        _write_xlsx(p, statement or 1, tmp_path)
+        _stamp_like(tmp_path, p)
+        os.replace(tmp_path, cached)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp_path)
+        raise
+    return FileResponse(cached, media_type=xlsx_media, filename=name)
+
+
+# The conversion is kept for the result's own life. It carries the source's
+# mtime, so `cleanup_old_results.py`, which reaps .xlsx files by mtime, removes
+# it together with the CSV it came from, and a stale one can be told apart
+# from a current one. It sits in the results directory with the CSV, under the
+# same 0600 permissions (mkstemp), and holds nothing the CSV does not.
+def _xlsx_cache_path(p: Path, statement: int) -> Path:
+    return p.with_name(f"{p.stem}.s{int(statement)}.xlsx")
+
+
+def _xlsx_cache_fresh(cached: Path, source: Path) -> bool:
+    try:
+        return int(cached.stat().st_mtime) == int(source.stat().st_mtime)
+    except OSError:
+        return False
+
+
+def _stamp_like(path: str, source: Path) -> None:
+    st = source.stat()
+    os.utime(path, (st.st_atime, st.st_mtime))
+
+
+def _write_xlsx(p: Path, statement: int, out_path: str) -> None:
     from openpyxl import Workbook
     csv.field_size_limit(cfg.get_int("csv_size_mb_ceiling", 100) * 1024 * 1024)
     wb = Workbook(write_only=True)
@@ -1426,16 +1477,10 @@ def query_result_xlsx(request_id: int, statement: int | None = None,
     # were guarded when the CSV was written; the header was not before
     # 2026-09-24, and a file written then is still served from here.
     from ..executor import _xlsx_cell
-    with _open_statement(p, statement or 1) as fh:
+    with _open_statement(p, statement) as fh:
         for rec in csv.reader(fh):
             ws.append([_xlsx_cell(v) for v in rec])
-    fd, tmp_path = tempfile.mkstemp(prefix=f"qhx_{request_id}_", suffix=".xlsx")
-    os.close(fd)
-    wb.save(tmp_path)
-    # Stream the temp file, then delete it once the response is sent.
-    return FileResponse(tmp_path, media_type=xlsx_media,
-                        filename=f"queryhub_result_{request_id}.xlsx",
-                        background=BackgroundTask(os.remove, tmp_path))
+    wb.save(out_path)
 
 
 # ---- /scheduled (real scheduled queries, from `requests`) --------------------

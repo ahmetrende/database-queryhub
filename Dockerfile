@@ -70,6 +70,15 @@ ENV PYTHONUNBUFFERED=1 \
     QH_RESULTS_DIR=/var/lib/queryhub/results \
     QH_WEB_STATIC_DIR=/app/QueryHubWeb/app/dist
 
+# Build identity for the build stamp, since the installed package has no .git
+# to ask (web/build_info.py). Late on purpose: a new value rebuilds nothing
+# above this line. The image digest cannot be known here; set QH_IMAGE_DIGEST
+# when running the image to show it too.
+ARG QH_BUILD_SHA=""
+ARG QH_BUILD_VERSION=""
+ENV QH_BUILD_SHA=${QH_BUILD_SHA} \
+    QH_BUILD_VERSION=${QH_BUILD_VERSION}
+
 EXPOSE 8080
 # The image has a health endpoint, so use it rather than guessing at readiness.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=40s --retries=6 \

@@ -175,15 +175,25 @@ def describe_database(connection: str, database: str,
                      "Pass `table` with part of a name to see its columns."),
         }
 
+    # The tables are chosen in SQL, capped, and only their columns are read. A
+    # loose filter (`table="a"`) matched 2,073 tables on the largest database,
+    # and every column of every one of them used to come back here to be
+    # dropped. A table with no catalogued column is not a match, as before.
+    like = f"%{want}%"
     rows = db.fetch_all(
-        "SELECT st.schema_name, st.table_name, st.relkind, "
+        "WITH hit AS ("
+        "  SELECT st.id, st.schema_name, st.table_name, st.relkind "
+        "    FROM schema_tables st "
+        "   WHERE st.target_server_id = %s AND st.database_name = %s "
+        "     AND lower(st.table_name) LIKE %s "
+        "     AND EXISTS (SELECT 1 FROM schema_columns x WHERE x.table_id = st.id) "
+        "   ORDER BY st.schema_name, st.table_name "
+        "   LIMIT %s) "
+        "SELECT h.schema_name, h.table_name, h.relkind, "
         "       sc.column_name, sc.data_type, sc.is_pk "
-        "  FROM schema_tables st "
-        "  JOIN schema_columns sc ON sc.table_id = st.id "
-        " WHERE st.target_server_id = %s AND st.database_name = %s "
-        "   AND lower(st.table_name) LIKE %s "
-        " ORDER BY st.schema_name, st.table_name, sc.column_name",
-        (t.id, database, f"%{want}%"))
+        "  FROM hit h JOIN schema_columns sc ON sc.table_id = h.id "
+        " ORDER BY h.schema_name, h.table_name, sc.column_name",
+        (t.id, database, like, MAX_DETAIL_TABLES))
     if not rows:
         raise ToolError(
             "no_match",
@@ -191,15 +201,21 @@ def describe_database(connection: str, database: str,
             f"'{connection}'. Call this without `table` to see what is there.")
     tables: dict[tuple, dict] = {}
     for r in rows:
-        key = (r["schema_name"], r["table_name"])
-        if key not in tables and len(tables) >= MAX_DETAIL_TABLES:
-            continue          # a loose filter can still match hundreds
-        e = tables.setdefault(key, {"schema": r["schema_name"],
-                                    "table": r["table_name"],
-                                    "kind": r["relkind"], "columns": []})
+        e = tables.setdefault((r["schema_name"], r["table_name"]),
+                              {"schema": r["schema_name"],
+                               "table": r["table_name"],
+                               "kind": r["relkind"], "columns": []})
         e["columns"].append({"name": r["column_name"], "type": r["data_type"],
                              "pk": bool(r["is_pk"])})
-    matched = len({(r["schema_name"], r["table_name"]) for r in rows})
+    matched = len(tables)
+    if matched >= MAX_DETAIL_TABLES:
+        # Only a full page can hide more. Counting reads no columns.
+        matched = db.fetch_one(
+            "SELECT count(*) AS n FROM schema_tables st "
+            " WHERE st.target_server_id = %s AND st.database_name = %s "
+            "   AND lower(st.table_name) LIKE %s "
+            "   AND EXISTS (SELECT 1 FROM schema_columns x WHERE x.table_id = st.id)",
+            (t.id, database, like))["n"]
     return {
         "connection": t.alias, "database": database, "match": table,
         "tables": list(tables.values()),
