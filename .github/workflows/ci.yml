@@ -80,12 +80,14 @@ jobs:
       - name: Coverage gate (access-deciding modules, per-file)
         run: python scripts/check_coverage_floor.py
 
-      # Advisory: surfaced in the log but not blocking. The codebase is
-      # not fully typed, and we don't want a dependency CVE to wedge an
-      # unrelated PR — review these, don't gate on them.
-      - name: Type check (mypy, advisory)
-        continue-on-error: true
-        run: mypy src --ignore-missing-imports
+      # Blocking, against a baseline: the codebase is not fully typed, so
+      # scripts/mypy_baseline.txt lists the errors that exist today and this
+      # step fails only on a NEW one. It runs on one matrix entry because
+      # mypy's output depends on the packages installed, and the baseline is
+      # generated from exactly this install.
+      - name: Type check (mypy, no new errors)
+        if: matrix.python-version == '3.11'
+        run: python scripts/check_mypy_baseline.py
 
       # The package is not the repository: `graft QueryHubWeb` walks the
       # filesystem, so it picks up gitignored directories and follows symlinks.
@@ -97,6 +99,8 @@ jobs:
           pip install build
           python scripts/check_sdist_clean.py
 
+      # Advisory: a dependency CVE should not wedge an unrelated PR. Review
+      # these; don't gate on them.
       - name: Dependency audit (pip-audit, advisory)
         continue-on-error: true
         run: |

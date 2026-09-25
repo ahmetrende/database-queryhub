@@ -50,6 +50,7 @@ import secrets as pysecrets
 import time
 import urllib.parse
 from dataclasses import dataclass
+from typing import Any
 
 import jwt
 
@@ -330,11 +331,11 @@ _RESERVED_IDS = frozenset({"slack", "local"})
 _SAFE_ALGS = ("RS256", "RS384", "RS512", "ES256", "ES384", "PS256")
 
 _DISCOVERY_TTL_SEC = 3600
-_discovery_cache: dict[str, tuple[float, dict]] = {}
+_discovery_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _jwks_clients: dict[str, jwt.PyJWKClient] = {}
 
 
-def _discover(issuer: str) -> dict:
+def _discover(issuer: str) -> dict[str, Any]:
     """The provider's own OIDC discovery document, cached for an hour.
 
     Endpoints come from the issuer rather than from our config so that a
@@ -511,7 +512,7 @@ class OIDCProvider:
 
         return self._identity_from_claims(claims)
 
-    def _identity_from_claims(self, claims: dict) -> Identity:
+    def _identity_from_claims(self, claims: dict[str, Any]) -> Identity:
         """Verified claims -> the principal they are allowed to act as.
 
         Split out from `exchange` because this half is where the security
@@ -577,27 +578,32 @@ def oidc_ids() -> list[str]:
 
 # ---- registry ---------------------------------------------------------------
 
+# What a registry entry can be. A union rather than a common base, because the
+# flows differ: only the OAuth providers have start/exchange, and only `local`
+# has verify. A caller has to know which kind it holds before calling either.
+LoginProvider = SlackOIDC | LocalPassword | OIDCProvider
+
 # The BUILT-IN providers. Kept as a plain dict because it is also the list
 # other modules assert against (every built-in needs an audit label); the
 # operator-configured OIDC providers are merged in below and cannot be
 # enumerated at import time.
-_ALL = {
+_ALL: dict[str, LoginProvider] = {
     SlackOIDC.name: SlackOIDC(),
     LocalPassword.name: LocalPassword(),
 }
 
 
-def _registry() -> dict[str, object]:
-    reg: dict[str, object] = dict(_ALL)
+def _registry() -> dict[str, LoginProvider]:
+    reg: dict[str, LoginProvider] = dict(_ALL)
     reg.update(_configured_oidc())
     return reg
 
 
-def enabled_providers() -> dict[str, object]:
+def enabled_providers() -> dict[str, LoginProvider]:
     return {name: p for name, p in _registry().items() if p.enabled()}
 
 
-def get_provider(name: str):
+def get_provider(name: str) -> LoginProvider | None:
     p = _registry().get(name)
     if p is None or not p.enabled():
         return None

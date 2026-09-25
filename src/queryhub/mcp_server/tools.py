@@ -210,12 +210,13 @@ def describe_database(connection: str, database: str,
     matched = len(tables)
     if matched >= MAX_DETAIL_TABLES:
         # Only a full page can hide more. Counting reads no columns.
-        matched = db.fetch_one(
+        counted = db.fetch_one(
             "SELECT count(*) AS n FROM schema_tables st "
             " WHERE st.target_server_id = %s AND st.database_name = %s "
             "   AND lower(st.table_name) LIKE %s "
             "   AND EXISTS (SELECT 1 FROM schema_columns x WHERE x.table_id = st.id)",
-            (t.id, database, like))["n"]
+            (t.id, database, like))
+        matched = counted["n"] if counted else matched
     return {
         "connection": t.alias, "database": database, "match": table,
         "tables": list(tables.values()),

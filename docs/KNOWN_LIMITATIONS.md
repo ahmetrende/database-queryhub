@@ -45,13 +45,17 @@ forward plan lives in [ROADMAP.md](../ROADMAP.md).
   never run. What is still thin: SQL Server behaviour has no live coverage
   (no CI instance), and `SET`/`search_path`/role semantics are asserted on the
   statements issued rather than on their effect.
-- The codebase is **not fully typed**; `mypy` runs in CI as advisory, not
-  as a blocking gate. The newer modules type clean and the safe/mechanical
+- The codebase is **not fully typed**. `mypy` blocks CI only on errors that
+  are not already in a committed baseline (`scripts/mypy_baseline.txt`), and
+  only the session, login-provider and credential-provider modules are held
+  to `--strict`. The newer modules type clean and the safe/mechanical
   findings are fixed; the residual `mypy` errors are annotation gaps in the
   larger legacy modules (Slack handlers, the metrics/mapping builders,
   the auth-event outbox), where runtime guards already exist but the
-  checker can't narrow them. Adding those annotations is a tracked,
-  low-risk backlog — not a correctness bug.
+  checker can't narrow them. Most of the 242 are annotation gaps, not bugs,
+  but not all: turning the strict flags on for three modules surfaced two
+  real ones (fixed 2026-09-25), and the roughly 100 "may be None" errors have
+  not been audited.
 
 ## Install & packaging
 

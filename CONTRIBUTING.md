@@ -45,6 +45,7 @@ python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev,slack]"
 pytest                       # ~7s, no database needed
 ruff check src tests scripts
+python scripts/check_mypy_baseline.py   # fails on NEW mypy errors only
 ```
 
 The suite is hermetic by construction: a unit test that reaches for a real

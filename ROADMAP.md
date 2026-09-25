@@ -96,7 +96,8 @@ Honest caveats to close:
 
 - Result **delivery** and the result **path** are not yet ports.
 - The metadata store is PostgreSQL-specific.
-- Type checking is not yet clean/blocking (`mypy` runs advisory in CI).
+- Type checking is not yet clean: CI blocks only *new* `mypy` errors, measured
+  against a committed baseline.
 - **One process, no HA.** The scheduler and boot recovery run in a single
   process — dispatch is `SKIP LOCKED`-safe but boot recovery is not, so a
   second web replica in the vanilla profile would double-run it. The login

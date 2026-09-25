@@ -54,6 +54,12 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Fixed
 
+- **`/api/auth/local/start` answers 404, not 500.** The password provider has
+  no redirect leg, and the redirect routes called it anyway.
+- **An AWS secret that is JSON but not an object fails with a clear error.**
+  A string, a list or `null` got past the parse and failed later as an
+  `AttributeError`, after being cached for the TTL.
+
 - **An all-RO batch reaches the pod captain, as a single RO request does.**
   The batch DM went to admins alone, and its bulk buttons were admin-only.
   A scoped approver now gets the batch when they can approve every item,

@@ -177,12 +177,24 @@ async def auth_local_login(request: Request):
     _set_session_cookies(resp, access, refresh)
     return resp
 
-@router.get("/{provider}/start")
-def auth_start(provider: str):
+def _redirect_provider(
+        provider: str) -> auth_providers.SlackOIDC | auth_providers.OIDCProvider:
+    """An enabled provider that signs in by redirect, or 404.
+
+    `local` is enabled too but has no start or exchange: its sign-in is a
+    password POST. Reaching these routes with it raised AttributeError, which
+    the catch-all turned into a 500. Found by the strict type check."""
     p = auth_providers.get_provider(provider)
-    if p is None:
+    if (p is None or isinstance(p, auth_providers.LocalPassword)
+            or getattr(p, "kind", None) != "oauth"):
         raise deps._error(404, "not_found",
                           f"Login provider '{provider}' is not enabled.")
+    return p
+
+
+@router.get("/{provider}/start")
+def auth_start(provider: str):
+    p = _redirect_provider(provider)
     redirect_uri = f"{base_url()}/api/auth/{provider}/callback"
     state = auth_providers.make_state()
     try:
@@ -203,10 +215,7 @@ def auth_start(provider: str):
 @router.get("/{provider}/callback")
 def auth_callback(provider: str, request: Request,
                   code: str = "", state: str = ""):
-    p = auth_providers.get_provider(provider)
-    if p is None:
-        raise deps._error(404, "not_found",
-                          f"Login provider '{provider}' is not enabled.")
+    p = _redirect_provider(provider)
     cookie_state = request.cookies.get(OAUTH_STATE_COOKIE)
     state_ok = bool(code and state and cookie_state
                     and hmac.compare_digest(cookie_state, state)

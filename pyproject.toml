@@ -77,7 +77,12 @@ dev = [
     # deterministic here; adopting 0.16's rules is a separate, deliberate
     # cleanup.
     "ruff>=0.6,<0.17",
-    "mypy>=1.10",
+    # Pinned EXACTLY: CI compares mypy's output against a committed baseline
+    # (scripts/mypy_baseline.txt), and a new mypy release rewords messages and
+    # adds checks, so an unpinned install would fail the gate on code nobody
+    # touched. Bump it deliberately, with `check_mypy_baseline.py --update` in
+    # the same commit.
+    "mypy==2.3.1",
 ]
 # Slack transport (the /sql bot + Slack approval/notification/delivery
 # adapters). Optional: the base install runs the "vanilla" profile —
@@ -153,7 +158,40 @@ lint.select = ["E4", "E7", "E9", "F"]
 lint.ignore = ["E402", "E701", "E702", "F541"]
 
 [tool.mypy]
-# Advisory in CI (not blocking) — the codebase is not fully typed yet.
+# Blocking in CI against a baseline: the codebase is not fully typed, so
+# scripts/check_mypy_baseline.py fails on NEW errors only. The baseline is
+# produced under this config; change a setting here and regenerate it.
 python_version = "3.11"
 ignore_missing_imports = true
 warn_unused_ignores = true
+# The one --strict flag mypy accepts only globally, so it cannot go in the
+# override below. Turning it on for everything changed nothing (no cast() in
+# src/).
+warn_redundant_casts = true
+
+# Web sessions, the login providers and target-credential lookup decide who a
+# caller is and which database login it gets. They are held to --strict, so a
+# regression in them fails the gate instead of joining the baseline.
+#
+# The flags are spelled out because `strict = true` cannot be scoped: mypy
+# accepts it in an override without complaint and applies it to EVERY module
+# (measured with mypy 2.3.1: 242 errors became 1680). This is the --strict list
+# `mypy --help` prints for the pinned version; recheck it when bumping mypy.
+[[tool.mypy.overrides]]
+module = [
+    "queryhub.web.sessions",
+    "queryhub.web.auth_providers",
+    "queryhub.secrets_providers",
+]
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+warn_unused_ignores = true
+warn_return_any = true
+implicit_reexport = false
+strict_equality = true
+extra_checks = true

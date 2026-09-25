@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Protocol
+from typing import Any, Protocol
 
 from .crypto import decrypt
 
@@ -37,7 +37,7 @@ class SecretsProviderError(RuntimeError):
 class SecretsProvider(Protocol):
     name: str
 
-    def get_credentials(self, row: dict, mode: str) -> tuple[str, str]:
+    def get_credentials(self, row: dict[str, Any], mode: str) -> tuple[str, str]:
         """Return ``(username, plaintext_password)`` for ``mode`` on the target
         described by ``row`` (a ``target_servers`` row as a dict). Raise
         ``LookupError`` if this target/tier has no credentials configured."""
@@ -54,7 +54,7 @@ class LocalVaultProvider:
         "ddl": ("username_ddl", "password_ddl_encrypted"),
     }
 
-    def get_credentials(self, row: dict, mode: str) -> tuple[str, str]:
+    def get_credentials(self, row: dict[str, Any], mode: str) -> tuple[str, str]:
         ucol, pcol = self._COLS[mode]
         username, ciphertext = row.get(ucol), row.get(pcol)
         if not username or not ciphertext:
@@ -86,13 +86,13 @@ class AwsSecretsManagerProvider:
         # Keyed by (region, secret id). A short secret NAME is per region, so
         # the same name in two regions is two secrets: keyed by the name alone,
         # the second target was handed the first region's credentials.
-        self._cache: dict[tuple[str, str], tuple[float, dict]] = {}
+        self._cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 
     def _cache_ttl(self) -> float:
         from . import config as cfg
         return float(cfg.get_int("awssm_cache_ttl_seconds", 60))
 
-    def _fetch(self, secret_id: str, region: str | None) -> dict:
+    def _fetch(self, secret_id: str, region: str | None) -> dict[str, Any]:
         now = time.monotonic()
         ttl = self._cache_ttl()
         key = (region or "", secret_id)
@@ -118,11 +118,18 @@ class AwsSecretsManagerProvider:
             raise SecretsProviderError(
                 f"secret {secret_id} is not the expected JSON {{tier: {{username, password}}}}"
             ) from e
+        # Valid JSON is not yet the right shape. A string, a list or null got
+        # past the parse and failed later in get_credentials as an
+        # AttributeError, after being cached for the TTL. Found by the strict
+        # type check.
+        if not isinstance(data, dict):
+            raise SecretsProviderError(
+                f"secret {secret_id} is JSON but not an object {{tier: {{username, password}}}}")
         if ttl > 0:
             self._cache[key] = (now + ttl, data)
         return data
 
-    def get_credentials(self, row: dict, mode: str) -> tuple[str, str]:
+    def get_credentials(self, row: dict[str, Any], mode: str) -> tuple[str, str]:
         ref = row.get("secrets_ref") or {}
         if isinstance(ref, str):
             try:
@@ -136,6 +143,9 @@ class AwsSecretsManagerProvider:
             )
         data = self._fetch(secret_id, ref.get("region"))
         tier = data.get(mode) or {}
+        if not isinstance(tier, dict):
+            raise SecretsProviderError(
+                f"awssm secret {secret_id}: {mode} is not an object {{username, password}}")
         username, password = tier.get("username"), tier.get("password")
         if not username or not password:
             raise LookupError(
@@ -151,7 +161,7 @@ _REGISTRY: dict[str, SecretsProvider] = {
 }
 
 
-def resolve_credentials(row: dict, mode: str) -> tuple[str, str]:
+def resolve_credentials(row: dict[str, Any], mode: str) -> tuple[str, str]:
     """Dispatch to the target's configured secrets provider. ``row`` is a
     ``target_servers`` row (dict) that must include ``secrets_provider`` and
     ``secrets_ref`` plus whatever columns the provider needs."""

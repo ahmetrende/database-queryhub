@@ -22,6 +22,7 @@ import logging
 import os
 import secrets as pysecrets
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import jwt
 
@@ -110,7 +111,7 @@ def _refresh_grace_seconds() -> int:
 
 # ---- access JWT ------------------------------------------------------------
 
-def mint_access(identity: dict, session_id: int) -> str:
+def mint_access(identity: dict[str, Any], session_id: int) -> str:
     """identity: {slack_user_id, name, email, provider, avatar}."""
     now = datetime.now(timezone.utc)
     return jwt.encode(
@@ -129,7 +130,7 @@ def mint_access(identity: dict, session_id: int) -> str:
     )
 
 
-def verify_access(token: str) -> dict | None:
+def verify_access(token: str) -> dict[str, Any] | None:
     """Signature + exp only — the caller does the revocation lookup."""
     try:
         return jwt.decode(token, _signing_secret(), algorithms=[_ALG])
@@ -192,7 +193,7 @@ def session_alive(session_id: int, principal_id: str | None = None) -> bool:
     return row is not None
 
 
-def rotate_refresh(refresh_token: str) -> dict | None:
+def rotate_refresh(refresh_token: str) -> dict[str, Any] | None:
     """Validate + rotate a refresh token. Single-use with reuse detection.
 
     Returns:
@@ -274,7 +275,9 @@ def revoke_by_refresh(refresh_token: str, reason: str) -> bool:
             "WHERE refresh_hash = %s AND revoked_at IS NULL",
             (reason, _hash(refresh_token)),
         )
-        return cur.rowcount > 0
+        # db.transaction() yields an untyped cursor; rowcount is an int.
+        revoked: int = cur.rowcount
+        return revoked > 0
 
 
 def revoke_session(session_id: int, reason: str) -> None:
@@ -293,4 +296,5 @@ def revoke_user(principal_id: str, reason: str) -> int:
             "WHERE slack_user_id = %s AND revoked_at IS NULL",
             (reason, principal_id),
         )
-        return cur.rowcount
+        revoked: int = cur.rowcount
+        return revoked
