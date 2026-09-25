@@ -40,6 +40,7 @@ self-contained — read what you need, skip the rest.
 25. [Super-admin elevation on a target](#25-super-admin-elevation-on-a-target)
 26. [Read replicas](#26-read-replicas)
 27. [Verifying target certificates](#27-verifying-target-certificates)
+28. [Splitting the metadata database roles](#28-splitting-the-metadata-database-roles)
 
 ---
 
@@ -1869,3 +1870,100 @@ change there needs a restart of both services, and a wrong value stops both,
 so measure it with the command above first. Do not set libpq's `PGSSLROOTCERT`
 instead: libpq applies it to every connection that names no root file, which
 turns each target's `require` into `verify-ca` against the wrong CA.
+
+## 28. Splitting the metadata database roles
+
+One login owns the metadata database and everything in it, and both services
+and the scheduled jobs connect with it. Owning `audit_log` means UPDATE, DELETE
+and TRUNCATE on it, whatever the code does, so a leaked runtime credential
+could rewrite the audit trail. The split takes that away without changing the
+services' configuration: the runtime keeps its login and password.
+
+| Role | Login | Holds |
+|---|---|---|
+| owner (e.g. `queryhub_owner`) | no | the database and every object in `public` |
+| migrator (e.g. `queryhub_migrator`) | yes | membership in owner; used only by `scripts/apply_migrations.py` |
+| runtime (`BOT_DB_USER`, unchanged) | yes | DML on tables, SELECT on views, USAGE on sequences, CONNECT and TEMPORARY on the database; SELECT and INSERT only on `audit_log`; nothing on `schema_migrations` |
+
+Code: `src/queryhub/metadata_roles.py` (the policy),
+`scripts/split_metadata_roles.py` (the change). CI runs the whole integration
+suite a second time as a split runtime, so a code path that needs more than
+DML fails there first.
+
+What the runtime needs, and why each piece is there:
+- **TEMPORARY on the database.** The access-model mirror trigger (migration
+  109) creates a temporary table on every write to the legacy access tables,
+  including the profile refresh on each `/sql` submission.
+- **SELECT only on views.** A simple view such as `audit_log_reportable` is
+  auto-updatable, and an UPDATE through it is checked against the view's owner.
+  A blanket grant on all tables includes views and would leave the audit rows
+  editable one step removed.
+- **INSERT and USAGE on `audit_log`'s sequence.** The `bot_config` audit
+  trigger (migration 066) writes it as the invoker.
+
+**1. Look at the plan.** Read-only, and it locks nothing:
+
+```bash
+PGPASSWORD=... python scripts/split_metadata_roles.py --owner queryhub_owner --admin-user <admin login>
+```
+
+The admin login is the database's administrative user (the RDS master), not
+the runtime: the runtime is the role losing privileges and cannot hand them
+over.
+
+**2. Create the two roles**, as that admin login. The migrator's password is
+yours to choose and never passes through the script:
+
+```sql
+CREATE ROLE queryhub_owner NOLOGIN;
+CREATE ROLE queryhub_migrator LOGIN IN ROLE queryhub_owner;
+\password queryhub_migrator
+-- ALTER ... OWNER needs the admin login to be able to SET ROLE to both:
+GRANT queryhub_owner TO <admin login>;
+GRANT <runtime login> TO <admin login>;
+```
+
+Put the migrator's login in its own file, readable by the operator only, and
+never in the services' environment:
+
+```bash
+# /etc/queryhub/migrator.env, mode 0600
+BOT_DB_MIGRATOR_USER=queryhub_migrator
+BOT_DB_MIGRATOR_PASSWORD=...
+BOT_DB_OWNER_ROLE=queryhub_owner
+```
+
+**3. Rehearse.** `--rehearse` runs everything in one transaction, checks it,
+and rolls back. It takes an ACCESS EXCLUSIVE lock on every table for the
+second or two it runs, so do it at a quiet moment, or on a restored copy.
+
+**4. Apply.** `--apply` runs the same transaction and commits it only if the
+checks pass: nothing left owned by the runtime, INSERT but no UPDATE, DELETE
+or TRUNCATE on `audit_log`, UPDATE still on `requests`, TEMPORARY held, no
+CREATE on `public`, no view writable. A table another session is using makes it
+give up after 3 seconds; run it again. No restart is needed.
+
+**5. Check the live paths** once: a `/sql` read, a web submit, an admin
+button. Each exercises a trigger.
+
+**6. Migrations from now on** run as the migrator:
+
+```bash
+set -a; . /etc/queryhub/migrator.env; set +a
+python scripts/apply_migrations.py
+```
+
+Without those variables the runner says the ledger is unreadable and stops.
+After the last file it re-applies the runtime's grants, so a new table gets DML
+and a new view SELECT only. The container entrypoint unsets the three
+variables after migrating; a separate one-off migration container keeps them
+out of the service container altogether.
+
+**Undo:** `--rollback --apply` gives everything back to the runtime login, the
+state before the split.
+
+Not done by the split, still open (SEC-AUDIT): a hash chain over `audit_log`
+with an anchor outside the database, and `audit_log.request_id`'s `ON DELETE
+SET NULL`, which lets a DELETE on `requests` rewrite audit rows through the
+foreign key. No runtime path deletes an audited request today: drafts, the
+only requests the runtime deletes, have no audit rows.

@@ -230,9 +230,10 @@ Close before the repository goes public or before any "try me" artifact ships.
 - [ ] Trusted-proxy-aware client IP for audit (don't trust a raw forwarded
       header). *(Applies directly to direct-IP deployments.)*
 - [x] Session-secret minimum length / entropy check.
-- [ ] Separate metadata roles: owner / migrator / runtime / audit-writer — the
+- [x] Separate metadata roles: owner / migrator / runtime / audit-writer — the
       runtime role cannot mutate the audit trail; the app does not run
-      migrations.
+      migrations. `scripts/split_metadata_roles.py`, exercised in CI
+      (docs/OPERATIONS.md §28).
 - [x] Transport identity: PostgreSQL `verify-full` + per-target CA; SQL Server
       certificate hostname validation. Per-host lists
       (`target_ssl_verify_hosts`); turning it on is a rollout step

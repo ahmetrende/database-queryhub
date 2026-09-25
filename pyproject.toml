@@ -133,6 +133,7 @@ testpaths = ["tests"]
 addopts = "-q --strict-markers"
 markers = [
     "integration: needs a real control database (set QH_RUN_INTEGRATION=1)",
+    "split_roles: needs the metadata roles split (BOT_DB_MIGRATOR_USER set); the second pass of CI's integration job",
 ]
 
 [tool.ruff]

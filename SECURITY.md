@@ -80,6 +80,6 @@ pages and are not enforceable from within the codebase.
 
 QueryHub's defenses are open source by design — security comes from
 correctness and defense-in-depth (two-pass SQL analysis, tier-matched
-credentials, per-value PII masking, immutable audit), not from secrecy. Specific
+credentials, per-value PII masking, an attributed audit trail), not from secrecy. Specific
 *unfixed* weaknesses are handled privately with the reporter until a fix ships;
 they are never published as a how-to.

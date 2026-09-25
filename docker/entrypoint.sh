@@ -42,6 +42,11 @@ done
 
 echo "queryhub: applying migrations"
 python scripts/apply_migrations.py
+# With split metadata roles the migrations ran as the migrator
+# (BOT_DB_MIGRATOR_*). The service must not hold that login, so it leaves the
+# environment here, before anything else runs. Running migrations as a separate
+# one-off container keeps it out of this one altogether, which is better still.
+unset BOT_DB_MIGRATOR_USER BOT_DB_MIGRATOR_PASSWORD BOT_DB_OWNER_ROLE
 
 if [ "${QH_DEMO:-}" = "1" ]; then
     echo "queryhub: seeding demo data"

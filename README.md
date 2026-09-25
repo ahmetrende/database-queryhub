@@ -180,7 +180,7 @@ no real connection, person or query appears in any of them.
 
 <p align="center">
   <img src="docs/screenshots/web/audit.png" alt="QueryHub web — audit log" width="820"><br>
-  <em>Every decision, attributed and immutable — approvals, rejections,
+  <em>Every decision, attributed and recorded — approvals, rejections,
   auto-approvals, grant changes, and queries the safety pass refused.</em>
 </p>
 

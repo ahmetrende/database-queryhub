@@ -78,6 +78,14 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Security
 
+- **The metadata database's roles can be split, so the service cannot edit
+  the audit trail.** `scripts/split_metadata_roles.py` moves every object to a
+  NOLOGIN owner and leaves the runtime login DML on tables, SELECT on views
+  and only SELECT/INSERT on `audit_log`. Migrations then run as a migrator
+  (`BOT_DB_MIGRATOR_USER`, `BOT_DB_MIGRATOR_PASSWORD`, `BOT_DB_OWNER_ROLE`),
+  which re-applies the runtime's grants after each run. Plan, rehearse, apply
+  and rollback modes; the runbook is docs/OPERATIONS.md §28. CI runs the
+  integration suite a second time as a split runtime.
 - **The container image installs a hash-locked dependency set.**
   `docker/requirements.lock` pins every package the image installs, with the
   hashes of its files; the build backend is in it too. Two builds of one

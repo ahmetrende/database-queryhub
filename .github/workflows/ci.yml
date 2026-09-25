@@ -169,9 +169,56 @@ jobs:
         # which is how they came to never run in the first place.
         run: |
           set -o pipefail
-          pytest -m integration -rs | tee /tmp/integration.log
+          pytest -m "integration and not split_roles" -rs | tee /tmp/integration.log
           if grep -q "skipped" /tmp/integration.log; then
             echo "::error::integration tests skipped — they must run in this job"
+            exit 1
+          fi
+
+      # Second pass, with the metadata roles split the way a hardened install
+      # runs them (scripts/split_metadata_roles.py, docs/OPERATIONS.md §28): a
+      # NOLOGIN owner, a migrator, and a runtime login with DML on tables,
+      # SELECT on views and only SELECT/INSERT on audit_log. The whole
+      # integration suite runs again as that runtime, so a code path that needs
+      # more than DML fails here, not after an operator has split a live
+      # database.
+      - name: Split the metadata roles
+        env:
+          BOT_DB_HOST: localhost
+          BOT_DB_PORT: "5432"
+          BOT_DB_NAME: queryhub_test
+          BOT_DB_USER: postgres
+          BOT_DB_PASSWORD: postgres
+          MASTER_KEY_PATH: /tmp/ci-master.key
+          PGPASSWORD: postgres
+        run: |
+          python - <<'EOF'
+          import psycopg
+          with psycopg.connect("host=localhost dbname=queryhub_test user=postgres "
+                               "password=postgres", autocommit=True) as c:
+              c.execute("CREATE ROLE qh_runtime LOGIN PASSWORD 'runtime'")
+              c.execute("CREATE ROLE qh_owner NOLOGIN")
+              c.execute("CREATE ROLE qh_migrator LOGIN PASSWORD 'migrator' IN ROLE qh_owner")
+          EOF
+          python scripts/split_metadata_roles.py --owner qh_owner --runtime qh_runtime \
+            --current-owner postgres --admin-user postgres --apply
+      - name: Integration tests as the split runtime
+        env:
+          QH_RUN_INTEGRATION: "1"
+          BOT_DB_HOST: localhost
+          BOT_DB_PORT: "5432"
+          BOT_DB_NAME: queryhub_test
+          BOT_DB_USER: qh_runtime
+          BOT_DB_PASSWORD: runtime
+          BOT_DB_MIGRATOR_USER: qh_migrator
+          BOT_DB_MIGRATOR_PASSWORD: migrator
+          BOT_DB_OWNER_ROLE: qh_owner
+          MASTER_KEY_PATH: /tmp/ci-master.key
+        run: |
+          set -o pipefail
+          pytest -m integration -rs | tee /tmp/integration-split.log
+          if grep -q "skipped" /tmp/integration-split.log; then
+            echo "::error::integration tests skipped in the split pass"
             exit 1
           fi
 

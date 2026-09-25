@@ -138,12 +138,28 @@ def test_a_cancelled_request_cannot_be_claimed():
         assert cur.rowcount == 0
 
 
+def _ledger(sql):
+    """Read the ledger as whoever may. Once the metadata roles are split the
+    runtime login has no access to it, by design; the migrator reads it."""
+    user = os.environ.get("BOT_DB_MIGRATOR_USER")
+    if not user:
+        return db.fetch_all(sql)
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from queryhub.config import ENV
+    with psycopg.connect(host=ENV.bot_db_host, port=ENV.bot_db_port,
+                         dbname=ENV.bot_db_name, user=user,
+                         password=os.environ.get("BOT_DB_MIGRATOR_PASSWORD", ""),
+                         row_factory=dict_row) as conn:
+        return conn.execute(sql).fetchall()
+
+
 def test_migration_ledger_is_idempotent_and_checksum_guarded():
     """Re-running the migration runner must be a no-op, and a changed file must
     be refused rather than silently re-applied. The ledger is the mechanism, so
     this asserts on the ledger itself."""
-    rows = db.fetch_all("SELECT filename, checksum FROM schema_migrations "
-                        "ORDER BY filename")
+    rows = _ledger("SELECT filename, checksum FROM schema_migrations ORDER BY filename")
     assert rows, "no migrations recorded — the ledger is not being written"
     assert all(r["checksum"] for r in rows), "a migration was recorded without a checksum"
     # Filenames are unique: a second apply of the same file cannot add a row.
@@ -158,7 +174,7 @@ def test_migration_ledger_is_idempotent_and_checksum_guarded():
     assert "Applying" not in second.stdout, \
         "a second run re-applied migrations:\n" + second.stdout[-2000:]
 
-    after = db.fetch_all("SELECT filename FROM schema_migrations")
+    after = _ledger("SELECT filename FROM schema_migrations")
     assert len(after) == len(rows), "the ledger grew on a no-op run"
 
 
