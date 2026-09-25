@@ -78,6 +78,12 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Security
 
+- **The container image installs a hash-locked dependency set.**
+  `docker/requirements.lock` pins every package the image installs, with the
+  hashes of its files; the build backend is in it too. Two builds of one
+  commit used to be able to ship different wheels, and nothing checked what
+  was downloaded. Regenerate it with `scripts/lock_image_deps.sh`. A release
+  now stops on a known vulnerability in that set.
 - **A web write needs Slack to confirm the person, live.** An RW/DDL submit
   without an answer from `users.info` is refused with a 503, and nobody is
   signed out. A sign-in or refresh with no answer passes only if Slack called

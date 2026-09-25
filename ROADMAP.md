@@ -291,7 +291,8 @@ Close before the repository goes public or before any "try me" artifact ships.
       on conflict).
 
 **Supply chain**
-- [ ] Dependency lock / constraints + Dependabot/Renovate (pip, npm, Actions).
+- [x] Dependency lock / constraints + Dependabot/Renovate (pip, npm, Actions).
+      The image installs a hash-locked set; the release audits it.
 - [ ] CodeQL + secret scanning in CI (blocking for release).
 - [ ] SBOM + signed releases + build provenance (SLSA); artifact/container smoke
       test.

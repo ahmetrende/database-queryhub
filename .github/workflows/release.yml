@@ -38,6 +38,16 @@ jobs:
       - name: Tests
         run: pytest
 
+      # Blocking here and advisory in CI. A release must not publish an image
+      # with a known-vulnerable pinned dependency; an upstream advisory should
+      # not fail an unrelated pull request. What ships is the lock, so the lock
+      # is what is audited. Accepting a finding is an `--ignore-vuln <id>` on
+      # this line, with the reason beside it.
+      - name: Dependency audit of the image's locked set (blocking)
+        run: |
+          pip install pip-audit
+          pip-audit -r docker/requirements.lock --no-deps --disable-pip
+
       - name: Source distribution contents
         run: python scripts/check_sdist_clean.py
 

@@ -45,6 +45,14 @@ RUN apt-get update \
 RUN useradd --create-home --uid 10001 queryhub
 WORKDIR /app
 
+# Dependencies first, from the hash lock (scripts/lock_image_deps.sh). Every
+# file is checked against a recorded hash, and two builds of one commit install
+# the same wheels. Resolving the ranges in pyproject.toml at build time gave
+# neither. Its own layer, so a source change does not reinstall them.
+COPY docker/requirements.lock /tmp/requirements.lock
+RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.lock \
+ && rm /tmp/requirements.lock
+
 # THIRD_PARTY_NOTICES.md is in pyproject's license-files. Without it here,
 # setuptools SILENTLY skips it — the build still succeeds and the image ships
 # with no LGPL notice for psycopg, which is precisely the redistribution case
@@ -57,7 +65,9 @@ COPY deploy/ ./deploy/
 COPY QueryHubWeb/ ./QueryHubWeb/
 COPY --from=frontend /build/QueryHubWeb/app/dist ./QueryHubWeb/app/dist
 
-RUN pip install --no-cache-dir . \
+# --no-deps: everything it needs is installed above. --no-build-isolation: the
+# build backend is in the lock too, so the build fetches nothing unlocked.
+RUN pip install --no-cache-dir --no-deps --no-build-isolation . \
  && mkdir -p /var/lib/queryhub /etc/queryhub \
  && chown -R queryhub:queryhub /app /var/lib/queryhub /etc/queryhub
 

@@ -48,6 +48,14 @@ ruff check src tests scripts
 python scripts/check_mypy_baseline.py   # fails on NEW mypy errors only
 ```
 
+**Changing a Python dependency.** The container image installs
+`docker/requirements.lock`, every package pinned with its hashes, not the
+ranges in `pyproject.toml`. After editing a dependency there, run
+`scripts/lock_image_deps.sh` (needs [uv](https://docs.astral.sh/uv/)) and commit
+the lock in the same change; `tests/test_image_dependency_lock.py` fails until
+the two agree. The release workflow audits the lock with `pip-audit` and stops
+on a known vulnerability.
+
 The suite is hermetic by construction: a unit test that reaches for a real
 database connection fails with a named error rather than hanging. If you need a
 real one, mark the test `@pytest.mark.integration` and run with

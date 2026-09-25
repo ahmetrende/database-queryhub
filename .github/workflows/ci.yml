@@ -100,12 +100,14 @@ jobs:
           python scripts/check_sdist_clean.py
 
       # Advisory: a dependency CVE should not wedge an unrelated PR. Review
-      # these; don't gate on them.
+      # these; don't gate on them. The release workflow runs the same audit on
+      # the image's lock and blocks there.
       - name: Dependency audit (pip-audit, advisory)
         continue-on-error: true
         run: |
           pip install pip-audit
           pip-audit
+          pip-audit -r docker/requirements.lock --no-deps --disable-pip
 
   # The real-DB tests have been in the repo behind QH_RUN_INTEGRATION since
   # they were written, and the variable was never set anywhere — so all of them

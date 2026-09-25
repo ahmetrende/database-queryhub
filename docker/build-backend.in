@@ -1,0 +1,4 @@
+# The build backend from pyproject.toml's [build-system], locked with the
+# runtime dependencies so the image's `pip install --no-build-isolation .`
+# fetches nothing that is not in docker/requirements.lock.
+setuptools>=68
