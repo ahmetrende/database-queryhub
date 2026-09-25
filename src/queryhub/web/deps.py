@@ -8,7 +8,7 @@ import logging
 from fastapi import Depends, HTTPException, Request
 from starlette.requests import HTTPConnection
 
-from .. import admins, requesters
+from .. import admins, db, requesters
 from .. import config as cfg
 from . import idp_assertion, sessions
 
@@ -222,24 +222,88 @@ def block_pw_gate(claims: dict = Depends(current_user)) -> None:
     block_if_password_change_required(claims)
 
 
-def slack_employment_ok(principal_id: str) -> bool:
-    """Live users.info — the AUTH.md 'dangerous moment' check. Runs at
-    refresh time and right before RW/DDL submits, independent of which
-    provider did the login. Fail-closed on a definitive bad answer,
-    fail-open on transport errors (Slack hiccups must not brick the app;
-    the short session TTL still bounds the window)."""
+# users.info answers that settle it: the account is gone, or this workspace
+# cannot see it. `users_not_found` is lookupByEmail's spelling; users.info says
+# `user_not_found`, which the old substring test missed. Anything else, such as
+# a timeout, a rate limit or a bad bot token, says nothing about the person.
+_GONE_ERRORS = frozenset({"user_not_found", "users_not_found", "user_not_visible"})
+
+
+def slack_employment(principal_id: str) -> str:
+    """Ask Slack whether `principal_id` still works here: "active", "gone", or
+    "unknown" when Slack could not answer.
+
+    With no Slack workspace configured there is nobody to ask, and the answer
+    is "active": the enabled requester or admin row is the whole check. Every
+    "active" answer is recorded (`slack_liveness`), so a later "unknown" can be
+    judged by how recently Slack last vouched for the person."""
+    if not cfg.ENV.slack_enabled:
+        return "active"
     try:
         from slack_sdk import WebClient
-        info = WebClient(token=cfg.ENV.slack_bot_token).users_info(
+        from slack_sdk.errors import SlackApiError
+    except ImportError:
+        log.error("SLACK_BOT_TOKEN is set but slack_sdk is not installed; "
+                  "employment cannot be checked")
+        return "unknown"
+    try:
+        info = WebClient(token=cfg.ENV.slack_bot_token, timeout=5).users_info(
             user=principal_id)
-        u = info["user"]
-        if u.get("deleted"):
-            return False
-        return True
-    except Exception as e:
-        # users_not_found / user_not_visible = definitive → fail closed.
-        msg = str(e)
-        if "users_not_found" in msg or "user_not_visible" in msg:
-            return False
-        log.warning("users.info transport failure for %s: %s", principal_id, e)
-        return True
+    except SlackApiError as e:
+        code = (getattr(e, "response", None) or {}).get("error")
+        if code in _GONE_ERRORS:
+            return "gone"
+        log.warning("users.info for %s answered %s", principal_id, code)
+        return "unknown"
+    except Exception as e:  # noqa: BLE001 -- transport: nothing about the person
+        log.warning("users.info transport failure for %s: %s", principal_id,
+                    type(e).__name__)
+        return "unknown"
+    if (info.get("user") or {}).get("deleted"):
+        return "gone"
+    try:
+        db.execute(
+            "INSERT INTO slack_liveness (principal_id, active_at) VALUES (%s, NOW()) "
+            "ON CONFLICT (principal_id) DO UPDATE SET active_at = EXCLUDED.active_at",
+            (principal_id,))
+    except Exception:  # noqa: BLE001 -- a bookkeeping write never refuses anyone
+        log.warning("could not record the users.info answer", exc_info=True)
+    return "active"
+
+
+def _vouched_recently(principal_id: str) -> bool:
+    hours = cfg.get_int("web_employment_grace_hours", 2)
+    try:
+        return db.fetch_one(
+            "SELECT 1 AS ok FROM slack_liveness WHERE principal_id = %s "
+            "   AND active_at > NOW() - make_interval(hours => %s)",
+            (principal_id, hours)) is not None
+    except Exception:  # noqa: BLE001
+        log.warning("could not read slack_liveness", exc_info=True)
+        return False
+
+
+def employment_verdict(principal_id: str) -> str:
+    """The AUTH.md 'dangerous moment' check at sign-in and refresh, whichever
+    provider did the login: "active", "gone", or "unconfirmed".
+
+    When Slack cannot answer, the person passes only if Slack called them
+    active within `web_employment_grace_hours`. A transport error used to pass
+    everyone, so during a Slack outage an offboarded person whose rows had not
+    been removed yet kept refreshing, for as long as the outage lasted. A write
+    asks `slack_employment` itself and does not accept an old answer."""
+    state = slack_employment(principal_id)
+    if state == "unknown":
+        return "active" if _vouched_recently(principal_id) else "unconfirmed"
+    return state
+
+
+def employment_checked(claims: dict) -> bool:
+    """True when this session's principal is a Slack person to ask about.
+
+    A `local` account has no Slack identity; its liveness is its own row. Any
+    other provider (Slack, company SSO, the IdP) resolves to a Slack principal,
+    so a test on `provider == "slack"` skipped the check for every sign-in that
+    came through SSO."""
+    provider = claims.get("provider")
+    return bool(provider) and provider != "local"

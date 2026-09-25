@@ -128,6 +128,11 @@ def create_app() -> FastAPI:
         return resp
 
     def _startup() -> None:
+        # A misconfigured signing key is fatal here, before any request: the
+        # degraded start below is for a database outage, not for a setting
+        # that would fail every sign-in.
+        from . import sessions
+        sessions.check_signing_secret()
         try:
             db.init_pool()
         except Exception:

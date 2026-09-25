@@ -20,20 +20,32 @@ def _maybe_load_encrypted_secrets() -> None:
     key and push its contents into os.environ — but only for keys that
     are not already set (so an explicit env var still wins, useful for
     testing). Silent no-op if the file doesn't exist (backward compat
-    with plaintext-env deployments)."""
+    with plaintext-env deployments).
+
+    A file that exists and cannot be read stops the process. It used to log
+    and carry on with the plaintext environment, which starts the service on
+    whatever stale credentials that environment still holds while the
+    operator believes the encrypted store is in use. Set
+    QH_SECRETS_PLAINTEXT_FALLBACK=1 to allow that on purpose, for the move
+    from a plaintext env file to the encrypted one. `manage_env_secrets.py`
+    does not import this module, so the file can still be repaired."""
     from . import secrets_store
     if not secrets_store.exists():
         return
     try:
         secrets = secrets_store.load()
     except Exception as e:
-        # Don't crash startup on a malformed file — log and let env-var
-        # fallback handle missing values (which raises a clear error).
-        logging.getLogger(__name__).error(
-            "Failed to decrypt %s: %s. Falling back to plaintext env.",
-            secrets_store.default_path(), e,
-        )
-        return
+        path = secrets_store.default_path()
+        if os.environ.get("QH_SECRETS_PLAINTEXT_FALLBACK", "").strip().lower() in {
+                "1", "true", "yes", "on"}:
+            logging.getLogger(__name__).error(
+                "Failed to decrypt %s: %s. Falling back to plaintext env "
+                "(QH_SECRETS_PLAINTEXT_FALLBACK is set).", path, e)
+            return
+        raise RuntimeError(
+            f"{path} exists but cannot be read ({type(e).__name__}: {e}). Fix "
+            f"the file or MASTER_KEY_PATH, or set QH_SECRETS_PLAINTEXT_FALLBACK=1 "
+            f"to start from the plaintext environment.") from e
     for k, v in secrets.items():
         if not os.environ.get(k):
             os.environ[k] = v

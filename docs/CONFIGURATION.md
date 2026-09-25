@@ -44,6 +44,7 @@ they are inert in the vanilla (web-only) profile.
 | `web_trusted_proxy_hops` | `1` | How many proxies sit in front, when `web_trusted_proxy` is on. The client address is read that many entries from the **right** of `X-Forwarded-For`, because each proxy appends and only the rightmost entries were written by infrastructure you control. `1` = a single proxy; `2` = proxy behind proxy. |
 | `web_access_token_minutes` | `20` | Lifetime of the short access JWT. |
 | `web_refresh_token_hours` | `12` | Lifetime of the refresh token (the session's outer bound). |
+| `web_employment_grace_hours` | `2` | When Slack cannot answer users.info, a sign-in or refresh still passes if Slack called the person active within this many hours. An RW/DDL submit always needs a live answer. `0` = no grace. |
 | `web_display_timezone` | `UTC` | Zone the UI formats every timestamp in (the DB always stores UTC). |
 | `awssm_cache_ttl_seconds` | `60` | How long a secret fetched from AWS Secrets Manager is held in memory. Longer means fewer API calls; shorter reacts faster to a rotation. Only used when a target's secrets provider is `awssm`. |
 | `web_metrics_enabled` | `off` | Serve `GET /metrics` in Prometheus text format (queue depth and age, request totals, approval/execution time, fleet and grant counts, kill switch, auth-event outbox backlog). While `off` the route answers **404**, not 403 — a 403 confirms the endpoint exists. |
@@ -62,6 +63,8 @@ requires the database connection they configure:
 | `BOT_DB_SSLMODE` | *(unset)* | libpq `sslmode` for the metadata DB and the inventory DB on the same server. Unset keeps libpq's default (`prefer`). `verify-full` needs `BOT_DB_SSLROOTCERT`. |
 | `BOT_DB_SSLROOTCERT` | *(unset)* | CA file for `BOT_DB_SSLMODE`. Do not use libpq's `PGSSLROOTCERT` instead: libpq applies it to target connections too, and a root file turns their `require` into `verify-ca` against the wrong CA. |
 | `QH_WEB_STATIC_DIR` | *(unset)* | Serve the frontend from this directory instead of `QueryHubWeb/app/dist`. |
+| `WEB_SESSION_SECRET` | *(unset)* | Session signing key. Unset derives one from the master key, which is the right default. An override shorter than 32 bytes stops the web process at startup. |
+| `QH_SECRETS_PLAINTEXT_FALLBACK` | *(unset)* | `1` lets a process start from the plaintext environment when `secrets.enc` exists but cannot be read. Without it that is fatal. For the move to the encrypted file only. |
 | `WEB_BASE_URL` | *(unset)* | Per-process override for `web_base_url`, for a second instance on the same database. |
 | `LOG_LEVEL` | `INFO` | Root log level. Read once at process start — a change needs a restart. |
 | `LOG_FORMAT` | `text` | `json` emits one JSON object per line (`timestamp`/`level`/`logger`/`message`, plus any `extra=` fields and a single-line `exception`) for a log pipeline. `text` stays human-readable for `journalctl`. Also read once at start. |

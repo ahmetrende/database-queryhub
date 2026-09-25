@@ -62,12 +62,30 @@ def _next_refresh_token(token: str) -> str:
     return base64.urlsafe_b64encode(mac[:48]).decode("ascii")
 
 
+# HS256 wants a key at least as long as its output (RFC 7518 §3.2).
+MIN_SECRET_BYTES = 32
+
+
 def _signing_secret() -> bytes:
     override = os.environ.get("WEB_SESSION_SECRET")
     if override:
-        return override.encode()
+        key = override.encode()
+        if len(key) < MIN_SECRET_BYTES:
+            # Refused, not warned: a short key signs tokens anyone who guesses
+            # it can mint, and the derived default below needs no setting.
+            raise RuntimeError(
+                f"WEB_SESSION_SECRET is {len(key)} bytes; at least "
+                f"{MIN_SECRET_BYTES} are required. Unset it to derive the key "
+                f"from the master key.")
+        return key
     master = cfg.ENV.master_key_path.read_bytes().strip()
     return hmac.new(master, b"queryhub-web-session-v1", hashlib.sha256).digest()
+
+
+def check_signing_secret() -> None:
+    """Startup check: raise now on a bad WEB_SESSION_SECRET rather than on the
+    first sign-in."""
+    _signing_secret()
 
 
 def access_ttl_minutes() -> int:

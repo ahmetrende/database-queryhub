@@ -1,6 +1,6 @@
 """The offboarding check at LOGIN, not just at refresh.
 
-While Slack was the only redirect provider, `slack_employment_ok` at refresh
+While Slack was the only redirect provider, the employment check at refresh
 was enough: Slack does not authenticate a deactivated account, so the login
 leg could not be the hole. An external SSO removes that guarantee — the
 company IdP can still authenticate someone Slack has deactivated, and the
@@ -55,7 +55,7 @@ def wired(monkeypatch):
 
 
 def test_a_deactivated_account_cannot_sign_in_via_external_sso(wired, monkeypatch):
-    monkeypatch.setattr(deps, "slack_employment_ok", lambda uid: False)
+    monkeypatch.setattr(deps, "employment_verdict", lambda uid: "gone")
     resp = routes_auth.auth_callback("corp", _Resp(wired), code="c", state=wired)
     assert resp.status_code == 302
     assert "auth_error=account_gone" in resp.headers["location"]
@@ -66,8 +66,8 @@ def test_a_deactivated_account_cannot_sign_in_via_external_sso(wired, monkeypatc
 
 def test_an_employed_account_signs_in(wired, monkeypatch):
     called = []
-    monkeypatch.setattr(deps, "slack_employment_ok",
-                        lambda uid: (called.append(uid), True)[1])
+    monkeypatch.setattr(deps, "employment_verdict",
+                        lambda uid: (called.append(uid), "active")[1])
     monkeypatch.setattr(routes_auth.sessions, "create_session",
                         lambda *a, **k: (7, "refresh-tok"))
     monkeypatch.setattr(routes_auth.sessions, "mint_access",
@@ -100,8 +100,8 @@ def test_the_check_is_skipped_for_local_principals(wired, monkeypatch):
     monkeypatch.setattr(auth_providers, "get_provider", lambda n: _Local())
     monkeypatch.setattr(requesters, "is_allowed", lambda p: True)
     asked = []
-    monkeypatch.setattr(deps, "slack_employment_ok",
-                        lambda uid: (asked.append(uid), False)[1])
+    monkeypatch.setattr(deps, "employment_verdict",
+                        lambda uid: (asked.append(uid), "gone")[1])
     monkeypatch.setattr(routes_auth.sessions, "create_session",
                         lambda *a, **k: (7, "refresh-tok"))
     monkeypatch.setattr(routes_auth.sessions, "mint_access",
@@ -110,3 +110,13 @@ def test_the_check_is_skipped_for_local_principals(wired, monkeypatch):
     resp = routes_auth.auth_callback("local", _Resp(wired), code="c", state=wired)
     assert asked == [], "users.info must not be asked about a local principal"
     assert "auth_error" not in resp.headers["location"]
+
+
+def test_slack_unreachable_and_no_recent_answer_refuses_sign_in(wired, monkeypatch):
+    """Not "account gone": nothing is known about the person, so the reason
+    says Slack, and no session is handed out."""
+    monkeypatch.setattr(deps, "employment_verdict", lambda uid: "unconfirmed")
+    resp = routes_auth.auth_callback("corp", _Resp(wired), code="c", state=wired)
+    assert "auth_error=slack_unavailable" in resp.headers["location"]
+    assert not any(deps.SESSION_COOKIE in v
+                   for k, v in resp.raw_headers or [] if k == b"set-cookie")

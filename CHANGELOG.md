@@ -63,6 +63,18 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Security
 
+- **A web write needs Slack to confirm the person, live.** An RW/DDL submit
+  without an answer from `users.info` is refused with a 503, and nobody is
+  signed out. A sign-in or refresh with no answer passes only if Slack called
+  the person active within `web_employment_grace_hours` (default 2). A
+  transport error used to pass everyone. The write check ran for Slack
+  sign-ins only and now covers SSO sessions too, and users.info's
+  `user_not_found` counts as gone (migration 134).
+- **An unreadable `secrets.enc` stops the process.** It used to fall back to
+  the plaintext environment. `QH_SECRETS_PLAINTEXT_FALLBACK=1` allows that on
+  purpose.
+- **A `WEB_SESSION_SECRET` shorter than 32 bytes stops the web process.**
+  Unset, the key is derived from the master key, as before.
 - **Target certificates can be verified one host, or one cloud, at a time.**
   `target_ssl_verify_hosts` switches the listed hosts to `verify-full`
   against `target_ssl_rootcert`; `target_ssl_verify_exempt_hosts` keeps a

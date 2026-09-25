@@ -228,7 +228,7 @@ Close before the repository goes public or before any "try me" artifact ships.
       (CSP, HSTS, frame-ancestors, …); WebSocket origin check.
 - [ ] Trusted-proxy-aware client IP for audit (don't trust a raw forwarded
       header). *(Applies directly to direct-IP deployments.)*
-- [ ] Session-secret minimum length / entropy check.
+- [x] Session-secret minimum length / entropy check.
 - [ ] Separate metadata roles: owner / migrator / runtime / audit-writer — the
       runtime role cannot mutate the audit trail; the app does not run
       migrations.

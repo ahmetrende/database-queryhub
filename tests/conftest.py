@@ -36,6 +36,11 @@ os.close(_key_fd)
 os.chmod(_key_path, 0o600)          # crypto refuses a world-readable key file
 os.environ["MASTER_KEY_PATH"] = _key_path
 
+# Forced for the same reason. The default is the host's real secrets file, which
+# the suite cannot decrypt with the key above, and an unreadable secrets file
+# now stops the process at import (config._maybe_load_encrypted_secrets).
+os.environ["SECRETS_ENC_PATH"] = _key_path + ".absent-secrets.enc"
+
 
 @atexit.register
 def _remove_test_key():

@@ -23,7 +23,7 @@ import pathlib
 import re
 import time
 
-os.environ.setdefault("WEB_SESSION_SECRET", "test-secret-not-for-prod")
+os.environ.setdefault("WEB_SESSION_SECRET", "test-secret-not-for-prod-32-bytes-long")
 
 import jwt  # noqa: E402
 

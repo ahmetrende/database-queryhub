@@ -101,6 +101,24 @@ class BatchIn(BaseModel):
     confirmed: bool = False
 
 
+def _employment_gate(uid: str, what: str) -> None:
+    """Before a write, Slack must say the person still works here, now.
+
+    Gone: every session is revoked. No answer: the write is refused and the
+    sessions stay, since a Slack outage says nothing about the person. Reads
+    still pass on a recent answer (`deps.employment_verdict`); a write does
+    not accept one."""
+    state = deps.slack_employment(uid)
+    if state == "gone":
+        sessions.revoke_user(uid, f"users.info: gone before {what}")
+        raise deps._error(401, "unauthenticated",
+                          "Slack account verification failed.")
+    if state != "active":
+        raise deps._error(503, "server_error",
+                          "Slack could not confirm your account just now, so "
+                          "the write was not sent. Try again in a minute.")
+
+
 def _origin_for(claims: dict) -> str:
     """Which door this request came through, decided here rather than taken
     from the caller.
@@ -262,15 +280,9 @@ def submit_query(body: QueryIn, request: Request,
     if isinstance(prep, core_submit.Rejection):
         _reject(prep)
 
-    # AUTH.md §5 — live employment check at the dangerous moment. Slack-only:
-    # a local account has no external employment system, so its liveness is the
-    # enabled requester/admin row (re-checked at refresh), not users.info.
-    if prep.required_mode in ("rw", "ddl") and claims.get("provider") == "slack":
-        if not deps.slack_employment_ok(uid):
-            from . import sessions
-            sessions.revoke_user(uid, "users.info failed before RW/DDL submit")
-            raise deps._error(401, "unauthenticated",
-                              "Slack account verification failed.")
+    # AUTH.md §5 — live employment check at the dangerous moment.
+    if prep.required_mode in ("rw", "ddl") and deps.employment_checked(claims):
+        _employment_gate(uid, "RW/DDL submit")
 
     outcome = core_submit.create_request(prep, draft_id=body.draftId)
     if isinstance(outcome, core_submit.Rejection):
@@ -529,13 +541,10 @@ def submit_batch(body: BatchIn, request: Request,
                          for r in prep.reasons])
         preps.append(prep)
 
-    # AUTH.md §5 — live employment check if any item is RW/DDL (Slack logins
-    # only; local accounts use the enabled requester/admin row as liveness).
+    # AUTH.md §5 — live employment check if any item is RW/DDL.
     if (any(p.required_mode in ("rw", "ddl") for p in preps)
-            and claims.get("provider") == "slack"):
-        if not deps.slack_employment_ok(uid):
-            sessions.revoke_user(uid, "users.info failed before RW/DDL batch")
-            raise deps._error(401, "unauthenticated", "Slack account verification failed.")
+            and deps.employment_checked(claims)):
+        _employment_gate(uid, "RW/DDL batch")
 
     sched_for = preps[0].sched_for
     # Phase-23 policy: a super-admin's own submissions auto-approve (all tiers).

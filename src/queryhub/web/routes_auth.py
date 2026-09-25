@@ -245,13 +245,19 @@ def auth_callback(provider: str, request: Request,
     # deactivated in Slack, so this is not a hypothetical ordering.
     #
     # `local` is exempt: its principals are `local:<username>` and have no
-    # Slack identity to ask about. The check fails closed only on a definitive
-    # answer, so a Slack outage does not block sign-in.
-    if ident.provider != "local" and not deps.slack_employment_ok(
-            ident.principal_id):
-        log.warning("login rejected (Slack account gone): %s",
-                    ident.principal_id)
-        return RedirectResponse(f"{base_url()}/?auth_error=account_gone", 302)
+    # Slack identity to ask about. When Slack cannot answer, the sign-in
+    # passes only if Slack called the person active recently
+    # (`web_employment_grace_hours`), not on the failure alone.
+    if ident.provider != "local":
+        verdict = deps.employment_verdict(ident.principal_id)
+        if verdict == "gone":
+            log.warning("login rejected (Slack account gone): %s",
+                        ident.principal_id)
+            return RedirectResponse(f"{base_url()}/?auth_error=account_gone", 302)
+        if verdict != "active":
+            log.warning("login rejected (Slack could not confirm the account): %s",
+                        ident.principal_id)
+            return RedirectResponse(f"{base_url()}/?auth_error=slack_unavailable", 302)
 
     sid, refresh = sessions.create_session(
         ident.principal_id, provider=ident.provider,
@@ -345,9 +351,18 @@ def auth_refresh(request: Request):
     # only redirect provider and silently wrong the moment a second one
     # existed: an external SSO login would have skipped the offboarding
     # check entirely and kept refreshing after the person left.
-    if rotated["auth_provider"] != "local" and not deps.slack_employment_ok(uid):
-        sessions.revoke_session(rotated["id"], "users.info: gone at refresh")
-        raise deps._error(401, "unauthenticated", "Slack account gone.")
+    if rotated["auth_provider"] != "local":
+        verdict = deps.employment_verdict(uid)
+        if verdict == "gone":
+            sessions.revoke_session(rotated["id"], "users.info: gone at refresh")
+            raise deps._error(401, "unauthenticated", "Slack account gone.")
+        if verdict != "active":
+            # The rotated token never reaches the browser, and the one it holds
+            # is spent, so the session ends either way. Say why.
+            sessions.revoke_session(rotated["id"], "users.info: unconfirmed at refresh")
+            raise deps._error(401, "unauthenticated",
+                              "Slack could not confirm your account. Sign in "
+                              "again once Slack is reachable.")
     from .. import admins, requesters
     if not (admins.is_admin(uid) or requesters.is_allowed(uid)):
         sessions.revoke_session(rotated["id"], "whitelist lost at refresh")

@@ -200,9 +200,11 @@ token, **that is where the human is re-confirmed** — at most every
 POST /api/auth/refresh:
   1. Validate + rotate the refresh token (reuse of a superseded token =
      suspected theft → the whole session is revoked, force re-login).
-  2. Slack logins only: live users.info — deleted/gone → revoke, 401.
-     (Local accounts have no external employment system; their liveness
-     is the enabled requesters/admins row, re-checked next.)
+  2. Every provider but `local`: live users.info — deleted/gone → revoke,
+     401. No answer from Slack → passes only if Slack called the person
+     active within `web_employment_grace_hours` (default 2); otherwise
+     revoke, 401. (Local accounts have no external employment system; their
+     liveness is the enabled requesters/admins row, re-checked next.)
   3. Re-check the whitelist (enabled requester or admin) — access removed
      → revoke, 401.
   4. Mint a fresh short access token.
@@ -222,15 +224,20 @@ right before an RW/DDL submit** (`routes_queries`):
 ```
 POST /api/queries (and /queries/batch):
   ... grant checks ...
-  if required tier is RW or DDL and provider == "slack":
-      users.info(principal) — deleted/gone → revoke session, 401
+  if required tier is RW or DDL and provider != "local":
+      users.info(principal) — deleted/gone → revoke every session, 401
+                            — no answer    → 503, sessions kept
   ... proceed to classify / submit ...
 ```
 
 Not on every read — that would be slow and rate-limited. Where the blast
-radius is real. Definitive "gone" answers fail closed; transport hiccups
-fail open (the short TTL still bounds the window). Local logins skip the
-Slack lookup — their gate is the whitelist row itself.
+radius is real. A write needs a live "active": an earlier answer does not
+count, and a Slack outage refuses writes until it ends. It used to fail open
+on transport errors, which let an offboarded person keep writing for as long
+as Slack was unreachable. Sign-in and refresh take a recent answer instead
+(§4). Every "active" answer is recorded in `slack_liveness`. `gone` means
+`deleted`, or users.info's `user_not_found` / `user_not_visible`. Local logins
+skip the Slack lookup — their gate is the whitelist row itself.
 
 ---
 

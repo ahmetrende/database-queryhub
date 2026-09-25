@@ -3,7 +3,7 @@ mint/verify, provider registry toggle. No DB, no network."""
 import os
 import time
 
-os.environ.setdefault("WEB_SESSION_SECRET", "test-secret-not-for-prod")
+os.environ.setdefault("WEB_SESSION_SECRET", "test-secret-not-for-prod-32-bytes-long")
 
 import pytest  # noqa: E402
 

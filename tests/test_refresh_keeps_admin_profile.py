@@ -25,7 +25,7 @@ def refresh(monkeypatch):
     monkeypatch.setattr(sessions, "rotate_refresh", lambda tok: {
         "id": 7, "slack_user_id": "U0EXAMPLE001", "auth_provider": "slack",
         "avatar_url": None, "refresh_token": "next"})
-    monkeypatch.setattr(deps, "slack_employment_ok", lambda uid: True)
+    monkeypatch.setattr(deps, "employment_verdict", lambda uid: "active")
     minted = []
     monkeypatch.setattr(sessions, "mint_access",
                         lambda claims, sid: minted.append(claims) or "access")

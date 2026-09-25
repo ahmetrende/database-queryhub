@@ -9,7 +9,7 @@ is supposed to refuse.
 """
 import os
 
-os.environ.setdefault("WEB_SESSION_SECRET", "test-secret-not-for-prod")
+os.environ.setdefault("WEB_SESSION_SECRET", "test-secret-not-for-prod-32-bytes-long")
 
 import base64  # noqa: E402
 import hashlib  # noqa: E402
