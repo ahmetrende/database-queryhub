@@ -179,6 +179,32 @@ _REJECTION_HTTP = {
 }
 
 
+def _record_refusal(claims: dict, mode: str, target_id: int | None,
+                    database: str | None, sql: str | None,
+                    rej: core_submit.Rejection) -> None:
+    """Keep what the web refused in submission_failures, as the Slack modal
+    already does. A web refusal used to leave nothing behind: asked why a
+    ClickHouse script was refused (2026-09-26), the only trace was an empty
+    draft row and a 422 in the access log. A confirmation prompt is not a
+    refusal and is not kept. Best-effort: a logging failure never changes the
+    answer the user gets."""
+    if rej.reason == "needs_confirmation":
+        return
+    try:
+        db.execute(
+            "INSERT INTO submission_failures "
+            "(slack_user_id, slack_user_name, mode, target_server_id, "
+            " database_name, query, errors) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)",
+            (claims.get("sub"), claims.get("name"), mode, target_id, database,
+             # Stored, so masked: a refused role script still carries its password.
+             query_safety.mask_password_literals(sql) if sql else sql,
+             json.dumps({"web": rej.message, "reasons": list(rej.reasons or ())})))
+    except Exception:
+        log.exception("failed to record a web submission refusal for %s",
+                      claims.get("sub"))
+
+
 def _reject(rej: core_submit.Rejection):
     status, code = _REJECTION_HTTP.get(
         rej.reason or rej.field, (422, "validation"))
@@ -279,6 +305,7 @@ def submit_query(body: QueryIn, request: Request,
         unmasked=body.unmasked,
     )
     if isinstance(prep, core_submit.Rejection):
+        _record_refusal(claims, "web", t.id, body.databaseId, body.sql, prep)
         _reject(prep)
 
     # AUTH.md §5 — live employment check at the dangerous moment.
@@ -531,6 +558,7 @@ def submit_batch(body: BatchIn, request: Request,
             origin=_origin_for(claims), client_ip=client_ip, user_agent=user_agent,
             confirmed=body.confirmed)
         if isinstance(prep, core_submit.Rejection):
+            _record_refusal(claims, "web-batch", t.id, it.databaseId, it.sql, prep)
             status, code = _REJECTION_HTTP.get(prep.reason or prep.field, (422, "validation"))
             # Same envelope the single-query path returns, so the client's one
             # 409 decision (`qhConfirmReasons`) covers both. Each reason names

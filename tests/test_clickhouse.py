@@ -62,10 +62,19 @@ def test_table_functions_are_default_deny():
         assert blocked(q), q
 
 
-def test_server_internals_are_refused():
-    assert blocked("SELECT * FROM system.users")
-    assert blocked("SELECT query FROM system.query_log")
-    assert blocked("SELECT * FROM information_schema.tables")
+def test_system_metadata_is_readable():
+    """Operator decision 2026-09-26: `system` and `information_schema` are open.
+    A requester was refused `system.*`, and everyone who reaches these tables
+    here already holds a ClickHouse grant on the server. The other read-only
+    guards still apply to them."""
+    for q in ("SELECT table, sum(bytes_on_disk) FROM system.parts WHERE active GROUP BY table",
+              "SELECT name, type FROM system.columns WHERE database = 'ledger'",
+              "SELECT * FROM system.tables WHERE database = currentDatabase()",
+              "SELECT query FROM system.query_log WHERE event_date = today() LIMIT 10",
+              "SELECT * FROM information_schema.tables"):
+        assert blocked(q) == [], q
+    assert blocked("SELECT * FROM merge('system', '^query_log')")
+    assert blocked("SELECT * FROM system.parts SETTINGS max_threads = 1")
 
 
 def test_the_dictionary_family_is_refused_in_every_typed_form():

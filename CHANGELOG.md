@@ -11,6 +11,14 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **ClickHouse `system` and `information_schema` tables are readable.**
+  Partition sizes, columns, running merges and the query log can be queried
+  on a ClickHouse target a requester holds a grant on; they were refused as
+  server internals. Table functions stay default-deny.
+- **A statement the web refuses is recorded** in `submission_failures`, as
+  the Slack modal's already were, with the SQL (passwords masked) and the
+  reason. A confirmation prompt is not recorded.
+
 - **The MCP `describe_database` search picks its tables in SQL.** A loose
   filter read every column of every matching table and kept 25. On the
   largest catalogue here: 31,412 rows in 124 ms before, 353 in 4 ms now.

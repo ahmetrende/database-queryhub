@@ -338,7 +338,13 @@ CLICKHOUSE = EngineSpec(
     read_only=True,
     blocked_functions=_CLICKHOUSE_BLOCKED,
     table_function_allowlist=_CLICKHOUSE_TABLE_FN_ALLOW,
-    blocked_schemas=frozenset({"system", "information_schema"}),
+    # No schema is off-limits. `system` and `information_schema` hold catalog
+    # metadata a requester needs (table and partition sizes, columns, running
+    # merges), and everyone who can reach them here already holds a ClickHouse
+    # grant on this server; the login QueryHub uses reads all of them anyway
+    # (operator decision, 2026-09-26). Opening them includes system.query_log
+    # and system.processes, which show other sessions' SQL.
+    blocked_schemas=frozenset(),
     supports_explain=False,
     set_local_supported=False,   # readonly=1 refuses every setting
     routines_sql=None,
