@@ -1651,6 +1651,23 @@ one role that makes it possible on a cluster.
 The model is in `docs/SCHEMA.md` → "Super-admin elevation". This section
 is the runbook.
 
+### What a super-admin can do that others cannot
+
+Each of these is refused for everyone else, as before:
+- **End or cancel a session.** `SELECT pg_terminate_backend(pid)` or
+  `pg_cancel_backend(pid)`, alone or over `pg_stat_activity`. It asks first,
+  then runs at the ddl tier, as the elevated role: the read-only login cannot
+  signal another role's backend. On a cluster without the role (no
+  `super_ddl_role`) the DDL login runs it and the server may refuse.
+- **Run a mixed script.** A SELECT, an UPDATE and a SELECT go as one request,
+  at the script's highest tier, in one transaction.
+- **Set `search_path`.** `SET search_path = app, public` before the query,
+  limited to a list of schema names and kept to the one request (SET LOCAL).
+
+Still refused for a super-admin too: logging-setting changes, file reads,
+`dblink`, `pg_reload_conf`, and replication-slot changes (a dropped slot breaks
+the CDC streams that migrations run on).
+
 ### Once per cluster
 
 Run as an operator login that holds the platform's admin role

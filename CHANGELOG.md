@@ -11,6 +11,11 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **A super-admin can end a session, run a mixed script and set
+  `search_path`.** `pg_terminate_backend` / `pg_cancel_backend` ask first and
+  run as the elevated role; a script mixing tiers runs as one request at its
+  highest tier; `SET search_path` takes a list of schema names for the one
+  request. All three stay refused for everyone else. See OPERATIONS.md §25.
 - **ClickHouse `system` and `information_schema` tables are readable.**
   Partition sizes, columns, running merges and the query log can be queried
   on a ClickHouse target a requester holds a grant on; they were refused as

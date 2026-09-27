@@ -139,11 +139,38 @@ def is_enabled(engine: str = "postgres") -> bool:
     return val in {"on", "true", "yes", "1"}
 
 
-def check(sql: str, engine: str = "postgres") -> list[str]:
+# Ending or cancelling a server session: DataGrip's "Terminate", SSMS's "Kill
+# process". Refused like the rest of _DANGEROUS_FUNCS, except for a
+# super-admin (operator request, 2026-09-26), for whom query_safety asks first
+# and runs the statement as the elevated role. The read-only login could not
+# signal another role's backend anyway; pg_signal_backend comes with the
+# elevated role.
+SESSION_CONTROL_FUNCS = frozenset({"pg_terminate_backend", "pg_cancel_backend"})
+
+
+def session_control_calls(sql: str, engine: str = "postgres") -> set[str]:
+    """The session-control functions a statement calls. Empty when it calls
+    none, or when it does not parse (check() refuses that on its own)."""
+    try:
+        statements = sqlglot.parse(sql, read=engines.spec(engine).sqlglot_dialect)
+    except Exception:
+        return set()
+    found: set[str] = set()
+    for stmt in statements:
+        if isinstance(stmt, exp.Expression):
+            found |= _function_names(stmt) & SESSION_CONTROL_FUNCS
+    return found
+
+
+def check(sql: str, engine: str = "postgres", unrestricted: bool = False) -> list[str]:
     """Return a list of human-facing blocker messages for the query.
     Empty list = clean. The caller appends these onto its own
     `report.blockers`. `engine` selects the sqlglot dialect and unions the
-    engine's dangerous-function set onto the Postgres one."""
+    engine's dangerous-function set onto the Postgres one.
+
+    `unrestricted` (the super-admin path) lets SESSION_CONTROL_FUNCS through;
+    query_safety adds the confirmation and the tier. Everything else stays
+    refused, and so does a session function an operator blocks in bot_config."""
     if not is_enabled(engine):
         return []
     sql = (sql or "").strip()
@@ -193,7 +220,11 @@ def check(sql: str, engine: str = "postgres") -> list[str]:
             "stray quotes, unbalanced parentheses, or non-standard syntax."
         ]
 
-    blocked_funcs = _DANGEROUS_FUNCS | spec.blocked_functions | _config_blocked(engine)
+    # PostgreSQL only: query_safety routes the call to the elevated role there,
+    # and on another engine the name is not a session control at all.
+    builtin = (_DANGEROUS_FUNCS - SESSION_CONTROL_FUNCS
+               if unrestricted and spec.name == "postgres" else _DANGEROUS_FUNCS)
+    blocked_funcs = builtin | spec.blocked_functions | _config_blocked(engine)
     blockers: list[str] = []
     for stmt in statements:
         if stmt is None:

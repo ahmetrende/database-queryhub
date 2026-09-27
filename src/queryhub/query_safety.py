@@ -465,7 +465,8 @@ def analyze(sql: str, engine: str = "postgres",
                     "submission."
                 )
                 return report
-            ok, rewritten, err = _validate_set(stmt.value, set_allowed)
+            ok, rewritten, err = _validate_set(stmt.value, set_allowed,
+                                               unrestricted=unrestricted)
             if not ok:
                 report.blockers.append(err)
                 return report
@@ -673,7 +674,20 @@ def analyze(sql: str, engine: str = "postgres",
         # the approver was shown the wrong thing and `CREATE TABLE AS`, the exact
         # same operation written differently, has always been ddl. Same operation,
         # same tier.
-        if upper in SUPER_ADMIN_LEADING:
+        #
+        # Ending or cancelling a server session (pg_terminate_backend,
+        # pg_cancel_backend) comes before all of that. ast_safety refuses it for
+        # everyone else. For a super-admin it asks first and runs at the top
+        # tier: the read-only login cannot signal another role's backend, the
+        # elevated role the ddl tier assumes can (pg_signal_backend). EXPLAIN
+        # keeps its own strict inner check.
+        ends = (sorted(_ast_module().session_control_calls(stmt.value, engine))
+                if unrestricted and spec.name == "postgres" and upper != "EXPLAIN"
+                else [])
+        if ends:
+            report.confirmations.append(_session_control_cost(ends))
+            tier = "ddl"
+        elif upper in SUPER_ADMIN_LEADING:
             # Only reachable in unrestricted mode (the gate above refuses it
             # for everyone else). The body of a DO block or a procedure is
             # OPAQUE to every guard in this module — no keyword scan, no AST
@@ -718,6 +732,19 @@ def analyze(sql: str, engine: str = "postgres",
         )
         return report
 
+    if len(main_tier_set) > 1 and unrestricted:
+        # A super-admin's script runs as one request at its highest tier, as it
+        # would in a desktop client (operator request, 2026-09-26). The rule
+        # below exists so an approver reviews each statement at its own tier; a
+        # super-admin's request has no approver, and the audit keeps every
+        # statement with its own kind.
+        report.main_tier = max(main_tier_set, key=_TIER_ORDER.index)
+        report.rewritten_sql = ";\n".join(s.rewritten for s in report.statements) + ";"
+        ast_blockers = _ast_module().check(sql, engine=engine, unrestricted=unrestricted)
+        if ast_blockers:
+            report.blockers.extend(ast_blockers)
+        return report
+
     if len(main_tier_set) > 1:
         tiers = sorted(main_tier_set)
         report.blockers.append(
@@ -738,11 +765,31 @@ def analyze(sql: str, engine: str = "postgres",
     # remains the primary defense; this is a second layer for things
     # the regex can't see (obfuscation, function-name calls inside
     # nested expressions, COPY PROGRAM, long pg_sleep).
-    from . import ast_safety  # local to keep the import boundary clean
-    ast_blockers = ast_safety.check(sql, engine=engine)
+    ast_blockers = _ast_module().check(sql, engine=engine, unrestricted=unrestricted)
     if ast_blockers:
         report.blockers.extend(ast_blockers)
     return report
+
+
+_TIER_ORDER = ("ro", "rw", "ddl")
+
+
+def _ast_module():
+    # Not `_ast`: analyze() imports ast_safety AS `_ast` in its EXPLAIN
+    # branches, which makes that name local to the whole function.
+    from . import ast_safety  # local to keep the import boundary clean
+    return ast_safety
+
+
+def _session_control_cost(functions: list[str]) -> str:
+    """The confirmation a super-admin reads before a session-control call."""
+    if "pg_terminate_backend" in functions:
+        return ("This calls pg_terminate_backend: the session it names is "
+                "disconnected, its open transaction is rolled back and that "
+                "uncommitted data is lost.")
+    return ("This calls pg_cancel_backend: the query running in the session it "
+            "names is stopped, and a write in progress there is rolled back, "
+            "its data lost.")
 
 
 def required_mode(sql: str, engine: str = "postgres",
@@ -885,11 +932,34 @@ def _validate_set_value(param: str, raw: str) -> tuple[bool, str]:
     return True, ""   # allow-listed but no value policy → operator's call
 
 
-def _validate_set(stmt_text: str, allowed: set[str]) -> tuple[bool, str, str]:
+# One schema name in a search_path list: a bare identifier, a double-quoted
+# one ("$user" included), or a single-quoted literal holding either.
+_SEARCH_PATH_ITEM = re.compile(
+    r'^(?:[A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")+"|\'(?:[^\']|\'\')+\')$')
+
+
+def _validate_search_path(value: str) -> tuple[bool, str]:
+    """A super-admin's `SET search_path`: a list of schema names, nothing else.
+
+    The executor pins search_path so another schema cannot shadow a built-in
+    (CVE-2018-1058). A super-admin may name their own schemas, as in a desktop
+    client, and the rewrite to SET LOCAL keeps it inside the one request."""
+    items = [p.strip() for p in (value or "").split(",")]
+    if not items or len(items) > 16 or not all(_SEARCH_PATH_ITEM.match(p) for p in items):
+        return False, ("`search_path` must be a comma-separated list of schema "
+                       "names, for example `SET search_path = app, public`.")
+    return True, ""
+
+
+def _validate_set(stmt_text: str, allowed: set[str],
+                  unrestricted: bool = False) -> tuple[bool, str, str]:
     """Validate a SET statement. Returns (ok, rewritten_text, err).
     On success, `rewritten_text` is the user's text with `SET ` rewritten
     to `SET LOCAL ` (idempotent — preserves explicit `SET LOCAL`).
-    `SESSION` form is rejected (we don't want session-scope changes)."""
+    `SESSION` form is rejected (we don't want session-scope changes).
+
+    `unrestricted` (the super-admin path) also accepts `search_path`, with a
+    value that is only a list of schema names (operator request, 2026-09-26)."""
     text = _strip_sql_comments(stmt_text).strip().rstrip(";").strip()
     if re.match(r"^\s*SET\s+SESSION\b", text, flags=re.IGNORECASE):
         return False, "", (
@@ -907,7 +977,8 @@ def _validate_set(stmt_text: str, allowed: set[str]) -> tuple[bool, str, str]:
         )
 
     param = m.group("param").lower()
-    if param not in allowed:
+    search_path = unrestricted and param == "search_path"
+    if param not in allowed and not search_path:
         return False, "", (
             f"SET parameter `{param}` is not allowed. Only a small set of "
             f"safe tuning parameters (e.g. work_mem, statement_timeout) "
@@ -917,7 +988,8 @@ def _validate_set(stmt_text: str, allowed: set[str]) -> tuple[bool, str, str]:
     # Validate the VALUE (type + bound) so an allow-listed param can't be
     # abused: statement_timeout=0 (disable the timeout), work_mem='100GB', etc.
     value = text[m.end():].strip()
-    ok_v, err_v = _validate_set_value(param, value)
+    ok_v, err_v = (_validate_search_path(value) if search_path
+                   else _validate_set_value(param, value))
     if not ok_v:
         return False, "", err_v
 
