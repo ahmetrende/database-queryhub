@@ -67,6 +67,18 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Fixed
 
+- **The metrics dashboards read pods, not the emptied teams table.** Every
+  request showed as "(unteamed)" since pods replaced teams. The per-team chart
+  and filter now use the requester's current pod (migration 135).
+- **Who-can-what, `/sql whoami` and `/sql roles` read the access model.** They
+  listed legacy grants and missed roles and grants written since the switch.
+- **A request's tier on the dashboard is the tier it ran at.** A leading
+  comment or a line break after SELECT counted a read as DDL.
+- **Approval latency counts decisions taken by people.** Auto-approvals, most
+  decisions, pulled every percentile to near zero; the S3 dashboard shows
+  their count on its own card and leaves them out of admin workload. A pod
+  captain's decisions show their name instead of a Slack id.
+
 - **`/api/auth/local/start` answers 404, not 500.** The password provider has
   no redirect leg, and the redirect routes called it anyway.
 - **An AWS secret that is JSON but not an object fails with a clear error.**

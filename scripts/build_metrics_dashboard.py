@@ -1281,24 +1281,32 @@ FACTORIES.scheduledUsage = function (rows) {
   });
 };
 
+// Seconds a PERSON took to decide. An auto-approval is decided by a grant in
+// about no time; they are most decisions, and counting them put every
+// percentile near zero.
+function humanApprovalSecs(rows) {
+  return rows.filter(r => !r.auto_approved)
+             .map(r => r.approval_sec).filter(v => v != null);
+}
+
 FACTORIES.approvalSla = function (rows) {
   const { labels, map } = gapFilledBuckets(rows, truncWeek, weeksBetween);
   const p50raw = labels.map(k => {
-    const vals = (map.get(k) || []).map(r => r.approval_sec).filter(v => v != null);
+    const vals = humanApprovalSecs(map.get(k) || []);
     return vals.length ? pct(vals, 0.5) : null;
   });
   const p90raw = labels.map(k => {
-    const vals = (map.get(k) || []).map(r => r.approval_sec).filter(v => v != null);
+    const vals = humanApprovalSecs(map.get(k) || []);
     return vals.length ? pct(vals, 0.9) : null;
   });
   const p95raw = labels.map(k => {
-    const vals = (map.get(k) || []).map(r => r.approval_sec).filter(v => v != null);
+    const vals = humanApprovalSecs(map.get(k) || []);
     return vals.length ? pct(vals, 0.95) : null;
   });
   const u = chooseTimeUnit([p50raw, p90raw, p95raw]);
   // Mirror the unit into the section title.
   const titleEl = document.querySelector('#sec-approval-sla h2');
-  if (titleEl) titleEl.textContent = 'Approval latency percentiles (' + u.unit + ')';
+  if (titleEl) titleEl.textContent = 'Approval latency percentiles, decided by people (' + u.unit + ')';
   return lineSpec(labels, [
     { label: 'p50', data: scaleTime(p50raw, u.div, u.decimals), color: C.completed },
     { label: 'p90', data: scaleTime(p90raw, u.div, u.decimals), color: C.rejected  },
@@ -1368,9 +1376,9 @@ FACTORIES.topUsers = function (rows) {
 };
 
 FACTORIES.adminWorkload = function (rows) {
-  // Decided rows only; group by decided_by_slack_id.
+  // Decisions taken by people; an auto-approval is not anyone's workload.
   const byAdmin = {};
-  rows.filter(r => r.decided_by_slack_id).forEach(r => {
+  rows.filter(r => r.decided_by_slack_id && !r.auto_approved).forEach(r => {
     const k = r.decided_by_slack_id;
     if (!byAdmin[k]) byAdmin[k] = {
       name: r.decided_by_name || k, approved: 0, rejected: 0, changes: 0,
@@ -1664,9 +1672,11 @@ FACTORIES.csvImports = function (rows) {
 FACTORIES.kpi = function (rows) {
   const total = rows.length;
   const sc = statusCounts(rows);
-  const decided = rows.filter(r => r.approval_sec != null).map(r => r.approval_sec);
+  const decided = humanApprovalSecs(rows);
   const p50 = decided.length ? pct(decided, 0.5) : null;
   const p95 = decided.length ? pct(decided, 0.95) : null;
+  const autoN = rows.filter(r => r.auto_approved).length;
+  const approvedN = rows.filter(r => r.decided_by_slack_id).length;
   const ratings = rows.map(r => r.rating).filter(v => v != null);
   const avgRating = ratings.length
     ? (ratings.reduce((s, v) => s + v, 0) / ratings.length).toFixed(2)
@@ -1690,8 +1700,10 @@ FACTORIES.kpi = function (rows) {
     { label: 'Cancelled',       value: sc.cancelled },
     { label: 'Unique users',    value: uniqUsers },
     { label: 'Targets touched', value: uniqTargets },
-    { label: 'p50 approval',    value: fmtTime(p50) },
-    { label: 'p95 approval',    value: fmtTime(p95) },
+    { label: 'Auto-approved',   value: autoN, hint: approvedN
+        ? (Math.round(1000 * autoN / approvedN) / 10) + '% of decisions' : '' },
+    { label: 'p50 approval',    value: fmtTime(p50), hint: 'decided by people' },
+    { label: 'p95 approval',    value: fmtTime(p95), hint: 'decided by people' },
     { label: 'Avg rating',      value: avgRating,
       hint: ratings.length + ' rating' + (ratings.length === 1 ? '' : 's') },
   ]);

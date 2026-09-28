@@ -91,7 +91,10 @@ def build_metrics() -> dict:
     # ---- headline KPIs ----
     total = len(rows)
     sc = Counter(r["status"] for r in rows)
-    appr = [_f(r["approval_sec"]) for r in rows if r["approval_sec"] is not None]
+    # Seconds a person took to decide: an auto-approval is decided by a grant
+    # in about no time, and counting them put every percentile near zero.
+    appr = [_f(r["approval_sec"]) for r in rows
+            if r["approval_sec"] is not None and not r.get("auto_approved")]
     ratings = [r["rating"] for r in rows if r["rating"] is not None]
     headline = {
         "total": total,
@@ -120,7 +123,7 @@ def build_metrics() -> dict:
                        (("p50", .5), ("p75", .75), ("p90", .9), ("p95", .95), ("p99", .99))}}
     by_tier_sec = defaultdict(list)
     for r in rows:
-        if r["approval_sec"] is not None and r["tier"]:
+        if r["approval_sec"] is not None and r["tier"] and not r.get("auto_approved"):
             by_tier_sec[r["tier"].upper()].append(_f(r["approval_sec"]))
     sla["byTier"] = {t: {"p50": _pct(v, .5), "p95": _pct(v, .95), "n": len(v)}
                      for t, v in sorted(by_tier_sec.items())}

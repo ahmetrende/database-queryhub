@@ -1072,7 +1072,7 @@ Two namespaces:
 | `p_metrics_rating_weekly` | Weekly rating rollup: n, avg, low (≤2), high (≥4), with_feedback. |
 | `p_metrics_rating_response_rate` | Of all terminal-state requests, what fraction got a rating. |
 | `p_metrics_rating_low_with_feedback` | Drill-down on 1-2 ratings with the original query preview. |
-| `p_metrics_who_can_what` | One row per active user with `is_admin` (+ `admin_max_tier` / `admin_scope_*`), `is_bypass`, `teams[]`, `user_grants[]`. Powers the `/sql roles` slash sub-command. |
+| `p_metrics_who_can_what` | One row per enabled person with `is_admin` (an admin or approver role, + `admin_max_tier` / `admin_scope_*`), `is_bypass`, `teams[]` (pods), `user_grants[]` (direct `access_grant` rows). Read from the access model since migration 135. Powers `/sql whoami`, `/sql roles` and both dashboards. |
 
 ---
 
