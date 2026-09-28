@@ -49,6 +49,7 @@ import re
 from dataclasses import dataclass, field
 
 import sqlparse
+from sqlparse.exceptions import SQLParseError
 from sqlparse.sql import Statement
 
 from . import engines
@@ -343,6 +344,37 @@ class SafetyReport:
         return bool(self.confirmations) and not self.blockers
 
 
+# A long value list that does not fit in one statement, written as ONE token:
+# sqlparse reads a string literal as a single token however long it is. Only for
+# engines where the rewrite is plain SQL the user can type.
+_ONE_VALUE_LIST = {
+    "postgres": "or pass the list as one array value: "
+                "`WHERE id = ANY('{1,2,3}'::bigint[])`",
+    "mssql": "or pass the list as one string: "
+             "`WHERE id IN (SELECT value FROM STRING_SPLIT('1,2,3', ','))`",
+}
+
+
+def _too_big_to_check(detail: str, engine: str) -> str:
+    """The refusal for a statement sqlparse will not group.
+
+    `detail` is the SQLParseError text: "Maximum number of tokens exceeded" for
+    the token cap, "Maximum grouping depth exceeded" or "Maximum recursion depth
+    exceeded" for nesting. The numbers were measured on sqlparse 0.5.5: an
+    `IN (...)` list written `1, 2, 3` reaches the token cap at about 3,300
+    values, and a chain of `+` or `||` reaches the depth cap before 300 terms.
+    """
+    if "number of tokens" in detail:
+        tip = _ONE_VALUE_LIST.get(engine)
+        return ("This statement is too long to check. One statement can be at "
+                "most 10,000 SQL tokens, which is about 3,000 values in an "
+                "`IN (...)` list. Split it into several statements in the same "
+                "script" + (f", {tip}." if tip else "."))
+    return ("This statement is nested too deeply to check: more than 100 levels "
+            "of brackets, or a very long chain of `+` or `||`. Split it into "
+            "smaller statements.")
+
+
 def analyze(sql: str, engine: str = "postgres",
             unrestricted: bool = False) -> SafetyReport:
     """Classify `sql` and decide what stops it.
@@ -378,7 +410,17 @@ def analyze(sql: str, engine: str = "postgres",
     rw_keywords = spec.rw_keywords or RW_KEYWORDS
     ddl_keywords = spec.ddl_keywords or DDL_KEYWORDS
     destructive = spec.destructive_keywords or DESTRUCTIVE_KEYWORDS
-    statements = [s for s in sqlparse.parse(sql) if _has_real_tokens(s)]
+    try:
+        parsed = sqlparse.parse(sql)
+    except SQLParseError as exc:
+        # sqlparse bounds its own running time: it refuses a statement of more
+        # than 10,000 tokens, or one nested more than 100 levels deep. Nothing
+        # below can classify what was not parsed, so the statement is refused
+        # for everyone, super-admins included. Before this the error escaped as
+        # a 500 from submit and from the editor's classify call.
+        report.blockers.append(_too_big_to_check(str(exc), engine))
+        return report
+    statements = [s for s in parsed if _has_real_tokens(s)]
     if not statements:
         report.blockers.append("Query is empty.")
         return report
