@@ -96,6 +96,16 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Fixed
 
+- **A statement too big to check is refused with a message, not a 500.**
+  sqlparse gives up on a statement of more than 10,000 tokens, which is about
+  3,000 values in an `IN (...)` list, or one nested more than 100 levels deep.
+  The refusal says how to split it, or how to pass a long list as one value.
+- **A long chain of operators is refused in milliseconds.** Each new operator
+  in `a + b + c ...` made sqlparse re-read the whole chain, so 1,000 of them
+  took 7 s to refuse and held a web worker the whole time. A group's text is
+  now joined from its children's (`sqlparse_patch.py`). The tree is the same:
+  a test compares both constructors on every statement in the suite.
+
 - **The metrics dashboards read pods, not the emptied teams table.** Every
   request showed as "(unteamed)" since pods replaced teams. The per-team chart
   and filter now use the requester's current pod (migration 135).

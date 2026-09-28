@@ -52,7 +52,12 @@ import sqlparse
 from sqlparse.exceptions import SQLParseError
 from sqlparse.sql import Statement
 
-from . import engines
+from . import engines, sqlparse_patch
+
+# sqlparse re-read a whole operator chain for every operator in it, so a long
+# `a + b + c ...` took seconds to refuse. See sqlparse_patch for the change;
+# the tree it builds is the same.
+sqlparse_patch.apply()
 
 # For a read-only engine (e.g. ClickHouse) only these leading words are
 # accepted; everything else is rejected up front, before tier
@@ -371,8 +376,9 @@ def _too_big_to_check(detail: str, engine: str) -> str:
                 "`IN (...)` list. Split it into several statements in the same "
                 "script" + (f", {tip}." if tip else "."))
     return ("This statement is nested too deeply to check: more than 100 levels "
-            "of brackets, or a very long chain of `+` or `||`. Split it into "
-            "smaller statements.")
+            "of brackets, or a chain of more than 100 operators such as `+`, "
+            "`||` or `=`. Split it into smaller statements, or build a long "
+            "string with `concat(a, b, c)` in place of `a || b || c`.")
 
 
 def analyze(sql: str, engine: str = "postgres",
