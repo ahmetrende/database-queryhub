@@ -14,8 +14,11 @@ shipping the raw projection is cheap and the user gets instant
 filter feedback with no round-trip.
 """
 
+import base64
+import re
 import sys
 import json
+from html import escape
 from pathlib import Path
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -28,6 +31,12 @@ from queryhub import db, metrics_defs  # noqa: E402
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 OUT_HTML = REPO_DIR / "metrics_dashboard.html"
+
+# The admin panel's typeface. Its @font-face rules are read from the web app's
+# own stylesheet and inlined as base64, so the published page needs no font
+# files next to it and sets type exactly as the panel does.
+FONT_CSS = REPO_DIR / "QueryHubWeb" / "fonts.css"
+FONT_FAMILY = "Manrope"
 
 
 # ----------------------------- helpers -------------------------------------
@@ -44,6 +53,47 @@ def _json_default(o):
     if isinstance(o, Decimal):
         return float(o)
     return str(o)
+
+
+_FONT_FACE = re.compile(r"@font-face\s*\{[^}]*\}")
+_FONT_URL = re.compile(r"""url\(\s*['"]?([^'")]+?)['"]?\s*\)""")
+_FONT_MIME = {".woff2": "font/woff2", ".woff": "font/woff",
+              ".ttf": "font/ttf", ".otf": "font/otf"}
+
+
+def embedded_font_faces(css_path: Path = FONT_CSS,
+                        family: str = FONT_FAMILY) -> str:
+    """`family`'s @font-face rules from `css_path`, each url() inlined.
+
+    A face whose file cannot be read is left out rather than published with a
+    relative url that would 404 on S3. With no faces at all the page still
+    renders, in the system fonts that follow the family name in every stack.
+    """
+    try:
+        css = css_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    wanted = re.compile(r"font-family:\s*['\"]?" + re.escape(family) + r"['\";]")
+    faces = []
+    for block in _FONT_FACE.findall(css):
+        if not wanted.search(block):
+            continue
+        unreadable = []
+
+        def inline(m: re.Match) -> str:
+            path = css_path.parent / m.group(1)
+            try:
+                data = base64.b64encode(path.read_bytes()).decode("ascii")
+            except OSError:
+                unreadable.append(path)
+                return m.group(0)
+            mime = _FONT_MIME.get(path.suffix.lower(), "application/octet-stream")
+            return f"url(data:{mime};base64,{data})"
+
+        block = _FONT_URL.sub(inline, block)
+        if not unreadable:
+            faces.append(block)
+    return "\n".join(faces)
 
 
 def _fetch_all(cur, sql, params=()):
@@ -192,56 +242,60 @@ HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>QueryHub — product metrics dashboard</title>
 <link rel="icon" type="image/svg+xml" href="queryhub-mark.svg">
+<script>
+  // Inside the site's tabbed shell the shell's bar is the page chrome, so
+  // this page's own bar steps aside (.is-framed below).
+  if (window.self !== window.top) document.documentElement.classList.add('is-framed');
+</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
 <style>
+%FONT_FACES%
+
+  /* The admin panel's Metrics view, copied rather than linked because this
+   * page is one self-contained file. Class names are the panel's own
+   * (QueryHubWeb/QueryHub.html), so a later design change carries across by
+   * name. Token values are the design system's, with the web app's contrast
+   * fix for --fg-tertiary. Brand tints are 8-digit hex, not rgba(), so the
+   * open-source export's colour swap reaches them too. */
   :root {
     color-scheme: light dark;
 
+    --brand-green:           #C4603F;
+    --brand-green-strong:    #B0512F;
+    --brand-adaptive-light:  #C4603F1A;
+    --brand-adaptive-medium: #C4603F33;
+
     --fg-primary:   #1F2229;
     --fg-secondary: rgba(31, 34, 41, 0.80);
-    --fg-tertiary:  rgba(31, 34, 41, 0.60);
+    --fg-tertiary:  rgba(31, 34, 41, 0.66);
     --fg-accent:    #A24628;
     --fg-danger:    #E53D3D;
-    --fg-warning:   #D97706;
 
-    --bg-page:    #FFFFFF;
+    --bg-white:   #FFFFFF;
     --bg-light:   #F9FAFB;
-    --bg-regular: #F5F6F8;
-    --bg-strong:  #ECEDF0;
 
     --stroke-light:  rgba(31, 34, 41, 0.04);
     --stroke-medium: rgba(31, 34, 41, 0.08);
     --stroke-strong: rgba(31, 34, 41, 0.15);
 
-    --brand-solid-light:  #C4603F;
-    --brand-solid-medium: #A24628;
-    --brand-adaptive-md:  rgba(155, 186, 60, 0.20);
+    --adaptive-light:  rgba(31, 34, 41, 0.02);
+    --adaptive-medium: rgba(31, 34, 41, 0.04);
+    --adaptive-strong: rgba(31, 34, 41, 0.08);
 
-    --shadow-card: 0 1px 2px rgba(31, 34, 41, 0.04),
-                   0 1px 1px rgba(31, 34, 41, 0.02);
+    --danger-adaptive-light: rgba(229, 61, 61, 0.10);
+    --tier-rw-fg: #15688C;
+    --tier-rw-bg: #E1F2FA;
 
-    --space-xs:  4px;
-    --space-ms:  8px;
-    --space-md:  12px;
-    --space-ml:  16px;
-    --space-lg:  20px;
-    --space-xl:  24px;
-    --space-2xl: 32px;
-    --space-3xl: 40px;
+    --r-2xs: 4px;
+    --r-sm:  8px;
+    --r-md:  12px;
+    --r-lg:  16px;
 
-    --radius-sm:   8px;
-    --radius-md:   12px;
-    --radius-lg:   16px;
-    --radius-xl:   20px;
-    --radius-full: 999px;
-
-    --surface-bg:     #FFFFFF;
-    --surface-border: var(--stroke-medium);
-    --table-stripe:   var(--bg-regular);
-    --table-hover:    var(--bg-light);
+    --qh-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -250,383 +304,286 @@ HTML = r"""<!doctype html>
       --fg-secondary: rgba(255, 255, 255, 0.80);
       --fg-tertiary:  rgba(255, 255, 255, 0.50);
       --fg-accent:    #C4603F;
-      --fg-danger:    #E53D3D;
-      --fg-warning:   #F59E0B;
 
-      --bg-page:    #181A20;
+      --bg-white:   #181A20;
       --bg-light:   #1F2229;
-      --bg-regular: #232A31;
-      --bg-strong:  #434954;
 
       --stroke-light:  rgba(255, 255, 255, 0.04);
       --stroke-medium: rgba(255, 255, 255, 0.08);
       --stroke-strong: rgba(255, 255, 255, 0.15);
 
-      --brand-solid-light:  #C4603F;
-      --brand-solid-medium: #C4603F;
-      --brand-adaptive-md:  rgba(155, 186, 60, 0.30);
+      --adaptive-light:  rgba(255, 255, 255, 0.02);
+      --adaptive-medium: rgba(255, 255, 255, 0.04);
+      --adaptive-strong: rgba(255, 255, 255, 0.08);
 
-      --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.48),
-                     0 1px 1px rgba(0, 0, 0, 0.32);
-
-      --surface-bg:     var(--bg-light);
-      --surface-border: var(--stroke-medium);
-      --table-stripe:   var(--bg-regular);
-      --table-hover:    var(--bg-regular);
+      --tier-rw-fg: #7FD2F5;
+      --tier-rw-bg: rgba(102, 204, 255, 0.12);
     }
   }
 
+  * { box-sizing: border-box; }
   body {
+    margin: 0;
     font-family: 'Manrope', -apple-system, "Segoe UI", Roboto,
                  system-ui, sans-serif;
-    margin: 0;
-    padding: var(--space-xl);
-    max-width: 1280px;
-    margin-inline: auto;
-    background: var(--bg-light);
-    color: var(--fg-primary);
     font-size: 14px;
-    line-height: 22px;
+    line-height: 1.45;
+    background: var(--bg-white);
+    color: var(--fg-primary);
     -webkit-font-smoothing: antialiased;
   }
+  a { color: var(--fg-accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--qh-mono); font-size: 12px; }
 
-  h1 {
-    font-size: 32px; line-height: 40px; font-weight: 600;
-    margin: 0 0 var(--space-xs); letter-spacing: -0.01em;
+  /* Top chrome — only when the page is opened on its own. */
+  .qh-top {
+    height: 52px; display: flex; align-items: center; padding: 0 18px;
+    background: var(--bg-white); border-bottom: 1px solid var(--stroke-medium);
   }
-  h2 {
-    font-size: 20px; line-height: 24px; font-weight: 600;
-    margin: var(--space-xl) 0 var(--space-ms);
-    letter-spacing: -0.005em;
-  }
-  .meta {
-    color: var(--fg-tertiary);
-    font-size: 12px; line-height: 16px;
-    margin: 0;
-  }
-
-  .page-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-xl);
-    margin-bottom: var(--space-xl);
-    flex-wrap: wrap;
-  }
-  .page-header h1 { margin-bottom: var(--space-xs); }
-
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    margin-bottom: var(--space-ms);
-  }
-  .brand__logo {
-    width: 44px; height: 44px;
-    flex-shrink: 0;
-    border-radius: var(--radius-sm);
-    object-fit: contain;
-  }
-  .brand h1 { margin: 0; }
-
-  .updated-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-ms);
-    background: var(--surface-bg);
-    border: 1px solid var(--surface-border);
-    border-radius: var(--radius-full);
-    padding: var(--space-ms) var(--space-ml);
-    box-shadow: var(--shadow-card);
-    font-size: 12px; line-height: 16px;
-    color: var(--fg-secondary);
-    white-space: nowrap;
-  }
-  .updated-pill__dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--brand-solid-light);
-    box-shadow: 0 0 0 0 var(--brand-adaptive-md);
-    animation: pulse 2.4s ease-out infinite;
-  }
-  .updated-pill__label {
-    color: var(--fg-tertiary);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
-    font-weight: 500;
-  }
-  @keyframes pulse {
-    0%   { box-shadow: 0 0 0 0 var(--brand-adaptive-md); }
-    70%  { box-shadow: 0 0 0 10px transparent; }
-    100% { box-shadow: 0 0 0 0 transparent; }
+  .is-framed .qh-top { display: none; }
+  .qh-brand { display: flex; align-items: center; gap: 10px; }
+  .qh-applogo { width: 26px; height: 26px; border-radius: var(--r-sm); display: block; }
+  .qh-brand-name { font-size: 15px; font-weight: 600; }
+  .qh-brand-tag {
+    font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--fg-accent); background: var(--brand-adaptive-light);
+    padding: 2px 6px; border-radius: var(--r-2xs);
   }
 
-  /* Filter panel — sits between the page header and the TOC. Two
-   * rows: presets / date range on top, multi-select dropdowns
-   * underneath. Everything client-side. */
-  .filters {
-    background: var(--surface-bg);
-    border: 1px solid var(--surface-border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-ml) var(--space-lg);
-    margin-bottom: var(--space-ml);
-    box-shadow: var(--shadow-card);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
+  /* View */
+  .qh-apad { padding: 24px max(28px, calc((100% - 1600px) / 2)) 48px; }
+  .qh-aview-head {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 16px; margin-bottom: 18px; flex-wrap: wrap;
   }
-  .filters__row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-ms);
-    align-items: center;
+  .qh-aview-title { font-size: 19px; font-weight: 600; letter-spacing: -0.2px; }
+  .qh-aview-sub { font-size: 13px; color: var(--fg-tertiary); margin-top: 3px; }
+  .qh-updated {
+    display: inline-flex; align-items: center; gap: 6px; padding-top: 4px;
+    font-size: 12px; font-weight: 500; color: var(--fg-tertiary); white-space: nowrap;
   }
-  .filters__label {
-    color: var(--fg-tertiary);
-    font-size: 11px; font-weight: 500;
-    text-transform: uppercase; letter-spacing: 0.06em;
-    min-width: 70px;
-  }
-  .filter-btn {
-    background: transparent;
-    color: var(--fg-secondary);
-    border: 1px solid transparent;
-    border-radius: var(--radius-full);
-    padding: 4px 14px;
-    font-size: 13px;
-    line-height: 18px;
-    cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease;
-    font-family: inherit;
-  }
-  .filter-btn:hover { background: var(--bg-regular); color: var(--fg-primary); }
-  .filter-btn.active {
-    background: var(--brand-solid-medium);
-    color: #FFFFFF;
-    font-weight: 500;
-  }
-  .filter-btn--reset {
-    border: 1px solid var(--stroke-strong);
-    color: var(--fg-secondary);
-    margin-left: auto;
-  }
-  .filter-btn--reset:hover {
-    background: var(--bg-regular);
-  }
-  .filter-date {
-    background: var(--bg-page);
-    border: 1px solid var(--stroke-strong);
-    border-radius: var(--radius-sm);
-    padding: 4px 10px;
-    font-size: 13px;
-    font-family: inherit;
-    color: var(--fg-primary);
-    color-scheme: light dark;
-  }
-  .filter-select {
-    background: var(--bg-page);
-    border: 1px solid var(--stroke-strong);
-    border-radius: var(--radius-sm);
-    padding: 4px 10px;
-    font-size: 13px;
-    font-family: inherit;
-    color: var(--fg-primary);
-    min-width: 140px;
-    cursor: pointer;
-  }
-  .filter-summary {
-    font-size: 12px;
-    color: var(--fg-tertiary);
-    margin-left: auto;
-  }
-  .filter-summary strong {
-    color: var(--fg-primary);
-    font-weight: 600;
+  .qh-dot {
+    width: 7px; height: 7px; border-radius: 999px; background: var(--brand-green);
+    box-shadow: 0 0 0 3px var(--brand-adaptive-light);
   }
 
-  /* Layout primitives ----------------------------------------------------- */
+  /* Filters: presets + date range on top, dimensions underneath. */
+  .qh-filterbar {
+    display: flex; flex-direction: column; gap: 10px; padding: 12px;
+    background: var(--bg-light); border: 1px solid var(--stroke-medium);
+    border-radius: var(--r-md); margin-bottom: 12px;
+  }
+  .qh-frow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .qh-seg { display: flex; flex-wrap: wrap; gap: 6px; }
+  .qh-seg-opt {
+    display: inline-flex; align-items: center; height: 34px; padding: 0 12px;
+    background: var(--bg-white); border: 1px solid var(--stroke-medium);
+    border-radius: var(--r-sm); cursor: pointer; font-family: inherit;
+    font-size: 12.5px; font-weight: 500; color: var(--fg-secondary);
+  }
+  .qh-seg-opt:hover { background: var(--adaptive-medium); }
+  .qh-seg-opt.is-active {
+    border-color: var(--brand-green); background: var(--brand-adaptive-light);
+    color: var(--fg-accent); font-weight: 600;
+  }
+  .qh-select, .qh-input {
+    height: 34px; padding: 0 10px; background: var(--bg-white);
+    border: 1px solid var(--stroke-medium); border-radius: var(--r-sm);
+    font-family: inherit; font-size: 13px; color: var(--fg-primary);
+  }
+  .qh-select { cursor: pointer; max-width: 240px; }
+  .qh-input-date { width: 150px; color-scheme: light dark; }
+  .qh-select:focus, .qh-input:focus, .qh-seg-opt:focus-visible, .qh-btn:focus-visible {
+    outline: none; border-color: var(--brand-green);
+    box-shadow: 0 0 0 2px var(--brand-adaptive-medium);
+  }
+  .qh-btn {
+    display: inline-flex; align-items: center; height: 34px; padding: 0 14px;
+    border-radius: 999px; background: transparent; border: 1px solid var(--stroke-strong);
+    font-family: inherit; font-size: 12.5px; font-weight: 600;
+    color: var(--fg-secondary); cursor: pointer;
+  }
+  .qh-btn:hover { background: var(--adaptive-medium); }
+  .qh-fsum { margin-left: auto; font-size: 12px; color: var(--fg-tertiary); }
+  .qh-fsum strong { color: var(--fg-primary); font-weight: 600; }
+  .qh-muted { color: var(--fg-tertiary); }
 
-  .toc {
-    background: var(--surface-bg);
-    border: 1px solid var(--surface-border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-ml) var(--space-lg);
-    margin-bottom: var(--space-xl);
-    box-shadow: var(--shadow-card);
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: var(--space-xs) var(--space-ml);
+  /* Jump links to the section labels. */
+  .qh-jump { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 18px; }
+  .qh-chip {
+    padding: 5px 11px; background: var(--bg-light); border: 1px solid var(--stroke-medium);
+    border-radius: 999px; font-size: 12px; font-weight: 500; color: var(--fg-secondary);
   }
-  .toc a {
-    color: var(--fg-accent);
-    text-decoration: none;
-    font-size: 13px;
-    line-height: 18px;
-    padding: 3px 0;
-  }
-  .toc a:hover { color: var(--brand-solid-medium); text-decoration: underline; }
+  .qh-chip:hover { background: var(--adaptive-medium); color: var(--fg-primary); text-decoration: none; }
 
-  .card {
-    background: var(--surface-bg);
-    border: 1px solid var(--surface-border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-lg);
-    margin-bottom: var(--space-ml);
-    box-shadow: var(--shadow-card);
+  /* KPI cards */
+  .qh-kpi-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+    gap: 10px; margin: 0 0 16px;
   }
-  .card h2:first-child { margin-top: 0; }
-  .chart-wrap {
-    position: relative;
-    height: 340px;
-    overflow: auto;
+  .qh-kpi-flush { margin: 0; }
+  .qh-metric {
+    background: var(--bg-light); border: 1px solid var(--stroke-light);
+    border-radius: var(--r-lg); padding: 18px; min-width: 0;
   }
-  /* Tables / KPI grids don't need a fixed canvas height; the
-   * factories opt into auto-sizing via this modifier. */
-  .chart-wrap--auto {
-    height: auto;
-    min-height: 80px;
-  }
-  .anno-pill {
-    display: inline-block;
-    background: var(--fg-danger);
-    color: #FFFFFF;
-    font-size: 11px;
-    font-weight: 600;
-    line-height: 14px;
-    padding: 3px 10px;
-    border-radius: var(--radius-full);
-    margin-right: var(--space-xs);
-  }
+  .qh-metric-v { font-size: 30px; font-weight: 700; letter-spacing: -1px; line-height: 1.2; }
+  .qh-metric-k { font-size: 12.5px; color: var(--fg-secondary); margin-top: 4px; font-weight: 500; }
+  .qh-metric-sub { font-size: 11px; color: var(--fg-accent); margin-top: 3px; }
 
-  /* KPI / table / heatmap --------------------------------------------------- */
-  .kpi-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: var(--space-ml);
+  /* Cards, section labels, the two-column grid */
+  .qh-mcard {
+    background: var(--bg-white); border: 1px solid var(--stroke-medium);
+    border-radius: var(--r-lg); padding: 18px; min-width: 0;
   }
-  .kpi {
-    background: var(--bg-regular);
-    border-radius: var(--radius-md);
-    padding: var(--space-ml);
+  .qh-apad > .qh-mcard { margin-bottom: 14px; }
+  .qh-mcard-title { font-size: 13px; font-weight: 600; margin-bottom: 16px; }
+  .qh-msection {
+    margin: 24px 0 12px; padding-top: 16px; border-top: 1px solid var(--stroke-light);
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--fg-tertiary); scroll-margin-top: 12px;
   }
-  .kpi__label {
-    color: var(--fg-tertiary);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    font-weight: 500;
-    margin-bottom: var(--space-xs);
+  .qh-mgrid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px; margin-bottom: 14px;
   }
-  .kpi__value {
-    color: var(--fg-primary);
-    font-size: 24px;
-    font-weight: 600;
-    line-height: 28px;
-    letter-spacing: -0.005em;
-  }
-  .kpi__hint {
-    color: var(--fg-tertiary);
-    font-size: 11px;
-    margin-top: var(--space-xs);
-  }
+  .qh-mgrid > .is-wide { grid-column: 1 / -1; }
+  .chart-wrap { position: relative; height: 240px; }
+  .qh-mcard.is-wide .chart-wrap { height: 280px; }
+  .chart-wrap.chart-wrap--auto,
+  .qh-mcard .chart-wrap.chart-wrap--auto { height: auto; }
 
-  table.data {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
+  /* Labelled bars */
+  .qh-toplist { display: flex; flex-direction: column; gap: 12px; }
+  .qh-toprow { display: flex; align-items: center; gap: 12px; }
+  .qh-topuser {
+    flex: 0 0 150px; font-size: 12.5px; color: var(--fg-secondary); font-family: var(--qh-mono);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  table.data th,
-  table.data td {
-    text-align: left;
-    padding: 6px 10px;
-    border-bottom: 1px solid var(--stroke-light);
+  .qh-toptrack {
+    flex: 1; min-width: 60px; height: 8px; background: var(--adaptive-medium);
+    border-radius: 999px; overflow: hidden;
   }
-  table.data th {
-    color: var(--fg-tertiary);
-    font-weight: 500;
-    text-transform: uppercase;
-    font-size: 11px;
-    letter-spacing: 0.04em;
-    background: var(--bg-regular);
+  .qh-topfill {
+    height: 100%; display: flex; border-radius: 999px; overflow: hidden;
+    background: var(--brand-green);
   }
-  table.data tr:hover td { background: var(--table-hover); }
-
-  .heatmap {
-    display: grid;
-    gap: 2px;
+  .qh-topseg { flex: 1 1 0; min-width: 0; height: 100%; }
+  .qh-topn {
+    flex: 0 0 56px; font-family: var(--qh-mono); font-size: 12px;
+    color: var(--fg-tertiary); text-align: right;
   }
-  .heatmap__cell {
-    text-align: center;
-    padding: 6px 2px;
-    font-size: 11px;
-    border-radius: 4px;
-    color: var(--fg-primary);
+  .qh-legend {
+    display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px;
+    font-size: 11px; color: var(--fg-tertiary);
   }
-  .heatmap__row-label {
-    font-size: 11px;
-    color: var(--fg-tertiary);
-    padding-right: 6px;
-    text-align: right;
+  .qh-legend .lg { display: inline-flex; align-items: center; gap: 5px; }
+  .qh-legend .lg::before {
+    content: ''; width: 9px; height: 9px; border-radius: 2px; background: var(--seg);
   }
 
-  .empty {
-    color: var(--fg-tertiary);
-    font-style: italic;
-    padding: var(--space-ml);
-    text-align: center;
+  /* Day x hour heatmap */
+  .qh-heat { display: flex; flex-direction: column; gap: 3px; overflow-x: auto; }
+  .qh-heatrow { display: flex; gap: 3px; align-items: center; }
+  .qh-heat-lbl {
+    flex: 0 0 34px; font-size: 10.5px; color: var(--fg-tertiary);
+    text-align: right; padding-right: 4px;
+  }
+  .qh-heat-h { flex: 1; min-width: 14px; font-size: 9.5px; color: var(--fg-tertiary); text-align: center; }
+  .qh-heatcell { flex: 1; min-width: 14px; height: 22px; border-radius: 3px; background: var(--brand-green); }
+
+  /* Tables */
+  .qh-tablewrap { overflow-x: auto; }
+  .qh-kpi-grid + .qh-tablewrap { margin-top: 6px; }
+  .qh-atable { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .qh-atable th {
+    text-align: left; padding: 9px 12px; font-size: 11px; font-weight: 600;
+    letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-tertiary);
+    border-bottom: 1px solid var(--stroke-medium); white-space: nowrap;
+  }
+  .qh-atable td {
+    padding: 10px 12px; border-bottom: 1px solid var(--stroke-light);
+    vertical-align: middle;
+  }
+  .qh-atable tr:hover td { background: var(--adaptive-light); }
+  .qh-atable .num { text-align: right; font-family: var(--qh-mono); font-size: 12px; white-space: nowrap; }
+  .qh-atable .qh-heatbar { width: 28%; min-width: 120px; }
+  .qh-atable .nowrap { white-space: nowrap; }
+  .qh-mono { font-family: var(--qh-mono); font-size: 12px; }
+  .qh-tier {
+    display: inline-flex; font-size: 10px; font-weight: 700; font-family: var(--qh-mono);
+    padding: 2px 7px; border-radius: var(--r-2xs); letter-spacing: 0.02em;
+  }
+  .tier-ro  { color: var(--fg-accent);  background: var(--brand-adaptive-light); }
+  .tier-rw  { color: var(--tier-rw-fg); background: var(--tier-rw-bg); }
+  .tier-ddl { color: var(--fg-danger);  background: var(--danger-adaptive-light); }
+  .qh-st-completed { color: var(--fg-accent); font-weight: 600; }
+  .qh-st-failed, .qh-st-rejected { color: var(--fg-danger); font-weight: 600; }
+  .empty { color: var(--fg-tertiary); font-size: 12.5px; padding: 4px 0; }
+
+  @media (max-width: 960px) {
+    .qh-mgrid { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (max-width: 640px) {
+    .qh-top { padding: 0 16px; }
+    .qh-apad { padding: 16px 16px 32px; }
+    .qh-fsum { margin-left: 0; width: 100%; }
+    .qh-topuser { flex-basis: 96px; }
   }
 </style>
 </head>
 <body>
-<div class="page-header">
-  <div>
-    <div class="brand">
-      <img class="brand__logo" src="queryhub-mark.svg" alt="QueryHub" width="44" height="44">
-      <h1>QueryHub — product metrics</h1>
+<header class="qh-top">
+  <div class="qh-brand">
+    <img class="qh-applogo" src="queryhub-mark.svg" alt="QueryHub" width="26" height="26">
+    <span class="qh-brand-name">QueryHub</span>
+    <span class="qh-brand-tag">Metrics</span>
+  </div>
+</header>
+
+<main class="qh-apad">
+  <div class="qh-aview-head">
+    <div>
+      <div class="qh-aview-title">Metrics</div>
+      <div class="qh-aview-sub">%VIEW_SUB%</div>
     </div>
-    <div class="meta">Internal dashboard. Auto-refreshed by the
-      <code>1_hour</code> publisher; reload the page to pull the
-      latest copy from S3.</div>
+    <span class="qh-updated"
+          title="Wall-clock time the HTML was built, sourced from a HEAD request to google.com (NTP-synced). The 1_hour publisher rebuilds it; reload for the latest copy.">
+      <span class="qh-dot"></span>Updated %GENERATED_AT%
+    </span>
   </div>
-  <div class="updated-pill"
-       title="Wall-clock time the HTML was built, sourced from a HEAD request to google.com (NTP-synced)">
-    <span class="updated-pill__dot"></span>
-    <span class="updated-pill__label">Last updated</span>
-    <span class="updated-pill__value">%GENERATED_AT%</span>
-  </div>
-</div>
 
-<div class="filters" role="region" aria-label="Dashboard filters">
-  <div class="filters__row">
-    <span class="filters__label">Date range</span>
-    <button class="filter-btn active" data-preset="all">All</button>
-    <button class="filter-btn" data-preset="90">Last 90d</button>
-    <button class="filter-btn" data-preset="30">Last 30d</button>
-    <button class="filter-btn" data-preset="7">Last 7d</button>
-    <button class="filter-btn" data-preset="today">Today</button>
-    <span class="filters__label" style="margin-left: var(--space-md)">Custom</span>
-    <input type="date" id="filter-from" class="filter-date" aria-label="From date">
-    <span style="color: var(--fg-tertiary)">→</span>
-    <input type="date" id="filter-to"   class="filter-date" aria-label="To date">
-    <button class="filter-btn filter-btn--reset" id="filter-reset"
-            type="button" title="Clear every filter">Reset all</button>
+  <div class="qh-filterbar" role="region" aria-label="Dashboard filters">
+    <div class="qh-frow">
+      <div class="qh-seg" role="group" aria-label="Date range">
+        <button type="button" class="qh-seg-opt is-active" data-preset="all">All time</button>
+        <button type="button" class="qh-seg-opt" data-preset="90">Last 90d</button>
+        <button type="button" class="qh-seg-opt" data-preset="30">Last 30d</button>
+        <button type="button" class="qh-seg-opt" data-preset="7">Last 7d</button>
+        <button type="button" class="qh-seg-opt" data-preset="today">Today</button>
+      </div>
+      <input type="date" id="filter-from" class="qh-input qh-input-date" aria-label="From date">
+      <span class="qh-muted">→</span>
+      <input type="date" id="filter-to"   class="qh-input qh-input-date" aria-label="To date">
+      <button type="button" class="qh-btn" id="filter-reset" title="Clear every filter">Reset</button>
+      <span class="qh-fsum" id="filter-summary">—</span>
+    </div>
+    <div class="qh-frow">
+      <select id="filter-team"    class="qh-select" aria-label="Team"></select>
+      <select id="filter-user"    class="qh-select" aria-label="Requester"></select>
+      <select id="filter-target"  class="qh-select" aria-label="Target server (RDS)"></select>
+      <select id="filter-db"      class="qh-select" aria-label="Database"></select>
+      <select id="filter-tier"    class="qh-select" aria-label="Tier"></select>
+      <select id="filter-status"  class="qh-select" aria-label="Status"></select>
+    </div>
   </div>
-  <div class="filters__row">
-    <span class="filters__label">Slice by</span>
-    <select id="filter-team"    class="filter-select" aria-label="Team"></select>
-    <select id="filter-user"    class="filter-select" aria-label="Requester"></select>
-    <select id="filter-target"  class="filter-select" aria-label="Target server (RDS)"></select>
-    <select id="filter-db"      class="filter-select" aria-label="Database"></select>
-    <select id="filter-tier"    class="filter-select" aria-label="Tier"></select>
-    <select id="filter-status"  class="filter-select" aria-label="Status"></select>
-    <span class="filter-summary"
-          id="filter-summary">—</span>
-  </div>
-</div>
 
-<div class="toc">
+  <nav class="qh-jump" aria-label="Sections">
 %TOC%
-</div>
+  </nav>
 
 %SECTIONS%
+</main>
 
 <script>
 window.__DATA = %DATA%;
@@ -638,43 +595,53 @@ window.__DATA = %DATA%;
 
 # ----------------------------- chart specs ---------------------------------
 #
-# Each spec is (id, title, factory_name). The renderer JS picks the
-# factory function by name and runs it against the current filtered
-# row set. Title is human display.
+# Each spec is (id, title, factory_name, group, layout). The renderer JS picks
+# the factory function by name and runs it against the current filtered row
+# set. A group opens a labelled two-column grid the first time it appears,
+# the way the admin panel's Metrics view is laid out (None = above the first
+# label). Layout is "half", "wide" (both columns) or "bare" (no card).
 
 
 CHART_SPECS = [
     # KPIs come first — at-a-glance numbers
-    ("kpi-headline",   "Headline KPIs",                                       "kpi"),
-    ("cost-savings",   "Cost savings snapshot",                               "kpiCostSavings"),
+    ("kpi-headline",   "Headline KPIs",                           "kpi",            None, "bare"),
+    ("cost-savings",   "Cost savings snapshot",                   "kpiCostSavings", None, "wide"),
     # Volume / status mix
-    ("volume-daily",   "Daily volume — status mix + active users",            "volumeDaily"),
-    ("volume-weekly",  "Weekly volume (status mix + WAU overlay)",            "volumeWeekly"),
-    ("volume-monthly", "Monthly volume (status mix + MAU overlay)",           "volumeMonthly"),
-    # Outcomes
-    ("failure-breakdown", "Terminal outcomes per week (success-rate overlay)","failureBreakdown"),
-    # Tier
-    ("tier-distribution", "Tier mix per week (ro / rw / ddl)",                "tierDistribution"),
-    # Adoption
-    ("scheduled-usage",  "Scheduled-request adoption (weekly %)",             "scheduledUsage"),
-    # Latency
-    ("approval-sla", "Approval latency percentiles",                          "approvalSla"),
-    # Hours
-    ("business-offhours","Business hours vs off-hours (weekly)",              "businessOffhours"),
-    ("peak-hours",       "Peak hours — request count by day-of-week × hour",  "peakHours"),
+    ("volume-daily",   "Daily volume — status mix + active users", "volumeDaily",   "Volume", "wide"),
+    ("volume-weekly",  "Weekly volume — status mix + WAU",        "volumeWeekly",   "Volume", "half"),
+    ("volume-monthly", "Monthly volume — status mix + MAU",       "volumeMonthly",  "Volume", "half"),
+    # Outcomes, tiers, approvals
+    ("failure-breakdown", "Terminal outcomes per week + success rate", "failureBreakdown",
+     "Outcomes & approvals", "half"),
+    ("tier-distribution", "Tier mix per week",                    "tierDistribution",
+     "Outcomes & approvals", "half"),
+    ("approval-sla",   "Approval latency percentiles",            "approvalSla",
+     "Outcomes & approvals", "half"),
+    ("admin-workload", "Admin workload (decisions taken)",        "adminWorkload",
+     "Outcomes & approvals", "half"),
+    # When requests arrive
+    ("peak-hours",     "Peak hours — day × hour (local)",         "peakHours",
+     "When requests arrive", "wide"),
+    ("business-offhours", "Business hours vs off-hours (weekly)", "businessOffhours",
+     "When requests arrive", "half"),
+    ("scheduled-usage", "Scheduled-request adoption (weekly %)",  "scheduledUsage",
+     "When requests arrive", "half"),
     # Per-team / per-user / per-target
-    ("team-usage", "Per-team usage",                                          "teamUsage"),
-    ("top-users",  "Top 10 users by total requests",                          "topUsers"),
-    ("admin-workload", "Admin workload (decisions taken)",                    "adminWorkload"),
-    ("target-heatmap", "Target heatmap — usage by alias",                     "targetHeatmap"),
+    ("team-usage",     "Per-team usage",                          "teamUsage",
+     "Teams, people & targets", "half"),
+    ("top-users",      "Top 10 users by total requests",          "topUsers",
+     "Teams, people & targets", "half"),
+    ("target-heatmap", "Target heatmap — usage by alias",         "targetHeatmap",
+     "Teams, people & targets", "wide"),
     # Ratings
-    ("rating-weekly",  "Weekly avg rating (1-5) + counts",                    "ratingWeekly"),
-    ("rating-response","Rating response rate (weekly %)",                     "ratingResponse"),
-    ("rating-low",     "Low ratings (≤2) with feedback",                      "ratingLow"),
-    # CSV bulk imports
-    ("csv-imports",    "CSV bulk imports",                                    "csvImports"),
-    # Static refs
-    ("who-can-what",   "Who can do what",                                     "whoCanWhat"),
+    ("rating-weekly",  "Weekly avg rating (1-5) + counts",        "ratingWeekly",   "Ratings", "half"),
+    ("rating-response", "Rating response rate (weekly %)",        "ratingResponse", "Ratings", "half"),
+    ("rating-low",     "Low ratings (≤2) with feedback",          "ratingLow",      "Ratings", "wide"),
+    # CSV bulk imports + static refs
+    ("csv-imports",    "CSV bulk imports",                        "csvImports",
+     "Imports & access", "wide"),
+    ("who-can-what",   "Who can do what",                         "whoCanWhat",
+     "Imports & access", "wide"),
 ]
 
 
@@ -712,45 +679,47 @@ const STATE = {
 // scratch on each render to avoid stale axis scales / annotations.
 const CHARTS = {};
 
-// Color palette — tied to status / tier so semantics stay consistent.
-const C = {
-  completed: '#C4603F',
-  failed:    '#E53D3D',
-  rejected:  '#F59E0B',
-  cancelled: '#5A6170',
-  pending:   '#9CA3AF',
-  approved:  '#66CCFF',
-  scheduled: '#BFB2FF',
-  executing: '#144A66',
-  awaiting_dba_manual: '#FF9933',
-  changes_requested:   '#FF66B2',
-  ro:           '#C4603F',
-  rw:           '#FF9933',
-  ddl_or_other: '#E53D3D',
-  overlay:      '#66CCFF',
-  accent:       '#BFB2FF',
-  neutral:      '#5A6170',
-};
-
-// Theme tokens — read on load so chart text matches CSS.
+// Theme tokens — read on load so chart text and fills match the CSS.
 function readToken(name, fallback) {
   const v = getComputedStyle(document.documentElement)
     .getPropertyValue(name).trim();
   return v || fallback;
 }
-const COLOR_FG_PRIMARY   = readToken('--fg-primary',   '#1F2229');
 const COLOR_FG_SECONDARY = readToken('--fg-secondary', 'rgba(31,34,41,0.8)');
-const COLOR_FG_TERTIARY  = readToken('--fg-tertiary',  'rgba(31,34,41,0.6)');
+const COLOR_FG_TERTIARY  = readToken('--fg-tertiary',  'rgba(31,34,41,0.66)');
 const COLOR_STROKE_MED   = readToken('--stroke-medium','rgba(31,34,41,0.08)');
+const COLOR_WEEKEND      = readToken('--adaptive-strong', 'rgba(31,34,41,0.08)');
 
-Chart.defaults.color = COLOR_FG_SECONDARY;
+// Color palette — the admin panel's, tied to status / tier so the two pages
+// mean the same thing by a colour: completed and RO green, RW blue, DDL and
+// failed red, rejected amber, cancelled grey.
+const C = {
+  completed:    '#C4603F',
+  failed:       '#E53D3D',
+  rejected:     '#E0A800',
+  cancelled:    COLOR_FG_TERTIARY,
+  ro:           '#C4603F',
+  rw:           '#66CCFF',
+  ddl_or_other: '#E53D3D',
+  blue:         '#66CCFF',
+  purple:       '#BFB2FF',
+  recent:       '#B0512F',
+  overlay:      COLOR_FG_SECONDARY,
+  neutral:      COLOR_FG_TERTIARY,
+};
+
+Chart.defaults.color = COLOR_FG_TERTIARY;
 Chart.defaults.borderColor = COLOR_STROKE_MED;
 Chart.defaults.font.family = "'Manrope', -apple-system, 'Segoe UI', "
                            + "Roboto, system-ui, sans-serif";
-Chart.defaults.font.size = 12;
+Chart.defaults.font.size = 11;
 if (window['chartjs-plugin-annotation']) {
   Chart.register(window['chartjs-plugin-annotation']);
 }
+
+// Legend and tooltip keep dataset order even where `order` lifts a line
+// above the bars it overlays.
+const byDataset = (a, b) => a.datasetIndex - b.datasetIndex;
 
 const CHART_DEFAULTS = {
   responsive: true,
@@ -759,16 +728,24 @@ const CHART_DEFAULTS = {
   plugins: {
     legend: {
       position: 'bottom',
+      align: 'start',
       labels: {
-        color: COLOR_FG_SECONDARY,
+        color: COLOR_FG_TERTIARY,
         usePointStyle: true,
-        padding: 16,
-        boxHeight: 8,
-        font: { size: 12 },
+        pointStyle: 'rectRounded',
+        boxWidth: 9,
+        boxHeight: 9,
+        padding: 12,
+        font: { size: 11 },
+        sort: byDataset,
       },
     },
     tooltip: {
-      backgroundColor: COLOR_FG_PRIMARY,
+      // A fixed dark surface: --fg-primary turns white in dark mode, and the
+      // text on it is white.
+      backgroundColor: '#1F2229',
+      borderColor: 'rgba(255, 255, 255, 0.15)',
+      borderWidth: 1,
       titleColor: '#FFFFFF',
       bodyColor: '#FFFFFF',
       padding: 10,
@@ -776,7 +753,9 @@ const CHART_DEFAULTS = {
       titleFont: { size: 12, weight: '600' },
       bodyFont:  { size: 12 },
       displayColors: true,
+      usePointStyle: true,
       boxPadding: 6,
+      itemSort: byDataset,
     },
   },
 };
@@ -988,7 +967,7 @@ function buildAnnotations(items, weekends) {
       type: 'box',
       xMin: w.startIdx - 0.5,
       xMax: w.endIdx + 0.5,
-      backgroundColor: 'rgba(31, 34, 41, 0.06)',
+      backgroundColor: COLOR_WEEKEND,
       borderWidth: 0,
       drawTime: 'beforeDatasetsDraw',
     };
@@ -1019,23 +998,82 @@ function buildAnnotations(items, weekends) {
 
 const FACTORIES = {};
 
-function lineStackedSpec(labels, datasets, opts) {
+// Axes the admin panel's way: no frame, no vertical grid lines, faint
+// horizontal ones, small tertiary text.
+function axisTitle(text) {
+  return { display: !!text, text: text || '', color: COLOR_FG_TERTIARY,
+           font: { size: 11 } };
+}
+
+function xAxis(bucket, stacked) {
+  return {
+    stacked: !!stacked,
+    grid: { display: false },
+    border: { display: false },
+    ticks: {
+      maxRotation: 0,
+      autoSkipPadding: 14,
+      callback: function (value) {
+        return shortDate(this.getLabelForValue(value), bucket);
+      },
+    },
+  };
+}
+
+function yAxis(title, stacked) {
+  return {
+    stacked: !!stacked,
+    beginAtZero: true,
+    grid: { color: COLOR_STROKE_MED, drawTicks: false },
+    border: { display: false },
+    ticks: { padding: 8 },
+    title: axisTitle(title),
+  };
+}
+
+function y1Axis(title) {
+  return {
+    position: 'right',
+    beginAtZero: true,
+    grid: { drawOnChartArea: false, drawTicks: false },
+    border: { display: false },
+    ticks: { padding: 8 },
+    title: axisTitle(title),
+  };
+}
+
+// "2026-09-22" -> "22 Sep" (a day, or a week's Monday); "Sep 2026" for a
+// month. The labels themselves stay ISO: annotations match on them.
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function shortDate(iso, bucket) {
+  if (typeof iso !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+  const month = MONTHS[+iso.slice(5, 7) - 1];
+  return bucket === 'month' ? month + ' ' + iso.slice(0, 4)
+                            : +iso.slice(8, 10) + ' ' + month;
+}
+
+function withAnnotations(opts) {
+  return {
+    ...CHART_DEFAULTS.plugins,
+    annotation: { annotations: buildAnnotations(opts.annotations, opts.weekends) },
+  };
+}
+
+// Stacked bars, the admin panel's status-mix chart, with an optional dashed
+// line on a second axis (active users, success rate). One bar per bucket
+// reads the same with one bucket or with two hundred.
+function stackSpec(labels, datasets, opts) {
   opts = opts || {};
-  // Line/area charts read as random dots when there's only one
-  // bucket on the x-axis. Fall back to a stacked bar in that case
-  // so the data still renders meaningfully (e.g. pilot's first
-  // month, or the user filtering down to a single day).
-  const sparse = labels.length <= 1;
   const ds = datasets.map(d => ({
     label: d.label,
     data: d.data,
-    borderColor: d.color,
-    backgroundColor: sparse ? d.color : d.color + '80',
-    fill: !sparse,
-    tension: 0.25,
-    borderWidth: sparse ? 0 : 2,
-    pointRadius: sparse ? 0 : 2,
+    backgroundColor: d.color,
+    borderWidth: 0,
     stack: 'stack0',
+    order: 1,
+    categoryPercentage: 0.86,
+    barPercentage: 0.94,
   }));
   if (opts.overlay) {
     ds.push({
@@ -1043,109 +1081,94 @@ function lineStackedSpec(labels, datasets, opts) {
       data: opts.overlay.data,
       type: 'line',
       borderColor: opts.overlay.color || C.overlay,
-      backgroundColor: 'transparent',
-      borderWidth: 2,
-      borderDash: [6, 4],
-      pointRadius: sparse ? 6 : 2,
+      backgroundColor: opts.overlay.color || C.overlay,
+      borderWidth: 1.5,
+      borderDash: [5, 4],
+      pointRadius: labels.length <= 1 ? 4 : 0,
+      pointHoverRadius: 3,
       fill: false,
-      tension: 0.25,
+      tension: 0.3,
+      cubicInterpolationMode: 'monotone',
       yAxisID: 'y1',
+      order: 0,
     });
   }
   const scales = {
-    y: {
-      stacked: true, beginAtZero: true,
-      title: { display: true, text: opts.yTitle || 'requests' },
-    },
+    x: xAxis(opts.bucket, true),
+    y: yAxis(opts.yTitle || 'requests', true),
   };
-  if (opts.overlay) {
-    scales.y1 = {
-      position: 'right',
-      grid: { drawOnChartArea: false },
-      beginAtZero: true,
-      title: { display: true, text: opts.y1Title || '' },
-    };
-  }
+  if (opts.overlay) scales.y1 = y1Axis(opts.y1Title || '');
   return {
-    type: sparse ? 'bar' : 'line',
+    type: 'bar',
     data: { labels, datasets: ds },
-    options: {
-      ...CHART_DEFAULTS,
-      plugins: {
-        ...CHART_DEFAULTS.plugins,
-        annotation: { annotations: buildAnnotations(opts.annotations, opts.weekends) },
-      },
-      scales,
-    },
+    options: { ...CHART_DEFAULTS, plugins: withAnnotations(opts), scales },
   };
 }
 
 function lineSpec(labels, datasets, opts) {
   opts = opts || {};
-  // Same single-bucket guard as the stacked variant — a non-stacked
-  // line with a single point is just a floating dot; switch to bars.
+  // A line with a single point is just a floating dot; switch to bars.
   const sparse = labels.length <= 1;
   const ds = datasets.map(d => ({
     label: d.label,
     data: d.data,
     borderColor: d.color,
-    backgroundColor: sparse ? d.color : d.color + '33',
+    backgroundColor: d.color,
     fill: false,
-    tension: 0.25,
-    borderWidth: sparse ? 0 : 2,
-    pointRadius: sparse ? 6 : 2,
+    tension: 0.3,
+    cubicInterpolationMode: 'monotone',
+    borderWidth: sparse ? 0 : (d.dashed ? 1.5 : 2),
+    pointRadius: 0,
+    pointHoverRadius: 3,
     yAxisID: d.secondAxis ? 'y1' : 'y',
-    borderDash: d.dashed ? [6, 4] : undefined,
+    borderDash: d.dashed ? [5, 4] : undefined,
     type: sparse ? 'bar' : 'line',
   }));
   const scales = {
-    y: { beginAtZero: true,
-         title: { display: true, text: opts.yTitle || 'value' } },
+    x: xAxis(opts.bucket, false),
+    y: yAxis(opts.yTitle || 'value', false),
   };
-  const hasSecond = ds.some(d => d.yAxisID === 'y1');
-  if (hasSecond) {
-    scales.y1 = {
-      position: 'right',
-      grid: { drawOnChartArea: false },
-      beginAtZero: true,
-      title: { display: true, text: opts.y1Title || '' },
-    };
-  }
+  if (ds.some(d => d.yAxisID === 'y1')) scales.y1 = y1Axis(opts.y1Title || '');
   return {
     type: sparse ? 'bar' : 'line',
     data: { labels, datasets: ds },
-    options: {
-      ...CHART_DEFAULTS,
-      plugins: {
-        ...CHART_DEFAULTS.plugins,
-        annotation: { annotations: buildAnnotations(opts.annotations, opts.weekends) },
-      },
-      scales,
-    },
+    options: { ...CHART_DEFAULTS, plugins: withAnnotations(opts), scales },
   };
 }
 
-function barSpec(labels, datasets, opts) {
-  opts = opts || {};
-  const ds = datasets.map(d => ({
-    label: d.label,
-    data: d.data,
-    backgroundColor: d.color,
-    borderColor: d.color,
-    borderWidth: 1,
-  }));
-  return {
-    type: 'bar',
-    data: { labels, datasets: ds },
-    options: {
-      ...CHART_DEFAULTS,
-      indexAxis: opts.horizontal ? 'y' : 'x',
-      scales: {
-        x: { stacked: !!opts.stacked },
-        y: { stacked: !!opts.stacked, beginAtZero: true },
-      },
-    },
-  };
+// Labelled horizontal bars, the admin panel's BarList. Each item is
+// { label, parts: [{ name, value, color }] }: the parts stack inside one
+// fill, and a fill's length is its total against the largest total.
+function renderBarList(containerId, items, legend) {
+  const container = document.getElementById(containerId);
+  if (!items.length) {
+    container.innerHTML = '<div class="empty">No requests match the current filters.</div>';
+    return;
+  }
+  const totals = items.map(it => it.parts.reduce((s, p) => s + p.value, 0));
+  const max = Math.max(1, ...totals);
+  let out = '<div class="qh-toplist">';
+  items.forEach((it, i) => {
+    const segs = it.parts.filter(p => p.value > 0).map(p =>
+      '<span class="qh-topseg" style="flex-grow:' + p.value + ';background:' + p.color + '"'
+      + ' title="' + escapeHtml(p.name + ': ' + fmtNum(p.value)) + '"></span>').join('');
+    out += '<div class="qh-toprow">'
+      + '<span class="qh-topuser" title="' + escapeHtml(it.label) + '">'
+      + escapeHtml(it.label) + '</span>'
+      + '<div class="qh-toptrack"><div class="qh-topfill" style="width:'
+      + (100 * totals[i] / max) + '%">' + segs + '</div></div>'
+      + '<span class="qh-topn">' + fmtNum(totals[i]) + '</span>'
+      + '</div>';
+  });
+  out += '</div>';
+  if (legend) out += legendHtml(legend);
+  container.innerHTML = out;
+}
+
+function legendHtml(items) {
+  return '<div class="qh-legend">' + items.map(it =>
+    '<span class="lg" style="--seg:' + it.color + '">' + escapeHtml(it.name) + '</span>'
+  ).join('') + '</div>';
 }
 
 // ===== status counters =====================================================
@@ -1196,7 +1219,7 @@ function volumeStatusFactory(bucketFn, rangeFn, opts) {
       const arr = map.get(k) || [];
       return new Set(arr.map(r => r.requester_slack_id)).size;
     });
-    return lineStackedSpec(labels, [
+    return stackSpec(labels, [
       { label: 'completed', data: sc('completed'), color: C.completed },
       { label: 'failed',    data: sc('failed'),    color: C.failed    },
       { label: 'rejected',  data: sc('rejected'),  color: C.rejected  },
@@ -1205,6 +1228,7 @@ function volumeStatusFactory(bucketFn, rangeFn, opts) {
       overlay: { label: opts.overlayLabel, data: active, color: C.overlay },
       yTitle: 'requests',
       y1Title: opts.y1Title,
+      bucket: opts.bucket,
       annotations: annotationsFor(labels),
       weekends: opts.bucket === 'day' ? weekendBands(labels) : [],
     });
@@ -1234,7 +1258,7 @@ FACTORIES.failureBreakdown = function (rows) {
     if (!total) return 0;
     return Math.round(100 * completed[i] / total);
   });
-  return lineStackedSpec(labels, [
+  return stackSpec(labels, [
     { label: 'completed',       data: completed, color: C.completed },
     { label: 'admin rejected',  data: rejected,  color: C.rejected  },
     { label: 'execute failed',  data: failed,    color: C.failed    },
@@ -1251,7 +1275,7 @@ FACTORIES.tierDistribution = function (rows) {
   const { labels, map } = gapFilledBuckets(rows, truncWeek, weeksBetween);
   const counts = (tier) => labels.map(k =>
     (map.get(k) || []).filter(r => r.tier === tier).length);
-  return lineStackedSpec(labels, [
+  return stackSpec(labels, [
     { label: 'ro',  data: counts('ro'),  color: C.ro  },
     { label: 'rw',  data: counts('rw'),  color: C.rw  },
     { label: 'ddl', data: counts('ddl_or_other'), color: C.ddl_or_other },
@@ -1271,7 +1295,7 @@ FACTORIES.scheduledUsage = function (rows) {
   });
   const totals = labels.map(k => (map.get(k) || []).length);
   return lineSpec(labels, [
-    { label: 'scheduled %',    data: scheduledPct, color: C.accent  },
+    { label: 'scheduled %',    data: scheduledPct, color: C.completed },
     { label: 'total requests', data: totals,       color: C.neutral,
       secondAxis: true, dashed: true },
   ], {
@@ -1305,7 +1329,7 @@ FACTORIES.approvalSla = function (rows) {
   });
   const u = chooseTimeUnit([p50raw, p90raw, p95raw]);
   // Mirror the unit into the section title.
-  const titleEl = document.querySelector('#sec-approval-sla h2');
+  const titleEl = document.querySelector('#sec-approval-sla .qh-mcard-title');
   if (titleEl) titleEl.textContent = 'Approval latency percentiles, decided by people (' + u.unit + ')';
   return lineSpec(labels, [
     { label: 'p50', data: scaleTime(p50raw, u.div, u.decimals), color: C.completed },
@@ -1317,7 +1341,7 @@ FACTORIES.approvalSla = function (rows) {
 FACTORIES.businessOffhours = function (rows) {
   const { labels, map } = gapFilledBuckets(rows, truncWeek, weeksBetween);
   const cls = (filter) => labels.map(k => (map.get(k) || []).filter(filter).length);
-  return lineStackedSpec(labels, [
+  return stackSpec(labels, [
     { label: 'business hours',  data: cls(r => r.dow_local >= 1 && r.dow_local <= 5
                                           && r.hour_local >= 9 && r.hour_local <= 17),
       color: C.completed },
@@ -1326,9 +1350,9 @@ FACTORIES.businessOffhours = function (rows) {
       color: C.rejected  },
     { label: 'weekday early',   data: cls(r => r.dow_local >= 1 && r.dow_local <= 5
                                           && r.hour_local <  9),
-      color: C.accent    },
+      color: C.blue      },
     { label: 'weekend',         data: cls(r => r.dow_local === 0 || r.dow_local === 6),
-      color: C.failed    },
+      color: C.purple    },
   ], { yTitle: 'requests', annotations: annotationsFor(labels) });
 };
 
@@ -1341,14 +1365,21 @@ FACTORIES.teamUsage = function (rows) {
     else if (r.status === 'failed') byTeam[k].failed++;
     else if (r.status === 'rejected') byTeam[k].rejected++;
   });
-  const labels = Object.keys(byTeam).sort((a, b) =>
-    (byTeam[b].completed + byTeam[b].failed + byTeam[b].rejected)
-    - (byTeam[a].completed + byTeam[a].failed + byTeam[a].rejected));
-  return barSpec(labels, [
-    { label: 'completed', data: labels.map(k => byTeam[k].completed), color: C.completed },
-    { label: 'failed',    data: labels.map(k => byTeam[k].failed),    color: C.failed    },
-    { label: 'rejected',  data: labels.map(k => byTeam[k].rejected),  color: C.rejected  },
-  ], { stacked: true });
+  const size = t => t.completed + t.failed + t.rejected;
+  const labels = Object.keys(byTeam).sort((a, b) => size(byTeam[b]) - size(byTeam[a]));
+  renderBarList('canvas-team-usage', labels.map(k => ({
+    label: k,
+    parts: [
+      { name: 'completed', value: byTeam[k].completed, color: C.completed },
+      { name: 'failed',    value: byTeam[k].failed,    color: C.failed    },
+      { name: 'rejected',  value: byTeam[k].rejected,  color: C.rejected  },
+    ],
+  })), [
+    { name: 'completed', color: C.completed },
+    { name: 'failed',    color: C.failed    },
+    { name: 'rejected',  color: C.rejected  },
+  ]);
+  return null;
 };
 
 FACTORIES.topUsers = function (rows) {
@@ -1365,14 +1396,18 @@ FACTORIES.topUsers = function (rows) {
   const sorted = Object.values(byUser)
     .sort((a, b) => b.total - a.total)
     .slice(0, 10);
-  return barSpec(
-    sorted.map(u => u.name),
-    [
-      { label: 'total',   data: sorted.map(u => u.total),  color: C.overlay },
-      { label: 'last 7d', data: sorted.map(u => u.recent), color: C.accent  },
+  // Oldest on the left, the last seven days at the end of the bar.
+  renderBarList('canvas-top-users', sorted.map(u => ({
+    label: personName(u.name),
+    parts: [
+      { name: 'earlier',     value: u.total - u.recent, color: C.completed },
+      { name: 'last 7 days', value: u.recent,           color: C.recent    },
     ],
-    { horizontal: true }
-  );
+  })), [
+    { name: 'earlier',     color: C.completed },
+    { name: 'last 7 days', color: C.recent    },
+  ]);
+  return null;
 };
 
 FACTORIES.adminWorkload = function (rows) {
@@ -1390,15 +1425,19 @@ FACTORIES.adminWorkload = function (rows) {
   const sorted = Object.values(byAdmin)
     .sort((a, b) => (b.approved + b.rejected + b.changes)
                   - (a.approved + a.rejected + a.changes));
-  return barSpec(
-    sorted.map(a => a.name),
-    [
-      { label: 'approved',          data: sorted.map(a => a.approved), color: C.completed },
-      { label: 'rejected',          data: sorted.map(a => a.rejected), color: C.failed    },
-      { label: 'changes requested', data: sorted.map(a => a.changes),  color: C.rejected  },
+  renderBarList('canvas-admin-workload', sorted.map(a => ({
+    label: personName(a.name),
+    parts: [
+      { name: 'approved',          value: a.approved, color: C.completed },
+      { name: 'rejected',          value: a.rejected, color: C.failed    },
+      { name: 'changes requested', value: a.changes,  color: C.rejected  },
     ],
-    { horizontal: true, stacked: true }
-  );
+  })), [
+    { name: 'approved',          color: C.completed },
+    { name: 'rejected',          color: C.failed    },
+    { name: 'changes requested', color: C.rejected  },
+  ]);
+  return null;
 };
 
 FACTORIES.targetHeatmap = function (rows) {
@@ -1419,32 +1458,23 @@ FACTORIES.targetHeatmap = function (rows) {
   const ranked = Object.values(byTarget).sort((a, b) => b.total - a.total);
   const max = ranked.reduce((m, r) => Math.max(m, r.total), 0) || 1;
   const container = document.getElementById('canvas-target-heatmap');
-  container.innerHTML = '';
   if (!ranked.length) {
     container.innerHTML = '<div class="empty">No requests match the current filters.</div>';
     return null;
   }
-  const tbl = document.createElement('table');
-  tbl.className = 'data';
-  tbl.innerHTML = '<thead><tr><th>Target</th><th>Total</th>'
-                + '<th>Completed</th><th>Failed</th><th>Heat</th>'
-                + '<th>Last used</th></tr></thead>';
-  const body = document.createElement('tbody');
+  let out = '<div class="qh-tablewrap"><table class="qh-atable"><thead><tr>'
+    + '<th>Target</th><th class="num">Total</th><th class="num">Completed</th>'
+    + '<th class="num">Failed</th><th>Heat</th><th>Last used</th></tr></thead><tbody>';
   ranked.forEach(t => {
-    const pct = Math.round(100 * t.total / max);
-    const tr = document.createElement('tr');
-    tr.innerHTML = '<td>' + t.alias + '</td>'
-      + '<td>' + t.total + '</td>'
-      + '<td>' + t.completed + '</td>'
-      + '<td>' + t.failed + '</td>'
-      + '<td style="min-width:120px"><div style="background: '
-      + 'linear-gradient(to right, var(--brand-solid-light) ' + pct + '%, transparent ' + pct + '%);'
-      + 'height: 14px; border-radius: 4px"></div></td>'
-      + '<td>' + (t.last_used ? t.last_used.slice(0, 10) : '—') + '</td>';
-    body.appendChild(tr);
+    out += '<tr><td class="qh-mono">' + escapeHtml(t.alias) + '</td>'
+      + '<td class="num">' + fmtNum(t.total) + '</td>'
+      + '<td class="num">' + fmtNum(t.completed) + '</td>'
+      + '<td class="num">' + fmtNum(t.failed) + '</td>'
+      + '<td class="qh-heatbar"><div class="qh-toptrack"><div class="qh-topfill" style="width:'
+      + (100 * t.total / max) + '%"></div></div></td>'
+      + '<td class="qh-muted">' + (t.last_used ? t.last_used.slice(0, 10) : '—') + '</td></tr>';
   });
-  tbl.appendChild(body);
-  container.appendChild(tbl);
+  container.innerHTML = out + '</tbody></table></div>';
   return null;  // signal "no Chart.js instance"
 };
 
@@ -1454,51 +1484,34 @@ FACTORIES.peakHours = function (rows) {
   const dayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const cells = {};
   rows.forEach(r => {
-    const dow = r.dow_local;
-    const h   = r.hour_local;
-    const key = dow + '|' + h;
+    const key = r.dow_local + '|' + r.hour_local;
     cells[key] = (cells[key] || 0) + 1;
   });
-  // dow 0 (Sun) should be last; 1..6 → 0..5 in display order; 0 → 6.
-  function displayIdx(dow) { return dow === 0 ? 6 : dow - 1; }
   const max = Math.max(0, ...Object.values(cells));
   const container = document.getElementById('canvas-peak-hours');
-  container.innerHTML = '';
   if (!Object.keys(cells).length) {
     container.innerHTML = '<div class="empty">No requests match the current filters.</div>';
     return null;
   }
-  const grid = document.createElement('div');
-  grid.className = 'heatmap';
-  grid.style.gridTemplateColumns = '40px repeat(24, 1fr)';
-  grid.appendChild(document.createElement('div'));  // top-left blank
+  // The admin panel's heatmap: one green, the count in its opacity.
+  let out = '<div class="qh-heat"><div class="qh-heatrow"><span class="qh-heat-lbl"></span>';
   for (let h = 0; h < 24; h++) {
-    const cell = document.createElement('div');
-    cell.className = 'heatmap__row-label';
-    cell.textContent = h;
-    grid.appendChild(cell);
+    out += '<span class="qh-heat-h">' + (h % 3 === 0 ? h : '') + '</span>';
   }
+  out += '</div>';
   for (let dIdx = 0; dIdx < 7; dIdx++) {
-    const labelCell = document.createElement('div');
-    labelCell.className = 'heatmap__row-label';
-    labelCell.textContent = dayLabels[dIdx];
-    grid.appendChild(labelCell);
-    // Reverse map dIdx → dow
-    const dow = dIdx === 6 ? 0 : dIdx + 1;
+    const dow = dIdx === 6 ? 0 : dIdx + 1;   // Sun (0) goes last
+    out += '<div class="qh-heatrow"><span class="qh-heat-lbl">' + dayLabels[dIdx] + '</span>';
     for (let h = 0; h < 24; h++) {
       const v = cells[dow + '|' + h] || 0;
-      const intensity = max ? v / max : 0;
-      const cell = document.createElement('div');
-      cell.className = 'heatmap__cell';
-      cell.style.background = v
-        ? 'rgba(37, 99, 235, ' + (0.08 + intensity * 0.72) + ')'
-        : 'var(--bg-regular)';
-      cell.textContent = v || '';
-      cell.title = dayLabels[dIdx] + ' ' + h + ':00 · ' + v + ' request' + (v === 1 ? '' : 's');
-      grid.appendChild(cell);
+      const opacity = v ? (0.14 + 0.86 * v / max).toFixed(3) : '0.05';
+      out += '<span class="qh-heatcell" style="opacity:' + opacity + '" title="'
+        + dayLabels[dIdx] + ' ' + h + ':00 · ' + fmtNum(v) + ' request' + (v === 1 ? '' : 's')
+        + '"></span>';
     }
+    out += '</div>';
   }
-  container.appendChild(grid);
+  container.innerHTML = out + '</div>';
   return null;
 };
 
@@ -1512,7 +1525,7 @@ FACTORIES.ratingWeekly = function (rows) {
   const counts = labels.map(k =>
     (map.get(k) || []).filter(r => r.rating != null).length);
   return lineSpec(labels, [
-    { label: 'avg rating', data: avg.map(v => v == null ? 0 : v),    color: C.overlay },
+    { label: 'avg rating', data: avg.map(v => v == null ? 0 : v),    color: C.completed },
     { label: 'n ratings',  data: counts, color: C.neutral, secondAxis: true, dashed: true },
   ], { yTitle: 'avg (1-5)', y1Title: 'count', annotations: annotationsFor(labels) });
 };
@@ -1537,61 +1550,47 @@ FACTORIES.ratingLow = function (rows) {
   const allowedIds = new Set(rows.map(r => r.id));
   const filtered = DATA.rating_low.filter(r => allowedIds.has(r.request_id));
   const container = document.getElementById('canvas-rating-low');
-  container.innerHTML = '';
   if (!filtered.length) {
     container.innerHTML = '<div class="empty">No low ratings in the current filter window.</div>';
     return null;
   }
-  const tbl = document.createElement('table');
-  tbl.className = 'data';
-  tbl.innerHTML = '<thead><tr><th>Rated at</th><th>Rating</th>'
-                + '<th>Feedback</th><th>Request</th><th>Requester</th>'
-                + '<th>Status</th><th>Query</th></tr></thead>';
-  const body = document.createElement('tbody');
+  let out = '<div class="qh-tablewrap"><table class="qh-atable"><thead><tr>'
+    + '<th>Rated at</th><th>Rating</th><th>Feedback</th><th>Request</th>'
+    + '<th>Requester</th><th>Status</th><th>Query</th></tr></thead><tbody>';
   filtered.forEach(r => {
-    const tr = document.createElement('tr');
-    const ratedAt = r.rated_at ? r.rated_at.slice(0, 19).replace('T', ' ') : '';
-    tr.innerHTML = '<td>' + ratedAt + '</td>'
-      + '<td>' + (r.rating || '') + '</td>'
-      + '<td>' + escapeHtml(r.feedback_text || '') + '</td>'
-      + '<td>#' + r.request_id + '</td>'
-      + '<td>' + escapeHtml(r.requester_name || r.requester_slack_id) + '</td>'
-      + '<td>' + r.status + '</td>'
-      + '<td><code>' + escapeHtml((r.query_preview || '').slice(0, 100)) + '</code></td>';
-    body.appendChild(tr);
+    const ratedAt = r.rated_at ? r.rated_at.slice(0, 16).replace('T', ' ') : '';
+    out += '<tr><td class="qh-muted">' + ratedAt + '</td>'
+      + '<td>' + (r.rating ? r.rating + '★' : '') + '</td>'
+      + '<td>' + escapeHtml(r.feedback_text || '—') + '</td>'
+      + '<td class="qh-mono">#' + r.request_id + '</td>'
+      + '<td class="nowrap">' + escapeHtml(personName(r.requester_name || r.requester_slack_id)) + '</td>'
+      + '<td>' + statusHtml(r.status) + '</td>'
+      + '<td><code>' + escapeHtml((r.query_preview || '').slice(0, 100)) + '</code></td></tr>';
   });
-  tbl.appendChild(body);
-  container.appendChild(tbl);
+  container.innerHTML = out + '</tbody></table></div>';
   return null;
 };
 
 FACTORIES.whoCanWhat = function (rows) {
   // Static org structure — not filtered by request-side filters.
   const container = document.getElementById('canvas-who-can-what');
-  container.innerHTML = '';
   if (!DATA.who_can_what.length) {
     container.innerHTML = '<div class="empty">No users registered.</div>';
     return null;
   }
-  const tbl = document.createElement('table');
-  tbl.className = 'data';
-  tbl.innerHTML = '<thead><tr><th>Name</th><th>Slack ID</th><th>Admin</th>'
-                + '<th>Max tier</th><th>Bypass</th><th>Teams</th>'
-                + '<th>User grants</th></tr></thead>';
-  const body = document.createElement('tbody');
+  let out = '<div class="qh-tablewrap"><table class="qh-atable"><thead><tr>'
+    + '<th>Name</th><th>Slack ID</th><th>Admin</th><th>Max tier</th><th>Bypass</th>'
+    + '<th>Teams</th><th>User grants</th></tr></thead><tbody>';
   DATA.who_can_what.forEach(r => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = '<td>' + escapeHtml(r.name || '(?)') + '</td>'
-      + '<td>' + r.slack_user_id + '</td>'
+    out += '<tr><td class="nowrap">' + escapeHtml(r.name || '(?)') + '</td>'
+      + '<td class="qh-mono">' + escapeHtml(r.slack_user_id || '') + '</td>'
       + '<td>' + (r.is_admin ? 'yes' : '') + '</td>'
-      + '<td>' + (r.admin_max_tier || '') + '</td>'
+      + '<td>' + tierHtml(r.admin_max_tier) + '</td>'
       + '<td>' + (r.is_bypass ? 'yes' : '') + '</td>'
-      + '<td>' + ((r.teams || []).join(', ')) + '</td>'
-      + '<td>' + ((r.user_grants || []).join(', ')) + '</td>';
-    body.appendChild(tr);
+      + '<td class="nowrap">' + escapeHtml((r.teams || []).join(', ')) + '</td>'
+      + '<td class="qh-mono">' + escapeHtml((r.user_grants || []).join(', ')) + '</td></tr>';
   });
-  tbl.appendChild(body);
-  container.appendChild(tbl);
+  container.innerHTML = out + '</tbody></table></div>';
   return null;
 };
 
@@ -1601,7 +1600,6 @@ FACTORIES.csvImports = function (rows) {
   // A summary line + a recent-imports table, rendered outside Chart.js.
   const imports = DATA.csv_imports || [];
   const container = document.getElementById('canvas-csv-imports');
-  container.innerHTML = '';
   if (!imports.length) {
     container.innerHTML = '<div class="empty">No CSV imports yet.</div>';
     return null;
@@ -1614,11 +1612,6 @@ FACTORIES.csvImports = function (rows) {
     while (s >= 1024 && i < u.length - 1) { s /= 1024; i++; }
     return (i === 0 ? s : s.toFixed(s >= 10 ? 0 : 1)) + ' ' + u[i];
   }
-  // Same markup as renderKPIs() so the summary cards match the headline KPIs.
-  function kpiCard(label, value) {
-    return '<div class="kpi"><div class="kpi__label">' + escapeHtml(label)
-         + '</div><div class="kpi__value">' + escapeHtml(String(value)) + '</div></div>';
-  }
 
   const completed = imports.filter(r => r.status === 'completed');
   const failed    = imports.filter(r => r.status === 'failed' || r.status === 'rejected');
@@ -1626,46 +1619,38 @@ FACTORIES.csvImports = function (rows) {
   const decided    = completed.length + failed.length;
   const successPct = decided ? Math.round(100 * completed.length / decided) : null;
 
-  const sum = document.createElement('div');
-  sum.className = 'kpi-grid';
-  sum.innerHTML =
-      kpiCard('Imports', imports.length)
-    + kpiCard('Completed', completed.length)
-    + kpiCard('Failed / rejected', failed.length)
-    + kpiCard('Rows loaded', rowsLoaded.toLocaleString())
-    + kpiCard('Success rate', successPct == null ? '—' : successPct + '%');
-  container.appendChild(sum);
-
-  const tbl = document.createElement('table');
-  tbl.className = 'data';
-  tbl.innerHTML = '<thead><tr><th>When</th><th>Import</th><th>Requester</th>'
-                + '<th>Target / DB</th><th>Table</th><th>New?</th>'
-                + '<th>Status</th><th>Rows</th><th>Size</th><th>Load</th></tr></thead>';
-  const body = document.createElement('tbody');
+  // Same cards as the headline KPIs.
+  let out = kpiGridHtml([
+    { label: 'Imports',           value: imports.length },
+    { label: 'Completed',         value: completed.length },
+    { label: 'Failed / rejected', value: failed.length },
+    { label: 'Rows loaded',       value: rowsLoaded },
+    { label: 'Success rate',      value: successPct == null ? '—' : successPct + '%' },
+  ]);
+  out += '<div class="qh-tablewrap"><table class="qh-atable"><thead><tr>'
+    + '<th>When</th><th>Import</th><th>Requester</th><th>Target / DB</th><th>Table</th>'
+    + '<th>New?</th><th>Status</th><th class="num">Rows</th><th class="num">Size</th>'
+    + '<th class="num">Load</th></tr></thead><tbody>';
   // Most recent first.
   imports.slice().reverse().forEach(r => {
-    const tr = document.createElement('tr');
-    const when = r.created_at ? r.created_at.slice(0, 19).replace('T', ' ') : '';
+    const when = r.created_at ? r.created_at.slice(0, 16).replace('T', ' ') : '';
     const load = r.load_seconds == null ? '—'
                : (Number(r.load_seconds) < 1
                     ? (Number(r.load_seconds) * 1000).toFixed(0) + 'ms'
                     : Number(r.load_seconds).toFixed(1) + 's');
-    const rowsCell = r.inserted_rows != null ? Number(r.inserted_rows).toLocaleString()
-                   : (r.row_count != null ? Number(r.row_count).toLocaleString() : '—');
-    tr.innerHTML = '<td>' + when + '</td>'
-      + '<td>#' + r.id + '</td>'
-      + '<td>' + escapeHtml(r.requester_name || r.requester_slack_id) + '</td>'
-      + '<td>' + escapeHtml((r.target_alias || '?') + ' / ' + (r.database_name || '')) + '</td>'
+    const rowsCell = fmtNum(r.inserted_rows != null ? r.inserted_rows : r.row_count);
+    out += '<tr><td class="qh-muted">' + when + '</td>'
+      + '<td class="qh-mono">#' + r.id + '</td>'
+      + '<td class="nowrap">' + escapeHtml(personName(r.requester_name || r.requester_slack_id)) + '</td>'
+      + '<td class="qh-mono">' + escapeHtml((r.target_alias || '?') + ' / ' + (r.database_name || '')) + '</td>'
       + '<td><code>dba.' + escapeHtml(r.table_name || '') + '</code></td>'
       + '<td>' + (r.is_new_table ? 'new' : 'append') + '</td>'
-      + '<td>' + escapeHtml(r.status) + '</td>'
-      + '<td>' + rowsCell + '</td>'
-      + '<td>' + fmtBytes(r.byte_size) + '</td>'
-      + '<td>' + load + '</td>';
-    body.appendChild(tr);
+      + '<td>' + statusHtml(r.status) + '</td>'
+      + '<td class="num">' + rowsCell + '</td>'
+      + '<td class="num">' + fmtBytes(r.byte_size) + '</td>'
+      + '<td class="num">' + load + '</td></tr>';
   });
-  tbl.appendChild(body);
-  container.appendChild(tbl);
+  container.innerHTML = out + '</tbody></table></div>';
   return null;
 };
 
@@ -1730,31 +1715,68 @@ FACTORIES.kpiCostSavings = function (rows) {
   const monthlyInfra  = replicas * perRep + other;
 
   renderKPIs('canvas-cost-savings', [
-    { label: 'Completed (in filter)', value: completed },
-    { label: 'DBA hours saved',       value: dbaHoursSaved.toFixed(1),
-      hint: dbaMin + ' min × $' + dbaHr + '/hr' },
-    { label: 'DBA $ saved',           value: '$' + dbaSavingUSD.toFixed(0) },
+    { label: 'Completed',             value: completed },
+    { label: 'DBA hours saved',       value: fmtNum(Number(dbaHoursSaved.toFixed(1)), 1),
+      hint: dbaMin + 'm × $' + dbaHr + '/hr' },
+    { label: 'DBA $ saved',           value: '$' + fmtNum(Number(dbaSavingUSD.toFixed(0))) },
     { label: 'Avoided replicas',      value: replicas },
-    { label: 'Infra $ avoided / mo',  value: '$' + monthlyInfra.toFixed(0),
+    { label: 'Infra $ / mo',          value: '$' + fmtNum(Number(monthlyInfra.toFixed(0))),
       hint: 'replicas + other' },
-  ]);
+  ], true);
   return null;
 };
 
-function renderKPIs(canvasId, cards) {
-  const container = document.getElementById(canvasId);
-  container.innerHTML = '';
-  const grid = document.createElement('div');
-  grid.className = 'kpi-grid';
-  cards.forEach(c => {
-    const card = document.createElement('div');
-    card.className = 'kpi';
-    card.innerHTML = '<div class="kpi__label">' + escapeHtml(c.label) + '</div>'
-      + '<div class="kpi__value">' + escapeHtml(String(c.value)) + '</div>'
-      + (c.hint ? '<div class="kpi__hint">' + escapeHtml(c.hint) + '</div>' : '');
-    grid.appendChild(card);
-  });
-  container.appendChild(grid);
+// The admin panel's Stat card: the number first, its label under it, a hint
+// in the accent colour.
+function kpiGridHtml(cards, flush) {
+  return '<div class="qh-kpi-grid' + (flush ? ' qh-kpi-flush' : '') + '">'
+    + cards.map(c => '<div class="qh-metric">'
+      + '<div class="qh-metric-v">' + escapeHtml(fmtValue(c.value)) + '</div>'
+      + '<div class="qh-metric-k">' + escapeHtml(c.label) + '</div>'
+      + (c.hint ? '<div class="qh-metric-sub">' + escapeHtml(c.hint) + '</div>' : '')
+      + '</div>').join('')
+    + '</div>';
+}
+
+function renderKPIs(canvasId, cards, flush) {
+  document.getElementById(canvasId).innerHTML = kpiGridHtml(cards, flush);
+}
+
+// 6933 -> "6,933", as the admin panel prints counts.
+function fmtNum(n, digits) {
+  if (n == null || !isFinite(n)) return '—';
+  return Number(n).toLocaleString('en-US', digits == null ? undefined
+    : { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+// "mehmet.genc" -> "Mehmet Genc". A Slack handle stands in for a name where
+// no profile name existed; the admin panel prints it as a name the same way
+// (qhPersonName in QueryHubWeb/qh-data.jsx) and leaves role accounts alone.
+const ROLE_PREFIXES = ['dba', 'oncall', 'svc', 'service', 'bot', 'job', 'auto',
+                       'admin', 'sys', 'ops', 'root'];
+function personName(n) {
+  if (typeof n !== 'string') return n;
+  const s = n.trim();
+  if (!s || /\s/.test(s) || !/[._]/.test(s) || !/^[a-z0-9._-]+$/i.test(s)) return n;
+  const parts = s.split(/[._]+/).filter(Boolean);
+  if (!parts.length || ROLE_PREFIXES.includes(parts[0].toLowerCase())) return n;
+  return parts.map(p => p.charAt(0).toLocaleUpperCase('tr') + p.slice(1)).join(' ');
+}
+
+function fmtValue(v) {
+  return typeof v === 'number' ? fmtNum(v) : String(v);
+}
+
+function tierHtml(tier) {
+  if (!tier) return '';
+  const t = String(tier).toLowerCase();
+  if (!['ro', 'rw', 'ddl'].includes(t)) return escapeHtml(tier);
+  return '<span class="qh-tier tier-' + t + '">' + t.toUpperCase() + '</span>';
+}
+
+function statusHtml(status) {
+  const s = String(status || '');
+  return '<span class="qh-st-' + s.replace(/[^a-z_]/g, '') + '">' + escapeHtml(s) + '</span>';
 }
 
 function escapeHtml(s) {
@@ -1770,15 +1792,6 @@ function destroyAllCharts() {
   Object.keys(CHARTS).forEach(k => delete CHARTS[k]);
 }
 
-function annotationsForChartCard(chartId) {
-  // Surface annotations as pills underneath the chart card. Always
-  // shows the full set (not filtered) so the operator can see where
-  // milestones fall on the time axis even after a date filter.
-  return DATA.annotations.map(a =>
-    '<span class="anno-pill">' + a.x + ': ' + escapeHtml(a.label) + '</span>'
-  ).join('');
-}
-
 function render() {
   const filtered = applyFilters();
 
@@ -1787,7 +1800,7 @@ function render() {
   const range = STATE.preset === 'custom'
     ? (STATE.from || '…') + ' → ' + (STATE.to || '…')
     : STATE.preset === 'all' ? 'All time' : presetLabel(STATE.preset);
-  sum.innerHTML = '<strong>' + filtered.length + '</strong> request'
+  sum.innerHTML = '<strong>' + fmtNum(filtered.length) + '</strong> request'
     + (filtered.length === 1 ? '' : 's')
     + ' · ' + escapeHtml(range);
 
@@ -1796,11 +1809,12 @@ function render() {
     const factory = FACTORIES[spec.factory];
     if (!factory) return;
     const wrap = document.getElementById('canvas-' + spec.id);
-    // HTML-emit factories (KPI, table, heatmap) clear the wrap and
-    // inject their own DOM; they want auto height. Chart.js factories
+    // HTML-emit factories (KPI, bar list, table, heatmap) clear the wrap
+    // and inject their own DOM; they want auto height. Chart.js factories
     // need a fresh canvas at the fixed height.
-    const wantsChartJs = !['kpi', 'kpiCostSavings', 'targetHeatmap',
-                            'peakHours', 'ratingLow', 'whoCanWhat', 'csvImports']
+    const wantsChartJs = !['kpi', 'kpiCostSavings', 'targetHeatmap', 'peakHours',
+                            'teamUsage', 'topUsers', 'adminWorkload',
+                            'ratingLow', 'whoCanWhat', 'csvImports']
                          .includes(spec.factory);
     if (wantsChartJs) {
       wrap.classList.remove('chart-wrap--auto');
@@ -1841,7 +1855,7 @@ function populateSelect(id, values, placeholder) {
 
 function setupFilters() {
   // Preset buttons
-  document.querySelectorAll('.filter-btn[data-preset]').forEach(btn => {
+  document.querySelectorAll('[data-preset]').forEach(btn => {
     btn.addEventListener('click', () => {
       STATE.preset = btn.dataset.preset;
       // Clear the custom date inputs to avoid stale display.
@@ -1891,7 +1905,7 @@ function setupFilters() {
   // Populate dropdown values from lookups
   populateSelect('filter-team',   DATA.teams,   'All teams');
   populateSelect('filter-user',
-    DATA.users.map(u => ({ value: u.id, label: u.name })),
+    DATA.users.map(u => ({ value: u.id, label: personName(u.name) })),
     'All users');
   populateSelect('filter-target', DATA.targets, 'All targets');
   populateSelect('filter-db',     DATA.databases, 'All databases');
@@ -1904,8 +1918,8 @@ function setupFilters() {
 }
 
 function activatePreset(preset) {
-  document.querySelectorAll('.filter-btn[data-preset]').forEach(b => {
-    b.classList.toggle('active', b.dataset.preset === preset);
+  document.querySelectorAll('[data-preset]').forEach(b => {
+    b.classList.toggle('is-active', b.dataset.preset === preset);
   });
 }
 
@@ -1916,24 +1930,47 @@ render();
 """
 
 
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
 def render(payload: dict) -> str:
-    # Build TOC + section shells (canvas placeholders only; data is
-    # injected via JS at runtime).
+    # Section shells only (canvas placeholders); the JS fills them from the
+    # rows at runtime. Each group gets a section label, a jump link, and a
+    # two-column grid the way the admin panel's Metrics view is laid out.
     toc = []
     sections = []
     chart_specs_js = []
 
-    for spec_id, title, factory in CHART_SPECS:
-        toc.append(f"<a href='#sec-{spec_id}'>{title}</a>")
-        sections.append(
-            f"<div class='card' id='sec-{spec_id}'>\n"
-            f"  <h2>{title}</h2>\n"
-            f"  <div class='chart-wrap' id='canvas-{spec_id}'>\n"
-            f"    <canvas></canvas>\n"
-            f"  </div>\n"
-            f"</div>"
-        )
+    group = None
+    for spec_id, title, factory, spec_group, layout in CHART_SPECS:
+        if spec_group != group:
+            if group is not None:
+                sections.append("</div>")
+            group = spec_group
+            if group is not None:
+                slug = _slug(group)
+                toc.append(f"<a class='qh-chip' href='#grp-{slug}'>{escape(group)}</a>")
+                sections.append(
+                    f"<div class='qh-msection' id='grp-{slug}'>{escape(group)}</div>\n"
+                    f"<div class='qh-mgrid'>")
+        if layout == "bare":
+            sections.append(
+                f"<section id='sec-{spec_id}' aria-label='{escape(title)}'>\n"
+                f"  <div class='chart-wrap chart-wrap--auto' id='canvas-{spec_id}'></div>\n"
+                f"</section>")
+        else:
+            wide = " is-wide" if layout == "wide" else ""
+            sections.append(
+                f"<section class='qh-mcard{wide}' id='sec-{spec_id}'>\n"
+                f"  <div class='qh-mcard-title'>{escape(title)}</div>\n"
+                f"  <div class='chart-wrap' id='canvas-{spec_id}'>\n"
+                f"    <canvas></canvas>\n"
+                f"  </div>\n"
+                f"</section>")
         chart_specs_js.append({"id": spec_id, "factory": factory})
+    if group is not None:
+        sections.append("</div>")
 
     chart_specs_js_str = (
         "const CHART_SPECS_DOM = "
@@ -1941,8 +1978,17 @@ def render(payload: dict) -> str:
         + ";\n"
     )
 
+    # The admin panel's subtitle, word for word.
+    cfg = payload.get("config") or {}
+    sub = "From p_metrics_* (self-test excluded)"
+    if cfg.get("report_start_date"):
+        sub += f" · since {cfg['report_start_date']}"
+    sub += f" · {cfg.get('report_timezone') or 'UTC'}"
+
     html = HTML
-    html = html.replace("%GENERATED_AT%", payload["generated_at"])
+    html = html.replace("%FONT_FACES%", embedded_font_faces())
+    html = html.replace("%GENERATED_AT%", escape(payload["generated_at"]))
+    html = html.replace("%VIEW_SUB%", escape(sub))
     html = html.replace("%TOC%", "\n".join(toc))
     html = html.replace("%SECTIONS%", "\n".join(sections))
     html = html.replace(

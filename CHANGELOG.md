@@ -11,6 +11,12 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **The S3 metrics dashboard looks like the admin panel's Metrics view:** the
+  same typeface (inlined at build time, so the page stays one file), cards,
+  section labels and colours — RW is blue, rejected amber, as in the panel.
+  Status mixes are stacked bars, and the per-team, top-user and admin-workload
+  charts are the panel's labelled bars. The filters and every figure are
+  unchanged.
 - **A super-admin can end a session, run a mixed script and set
   `search_path`.** `pg_terminate_backend` / `pg_cancel_backend` ask first and
   run as the elevated role; a script mixing tiers runs as one request at its
