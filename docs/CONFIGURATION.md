@@ -36,6 +36,13 @@ they are inert in the vanilla (web-only) profile.
 | `web_allowed_email_domain` | `""` | If set, restrict Slack SSO and external-OIDC logins to this email domain (e.g. `example.com`). Empty = no domain gate. |
 | `auth_session_retention_days` | `7` | Expired/revoked login sessions (`web_sessions`) are deleted after this many days. Nothing removed them before, so the table grew for every sign-in. |
 | `auth_outbox_retention_days` | `14` | Processed authorization-change outbox rows are deleted after this many days. |
+| `idp_assertion_enabled` | `off` | Accept identity assertions from a trusted portal (AUTH.md §1.2). Every `idp_*` setting below is inert while this is off. |
+| `idp_issuer` / `idp_audience` | `idp` / `queryhub` | The `iss` and `aud` an assertion must carry. |
+| `idp_public_keys` | `{}` | JSON object mapping `kid` to the portal's Ed25519 public key (PEM). Empty = no assertion verifies. |
+| `idp_sync_principal` | `""` | The one principal allowed to call the reconcile and the notification outbox routes, through an assertion. Empty = nobody. |
+| `idp_clock_skew_seconds` | `10` | Clock disagreement tolerated between the portal and this host on an assertion's `iat` and `exp` (0-60). |
+| `idp_outbox_enabled` | `off` | Write a `notification_outbox` row for the portal on each pending submission. Leave off until the portal polls it. |
+| `idp_outbox_retention_days` | `7` | The daily cleanup deletes `notification_outbox` rows older than this, processed or not. |
 | `web_refresh_grace_seconds` | `30` | How long a just-rotated refresh token still works, so two tabs refreshing at once are not treated as token theft. 0 = strict single-use. |
 | `control_plane_target_ids` | *(auto)* | Comma-separated target ids that reach the bot's own metadata DB and can never be granted. Empty = detect from the configured BOT_DB_* connection. |
 | `web_base_url` | `http://localhost:8080` | External origin used for OAuth redirects and links. Override per-process with the `WEB_BASE_URL` env var. |

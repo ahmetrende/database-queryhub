@@ -14,6 +14,7 @@ count that makes the value-equality meaningful rather than coincidental.
 """
 from __future__ import annotations
 
+import inspect
 import json
 
 import pytest
@@ -86,11 +87,32 @@ def env(monkeypatch, active_admins):
     monkeypatch.setattr(cs.admins, "list_active", _list_active)
     monkeypatch.setattr(notifications_mod, "notify_admins", _fake_notify_admins)
     monkeypatch.setattr(cs.db, "execute", _fake_execute)
+    # The write is behind idp_outbox_enabled (off by default); these tests are
+    # about the row it writes, so they switch it on.
+    monkeypatch.setattr(cs.cfg, "get_bool",
+                        lambda k, d: True if k == "idp_outbox_enabled" else d)
     return calls
 
 
 def _outbox_calls(calls):
     return [c for c in calls["db_execute"] if "notification_outbox" in c[0]]
+
+
+def test_with_the_outbox_off_nothing_is_written_and_admins_are_still_dmed(
+        env, monkeypatch):
+    """Nothing reads the table until the panel's poller runs, and before the
+    switch existed every pending submission wrote a row for nobody."""
+    monkeypatch.setattr(cs.cfg, "get_bool",
+                        lambda k, d: False if k == "idp_outbox_enabled" else d)
+    result = cs.dispatch_and_notify(object(), _prep(), _outcome(_row()), dm_requester=False)
+    assert result == "pending"
+    assert _outbox_calls(env) == []
+    assert env["notify_admins_args"] is not None
+
+
+def test_the_outbox_switch_defaults_to_off():
+    src = inspect.getsource(cs.dispatch_and_notify)
+    assert 'cfg.get_bool("idp_outbox_enabled", False)' in src
 
 
 def test_pending_request_writes_exactly_one_outbox_row(env):

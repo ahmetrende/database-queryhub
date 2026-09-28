@@ -11,6 +11,17 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **The trusted-portal seam is ready for its first connection** (AUTH.md §1.2).
+  Everything here is inert while `idp_assertion_enabled` is off.
+  - An assertion is accepted with up to `idp_clock_skew_seconds` (10) of
+    clock skew. It is refused when no email domain is configured, when it
+    lives longer than 120 s, and on a websocket.
+  - The reconcile has a dry run. It never disables an admin, a role holder
+    or the sync account.
+  - The reconcile and the outbox answer the sync principal only, which
+    needs no admin role.
+  - The notification outbox is written only while `idp_outbox_enabled` is on,
+    and the daily cleanup trims it.
 - **The S3 metrics dashboard looks like the admin panel's Metrics view:** the
   same typeface (inlined at build time, so the page stays one file), cards,
   section labels and colours — RW is blue, rejected amber, as in the panel.

@@ -968,16 +968,19 @@ trimmed after `auth_outbox_retention_days` (default 14).
 ### `idp_assertion_jti`
 
 Replay ledger for identity assertions from a trusted portal (migration 101, AUTH.md
-§1.2): one row per accepted `jti` with its `expires_at`. The primary key is what
-refuses a replay; each insert prunes the expired rows, so there is no sweep job.
+§1.2): one row per accepted `jti`, kept until its token's expiry plus
+`idp_clock_skew_seconds`. The primary key is what refuses a replay; each insert
+prunes the expired rows, so there is no sweep job.
 
 ### `notification_outbox`
 
 One row per pending request and the admins notified about it (migration 102):
-`event_type`, `request_id`, `recipients`, `payload`, `processed_at`. Written on
-every submit next to the Slack DMs, never instead of them; read and acknowledged
-through two admin-gated routes so a portal can render an approvals queue without
-owning an admins table of its own.
+`event_type`, `request_id`, `recipients`, `payload`, `processed_at`. Written next
+to the Slack DMs, never instead of them, and only while `idp_outbox_enabled` is
+on (migration 136); read and acknowledged through two routes gated to the sync
+principal, so a portal can render an approvals queue without owning an admins
+table of its own. The daily cleanup deletes rows older than
+`idp_outbox_retention_days`.
 
 ### `schema_tables` / `schema_columns`
 

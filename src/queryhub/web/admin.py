@@ -9,6 +9,7 @@ exact same scopes as Slack, never a parallel one.
 from __future__ import annotations
 
 from .. import admins, targets
+from .. import config as cfg
 from . import deps
 
 _TIERS = ["ro", "rw", "ddl"]
@@ -56,6 +57,26 @@ def admin_block(principal_id: str) -> dict | None:
         can = ["RO"]
     return {"isAdmin": True, "role": "dba", "canApprove": can,
             "connections": ["*"] if star_conns else sorted(conns)}
+
+
+def require_sync_principal(claims: dict) -> str:
+    """Gate for the IDP panel's machine routes: the reconcile and the
+    notification outbox. Nothing else calls them.
+
+    Not `require_admin`. Under the access model an admin role is fleet-wide,
+    so with no tier cap the key that signs for the panel's cron would also
+    have approved anything; the gate asked for more authority than the job
+    needs. The caller must be the principal named in `idp_sync_principal`
+    and must have arrived through an identity assertion — a browser session
+    for the same account is refused. That account can be a DISABLED
+    requesters row with no grants: it passes here and nowhere else
+    (docs/AUTH.md §1.2).
+    """
+    uid = claims.get("sub") or ""
+    expected = (cfg.get_setting("idp_sync_principal", "") or "").strip()
+    if not expected or uid != expected or claims.get("provider") != "idp":
+        raise deps._error(403, "forbidden", "Not the sync principal.")
+    return uid
 
 
 def require_admin(claims: dict, need: str = "review", *, request: dict | None = None) -> str:

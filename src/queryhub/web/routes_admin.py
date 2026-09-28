@@ -5507,6 +5507,16 @@ class PrincipalSyncIn(BaseModel):
     """
     emails: list[str] = Field(default_factory=list)
     admin_emails: list[str] = Field(default_factory=list)
+    # Compute the plan and return it, writing nothing — not even the audit row.
+    dry_run: bool = False
+
+
+def _sync_keeps() -> set[str]:
+    """Principals the reconcile never disables: live admins in the admins
+    table (permanent or temporary) and every live role holder of the access
+    model. See `access.role_holder_ids` for why."""
+    return ({a["slack_user_id"] for a in admins.list_active()}
+            | access_model.role_holder_ids())
 
 
 @router.post("/principals/sync")
@@ -5514,33 +5524,34 @@ def principals_sync(body: PrincipalSyncIn,
                     claims: dict = Depends(deps.current_user)):
     """Apply the panel's view of who may use QueryHub.
 
-    Gated twice. `require_admin` is the structural gate every /api/admin route
-    carries; on top of it the caller must be the exact principal named in
-    `bot_config.idp_sync_principal`. 'review' rather than 'access' is
-    deliberate: the sync account needs to be *an* admin, and making a machine
-    account a super-admin — able to approve anything if its key leaked — would
-    be a real downgrade paid to satisfy a gate. Scope its admin row to nothing
-    (`scope_team_ids='{}'`, `scope_target_ids='{}'`) and it can approve no
-    request at all while still passing here.
+    Gated by `admin.require_sync_principal`: the exact principal named in
+    `bot_config.idp_sync_principal`, arriving through an identity assertion.
+    It used to be `require_admin("review")` plus that match, but under the
+    access model an admin role is fleet-wide, so the machine account held
+    approval authority it has no use for.
 
     Enable and disable requesters only. Onboarding needs a Slack id the panel
     does not own, so an address with no row comes back in `unresolved` for a
     human to act on.
 
-    It does not write to the `admins` table at all, in either direction.
-    Promotion was never implemented; disabling was, and the empty-state guard
-    covered only requesters, so a caller sending a populated `emails` with an
-    empty `admin_emails` disabled EVERY admin and stopped approvals dead. Admin
-    membership is now a human decision made in QueryHub, which puts it outside
-    a compromised panel's reach entirely. What the panel believes is reported
-    as `admin_drift` for an operator to act on, and every reconcile writes an
-    audit row: a permission change nobody can reconstruct afterwards is a
-    permission change nobody can review.
+    It changes nobody's role, in either direction. It does not write the
+    `admins` table: promotion was never implemented, and disabling was — a
+    caller sending a populated `emails` with an empty `admin_emails` once
+    disabled EVERY admin and stopped approvals dead. It also never disables
+    the requesters row of a live admin or role holder, nor of the sync
+    principal itself: under the access model that row's `enabled` is what the
+    principal's roles hang on, so disabling it would strip approval power the
+    panel was never meant to reach. Those rows come back in `kept`. Admin
+    membership is a human decision made in QueryHub, outside a compromised
+    panel's reach; what the panel believes is reported as `admin_drift` for an
+    operator to act on, and every reconcile writes an audit row: a permission
+    change nobody can reconstruct afterwards is one nobody can review.
+
+    `dry_run: true` computes the same plan, writes nothing — no audit row
+    either — and returns the ids it would change. Run it before the first real
+    sync: that one disables every requester the panel leaves out.
     """
-    uid = admin.require_admin(claims, "review")
-    expected = (cfg.get_setting("idp_sync_principal", "") or "").strip()
-    if not expected or uid != expected:
-        raise deps._error(403, "forbidden", "Not the sync principal.")
+    uid = admin.require_sync_principal(claims)
 
     live = requesters.list_enabled_ids()
     if live and not body.emails:
@@ -5557,12 +5568,10 @@ def principals_sync(body: PrincipalSyncIn,
             continue
         want.add(row["slack_user_id"])
 
+    keeps = _sync_keeps() | {uid}
     enabled_ids = sorted(want - live)
-    for pid in enabled_ids:
-        requesters.enable(pid)
-    disabled_ids = sorted(live - want)
-    for pid in disabled_ids:
-        requesters.disable(pid)
+    disabled_ids = sorted(live - want - keeps)
+    kept = sorted((live - want) & keeps)
 
     # Report-only. Resolving the panel's admin list costs one lookup each and
     # tells an operator exactly what to reconcile by hand.
@@ -5579,14 +5588,29 @@ def principals_sync(body: PrincipalSyncIn,
     drift = {"not_admin_here": sorted(want_admins - live_admins),
              "not_listed_by_panel": sorted(live_admins - want_admins)}
 
+    if body.dry_run:
+        return {"dry_run": True,
+                "requesters": {"would_enable": enabled_ids,
+                               "would_disable": disabled_ids},
+                "kept": kept,
+                "admin_drift": drift,
+                "unresolved": unresolved}
+
+    for pid in enabled_ids:
+        requesters.enable(pid)
+    for pid in disabled_ids:
+        requesters.disable(pid)
+
     audit.log(None, uid, "idp-sync", "idp_principal_sync",
-              {"enabled": enabled_ids, "disabled": disabled_ids,
+              {"enabled": enabled_ids, "disabled": disabled_ids, "kept": kept,
                "unresolved": unresolved, "admin_drift": drift})
 
-    log.info("layer-A reconcile: +%d/-%d requesters, %d unresolved, drift %s",
-             len(enabled_ids), len(disabled_ids), len(unresolved), drift)
+    log.info("layer-A reconcile: +%d/-%d requesters, %d kept, %d unresolved, "
+             "drift %s", len(enabled_ids), len(disabled_ids), len(kept),
+             len(unresolved), drift)
     return {"requesters": {"enabled": len(enabled_ids),
                            "disabled": len(disabled_ids)},
+            "kept": kept,
             "admin_drift": drift,
             "unresolved": unresolved}
 
@@ -5623,10 +5647,10 @@ _OUTBOX_MAX_LIMIT = 500
 def _resolve_recipient_emails(slack_ids: list[str]) -> dict[str, str]:
     """slack_user_id -> work email, resolved at READ time (Ruling P-1).
 
-    `notification_outbox.recipients` stores whatever `admins.list_active()`
+    `notification_outbox.recipients` stores whatever `admins.notify_list()`
     yielded at write time — mostly permanent `admins` rows, but a temp-admin
     grantee's own row lives in `requesters` instead (see `list_active`'s
-    COALESCE across the two tables). Checking admins first, then requesters
+    COALESCE across the two tables), and so does a scoped approver's. Checking admins first, then requesters
     for whatever is still missing, covers both without assuming a person
     exists in only one. Resolving here rather than caching at write time
     means an admin whose email changes while a row sits unprocessed is
@@ -5691,8 +5715,12 @@ def notifications_outbox(limit: int = _OUTBOX_DEFAULT_LIMIT,
     comment above for why this lists rather than claims. `recipients` are
     served as work emails (Ruling P-1); `unresolvedRecipients` counts
     recipients this call could not resolve to an email, so the panel can
-    attribute a drop to this side of the seam instead of guessing."""
-    admin.require_admin(claims, "review")
+    attribute a drop to this side of the seam instead of guessing.
+
+    Machine-only: gated by `admin.require_sync_principal`, not by admin rights.
+    It serves the work email addresses of the admins on each event, which no
+    admin needs from here and which a leaked admin key should not read."""
+    admin.require_sync_principal(claims)
     lim = limit if 1 <= limit <= _OUTBOX_MAX_LIMIT else _OUTBOX_DEFAULT_LIMIT
     rows = db.fetch_all(
         "SELECT id, event_type, request_id, recipients, payload, created_at "
@@ -5729,8 +5757,8 @@ def notifications_outbox_processed(outbox_id: int,
     """Stamp one outbox row processed. Idempotent by construction — see the
     section comment above: the UPDATE's own guard means a second call for an
     already-stamped (or never-existing) id touches zero rows and still
-    answers 204."""
-    admin.require_admin(claims, "review")
+    answers 204. Machine-only, like the GET above."""
+    admin.require_sync_principal(claims)
     db.execute(
         "UPDATE notification_outbox SET processed_at = NOW() "
         " WHERE id = %s AND processed_at IS NULL", (outbox_id,))

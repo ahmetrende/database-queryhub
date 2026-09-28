@@ -212,6 +212,18 @@ def cleanup_auth_event_outbox(days: int) -> None:
     log.info("auth-outbox: purged processed rows older than %dd", days)
 
 
+def cleanup_notification_outbox(days: int) -> None:
+    """Delete IDP-panel notification rows older than `days`, processed or not.
+
+    The table had no removal at all. A "request pending" notice nobody
+    delivered within the window is stale by then — the request has long been
+    decided or expired — and handing it to the panel late would only mislead
+    the approver who receives it."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    db.execute("DELETE FROM notification_outbox WHERE created_at < %s", (cutoff,))
+    log.info("notification-outbox: purged rows older than %dd", days)
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -232,6 +244,7 @@ def main() -> int:
     # Auth sessions + the authorization-change outbox: tables that only grew.
     cleanup_auth_sessions(cfg.get_int("auth_session_retention_days", 7))
     cleanup_auth_event_outbox(cfg.get_int("auth_outbox_retention_days", 14))
+    cleanup_notification_outbox(cfg.get_int("idp_outbox_retention_days", 7))
     return 0
 
 

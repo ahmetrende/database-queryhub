@@ -11,7 +11,7 @@ silently truncating every POST.
 import pytest
 from fastapi import Request as FastAPIRequest
 from fastapi.testclient import TestClient
-from starlette.requests import Request
+from starlette.requests import HTTPConnection, Request
 
 from queryhub.web import app as web_app
 from queryhub.web import deps, idp_assertion
@@ -126,3 +126,18 @@ def test_middleware_caches_the_body_without_stealing_it(monkeypatch):
         "current_user would hash an empty body"
     assert seen["route_body"] == b'{"sql":"SELECT 1"}', \
         "the route received an empty body — Starlette stopped replaying it"
+
+
+def test_a_websocket_with_an_assertion_is_refused_before_verification(monkeypatch):
+    """The panel polls; it does not relay sockets. verify() must not run for a
+    handshake: it would spend the single-use jti and then fail anyway."""
+    monkeypatch.setattr(deps.idp_assertion, "verify",
+                        lambda *a, **k: pytest.fail("verify() ran for a websocket"))
+    monkeypatch.setattr(deps.sessions, "verify_access",
+                        lambda t: pytest.fail("cookie path must not run"))
+    conn = HTTPConnection({
+        "type": "websocket", "path": "/api/queries/1/stream", "query_string": b"",
+        "headers": [(b"x-idp-assertion", b"tok"), (b"cookie", b"qh_session=c")]})
+    with pytest.raises(Exception) as e:
+        deps.current_user(conn)
+    assert e.value.status_code == 401

@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import NamedTuple
 
 import jwt as pyjwt
@@ -31,7 +31,12 @@ from .. import db, requesters
 log = logging.getLogger(__name__)
 
 _ALG = "EdDSA"
-_REPLAY_WINDOW = timedelta(minutes=2)
+# The panel mints 60-second assertions. One claiming a longer life was not
+# minted as specified, and refusing it keeps the jti ledger's job bounded: a
+# jti only has to be remembered while its token can still be accepted.
+_MAX_LIFETIME_S = 120
+_DEFAULT_SKEW_S = 10
+_MAX_SKEW_S = 60
 
 
 class AssertionError_(Exception):
@@ -54,6 +59,22 @@ def body_hash(method: str, path: str, body: bytes) -> str:
 def _enabled() -> bool:
     return (cfg.get_setting("idp_assertion_enabled", "off") or "").strip().lower() \
         in {"on", "1", "true", "yes"}
+
+
+def _clock_skew() -> int:
+    """Seconds of clock disagreement tolerated between the panel and this host.
+
+    `idp_clock_skew_seconds`, default 10, clamped to 0-60. Without it the
+    60-second window depended on two hosts agreeing to the second: a panel
+    clock one second ahead minted an `iat` in this service's future, and every
+    assertion was refused — logged as a bad signature, which hid the cause.
+    """
+    raw = cfg.get_setting("idp_clock_skew_seconds", str(_DEFAULT_SKEW_S))
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_SKEW_S
+    return max(0, min(seconds, _MAX_SKEW_S))
 
 
 def _public_key_for(kid: str) -> str | None:
@@ -113,15 +134,21 @@ def verify(token: str, method: str, path: str, body: bytes) -> Principal:
     if public_key is None:
         raise AssertionError_("unknown_kid", f"No public key for kid {kid!r}.")
 
+    skew = _clock_skew()
     try:
         claims = pyjwt.decode(
             token, public_key, algorithms=[_ALG],
             audience=cfg.get_setting("idp_audience", "queryhub"),
             issuer=cfg.get_setting("idp_issuer", "idp"),
+            leeway=skew,
             options={"require": ["exp", "iat", "sub", "jti", "aud", "iss"]},
         )
     except pyjwt.ExpiredSignatureError as e:
         raise AssertionError_("expired", str(e)) from e
+    except pyjwt.ImmatureSignatureError as e:
+        # `iat` further ahead than the tolerated skew: the panel's clock is
+        # ahead of this host's. Named apart so the log says what happened.
+        raise AssertionError_("clock_ahead", str(e)) from e
     except pyjwt.InvalidIssuerError as e:
         raise AssertionError_("bad_issuer", str(e)) from e
     except pyjwt.InvalidAudienceError as e:
@@ -129,12 +156,22 @@ def verify(token: str, method: str, path: str, body: bytes) -> Principal:
     except pyjwt.PyJWTError as e:
         raise AssertionError_("bad_signature", str(e)) from e
 
+    # decode() has already required both to be integers.
+    exp, iat = int(claims["exp"]), int(claims["iat"])
+    if exp - iat > _MAX_LIFETIME_S:
+        raise AssertionError_(
+            "too_long_lived",
+            f"Assertion lives {exp - iat}s; at most {_MAX_LIFETIME_S}s is accepted.")
+
     if claims.get("bh") != body_hash(method, path, body):
         raise AssertionError_("body_mismatch",
                               "Assertion is not bound to this request.")
 
+    # Remembered for as long as the token could still pass decode() above:
+    # its own expiry plus the skew. A fixed window from now let a token whose
+    # life outlasted it be replayed once its ledger row was pruned.
     if not _claim_jti(claims["jti"],
-                      datetime.now(timezone.utc) + _REPLAY_WINDOW):
+                      datetime.fromtimestamp(exp + skew, timezone.utc)):
         raise AssertionError_("replayed", "Assertion has already been used.")
 
     email = str(claims["sub"]).strip().lower()
@@ -143,9 +180,14 @@ def verify(token: str, method: str, path: str, body: bytes) -> Principal:
 
     # The same domain gate the OIDC providers apply. The panel checks it too,
     # but this is the check that matters: it is the one an attacker who is
-    # already past the panel cannot skip.
-    domain = (cfg.get_setting("web_allowed_email_domain", "") or "").strip()
-    if domain and not email.endswith("@" + domain.lower()):
+    # already past the panel cannot skip. It fails CLOSED, unlike the OIDC
+    # logins: this path is a machine speaking for people, and with no domain
+    # configured it would accept any address the key's holder chose to name.
+    domain = (cfg.get_setting("web_allowed_email_domain", "") or "").strip().lower()
+    if not domain:
+        raise AssertionError_("no_domain",
+                              "web_allowed_email_domain is not set; refusing.")
+    if not email.endswith("@" + domain):
         raise AssertionError_("bad_domain", "Address is outside the allowed domain.")
 
     row = requesters.principal_by_email(email)

@@ -56,6 +56,13 @@ def current_user(conn: HTTPConnection) -> dict:
     # for a proxy call this service just rejected.
     raw = conn.headers.get(ASSERTION_HEADER)
     if raw:
+        if conn.scope.get("type") == "websocket":
+            # The panel does not relay sockets; it polls. Refused before
+            # verify() runs, so a handshake cannot spend the single-use jti of
+            # an assertion, and without falling back to the cookie either.
+            log.warning("idp assertion refused: websocket")
+            raise _error(401, "unauthenticated",
+                         "Identity assertions are not accepted on websockets.")
         try:
             principal = idp_assertion.verify(
                 raw,

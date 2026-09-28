@@ -230,7 +230,9 @@ def run_idp_assertion(c: httpx.Client) -> None:
         skip("IDP assertion checks", "idp_assertion_enabled is off on this instance")
         return
 
-    path = "/api/queue"
+    # A real route, so a valid assertion would reach a handler rather than a
+    # 404: the admin queue, which every probe below is refused before.
+    path = "/api/admin/queue"
     url = BASE + path
 
     def _send(tok: str, *, method="GET", body: bytes = b"", target=path):

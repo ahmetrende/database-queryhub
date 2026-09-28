@@ -97,34 +97,51 @@ by the portal. `verify()` in `web/idp_assertion.py`:
   kid → PEM);
 - requires `exp`, `iat`, `sub`, `jti`, `aud` and `iss`, and checks `aud` /
   `iss` against `idp_audience` / `idp_issuer` (defaults `queryhub` / `idp`);
+- tolerates `idp_clock_skew_seconds` (default 10, at most 60) of clock
+  disagreement on `iat` and `exp`, and refuses an assertion whose `exp - iat`
+  is over 120 seconds;
 - checks the assertion is bound to THIS request — method, path with its query
   string, and body — so one minted for a call cannot be replayed against another;
-- refuses a reused `jti` through the `idp_assertion_jti` ledger;
-- applies the same `web_allowed_email_domain` gate the OIDC providers apply;
+- refuses a reused `jti` through the `idp_assertion_jti` ledger, which keeps
+  each one until its token's expiry plus the skew;
+- applies the `web_allowed_email_domain` gate — and, unlike the OIDC providers,
+  refuses every assertion while that setting is empty;
 - resolves the asserted address to an existing `requesters` or `admins` row and
   proceeds as that principal. An unknown address is refused, never created.
 
 A request that carries the header is judged by the assertion ONLY —
 `current_user` never falls through to the cookie after refusing one. Such
-requests record `origin = idp` next to `slack` and `web`.
+requests record `origin = idp` next to `slack` and `web`. A websocket handshake
+carrying the header is refused before verification, so it cannot spend a `jti`;
+the portal polls for live status instead.
 
 Everything here is inert until `bot_config.idp_assertion_enabled = on`. Beyond
-the proxied `/api` surface the portal gets two things, both behind
-`require_admin("review")`:
+the proxied `/api` surface the portal gets two machine-only things, both behind
+`require_sync_principal`: the caller must be the principal named in
+`bot_config.idp_sync_principal` and must arrive through an assertion. Admin
+rights are neither needed nor enough.
 
-- `POST /api/admin/principals/sync` — the reconcile. Only the principal named
-  in `bot_config.idp_sync_principal` may call it. It enables and disables
+- `POST /api/admin/principals/sync` — the reconcile. It enables and disables
   `requesters` rows to match the list of addresses the portal sends, never
   writes `admins`, refuses a list that would disable every requester, returns
   the addresses it cannot resolve for a human to onboard, and writes an
   `idp_principal_sync` audit row. **A requester missing from the list is
-  disabled** — read the list before the first run.
+  disabled** — except live admins, holders of any access-model role and the
+  sync principal itself, which come back in `kept`: disabling their row would
+  also switch off the roles it carries. Send `"dry_run": true` first; it
+  returns what would change and writes nothing.
 - `GET /api/admin/notifications/outbox` and
   `POST /api/admin/notifications/outbox/{id}/processed` — the pending-request
-  feed and its acknowledgement.
+  feed and its acknowledgement. Rows are written only while
+  `idp_outbox_enabled = on`, and deleted after `idp_outbox_retention_days` by
+  the daily cleanup.
 
-Give the sync account an `admins` row scoped to nothing (`scope_team_ids='{}'`,
-`scope_target_ids='{}'`): it passes the admin gate and can approve no request.
+Create the sync account as a **disabled** `requesters` row with no grants and
+the portal's sync address as its email. The assertion still resolves it (the
+resolver matches disabled rows), the machine gate lets it through, and every
+other route refuses it. It needs no admin row — under the access model an
+admin role is fleet-wide, so one would hand the portal's cron key approval
+authority it has no use for.
 
 ## 2. Login flow (one-time identity)
 

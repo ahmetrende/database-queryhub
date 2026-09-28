@@ -954,6 +954,45 @@ def create_request(
 
 # ---- Step 3: notifications + dispatch --------------------------------------
 
+def _write_outbox_row(row: dict, prep, active_admins: list[dict]) -> None:
+    """One `queryhub.request_pending` row for the IDP panel's poller: the same
+    admins the Slack fan-out just DMed, and a payload of strings only."""
+    try:
+        db.execute(
+            "INSERT INTO notification_outbox "
+            "(event_type, request_id, recipients, payload) "
+            "VALUES (%s, %s, %s, %s)",
+            (
+                "queryhub.request_pending",
+                row["id"],
+                [admin["slack_user_id"] for admin in active_admins],
+                json.dumps({
+                    # Ruling P-10: the panel decodes this into Go's
+                    # map[string]string, so EVERY value must already be a
+                    # string -- a bare int (requestId) or a None (tier /
+                    # justification, when unset) fails the whole outbox
+                    # fetch on the panel side, not just that one field, and
+                    # silently stops every notification from being
+                    # delivered. An absent value serialises as "" rather
+                    # than null.
+                    "requesterName": str(
+                        row.get("requester_name") or row.get("requester_slack_id") or ""),
+                    "tier": str(row.get("required_tier") or ""),
+                    "target": str(prep.target.alias),
+                    "justification": str(row.get("justification") or ""),
+                    "requestId": str(row["id"]),
+                }),
+            ),
+        )
+    except Exception:
+        log.exception(
+            "failed to write notification_outbox row for request %s; the "
+            "request was submitted and admins were DMed, but the IDP panel "
+            "will not learn about it until an admin acts from Slack or the "
+            "approvals queue", row["id"],
+        )
+
+
 def dispatch_and_notify(
     client,
     prep: Prepared,
@@ -1048,40 +1087,12 @@ def dispatch_and_notify(
     # a lost outbox row is recoverable (the request still surfaces in the
     # approvals queue); a false 500 sends the requester into a duplicate-
     # detection 409 on retry for a request that already succeeded.
-    try:
-        db.execute(
-            "INSERT INTO notification_outbox "
-            "(event_type, request_id, recipients, payload) "
-            "VALUES (%s, %s, %s, %s)",
-            (
-                "queryhub.request_pending",
-                row["id"],
-                [admin["slack_user_id"] for admin in active_admins],
-                json.dumps({
-                    # Ruling P-10: the panel decodes this into Go's
-                    # map[string]string, so EVERY value must already be a
-                    # string -- a bare int (requestId) or a None (tier /
-                    # justification, when unset) fails the whole outbox
-                    # fetch on the panel side, not just that one field, and
-                    # silently stops every notification from being
-                    # delivered. An absent value serialises as "" rather
-                    # than null.
-                    "requesterName": str(
-                        row.get("requester_name") or row.get("requester_slack_id") or ""),
-                    "tier": str(row.get("required_tier") or ""),
-                    "target": str(prep.target.alias),
-                    "justification": str(row.get("justification") or ""),
-                    "requestId": str(row["id"]),
-                }),
-            ),
-        )
-    except Exception:
-        log.exception(
-            "failed to write notification_outbox row for request %s; the "
-            "request was submitted and admins were DMed, but the IDP panel "
-            "will not learn about it until an admin acts from Slack or the "
-            "approvals queue", row["id"],
-        )
+    # Behind `idp_outbox_enabled` (default off). Nothing reads the table until
+    # the panel's poller is switched on; before this switch existed every
+    # pending submission wrote a row regardless, and 185 of them piled up
+    # unread between 7 and 28 September 2026.
+    if cfg.get_bool("idp_outbox_enabled", False):
+        _write_outbox_row(row, prep, active_admins)
     if dm_requester:
         blocks = notifications.requester_card_blocks(
             row,

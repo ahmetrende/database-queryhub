@@ -28,10 +28,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from queryhub import admins, db, requesters
+from queryhub import config as cfg
 from queryhub.web import app as web_app
-from queryhub.web import routes_admin, sessions
+from queryhub.web import deps, routes_admin, sessions
 
 ADMIN = "U0ADMIN"
+SYNC = "U0SYNC"
 
 
 class FakeOutboxDB:
@@ -103,13 +105,18 @@ def _row(id_, *, created_at, processed_at=None, recipients=(),
 
 @pytest.fixture
 def admin_claims():
-    return {"sub": ADMIN, "name": "Admin Person"}
+    """The caller these routes serve: the sync principal, through an
+    assertion. (Named for its history; the routes used to take any admin.)"""
+    return {"sub": SYNC, "name": "QueryHub principal sync", "provider": "idp"}
 
 
 @pytest.fixture(autouse=True)
 def _admin_gate(monkeypatch):
     monkeypatch.setattr(admins, "is_admin", lambda uid: uid == ADMIN)
     monkeypatch.setattr(admins, "is_super_admin", lambda uid: False)
+    real = cfg.get_setting
+    monkeypatch.setattr(cfg, "get_setting",
+                        lambda k, d=None: SYNC if k == "idp_sync_principal" else real(k, d))
 
 
 # ---------------------------------------------------------------------------
@@ -247,9 +254,16 @@ def test_a_null_request_id_is_served_as_null(monkeypatch, admin_claims):
     assert result["events"][0]["requestId"] is None
 
 
-def test_get_requires_admin(admin_claims):
+@pytest.mark.parametrize("claims", [
+    {"sub": "U0PLAIN"},                                  # nobody
+    {"sub": ADMIN, "provider": "slack"},                 # an admin: not enough
+    {"sub": SYNC, "provider": "slack"},                  # the account, by browser
+])
+def test_get_answers_the_sync_principal_only(claims):
+    """It serves admins' work email addresses; no admin needs them from
+    here, and a leaked admin session should not read them."""
     with pytest.raises(Exception) as e:
-        routes_admin.notifications_outbox(limit=50, claims={"sub": "U0PLAIN"})
+        routes_admin.notifications_outbox(limit=50, claims=claims)
     assert e.value.status_code == 403
 
 
@@ -299,10 +313,14 @@ def test_posting_processed_for_an_id_that_never_existed_is_also_204(
     routes_admin.notifications_outbox_processed(999, claims=admin_claims)
 
 
-def test_post_requires_admin():
+@pytest.mark.parametrize("claims", [
+    {"sub": "U0PLAIN"},
+    {"sub": ADMIN, "provider": "slack"},
+    {"sub": SYNC, "provider": "slack"},
+])
+def test_post_answers_the_sync_principal_only(claims):
     with pytest.raises(Exception) as e:
-        routes_admin.notifications_outbox_processed(
-            5, claims={"sub": "U0PLAIN"})
+        routes_admin.notifications_outbox_processed(5, claims=claims)
     assert e.value.status_code == 403
 
 
@@ -330,12 +348,26 @@ def http_client(monkeypatch):
         yield c
 
 
-def test_http_get_returns_the_pinned_shape(monkeypatch, http_client):
+@pytest.fixture
+def sync_http_client(monkeypatch):
+    """The real app, with the caller resolved as the sync principal arriving
+    through an assertion (dependency_overrides is the only seam that reaches
+    the resolved dependency)."""
+    logging.disable(logging.CRITICAL)
+    monkeypatch.setattr(db, "init_pool", lambda: None)
+    app = web_app.create_app()
+    app.dependency_overrides[deps.current_user] = \
+        lambda: {"sub": SYNC, "provider": "idp", "sid": None}
+    with TestClient(app) as c:
+        yield c
+
+
+def test_http_get_returns_the_pinned_shape(monkeypatch, sync_http_client):
+    http_client = sync_http_client
     t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
     fake = FakeOutboxDB([_row(1, created_at=t1, recipients=["U0A"])],
                         admin_emails={"U0A": "a@example.com"})
     monkeypatch.setattr(routes_admin.db, "fetch_all", fake.fetch_all)
-    http_client.cookies.set("qh_session", "good")
 
     r = http_client.get("/api/admin/notifications/outbox?limit=50")
 
@@ -345,12 +377,12 @@ def test_http_get_returns_the_pinned_shape(monkeypatch, http_client):
     assert body["unresolvedRecipients"] == 0
 
 
-def test_http_post_processed_is_204_with_an_empty_body(monkeypatch, http_client):
+def test_http_post_processed_is_204_with_an_empty_body(monkeypatch, sync_http_client):
+    http_client = sync_http_client
     t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
     fake = FakeOutboxDB([_row(7, created_at=t1)])
     monkeypatch.setattr(routes_admin.db, "execute", fake.execute)
     monkeypatch.setattr(routes_admin.db, "fetch_one", fake.fetch_one)
-    http_client.cookies.set("qh_session", "good")
 
     r = http_client.post("/api/admin/notifications/outbox/7/processed")
 
@@ -358,8 +390,10 @@ def test_http_post_processed_is_204_with_an_empty_body(monkeypatch, http_client)
     assert r.content == b""
 
 
-def test_http_non_admin_gets_403_from_both_routes(http_client):
-    http_client.cookies.set("qh_session", "plain")
+@pytest.mark.parametrize("cookie", ["plain", "good"])
+def test_http_a_browser_session_gets_403_from_both_routes(http_client, cookie):
+    """A non-admin and an admin alike: the routes are the panel's."""
+    http_client.cookies.set("qh_session", cookie)
 
     r1 = http_client.get("/api/admin/notifications/outbox?limit=50")
     r2 = http_client.post("/api/admin/notifications/outbox/1/processed")

@@ -4,9 +4,12 @@ The IDP panel owns who may use QueryHub; this service keeps a derived copy so
 it can still decide while the panel is down. The endpoint takes the FULL
 desired state as verified addresses and applies the difference.
 
-Two limits are deliberate and tested here: it never creates a row (onboarding
-needs a Slack id the panel does not own), and it refuses a desired state that
-would disable everyone.
+Limits that are deliberate and tested here: it never creates a row
+(onboarding needs a Slack id the panel does not own), it refuses a desired
+state that would disable everyone, it never disables an admin, a role holder
+or the sync account itself, and a dry run writes nothing. The gate is the sync
+principal arriving through an assertion; an admin role is neither needed nor
+enough.
 """
 import pytest
 from fastapi.testclient import TestClient
@@ -24,11 +27,13 @@ def app_client(monkeypatch):
     be a no-op that reads like a pass."""
     monkeypatch.setattr(routes_admin.cfg, "get_setting",
                         lambda k, d=None: SYNC if k == "idp_sync_principal" else d)
+    # Role holders come from the access model's tables; no database here.
+    monkeypatch.setattr(routes_admin.access_model, "role_holder_ids", lambda: set())
     app = web_app.create_app()
     return app, TestClient(app)
 
 
-def _as(app, monkeypatch, principal, *, is_admin=True):
+def _as(app, monkeypatch, principal, *, is_admin=True, provider="idp"):
     """Replace the identity through dependency_overrides.
 
     Monkeypatching deps.current_user does nothing: FastAPI captured the
@@ -38,16 +43,99 @@ def _as(app, monkeypatch, principal, *, is_admin=True):
     monkeypatch.setattr(routes_admin.admin.admins, "is_admin", lambda uid: is_admin)
     monkeypatch.setattr(routes_admin.admin.admins, "is_super_admin", lambda uid: False)
     app.dependency_overrides[deps.current_user] = \
-        lambda: {"sub": principal, "provider": "idp", "sid": None}
+        lambda: {"sub": principal, "provider": provider, "sid": None}
 
 
-def test_a_non_admin_is_refused(app_client, monkeypatch):
-    """The admin gate runs first, before the sync-principal check."""
+def _people(monkeypatch, *, live, by_email, admins_active=(), role_holders=()):
+    """Stub the tables the reconcile reads, and record what it writes."""
+    monkeypatch.setattr(routes_admin.requesters, "list_enabled_ids", lambda: set(live))
+    monkeypatch.setattr(routes_admin.requesters, "principal_by_email",
+                        lambda e: ({"slack_user_id": by_email[e]} if e in by_email else None))
+    monkeypatch.setattr(routes_admin.admins, "list_active",
+                        lambda: [{"slack_user_id": a, "source": "permanent"}
+                                 for a in admins_active])
+    monkeypatch.setattr(routes_admin.access_model, "role_holder_ids",
+                        lambda: set(role_holders))
+    writes = {"enable": [], "disable": [], "audit": []}
+    monkeypatch.setattr(routes_admin.requesters, "enable",
+                        lambda pid: writes["enable"].append(pid))
+    monkeypatch.setattr(routes_admin.requesters, "disable",
+                        lambda pid: writes["disable"].append(pid))
+    monkeypatch.setattr(routes_admin.audit, "log",
+                        lambda *a, **k: writes["audit"].append((a, k)))
+    return writes
+
+
+def test_the_sync_principal_needs_no_admin_role(app_client, monkeypatch):
+    """Under the access model an admin role is fleet-wide, so requiring one
+    handed the panel's cron key approval authority it has no use for."""
     app, client = app_client
     _as(app, monkeypatch, SYNC, is_admin=False)
+    _people(monkeypatch, live={"U_KEEP"}, by_email={"keep@example.com": "U_KEEP"})
+    r = client.post("/api/admin/principals/sync",
+                    json={"emails": ["keep@example.com"], "admin_emails": []})
+    assert r.status_code == 200, r.text
+
+
+def test_a_browser_session_of_the_sync_principal_is_refused(app_client, monkeypatch):
+    """The same account signed in through the web UI is not the panel."""
+    app, client = app_client
+    _as(app, monkeypatch, SYNC, provider="slack")
     r = client.post("/api/admin/principals/sync",
                     json={"emails": ["a@example.com"], "admin_emails": []})
     assert r.status_code == 403
+    assert r.json()["error"]["code"] == "forbidden"
+
+
+def test_an_unset_sync_principal_refuses_everyone(app_client, monkeypatch):
+    app, client = app_client
+    monkeypatch.setattr(routes_admin.cfg, "get_setting", lambda k, d=None: d)
+    _as(app, monkeypatch, SYNC)
+    r = client.post("/api/admin/principals/sync",
+                    json={"emails": ["a@example.com"], "admin_emails": []})
+    assert r.status_code == 403
+
+
+def test_admins_role_holders_and_the_sync_account_are_never_disabled(
+        app_client, monkeypatch):
+    """Disabling a requesters row disables the principal its roles hang on,
+    so leaving an approver out of the panel's list must not strip approval
+    power. They come back in `kept` instead."""
+    app, client = app_client
+    _as(app, monkeypatch, SYNC)
+    writes = _people(
+        monkeypatch,
+        live={"U_GONE", "U_ADMIN", "U_APPROVER", SYNC},
+        by_email={"new@example.com": "U_NEW"},
+        admins_active=["U_ADMIN"], role_holders=["U_APPROVER"])
+    r = client.post("/api/admin/principals/sync",
+                    json={"emails": ["new@example.com"], "admin_emails": []})
+    assert r.status_code == 200, r.text
+    assert writes["disable"] == ["U_GONE"]
+    assert writes["enable"] == ["U_NEW"]
+    assert r.json()["kept"] == sorted(["U_ADMIN", "U_APPROVER", SYNC])
+    assert writes["audit"][0][0][4]["kept"] == sorted(["U_ADMIN", "U_APPROVER", SYNC])
+
+
+def test_a_dry_run_returns_the_plan_and_writes_nothing(app_client, monkeypatch):
+    """Run before the first real sync: that one disables everyone the panel
+    leaves out, and nobody should learn the list by living through it."""
+    app, client = app_client
+    _as(app, monkeypatch, SYNC)
+    writes = _people(
+        monkeypatch, live={"U_GONE", "U_ADMIN"},
+        by_email={"new@example.com": "U_NEW"}, admins_active=["U_ADMIN"])
+    r = client.post("/api/admin/principals/sync",
+                    json={"emails": ["new@example.com", "stranger@example.com"],
+                          "admin_emails": [], "dry_run": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["dry_run"] is True
+    assert body["requesters"] == {"would_enable": ["U_NEW"],
+                                  "would_disable": ["U_GONE"]}
+    assert body["kept"] == ["U_ADMIN"]
+    assert body["unresolved"] == ["stranger@example.com"]
+    assert writes == {"enable": [], "disable": [], "audit": []}
 
 
 def test_an_admin_that_is_not_the_sync_principal_is_refused(app_client, monkeypatch):

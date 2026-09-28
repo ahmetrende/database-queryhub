@@ -786,6 +786,27 @@ def list_admins() -> list[dict]:
         " ORDER BY i.external_id, (ra.valid_until IS NOT NULL), ra.valid_until",
         {"prov": _SLACK})
 
+def role_holder_ids() -> set[str]:
+    """Slack ids of everyone holding a live role of any kind (admin,
+    approver, granter) on an enabled principal.
+
+    The IDP reconcile leaves these people alone. Disabling a role holder's
+    requesters row disables the principal the role hangs on (migration 109's
+    mirror), so the panel's list of who may submit would otherwise also decide
+    who may approve — which is QueryHub's decision, made by a person.
+    """
+    rows = db.fetch_all(
+        "SELECT DISTINCT i.external_id AS slack_user_id "
+        "  FROM role_assignment ra "
+        "  JOIN principal p ON p.id = ra.principal_id "
+        "   AND NOT p.is_deleted AND p.enabled "
+        "  JOIN principal_identity i ON i.principal_id = p.id "
+        "   AND NOT i.is_deleted AND i.provider = %s "
+        " WHERE " + _LIVE_ROLE,
+        (_SLACK,))
+    return {r["slack_user_id"] for r in rows}
+
+
 def warn_if_access_model_v2() -> None:
     """Say loudly, at boot, that reads and writes are on different models.
 

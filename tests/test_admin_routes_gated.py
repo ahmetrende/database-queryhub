@@ -39,6 +39,12 @@ from queryhub.web import routes_admin, sessions
 # for itself in this list rather than pass silently.
 PUBLIC_ADMIN_ROUTES: dict[str, str] = {}
 
+# Every call that counts as the gate. Kept in one place so the source check and
+# the ordering check below cannot disagree about what a gate is.
+_GATE_NAMES = ("require_admin", "require_super", "is_super_admin",
+               "require_sync_principal")
+_GATE_RE = "|".join(_GATE_NAMES)
+
 
 def _admin_routes():
     """(path, methods, endpoint) for every route on the admin router."""
@@ -65,9 +71,13 @@ def test_every_admin_route_checks_admin_rights(path, methods, endpoint):
         pytest.skip(PUBLIC_ADMIN_ROUTES[path])
     src = inspect.getsource(endpoint)
     # require_admin / require_super_admin / is_super_admin — any of the admin
-    # gates. A route that resolves its own permission some other way should be
-    # listed in PUBLIC_ADMIN_ROUTES with a reason, not pass by accident.
-    assert re.search(r"require_admin|require_super|is_super_admin", src), (
+    # gates. require_sync_principal is the one gate that is not an admin
+    # check: the trusted portal's machine routes (the reconcile and the
+    # notification outbox) answer only the sync principal, which holds no
+    # admin role on purpose (docs/AUTH.md §1.2). A route that resolves its own
+    # permission some other way should be listed in PUBLIC_ADMIN_ROUTES with a
+    # reason, not pass by accident.
+    assert re.search(_GATE_RE, src), (
         f"{methods} {path} -> {endpoint.__name__}() has no admin check. "
         f"Add one, or list the route in PUBLIC_ADMIN_ROUTES with a reason.")
 
@@ -81,8 +91,7 @@ def _first_gate_index(fn_src: str):
     tree = ast.parse(textwrap.dedent(fn_src))
     fn = tree.body[0]
     for i, stmt in enumerate(fn.body):
-        if any(getattr(n.func, "attr", "") in
-               ("require_admin", "require_super", "is_super_admin")
+        if any(getattr(n.func, "attr", "") in _GATE_NAMES
                for n in ast.walk(stmt) if isinstance(n, ast.Call)):
             before = [s for s in fn.body[:i]
                       if not (isinstance(s, ast.Expr)
@@ -147,7 +156,7 @@ def test_the_check_would_fail_for_an_ungated_handler():
         return {"secrets": "everything"}
 
     src = inspect.getsource(ungated_handler)
-    assert not re.search(r"require_admin|require_super|is_super_admin", src)
+    assert not re.search(_GATE_RE, src)
 
 
 # ---------------------------------------------------------------------------

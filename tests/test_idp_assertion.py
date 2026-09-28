@@ -7,6 +7,7 @@ are checked against the same fixed values rather than against each other.
 """
 import json
 import time
+from datetime import datetime, timezone
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -30,9 +31,10 @@ def _keypair():
 
 
 def _token(priv, *, kid="k1", sub="dev@example.com", iss="idp", aud="queryhub",
-           exp_delta=60, jti="j-1", bh=None, alg="EdDSA"):
+           exp_delta=60, iat_delta=0, jti="j-1", bh=None, alg="EdDSA"):
+    now = int(time.time())
     claims = {"iss": iss, "aud": aud, "sub": sub, "jti": jti,
-              "iat": int(time.time()), "exp": int(time.time()) + exp_delta}
+              "iat": now + iat_delta, "exp": now + exp_delta}
     if bh is not None:
         claims["bh"] = bh
     return pyjwt.encode(claims, priv, algorithm=alg, headers={"kid": kid})
@@ -225,3 +227,77 @@ def test_verify_still_binds_the_query_string_not_just_the_bare_path(configured):
         idp_assertion.verify(
             tok, "GET", "/api/admin/notifications/outbox?limit=999", b"")
     assert e.value.code == "body_mismatch"
+
+
+# ---------------------------------------------------------------------------
+# Clock skew, lifetime, the jti ledger's horizon and the empty-domain case
+# ---------------------------------------------------------------------------
+
+def _with_setting(monkeypatch, key, value):
+    real = idp_assertion.cfg.get_setting
+    monkeypatch.setattr(idp_assertion.cfg, "get_setting",
+                        lambda k, d=None: value if k == key else real(k, d))
+
+
+_BH = idp_assertion.body_hash("GET", "/api/admin/queue", b"")
+
+
+def test_a_panel_clock_a_few_seconds_ahead_is_tolerated(configured):
+    """Two hosts never agree to the second. With no leeway a panel one second
+    ahead minted an `iat` in this host's future and every call failed."""
+    tok = _token(configured, iat_delta=5, exp_delta=65, bh=_BH)
+    assert idp_assertion.verify(tok, "GET", "/api/admin/queue", b"").id == "U123"
+
+
+def test_a_panel_clock_far_ahead_is_named_as_such(configured):
+    tok = _token(configured, iat_delta=40, exp_delta=100, bh=_BH)
+    with pytest.raises(idp_assertion.AssertionError_) as e:
+        idp_assertion.verify(tok, "GET", "/api/admin/queue", b"")
+    assert e.value.code == "clock_ahead"
+
+
+def test_the_tolerance_is_a_setting(configured, monkeypatch):
+    _with_setting(monkeypatch, "idp_clock_skew_seconds", "0")
+    tok = _token(configured, iat_delta=3, exp_delta=63, bh=_BH)
+    with pytest.raises(idp_assertion.AssertionError_) as e:
+        idp_assertion.verify(tok, "GET", "/api/admin/queue", b"")
+    assert e.value.code == "clock_ahead"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("10", 10), ("0", 0), ("999", 60), ("-5", 0), ("junk", 10), ("", 10)])
+def test_the_tolerance_setting_is_clamped(monkeypatch, raw, expected):
+    monkeypatch.setattr(idp_assertion.cfg, "get_setting",
+                        lambda k, d=None: raw if k == "idp_clock_skew_seconds" else d)
+    assert idp_assertion._clock_skew() == expected
+
+
+def test_an_assertion_living_longer_than_two_minutes_is_refused(configured):
+    """The panel mints 60-second assertions; a longer one was not minted as
+    specified, and the jti ledger only has to cover what can be accepted."""
+    tok = _token(configured, exp_delta=600, bh=_BH)
+    with pytest.raises(idp_assertion.AssertionError_) as e:
+        idp_assertion.verify(tok, "GET", "/api/admin/queue", b"")
+    assert e.value.code == "too_long_lived"
+
+
+def test_the_jti_is_remembered_until_expiry_plus_the_tolerance(configured, monkeypatch):
+    """A fixed window from now let a token that outlived it be replayed once
+    its ledger row was pruned."""
+    seen = {}
+    monkeypatch.setattr(idp_assertion, "_claim_jti",
+                        lambda jti, until: seen.setdefault("until", until) is not None)
+    tok = _token(configured, bh=_BH)
+    idp_assertion.verify(tok, "GET", "/api/admin/queue", b"")
+    exp = pyjwt.decode(tok, options={"verify_signature": False})["exp"]
+    assert seen["until"] == datetime.fromtimestamp(exp + 10, timezone.utc)
+
+
+def test_an_empty_domain_setting_refuses_every_assertion(configured, monkeypatch):
+    """Fail closed. The OIDC logins skip the check when no domain is set; this
+    path is a machine speaking for people, and would accept any address."""
+    _with_setting(monkeypatch, "web_allowed_email_domain", "")
+    tok = _token(configured, bh=_BH)
+    with pytest.raises(idp_assertion.AssertionError_) as e:
+        idp_assertion.verify(tok, "GET", "/api/admin/queue", b"")
+    assert e.value.code == "no_domain"
