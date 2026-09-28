@@ -6,7 +6,7 @@ psycopg[binary]>=3.2.0
 psycopg-pool>=3.2.0
 cryptography>=42.0.0
 python-dotenv>=1.0.0
-sqlparse>=0.5.0
+sqlparse>=0.6.0
 sqlglot>=30.0.0,<31          # safety-critical parser — see pyproject.toml
 openpyxl>=3.1.0
 # Upper bounds mirror pyproject.toml on purpose. Without them this file

@@ -52,12 +52,7 @@ import sqlparse
 from sqlparse.exceptions import SQLParseError
 from sqlparse.sql import Statement
 
-from . import engines, sqlparse_patch
-
-# sqlparse re-read a whole operator chain for every operator in it, so a long
-# `a + b + c ...` took seconds to refuse. See sqlparse_patch for the change;
-# the tree it builds is the same.
-sqlparse_patch.apply()
+from . import engines
 
 # For a read-only engine (e.g. ClickHouse) only these leading words are
 # accepted; everything else is rejected up front, before tier

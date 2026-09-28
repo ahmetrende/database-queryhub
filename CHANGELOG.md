@@ -101,10 +101,10 @@ frontend and the endpoints it calls are explicitly outside it.
   3,000 values in an `IN (...)` list, or one nested more than 100 levels deep.
   The refusal says how to split it, or how to pass a long list as one value.
 - **A long chain of operators is refused in milliseconds.** Each new operator
-  in `a + b + c ...` made sqlparse re-read the whole chain, so 1,000 of them
-  took 7 s to refuse and held a web worker the whole time. A group's text is
-  now joined from its children's (`sqlparse_patch.py`). The tree is the same:
-  a test compares both constructors on every statement in the suite.
+  in `a + b + c ...` made sqlparse 0.5 re-read the whole chain, so 1,000 of
+  them took 7 s to refuse and held a web worker the whole time. sqlparse 0.6
+  builds a group's text from its children's, and QueryHub now requires it
+  (`sqlparse>=0.6.0`, as the image's lock already had).
 
 - **The metrics dashboards read pods, not the emptied teams table.** Every
   request showed as "(unteamed)" since pods replaced teams. The per-team chart
