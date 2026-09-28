@@ -660,10 +660,30 @@ function connRegistry() {
     return { ...b, id: p + '-' + suffix, name: p + '-' + suffix, replicaOf: b.name, enabled: on,
       host: p + '-' + suffix + '.db.internal', notes: '', databases: b.databases.map(x => ({ ...x })),
       credentials: { ro: { username: '', configured: false, placeholder: false }, rw: { username: '', configured: false, placeholder: false }, ddl: { username: '', configured: false, placeholder: false } } }; };
-  const all = built.map(c => ({ ...c, replicaOf: null })).concat([rep('prod-main', 'r1', true), rep('reporting-mssql', 'r1', false)].filter(Boolean));
+  // Runs on (CODE 2026-09-28): prod-main has ONE replica in rotation and
+  // svc-prod-billing has TWO — one caught up, one past the lag limit — so the
+  // menu renders the single-replica case, the pick-which case and a sick row.
+  const all = built.map(c => ({ ...c, replicaOf: null })).concat([rep('prod-main', 'r1', true), rep('reporting-mssql', 'r1', false),
+    rep('svc-prod-billing', 'r1', true), rep('svc-prod-billing', 'r2', true)].filter(Boolean));
   ADMIN.connections = all.filter(c => c.enabled !== false).concat(all.filter(c => c.enabled === false));
   return ADMIN.connections;
 }
+
+// Replicas a query can be sent to: in rotation, and only on Postgres — the
+// same filter GET /connections applies before it lists `replicas`.
+function mockReplicasOf(connId) {
+  const reg = connRegistry();
+  const p = reg.find(c => c.id === connId && !c.replicaOf);
+  if (!p || p.engineId !== 'postgres') return [];
+  return reg.filter(c => c.replicaOf === p.name && c.enabled !== false);
+}
+// GET /connections/{id}/replicas health, as the server caches it (~15 s).
+const MOCK_REPLICA_HEALTH = {
+  'prod-main-r1': { healthy: true, lagSeconds: 0.4, reason: null },
+  'svc-prod-billing-r1': { healthy: true, lagSeconds: 0, reason: null },
+  'svc-prod-billing-r2': { healthy: false, lagSeconds: 12.0, reason: '12s behind (limit 10s)' },
+};
+const mockReplicaHealth = (id) => MOCK_REPLICA_HEALTH[id] || { healthy: true, lagSeconds: null, reason: null };
 
 // ---------- MOCK: the audit trail (design 2026-09-09 (c)) ----------
 // Round (b) assumed action names were namespaced (`<area>.<object>.<verb>`) and
@@ -682,7 +702,9 @@ const QH_AUD_PATTERNS = [
   // later patterns would claim.
   [/^pii_|^result_unmasked$|^result_(export|download)/, 'protection'],
   [/^slack_sql_opened$|_viewed$/, 'usage'],
-  [/^execution_|^(submitted|started|completed|failed)$|_(submitted|started|completed|failed)$/, 'requests'],
+  // `query_run_on_forced` (CODE 2026-09-28 §5) is an execution fact, not data
+  // protection — named here because no suffix rule below would claim it.
+  [/^execution_|^query_run_on_forced$|^(submitted|started|completed|failed)$|_(submitted|started|completed|failed)$/, 'requests'],
   [/^(approved|rejected|auto_approved|changes_requested|escalated|withdrawn|bundle_approved)/, 'requests'],
   [/^(grant|role|admin|team|user|whitelist|auto_approve)/, 'access'],
   [/^(target|connection|schema|migration|credential)/, 'connections'],
@@ -1485,6 +1507,10 @@ function newRequest(body, bundleId) {
     // Per request, never per session — and it rides back out on the result, so
     // the grid can state which it is instead of the client remembering.
     unmasked: !!body.unmasked,
+    // Runs on (CODE 2026-09-28 §3). Auto is stored as null; a lone replica may
+    // arrive without its id, and is resolved here.
+    runOn: body.runOn === 'primary' || body.runOn === 'replica' ? body.runOn : null,
+    replicaId: body.runOn === 'replica' ? String(body.replicaId || (mockReplicasOf(body.connectionId)[0] || {}).id || '') : null,
     t0: Date.now(), scheduledFor: runAt ? new Date(runAt).toISOString() : null,
     // MOCK: the DBA rejects an ad-hoc DROP from a requester who needs approval.
     // A super-admin's DROP is confirmed instead (the 409 in submit) and then
@@ -1557,14 +1583,40 @@ function statusOf(rec) {
     return { status: 'running', runMs: null, messages: msg, audit };
   }
   const runMs = RUN_MS + (rec.id.length * 7 % 300);
-  // CODE 2026-09-23 (e): a read-only query on a primary with a healthy replica
-  // in rotation ran there. One info line, no replica name — nobody picks it.
-  if (rec.tier === 'RO' && connRegistry().some(c => c.replicaOf === rec.conn && c.enabled !== false)) {
-    push('info', 'Ran on a read replica, about 0.4 s behind the primary.');
+  // Where it ran (`ranOn`, CODE 2026-09-28 §4). A chosen node gets NO text line
+  // from the server — the client prints it from `ranOn`; Auto keeps the
+  // (2026-09-23 (e)) line: a read-only query with a healthy replica ran there.
+  const reps = mockReplicasOf(rec.conn);
+  const primaryName = (connRegistry().find(c => c.id === rec.conn) || {}).name || rec.conn;
+  let ranOn;
+  const forcedRep = rec.runOn === 'replica' ? (reps.find(x => x.id === rec.replicaId) || null) : null;
+  if (rec.runOn === 'replica' && !forcedRep) {
+    push('err', 'That replica left rotation before the run — nothing ran.');
+    return { status: 'failed', runMs: null, messages: msg, audit, ranOn: null };
   }
+  if (forcedRep) {
+    const r = forcedRep;
+    const h = mockReplicaHealth(r.id);
+    // Forced means no fallback: an unreachable replica fails the run.
+    if (h.reason === 'unreachable') {
+      push('err', r.name + ' is unreachable — nothing ran. Pick Auto or Primary to run it elsewhere.');
+      return { status: 'failed', runMs: null, messages: msg, audit, ranOn: null };
+    }
+    ranOn = { kind: 'replica', name: r.name, forced: true, lagSeconds: h.lagSeconds };
+  } else if (rec.runOn === 'primary') {
+    ranOn = { kind: 'primary', name: primaryName, forced: true, lagSeconds: null };
+  } else {
+    const hr = rec.tier === 'RO' ? reps.find(r => mockReplicaHealth(r.id).healthy) : null;
+    if (hr) {
+      const lag = mockReplicaHealth(hr.id).lagSeconds;
+      push('info', 'Ran on a read replica, about ' + (lag == null || lag < 0.1 ? '0.1' : lag) + ' s behind the primary.');
+      ranOn = { kind: 'replica', name: hr.name, forced: false, lagSeconds: lag };
+    } else ranOn = { kind: 'primary', name: primaryName, forced: false, lagSeconds: null };
+  }
+  if (ranOn.forced) aud('you', 'Chose where it runs: ' + (ranOn.kind === 'primary' ? 'the primary' : ranOn.name));
   push('ok', 'Completed in ' + runMs + ' ms.');
   aud('executor', 'Ran with the ' + rec.tier + ' credential');
-  return { status: 'done', runMs, messages: msg, audit };
+  return { status: 'done', runMs, messages: msg, audit, ranOn };
 }
 // Registers a hand-off in GET /admin/manual-runs the first time the request is
 // seen in that state — the server writes it when the bot gives up.
@@ -1793,6 +1845,7 @@ const qhApi = {
     // tags stay admin-only — an account id is not an address anyone pastes into a
     // ticket or a psql line, so that argument does not carry them.
     const adminView = !!(mockUser() && mockUser().role !== 'developer');
+    const superView = !!(mockUser() && mockUser().role === 'super');
     const narrowTags = (t) => {
       const o = {};
       if (t.provider) o.provider = t.provider;
@@ -1815,8 +1868,18 @@ const qhApi = {
     // GET /connections must carry it too, or the tree renders empty databases.
     databases: c.databases.map(d => ({ ...d, tables: ((targetOf(c.id, d.id).db || {}).tables) || [],
       autoApproveRO: d.tier === 'RO' && c.env !== 'production' ? true : undefined })),
+    // Runs on (CODE 2026-09-28 §1): super-admins only, Postgres only, only
+    // replicas in rotation — absent for everyone and everything else.
+    ...(() => { const reps = superView ? mockReplicasOf(c.id) : [];
+      return reps.length ? { replicas: reps.map(r => ({ id: r.id, name: r.name })) } : null; })(),
   })) };
   }),
+  // GET /connections/{id}/replicas — health for the Runs on menu, read when it
+  // opens. Super-admin only; the lag and the reason are the server's words.
+  connectionReplicas: (connId) => mockDelay(() => {
+    if (!(mockUser() && mockUser().role === 'super')) return mockFail('Only a super-admin can choose where a query runs.', 403, 'forbidden');
+    return { replicas: mockReplicasOf(connId).map(r => ({ id: r.id, name: r.name, ...mockReplicaHealth(r.id) })) };
+  }, 420),
   schema: (conn, dbn) => mockDelay(() => schemaPayload(conn, dbn), 260),
   roles: (conn) => mockDelay(() => {
     if (!mockUser() || mockUser().role !== 'super') return mockFail('Super-admin only.', 403, 'forbidden');
@@ -1840,6 +1903,9 @@ const qhApi = {
       id: h.id, sql: h.sql, connectionId: h.conn, databaseId: h.db, tier: h.tier, status: h.status,
       rowCount: h.rows, approver: h.approver, createdAt: isoAgo(1000 * 60 * (2 + i * 37)),
       connectionState: connStateFor(h.conn), awaitingDba: false,
+      // One forced run in a super-admin's history, so the badge is on screen.
+      ranOn: h.id === 'h1' && mockUser() && mockUser().role === 'super'
+        ? { kind: 'primary', name: h.conn, forced: true, lagSeconds: null } : null,
     }));
     // MOCK (CODE 2026-09-23 §5): a hand-off stays `failed` + `awaitingDba`
     // until a DBA closes it — and its stored text has the password hidden.
@@ -1882,6 +1948,18 @@ const qhApi = {
     // showing the switch to no one else is a courtesy, not the protection.
     if (body.unmasked && !(mockUser() && mockUser().role === 'super')) {
       return mockFail('Unmasked results are available to super-admins only.', 403, 'forbidden');
+    }
+    // Runs on (CODE 2026-09-28 §3) — the server is the gate here too.
+    if (body.runOn && body.runOn !== 'auto') {
+      if (!(mockUser() && mockUser().role === 'super')) return mockFail('Only a super-admin can choose where a query runs.', 403, 'forbidden');
+      if (body.runOn === 'replica') {
+        const reps = mockReplicasOf(body.connectionId);
+        const hit = body.replicaId ? reps.find(r => r.id === String(body.replicaId)) : (reps.length === 1 ? reps[0] : null);
+        if (!hit) return mockFail('That replica does not belong to this connection.', 400, 'bad_request');
+        if (window.qhClassify(body.sql || '').tier !== 'RO') return mockFail('A replica runs read-only statements only.', 400, 'bad_request');
+      } else if (body.runOn !== 'primary') {
+        return mockFail('runOn must be auto, primary or replica.', 400, 'bad_request');
+      }
     }
     // Destructive SQL is not refused — it is asked about once, and the identical
     // request with confirmed:true runs. Since 2026-08-15 the server sends the

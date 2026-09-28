@@ -434,7 +434,7 @@ function App() {
       qhApi.history().then(r => setHistory((r.history || []).map(h => ({
         id: h.id, sql: h.sql, conn: h.connectionId, db: h.databaseId, tier: h.tier,
         status: h.status, rows: h.rowCount, when: qhTimeAgo(h.createdAt), approver: h.approver,
-        awaitingDba: !!h.awaitingDba,
+        awaitingDba: !!h.awaitingDba, ranOn: h.ranOn || null,
         state: h.connectionState || null,
       })))),
       // Merge the user's server-saved queries into the Saved library (server
@@ -894,13 +894,44 @@ function App() {
   const refreshHistory = () => qhApi.history().then(r => setHistory((r.history || []).map(h => ({
     id: h.id, sql: h.sql, conn: h.connectionId, db: h.databaseId, tier: h.tier,
     status: h.status, rows: h.rowCount, when: qhTimeAgo(h.createdAt), approver: h.approver,
-    awaitingDba: !!h.awaitingDba,
+    awaitingDba: !!h.awaitingDba, ranOn: h.ranOn || null,
     state: h.connectionState || null,
   })))).catch(() => {});
 
+  // Where the query in a tab runs (super-admin, Postgres with a replica in
+  // rotation). The tab stores the choice; what is SENT is only what the control
+  // on screen can show: none of it on a connection without replicas, and a
+  // replica only on the connection it belongs to. Never persisted — the slim
+  // workspace does not carry it — so a reload starts on Auto, like MaskToggle.
+  const effRunOn = (t) => {
+    const c = t && conns.find(x => x.id === t.conn);
+    const reps = (isSuper && c && c.replicas) || [];
+    const r = t && t.runOn;
+    if (!r || !reps.length) return null;
+    if (r.mode === 'primary') return r;
+    const rep = r.mode === 'replica' && r.conn === t.conn && reps.find(x => x.id === r.replicaId);
+    return rep ? { ...r, name: rep.name } : null;
+  };
+  // A replica belongs to the connection it was picked on: re-pointing the tab
+  // drops it for good (switching back does not bring it back). Primary stays.
+  useEffect(() => {
+    const stale = (x) => x.runOn && x.runOn.mode === 'replica' && x.runOn.conn !== x.conn;
+    if (tabs.some(stale)) setTabs(ts => ts.map(x => stale(x) ? { ...x, runOn: null } : x));
+  }, [tabs]);
+
   const applyStatus = async (id, qid, sres) => {
+    // A forced run says so in Messages, from `ranOn` — the server keeps its own
+    // line for Auto and adds none for a chosen node. Placed before the closing
+    // "Completed" so it reads in the order it happened.
+    const msgs = (sres.messages || []).slice();
+    const ranLine = qhRanOnLine(sres.ranOn);
+    if (ranLine) {
+      const at = sres.status === 'done' && msgs.length ? msgs.length - 1 : msgs.length;
+      msgs.splice(at, 0, { kind: 'info', text: ranLine, time: (msgs[at] || msgs[at - 1] || {}).time || nowTime() });
+    }
     setTabs(ts => ts.map(x => x.id === id ? {
-      ...x, status: sres.status, awaitingDba: !!sres.awaitingDba, runMs: sres.runMs, messages: sres.messages || [], audit: sres.audit || [],
+      ...x, status: sres.status, awaitingDba: !!sres.awaitingDba, runMs: sres.runMs, messages: msgs, audit: sres.audit || [],
+      ranOn: sres.ranOn || null,
     } : x));
     if (sres.scheduledFor && sres.status !== 'running' && sres.status !== 'done'
         && new Date(sres.scheduledFor) > new Date()) { setResTab('messages'); return true; }
@@ -958,8 +989,15 @@ function App() {
       return;
     }
     const o = opts || {};
+    // The server refuses this too (400); saying it here spares the round trip,
+    // and F5/F8 reach this without passing the disabled button.
+    const ro = effRunOn(cur);
+    if (ro && ro.mode === 'replica' && qhClassify(sqlOverride || cur.sql).tier !== 'RO') {
+      pushToast('A replica runs read-only statements only — switch Runs on to Auto or Primary, or make the statement read-only.');
+      return;
+    }
     setResTab('messages');
-    patch(id, { status: 'pending', result: null,
+    patch(id, { status: 'pending', result: null, ranOn: null,
       messages: [{ kind: 'info', text: 'Submitting to QueryHub…', time: nowTime() }] });
     try {
       const r = await qhApi.submit({
@@ -970,6 +1008,10 @@ function App() {
         // Sent only while it is on, and never by anyone else — a non-super-admin
         // request carrying it is answered 403, and that server check is the gate.
         ...(cur.unmasked ? { unmasked: true } : null),
+        // Where it runs — sent only when the tab left Auto, spread-first like
+        // `unmasked`. replicaId always rides with a replica, one or several.
+        ...(ro && ro.mode === 'primary' ? { runOn: 'primary' } : null),
+        ...(ro && ro.mode === 'replica' ? { runOn: 'replica', replicaId: ro.replicaId } : null),
         // Set only by the destructive-statement confirm, which re-sends this same
         // request unchanged apart from this one flag.
         ...(o.confirmed ? { confirmed: true } : null),
@@ -1447,6 +1489,8 @@ function App() {
                 schedOpen={schedOpen} setSchedOpen={setSchedOpen} onSchedule={schedule}
                 why={why} onWhy={setWhy} whyNeedSched={needWhySched} whyErr={whyErr}
                 isSuper={isSuper} unmasked={!!tab.unmasked} onUnmask={(v) => patch(activeId, { unmasked: v })}
+                runOnConn={isSuper && conn && (conn.replicas || []).length ? conn : null} runOn={effRunOn(tab)}
+                onRunOn={(v) => patch(activeId, { runOn: v })}
               />
 
               <WhyBar show={showWhy} need={needWhy} value={why} onChange={setWhy} err={whyErr && needWhy}
@@ -1464,7 +1508,7 @@ function App() {
               <div style={{ height: resH, flexShrink: 0 }}>
                 <ResultsPanel colMeta={colMeta} tab={resTab} setTab={setResTab} result={tab.result} messages={tab.messages}
                   audit={tab.audit} status={tab.status} awaitingDba={tab.awaitingDba} runMs={tab.runMs} onExport={exportResult} plan={tab.plan} onToast={pushToast} reqId={tab.reqId}
-                  unmasked={resUnmasked} conn={resConn} onStatement={pickStatement} />
+                  unmasked={resUnmasked} conn={resConn} onStatement={pickStatement} ranOn={tab.ranOn} />
               </div>
             </>
           )}
@@ -1867,8 +1911,89 @@ function MaskToggle({ unmasked, pii, onUnmask }) {
   );
 }
 
+// ---------- Where the query runs (super-admin, connections with replicas) ----------
+// MaskToggle's sibling: the chip that states where this tab's query runs is the
+// control that changes it. Auto is quiet — it is today's behaviour and nothing
+// to read. A chosen node is brand-tinted: visibly not the default, but not a
+// warning, because running on the primary or a named replica exposes nothing.
+// The one alarming state is the conflict — a replica picked for a statement a
+// replica cannot run — and that one is amber, on the chip AND on Run.
+//
+// Health is fetched when the menu opens (the server caches ~15 s), never while
+// typing. An unhealthy replica stays pickable and says why: asking a lagging or
+// sick replica about itself is exactly what a DBA forces one for.
+const ICN_NODE = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>;
+function RunOnOpt({ on, t, s, bad, disabled, mono, onClick }) {
+  return (
+    <button type="button" role="menuitemradio" aria-checked={!!on} disabled={disabled} onClick={onClick}
+      className={'qh-runon-opt' + (on ? ' is-on' : '') + (bad ? ' is-bad' : '')}>
+      <span className="qh-runon-dot" />
+      <span className="qh-runon-txt">
+        <span className={'qh-runon-t' + (mono ? ' is-mono' : '')}>{t}</span>
+        {s && <span className="qh-runon-s">{s}</span>}
+      </span>
+    </button>
+  );
+}
+function RunOnToggle({ conn, runOn, tier, onRunOn, tight }) {
+  const [open, setOpen] = React.useState(false);
+  const [health, setHealth] = React.useState(null);
+  const close = React.useCallback(() => setOpen(false), []);
+  const wrapRef = qhUseDismiss(open, close);
+  const reps = conn.replicas || [];
+  const ro = tier === 'RO';
+  const conflict = !!(runOn && runOn.mode === 'replica' && !ro);
+  const toggle = () => {
+    if (open) { close(); return; }
+    setOpen(true);
+    setHealth(h => ({ conn: conn.id, state: 'loading', rows: h && h.conn === conn.id ? h.rows : null }));
+    qhApi.connectionReplicas(conn.id)
+      .then(r => setHealth({ conn: conn.id, state: 'ok', rows: r.replicas || [] }))
+      .catch(() => setHealth(h => ({ conn: conn.id, state: 'err', rows: h && h.conn === conn.id ? h.rows : null })));
+  };
+  const mine = health && health.conn === conn.id ? health : null;
+  const hOf = (id) => mine && mine.rows ? mine.rows.find(x => x.id === id) : null;
+  const pick = (v) => { close(); onRunOn(v); };
+  const label = !runOn ? 'Auto' : runOn.mode === 'primary' ? 'Primary' : runOn.name;
+  return (
+    <span className="qh-runon" ref={wrapRef}>
+      <button type="button" className={'qh-runon-toggle' + (runOn ? ' is-forced' : '') + (conflict ? ' is-conflict' : '')}
+        aria-haspopup="menu" aria-expanded={open} onClick={toggle}
+        title={conflict ? 'A replica runs read-only statements only. Switch to Auto or Primary, or make the statement read-only.'
+          : !runOn ? 'Reads go to a healthy replica when the rules allow, otherwise the primary. Click to choose.'
+          : runOn.mode === 'primary' ? 'This tab always runs on the primary.' : 'This tab runs on ' + runOn.name + ' — no automatic checks, no fallback.'}>
+        {ICN_NODE}
+        {!tight && <span className="qh-runon-k">Runs on:</span>}
+        <span className="qh-runon-v">{label}</span>
+        {conflict && !tight && <span className="qh-runon-warn">reads only</span>}
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      {open && (
+        <div className="qh-runon-pop" role="menu">
+          <RunOnOpt on={!runOn} t="Auto" s="Replica when healthy, else primary" onClick={() => pick(null)} />
+          <RunOnOpt on={runOn && runOn.mode === 'primary'} t="Primary" s="Always, even for a read the rules would send to a replica" onClick={() => pick({ mode: 'primary' })} />
+          <div className="qh-runon-sep">
+            <span>{reps.length > 1 ? 'Replicas' : 'Replica'}</span>
+            {mine && mine.state === 'loading' && <span className="qh-runon-busy"><span className="qh-spin" />checking</span>}
+          </div>
+          {!ro && <div className="qh-runon-note">A replica runs read-only statements only.</div>}
+          {reps.map(r => {
+            const h = hOf(r.id);
+            const line = h ? qhReplicaHealth(h) : mine && mine.state === 'err' ? 'Health unavailable' : 'Checking…';
+            return <RunOnOpt key={r.id} mono t={r.name} s={line} bad={!!(h && !h.healthy)} disabled={!ro}
+              on={runOn && runOn.mode === 'replica' && runOn.replicaId === r.id}
+              onClick={() => pick({ mode: 'replica', replicaId: r.id, conn: conn.id })} />;
+          })}
+          <div className="qh-runon-foot">This tab only — every new tab, and this one after a reload, starts on Auto. A chosen replica skips the automatic checks and never falls back to the primary.</div>
+        </div>
+      )}
+    </span>
+  );
+}
+
 // ---------- Action bar (target context + security + actions) ----------
-function ActionBar({ redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask }) {
+function ActionBar({ redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn }) {
+  const runOnConflict = !!(runOnConn && runOn && runOn.mode === 'replica' && hasSql && !classify.empty && classify.tier !== 'RO');
   const tierLabel = { RO: 'Read-only', RW: 'Read/Write', DDL: 'Schema (DDL)' }[classify.tier];
   const highRisks = (riskHints || []).filter(h => h.level !== 'low');
   const schedBtnRef = useRef(null);
@@ -1883,6 +2008,7 @@ function ActionBar({ redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyEr
   };
   let primaryLabel = autoApprove ? 'Run' : 'Submit for approval';
   if (killed) primaryLabel = 'Paused (kill switch)';
+  else if (runOnConflict && !busy) primaryLabel = 'Reads only';
   else if (busy) primaryLabel = status === 'pending' ? 'Awaiting DBA approval…' : status === 'running' ? 'Running…' : 'Approved — running…';
   // A tight bar drops the three secondary buttons to icons (each keeps its own
   // title), which is what buys the target strip room to keep the whole
@@ -1909,7 +2035,8 @@ function ActionBar({ redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyEr
     <div className={'qh-actionbar' + (tight ? ' is-tight' : '')} ref={barRef}>
       <button className={'qh-btn qh-btn-primary qh-run' + (autoApprove ? '' : ' is-approval') + (busy ? ' is-waiting' : '')}
         data-kbd={QH_KBD.run}
-        onClick={() => onPrimary()} disabled={!hasSql || busy || tierExceedsGrant || killed}>
+        onClick={() => onPrimary()} disabled={!hasSql || busy || tierExceedsGrant || killed || runOnConflict}
+        title={runOnConflict ? 'This tab is set to run on ' + runOn.name + ', and a replica runs read-only statements only. Switch Runs on to Auto or Primary, or make the statement read-only.' : undefined}>
         {busy && <span className="qh-spin light" />}
         {!busy && autoApprove && <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M7 5v14l11-7z"/></svg>}
         {!busy && !autoApprove && <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>}
@@ -1997,7 +2124,10 @@ function ActionBar({ redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyEr
               super-admin the same chip is the switch, so the state and the one
               control that can change it are a single object. */}
           {isSuper ? (
-            <MaskToggle unmasked={unmasked} pii={pii} onUnmask={onUnmask} />
+            <>
+              <MaskToggle unmasked={unmasked} pii={pii} onUnmask={onUnmask} />
+              {runOnConn && <RunOnToggle conn={runOnConn} runOn={runOn} tier={classify.tier} onRunOn={onRunOn} tight={tight} />}
+            </>
           ) : (pii.columns.length > 0 || pii.star) && (
             <span className="qh-pii-chip" title={pii.columns.map(c => c.label).join(', ')}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
@@ -2328,6 +2458,10 @@ function BatchModal({ tabs, activeId, onClose, onSubmit, recent }) {
         <button className="qh-icon-btn" onClick={onClose} aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
       </div>
       <div className="qh-modal-body">
+        {/* A bundle carries no Runs on: said here rather than dropped silently. */}
+        {eligible.some(x => sel.includes(x.id) && x.runOn) && (
+          <div className="qh-batch-note">A batch always runs on Auto — a Runs on choice made in a tab is not sent with it.</div>
+        )}
         <div className="qh-batch-list">
           {eligible.map(x => {
             const cl = qhClassify(x.sql);

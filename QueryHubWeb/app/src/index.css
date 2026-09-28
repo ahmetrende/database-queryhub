@@ -518,6 +518,45 @@
   .qh-mask-pop-a { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
   .qh-mask-go { color: var(--fg-danger); border-color: var(--danger-adaptive-strong); background: var(--danger-adaptive-light); }
   .qh-mask-go:hover:not(:disabled) { border-color: var(--stroke-danger); background: var(--danger-adaptive-medium); }
+  /* Runs on (super-admin, 2026-09-28). MaskToggle's size and family. Auto is quiet
+     (neutral ground); a chosen node is brand-tinted, not a warning; only the
+     replica-with-a-write conflict is amber. The menu mirrors .qh-mask-pop. */
+  .qh-runon { position: relative; display: inline-flex; flex-shrink: 0; }
+  .qh-runon-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border: 0; border-radius: var(--r-full); white-space: nowrap;
+    font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer; color: var(--fg-secondary); background: var(--adaptive-medium); }
+  .qh-runon-toggle:hover { box-shadow: inset 0 0 0 1px var(--stroke-strong); }
+  .qh-runon-toggle:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-runon-k { font-weight: 500; color: var(--fg-tertiary); }
+  .qh-runon-v { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+  .qh-actionbar.is-tight .qh-runon-v { max-width: 120px; }
+  .qh-runon-toggle.is-forced { color: var(--fg-accent); background: var(--brand-adaptive-light); box-shadow: inset 0 0 0 1px var(--brand-adaptive-strong); }
+  .qh-runon-toggle.is-forced .qh-runon-k { color: var(--fg-accent); font-weight: 500; }
+  .qh-runon-toggle.is-conflict, .qh-runon-toggle.is-conflict .qh-runon-k { color: var(--fg-warning); background: var(--warning-adaptive-light); box-shadow: inset 0 0 0 1px var(--warning-solid-light); }
+  .qh-runon-warn { padding-left: 5px; margin-left: 1px; border-left: 1px solid currentColor; font-weight: 700; }
+  .qh-runon-pop { position: absolute; top: calc(100% + 4px); right: 0; z-index: 70; width: 320px; padding: 6px; background: var(--bg-white);
+    border: 1px solid var(--stroke-medium); border-radius: var(--r-md); box-shadow: var(--shadow-medium); display: flex; flex-direction: column; gap: 2px; }
+  .qh-runon-opt { display: flex; align-items: flex-start; gap: 9px; width: 100%; padding: 7px 8px; border: 0; border-radius: var(--r-sm); background: none;
+    font-family: inherit; text-align: left; cursor: pointer; color: var(--fg-primary); }
+  .qh-runon-opt:hover:not(:disabled) { background: var(--brand-adaptive-light); }
+  .qh-runon-opt:disabled { cursor: not-allowed; opacity: 0.55; }
+  .qh-runon-dot { flex-shrink: 0; width: 14px; height: 14px; margin-top: 1px; border-radius: 999px; box-shadow: inset 0 0 0 1.5px var(--stroke-strong); }
+  .qh-runon-opt.is-on .qh-runon-dot { box-shadow: inset 0 0 0 4px var(--brand-green); }
+  .qh-runon-txt { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .qh-runon-t { font-size: 12.5px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+  .qh-runon-t.is-mono { font-family: var(--qh-mono); font-size: 12px; font-weight: 500; }
+  .qh-runon-s { font-size: 11.5px; line-height: 1.4; color: var(--fg-tertiary); }
+  .qh-runon-opt.is-bad .qh-runon-s { color: var(--fg-warning); font-weight: 600; }
+  .qh-runon-sep { display: flex; align-items: center; gap: 8px; margin: 4px 8px 0; padding-top: 8px; border-top: 1px solid var(--stroke-light);
+    font-size: 11px; font-weight: 600; color: var(--fg-tertiary); }
+  .qh-runon-busy { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; font-weight: 500; }
+  .qh-runon-busy .qh-spin { width: 9px; height: 9px; border-width: 1.5px; }
+  .qh-runon-note { margin: 2px 8px 2px; font-size: 11.5px; line-height: 1.4; color: var(--fg-warning); }
+  .qh-runon-foot { margin: 4px 2px 0; padding: 8px 6px 2px; border-top: 1px solid var(--stroke-light); font-size: 11px; line-height: 1.45; color: var(--fg-tertiary); text-wrap: pretty; }
+  /* Where a forced run ran — results header + history row. Absent for Auto. */
+  .qh-ranon { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: var(--r-full); font-size: 10.5px; font-weight: 600; white-space: nowrap;
+    color: var(--fg-accent); background: var(--brand-adaptive-light); flex-shrink: 0; }
+  .qh-res-time, .qh-res-rows { white-space: nowrap; }
+  .qh-batch-note { margin-bottom: 10px; padding: 8px 11px; border-radius: var(--r-sm); font-size: 12px; line-height: 1.45; color: var(--fg-secondary); background: var(--adaptive-medium); }
 
   /* tier color tokens */
   .tier-ro { color: var(--fg-accent); background: var(--brand-adaptive-light); }

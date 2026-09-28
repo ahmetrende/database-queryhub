@@ -7,6 +7,32 @@ function TierBadge({ tier, sm }) {
 // `failed` + `awaitingDba` is its OWN state (CODE 2026-09-23 §5): the bot handed
 // a DDL it may not run to a DBA. Amber, and no spinner — nothing is running, and
 // nothing will until a DBA runs it by hand. Red "Failed" would say it is over.
+// Where a run ran, when the tab CHOSE it (`ranOn.forced`). Auto runs return null:
+// the server's own Messages line covers them and a badge would mark the default.
+function qhLagText(s) {
+  if (s == null) return null;
+  if (s < 0.05) return 'caught up';
+  return (s < 10 ? (Math.round(s * 10) / 10) : Math.round(s)) + ' s behind';
+}
+function qhRanOnLine(r) {
+  if (!r || !r.forced) return null;
+  if (r.kind === 'primary') return 'Ran on the primary (chosen).';
+  const lag = qhLagText(r.lagSeconds);
+  return 'Ran on ' + (r.name || 'a replica')
+    + (lag === 'caught up' ? ', caught up with the primary' : lag ? ', ' + lag + ' the primary' : '') + ' (chosen).';
+}
+// One replica's health, as the Runs on menu prints it under the name.
+function qhReplicaHealth(h) {
+  if (!h) return null;
+  if (!h.healthy) return h.reason || 'Unhealthy';
+  return qhLagText(h.lagSeconds) || 'Healthy';
+}
+function RanOnBadge({ ranOn, long }) {
+  if (!ranOn || !ranOn.forced) return null;
+  const where = ranOn.kind === 'primary' ? 'primary' : (long ? ranOn.name : 'replica');
+  return <span className="qh-ranon" title={qhRanOnLine(ranOn)}>{long ? 'Chosen: ' + where : 'on ' + where}</span>;
+}
+
 function StatusPill({ status, awaitingDba }) {
   if (status === 'failed' && awaitingDba) {
     return <span className="qh-status st-dba" title="The bot may not run this statement itself, so a DBA runs it by hand.">Needs a DBA</span>;
@@ -927,6 +953,7 @@ function Sidebar({ modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode
             <div className="qh-hist-top">
               <TierBadge tier={h.tier} sm />
               <StatusPill status={h.status} awaitingDba={h.awaitingDba} />
+              <RanOnBadge ranOn={h.ranOn} />
               <span className="qh-hist-when">{h.when}</span>
             </div>
             <div className="qh-hist-sql">{h.sql}</div>
@@ -1256,7 +1283,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
 }
 
 // ---------- Bottom results panel ----------
-function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement }) {
+function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement, ranOn }) {
   const [exp, setExp] = React.useState(false);
   // Click-away / Escape, not mouse-out: the 6px gap between the button and the
   // menu used to close it mid-reach. See qhUseDismiss.
@@ -1366,13 +1393,15 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
           {/* Where these rows came from. The tab's target can be re-pointed after a
               run, so this reads the connection the query WAS sent to — same rule
               as the unmasked chip: the header describes the grid, not the
-              toolbar. */}
-          {result && conn && qhHosting(conn) && (
+              toolbar. A forced run's badge takes this slot: both answer "where
+              did it run", and the header has no room for two. */}
+          {result && conn && qhHosting(conn) && !(ranOn && ranOn.forced) && (
             <span className="qh-res-loc" title={'Ran on ' + conn.name + (conn.host ? ' · ' + conn.host + (conn.port ? ':' + conn.port : '') : '') + ' · ' + qhHostingFull(conn)}>
               <img className="qh-prov-logo" src={qhProviderLogo(qhTags(conn).provider)} alt="" draggable={false} />
               {qhHosting(conn)}
             </span>
           )}
+          {result && <RanOnBadge ranOn={ranOn} />}
           {/* A result that came back unmasked says so ON the result, not only on
               the switch that produced it: the grid is what someone reads, quotes
               and screenshots, and it must never look like a masked one. */}
@@ -2010,4 +2039,4 @@ const DBIcons = {
   calendar: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>,
 };
 
-Object.assign(window, { Sidebar, ResultsPanel, ResultsView, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge });
+Object.assign(window, { Sidebar, ResultsPanel, ResultsView, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhReplicaHealth, qhLagText });
