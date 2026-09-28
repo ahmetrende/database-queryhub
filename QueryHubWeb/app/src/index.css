@@ -1354,27 +1354,24 @@
   .qh-audimmutable { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--stroke-light); font-size: 11px; color: var(--fg-tertiary); }
   @media (max-width: 1180px) { .qh-audsplit { grid-template-columns: minmax(0, 1fr); } .qh-auddetail { position: static; max-height: none; } .qh-auddetail.is-idle { display: none; } }
 
-  /* ---------- Masking exemptions (design 2026-09-09) ---------- */
+  /* ---------- Masking exemptions (design 2026-09-09, re-cut 2026-09-28) ---------- */
+  /* Toolbar: search, the two place filters, status, and the defaults as a legend. */
+  .qh-mxtools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .qh-mxtools .qh-mxcombo { width: 190px; min-width: 0; }
+  .qh-mxseg-n { font-size: 11px; font-weight: 600; color: var(--fg-tertiary); }
+  .qh-seg-opt.is-active .qh-mxseg-n { color: inherit; }
+  .qh-mxlegend { margin-left: auto; font-size: 11.5px; color: var(--fg-tertiary); white-space: nowrap; }
   .qh-mxlist { display: flex; flex-direction: column; gap: 6px; }
   .qh-mxgroup + .qh-mxgroup { margin-top: 15px; }
-  /* One label per server/database rather than the same two identifiers repeated
-     down every row of the group — a header that REPLACES text is not furniture.
-     It also carries the `+` that starts the next exemption in that database. */
   .qh-mxgroup-h { display: flex; align-items: center; gap: 8px; margin: 0 2px 5px; }
   .qh-mxgroup-n { font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-secondary); }
-  .qh-mxgroup-c { padding: 0 5px; border-radius: 999px; background: var(--adaptive-light); font-size: 10px; font-weight: 700; color: var(--fg-tertiary); }
-  .qh-mxadd { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; padding: 2px 9px 2px 7px; background: none; border: 1px solid var(--stroke-medium); border-radius: 999px; font: inherit; font-size: 11px; color: var(--fg-secondary); cursor: pointer; }
-  .qh-mxadd:hover { border-color: var(--brand-green); color: var(--fg-accent); }
-  /* Two lines: what is exempt, and why. The list is scanned thirty times and
-     read once, so the detail below carries the rest — the same principle as the
-     audit rail: a detail needs a place that does not make the list heavy. */
+  .qh-mxgroup-c { padding: 0 6px; border-radius: 999px; background: var(--adaptive-light); font-size: 10.5px; font-weight: 600; color: var(--fg-tertiary); }
+  .qh-mxadd { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin-left: auto; padding: 0; background: none; border: 1px solid var(--stroke-medium); border-radius: 999px; color: var(--fg-secondary); cursor: pointer; }
+  .qh-mxadd:hover { border-color: var(--brand-green); color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  .qh-mxadd:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
   .qh-mxitem { background: var(--bg-white); border: 1px solid var(--stroke-light); border-radius: var(--r-md); }
-  /* A wide exemption LOOKS wide. Tonal ground + a stronger border, no stripe and
-     no per-row warning banner: hierarchy carries the weight so an ordinary
-     correct row is not shouted at. */
+  /* A wide exemption LOOKS wide: tonal ground + a stronger border, no stripe. */
   .qh-mxitem.is-wide { background: var(--warning-adaptive-light); border-color: var(--stroke-strong); }
-  /* Turned off genuinely does nothing, so dimming is honest here (unlike a
-     disabled account on the Roles screen, where the row still stands). */
   .qh-mxitem.is-off { background: var(--bg-light); }
   .qh-mxitem.is-off .qh-mxtitle, .qh-mxitem.is-moot .qh-mxtitle { color: var(--fg-tertiary); }
   .qh-mxitem.is-off .qh-mxsent, .qh-mxitem.is-off .qh-mxlines, .qh-mxitem.is-moot .qh-mxsent { color: var(--fg-tertiary); }
@@ -1384,145 +1381,109 @@
   .qh-mxitem-top:hover { background: var(--adaptive-light); }
   .qh-mxcaret { flex-shrink: 0; display: inline-flex; margin-top: 3px; color: var(--fg-tertiary); transition: transform .15s ease; }
   .qh-mxitem.is-open .qh-mxcaret { transform: rotate(90deg); }
-  /* A heading and a caption, not a paragraph on one line. The first cut put
-     target, chips, a 200-character reason and a timestamp in one row, so the
-     reason — the most useful sentence on the row — was what got truncated. */
   .qh-mxbody { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
   .qh-mxline1 { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
   .qh-mxtitle { font-family: var(--qh-mono); font-size: 12.5px; color: var(--fg-primary); }
-  /* One line, quieter, and the full text is one click below. */
   .qh-mxsaid { font-size: 12px; line-height: 1.45; color: var(--fg-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .qh-mxwhen { flex-shrink: 0; margin-top: 2px; font-size: 11px; color: var(--fg-tertiary); }
-  .qh-mxnorm { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: 7px; font-size: 11.5px; color: var(--fg-tertiary); text-wrap: pretty; }
-  .qh-mxnorm-k { padding: 1px 7px; border-radius: 999px; background: var(--adaptive-light); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--fg-secondary); }
   .qh-mxdetail { display: flex; flex-direction: column; gap: 5px; padding: 2px 14px 13px 33px; }
-  .qh-mxrowacts { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; margin-top: 7px; }
-  /* The one fact the list cannot show about itself, said once above it rather
-     than as a second section with its own explanatory paragraph. */
-  .qh-mxbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; font-size: 12.5px; color: var(--fg-secondary); }
-  .qh-mxbar svg { flex-shrink: 0; color: var(--fg-warning); }
-  .qh-mxbar b { color: var(--fg-primary); }
-  .qh-mxpath { font-family: var(--qh-mono); font-size: 12px; line-height: 1.55; color: var(--fg-primary); overflow-wrap: break-word; min-width: 0; }
-  .qh-mxsep { margin: 0 5px; color: var(--fg-tertiary); }
-  .qh-mxall { color: var(--fg-warning); }
+  .qh-mxrowacts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 7px; }
+  .qh-mxrowacts .qh-rowmenu-btn { height: 32px; }
   .qh-mxchip { white-space: nowrap; padding: 2px 8px; border-radius: var(--r-2xs); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-secondary); background: var(--adaptive-strong); }
-  .qh-mxchip.is-server, .qh-mxchip.is-database { color: var(--fg-danger); background: var(--danger-adaptive-light); }
-  .qh-mxchip.is-schema { color: var(--fg-warning); background: var(--warning-adaptive-light); }
+  .qh-mxchip.is-server, .qh-mxchip.is-database, .qh-mxchip.is-fleet, .qh-mxchip.is-full { color: var(--fg-danger); background: var(--danger-adaptive-light); }
+  .qh-mxchip.is-schema, .qh-mxchip.is-gone, .qh-mxchip.is-soft, .qh-mxchip.is-join { color: var(--fg-warning); background: var(--warning-adaptive-light); }
   .qh-mxchip.is-off { color: var(--fg-tertiary); background: var(--adaptive-medium); }
-  .qh-mxchip.is-gone { color: var(--fg-warning); background: var(--warning-adaptive-light); }
   .qh-mxchip.is-aud { color: var(--fg-accent); background: var(--brand-adaptive-light); }
-  /* Only what differs from the norm the list itself reports. The first cut
-     hardcoded "soft" as the default and the real fleet is mostly `full`, so
-     `NO MASKING` printed in red on nearly every row — a chip on every row is
-     not a chip. */
-  .qh-mxchip.is-full { color: var(--fg-danger); background: var(--danger-adaptive-light); }
-  .qh-mxchip.is-soft, .qh-mxchip.is-join { color: var(--fg-warning); background: var(--warning-adaptive-light); }
-  /* Several columns of one table, added one click each. */
-  .qh-mxcols { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  .qh-mxcolsel { max-width: 300px; }
-  .qh-mxcolchip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 5px 3px 9px; border-radius: 999px; background: var(--brand-adaptive-light); font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-accent); }
-  .qh-mxcolchip button { display: inline-flex; padding: 1px; background: none; border: 0; border-radius: 999px; color: inherit; cursor: pointer; opacity: .65; }
-  .qh-mxcolchip button:hover { opacity: 1; background: var(--brand-adaptive-medium); }
   .qh-mxsent { font-size: 13px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
   .qh-mxsent b { font-weight: 600; color: var(--fg-primary); }
-  .qh-mxlines { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); }
+  .qh-mxlines { font-size: 12px; line-height: 1.45; color: var(--fg-secondary); }
   .qh-mxwhy { font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); }
   .qh-mxwhy.is-gone { color: var(--fg-warning); }
-  .qh-mxwhy code, .qh-mxnote code, .qh-mxevidence code, .qh-roleempty-p code { font-family: var(--qh-mono); font-size: 11px; padding: 1px 4px; border-radius: var(--r-2xs); background: var(--adaptive-light); }
+  .qh-mxwhy code, .qh-mxnote code, .qh-mxevidence code, .qh-mxprev-idle code, .qh-roleempty-p code { font-family: var(--qh-mono); font-size: 11px; padding: 1px 4px; border-radius: var(--r-2xs); background: var(--adaptive-light); }
   .qh-mxreason { margin-top: 2px; font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
   .qh-mxmeta { font-size: 11px; font-family: var(--qh-mono); color: var(--fg-tertiary); }
   .qh-mxsug { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 5px; padding: 6px 9px; border-radius: var(--r-xs); background: var(--adaptive-light); font-size: 11.5px; color: var(--fg-secondary); }
-  /* The app's quiet text action — used wherever a control has to sit inside a
-     sentence or a section header without becoming a button. Bare, tokened and
-     accent-coloured so it reads as actionable beside body text; qh-mxdel below
-     is the same idiom with a danger hover. */
+  /* The app's quiet text action — a control inside a sentence or header. */
   .qh-linkbtn { padding: 0; background: none; border: 0; font: inherit; font-size: 11.5px; font-weight: 500; color: var(--fg-accent); cursor: pointer; }
   .qh-linkbtn:hover { text-decoration: underline; }
   .qh-linkbtn:focus-visible { outline: none; border-radius: var(--r-2xs); box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
-  .qh-mxdel { padding: 0; background: none; border: 0; font: inherit; font-size: 12px; color: var(--fg-tertiary); cursor: pointer; }
-  .qh-mxdel:hover { color: var(--fg-danger); }
-  /* --- the add flow --- */
-  .qh-mxform { margin: 0 0 16px; padding: 16px 18px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-lg); }
-  .qh-mxfields { display: flex; gap: 12px; flex-wrap: wrap; }
-  .qh-mxfields .qh-select { min-width: 190px; }
-  .qh-mxcolfield .qh-select { min-width: 300px; }
-  /* The ladder as ONE row, widest last. Five cards printing five widths at once
-     made the reader compare all five before picking one; the sentence under the
-     row states the width of the rung they actually picked, which is the only
-     one they are deciding about. */
+  /* --- the add flow: one column, one width, three numbered sections --- */
+  .qh-mxform { max-width: 880px; box-sizing: border-box; margin: 0 0 18px; padding: 18px 20px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-lg); }
+  .qh-mxstep { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; margin: 20px 0 9px; }
+  .qh-mxstep:first-child { margin-top: 0; }
+  .qh-mxstep-n { flex-shrink: 0; width: 19px; height: 19px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: var(--adaptive-light); font-size: 11px; font-weight: 700; color: var(--fg-secondary); align-self: center; }
+  .qh-mxstep-t { font-size: 13.5px; font-weight: 600; color: var(--fg-primary); }
+  .qh-mxstep-h { font-size: 12px; color: var(--fg-tertiary); }
   .qh-mxscope { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-  /* Picking a wide rung colours the CHOICE, not a warning beside it. */
   .qh-mxscope .qh-seg-opt.is-wide.is-active { color: var(--fg-danger); background: var(--danger-adaptive-light); }
   .qh-mxfleetlink { font-size: 12px; }
-  .qh-mxwidth { margin: 9px 0 14px; font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
-  /* Off the ladder rather than a sixth segment: it is wider than the top rung of
-     a ladder built to make width feel wide, and it should not sit in the same
-     row as "one column". */
-  .qh-mxfleetbox { display: flex; align-items: flex-start; gap: 9px; margin-top: 10px; padding: 10px 12px; background: var(--danger-adaptive-light); border: 1px solid var(--fg-danger); border-radius: var(--r-sm); font-size: 12.5px; line-height: 1.5; color: var(--fg-danger); text-wrap: pretty; }
-  .qh-mxfleetbox svg { flex-shrink: 0; margin-top: 2px; }
-  /* Numbered steps, so the form reads as three things instead of nine. */
-  .qh-mxstep { display: flex; align-items: baseline; gap: 9px; margin: 18px 0 9px; }
-  .qh-mxstep:first-child { margin-top: 0; }
-  .qh-mxstep-n { flex-shrink: 0; width: 19px; height: 19px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: var(--adaptive-light); font-size: 11px; font-weight: 700; color: var(--fg-secondary); }
-  .qh-mxstep-t { display: flex; flex-direction: column; gap: 3px; font-size: 13px; font-weight: 600; color: var(--fg-primary); }
-  .qh-mxstep-t .qh-accedit-hint { font-weight: 400; }
-  /* The defaults, STATED. Two questions whose answer is right 27 times out of 30
-     are not questions on the way past — but reading this line has to be faster
-     than opening it, or it is just a closed form. */
-  .qh-mxsum { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; max-width: 620px; padding: 9px 12px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); font: inherit; text-align: left; cursor: pointer; }
-  .qh-mxsum:hover { border-color: var(--stroke-accent); }
-  .qh-mxsum-t { font-size: 12.5px; color: var(--fg-secondary); }
-  .qh-mxsettings { margin-top: 2px; }
-  /* Editing in place: the consequences and the reason, never the reach. */
-  .qh-mxeditbox { display: flex; flex-direction: column; gap: 11px; margin-top: 2px; padding: 12px 14px; background: var(--bg-light); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); }
-  .qh-mxeditwhat { display: flex; flex-direction: column; gap: 3px; }
-  .qh-mxfixed { font-size: 11.5px; color: var(--fg-tertiary); }
-  .qh-mxprevbtn { margin-right: auto; }
-  /* The typed confirmation is a separate step, separated by whitespace that
-     clears the reach sentence's own line-height (19.5px). A 14px gap let a
-     wrapped sentence run into it; a rule read as an underline on the last line
-     of the sentence, which was worse. */
-  .qh-mxtype { display: flex; flex-direction: column; gap: 6px; margin-top: 22px; font-size: 12.5px; line-height: 1.45; color: var(--fg-danger); }
-  .qh-mxreach .qh-mxsent { display: block; }
-  .qh-mxtype .qh-input { max-width: 220px; }
-  .qh-mxchip.is-fleet { color: var(--fg-danger); background: var(--danger-adaptive-light); }
-  .qh-mxnote { margin-top: 10px; padding: 8px 11px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-xs); font-size: 12px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
-  .qh-mxreach { display: flex; align-items: flex-start; gap: 9px; margin-top: 12px; padding: 11px 13px; border-radius: var(--r-sm); background: var(--bg-light); border: 1px solid var(--stroke-medium); }
+  /* Every picker the rung needs, on one grid, all visible at once. */
+  .qh-mxgrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 12px; margin-top: 12px; }
+  .qh-mxgrid-cols { grid-column: 1 / -1; }
+  .qh-mxgrid .qh-mxcombo { width: 100%; min-width: 0; }
+  .qh-mxgrid .qh-input { height: 36px; font-size: 13px; }
+  .qh-mxfield { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  /* One label style everywhere in the form: sentence case, quiet, no caps. */
+  .qh-mxlab { font-size: 12px; font-weight: 500; color: var(--fg-secondary); }
+  .qh-mxlab-h { font-weight: 400; color: var(--fg-tertiary); }
+  .qh-mxcols { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .qh-mxcols .qh-mxcombo { flex: 1 1 260px; width: auto; max-width: 360px; }
+  .qh-mxcolchip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 5px 3px 9px; border-radius: 999px; background: var(--brand-adaptive-light); font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-accent); }
+  .qh-mxcolchip button { display: inline-flex; padding: 1px; background: none; border: 0; border-radius: 999px; color: inherit; cursor: pointer; opacity: .65; }
+  .qh-mxcolchip button:hover { opacity: 1; background: var(--brand-adaptive-medium); }
+  .qh-mxnote { margin-top: 8px; font-size: 12px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-mxnote.is-bad { color: var(--fg-danger); }
+  .qh-mxreach { display: flex; align-items: flex-start; gap: 9px; margin-top: 12px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--bg-light); border: 1px solid var(--stroke-light); }
   .qh-mxreach.is-wide { background: var(--danger-adaptive-light); border-color: var(--fg-danger); color: var(--fg-danger); }
   .qh-mxreach.is-wide .qh-mxsent, .qh-mxreach.is-wide .qh-mxsent b { color: var(--fg-danger); }
+  .qh-mxreach > svg { flex-shrink: 0; margin-top: 3px; }
+  .qh-mxreach .qh-mxsent { display: block; }
   .qh-mxconfirm { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; font-size: 12.5px; line-height: 1.45; color: var(--fg-danger); cursor: pointer; }
-  .qh-mxq { margin-top: 12px; }
-  .qh-mxq-t { margin-bottom: 7px; font-size: 13px; font-weight: 600; color: var(--fg-primary); text-wrap: pretty; }
-  .qh-mxopts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
-  .qh-mxopt { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); font: inherit; text-align: left; cursor: pointer; }
-  .qh-mxopt:hover { border-color: var(--stroke-accent); }
-  .qh-mxopt.is-on { background: var(--brand-adaptive-light); border-color: var(--brand-green); }
-  .qh-mxopt-l { font-size: 13px; font-weight: 600; color: var(--fg-primary); }
-  .qh-mxopt.is-on .qh-mxopt-l { color: var(--fg-accent); }
-  .qh-mxopt-w { font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); text-wrap: pretty; }
-  .qh-mxevidence { margin-top: 8px; font-size: 12px; line-height: 1.5; color: var(--fg-secondary); }
-  .qh-mxreason-in { display: block; width: 100%; max-width: 620px; height: auto; padding: 9px 11px; line-height: 1.5; resize: vertical; }
+  .qh-mxtype { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; font-size: 12.5px; line-height: 1.45; color: var(--fg-danger); }
+  .qh-mxtype .qh-input { max-width: 220px; height: 36px; font-size: 13px; }
+  .qh-mxreason-in { display: block; width: 100%; height: auto; padding: 9px 11px; font-size: 13px; line-height: 1.5; resize: vertical; }
+  /* The settings, stated; Change opens three compact radio rows in the same width. */
+  .qh-mxsum { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; padding: 9px 12px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); font: inherit; text-align: left; cursor: pointer; }
+  .qh-mxsum:hover { border-color: var(--stroke-strong); }
+  .qh-mxsum-t { font-size: 12.5px; color: var(--fg-secondary); }
+  .qh-mxsettings { display: flex; flex-direction: column; margin-top: 4px; border: 1px solid var(--stroke-light); border-radius: var(--r-sm); }
+  .qh-mxset { display: grid; grid-template-columns: 64px minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: 12px; padding: 9px 12px; }
+  .qh-mxset + .qh-mxset, .qh-mxevidence + .qh-mxset { border-top: 1px solid var(--stroke-light); }
+  .qh-mxset-k { padding-top: 1px; font-size: 12px; font-weight: 500; color: var(--fg-secondary); }
+  .qh-mxradio { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; min-width: 0; }
+  .qh-mxradio input { margin: 2px 0 0; accent-color: var(--brand-green); flex-shrink: 0; }
+  .qh-mxradio-t { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .qh-mxradio-l { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: var(--fg-primary); }
+  .qh-mxradio.is-on .qh-mxradio-l { font-weight: 600; }
+  .qh-mxradio-d { padding: 0 6px; border-radius: 999px; background: var(--adaptive-light); font-size: 10.5px; font-weight: 500; color: var(--fg-tertiary); }
+  .qh-mxradio-h { font-size: 11.5px; line-height: 1.4; color: var(--fg-tertiary); text-wrap: pretty; }
+  .qh-mxevidence { padding: 0 12px 9px 88px; font-size: 12px; line-height: 1.5; color: var(--fg-secondary); }
+  /* One action bar, at the bottom. A disabled Save carries its reason as a tooltip. */
+  .qh-mxacts { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+  .qh-mxacts.is-form { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--stroke-light); }
+  .qh-mxsavewrap { display: inline-flex; }
+  .qh-mxsavewrap .qh-btn:disabled { pointer-events: none; }
+  /* Editing in place: the consequences and the reason, never the reach. */
+  .qh-mxeditbox { display: flex; flex-direction: column; gap: 11px; max-width: 840px; margin-top: 2px; padding: 12px 14px; background: var(--bg-light); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); }
+  .qh-mxeditbox .qh-mxsum, .qh-mxeditbox .qh-mxsettings { background: var(--bg-white); }
+  .qh-mxeditwhat { display: flex; flex-direction: column; gap: 3px; }
+  .qh-mxfixed { font-size: 11.5px; color: var(--fg-tertiary); }
   .qh-mxprev { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--stroke-light); }
   .qh-mxprev-idle { font-size: 12.5px; line-height: 1.5; color: var(--fg-tertiary); text-wrap: pretty; }
   .qh-mxprev-q { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 9px 11px; background: var(--bg-light); border-radius: var(--r-xs); }
   .qh-mxprev-q code { font-family: var(--qh-mono); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; color: var(--fg-secondary); }
   .qh-mxprev-by { flex-shrink: 0; font-size: 11px; color: var(--fg-tertiary); }
   .qh-mxdiffwrap { display: flex; flex-direction: column; gap: 8px; }
-  /* The honest question is "what will people see that they cannot see now?", so
-     the answer is two rows of the same real query — today's and after's — with
-     the one changed cell carrying the colour. */
   .qh-mxdiff { border-collapse: collapse; font-size: 11.5px; }
   .qh-mxdiff th, .qh-mxdiff td { padding: 6px 10px; border-bottom: 1px solid var(--stroke-light); text-align: left; white-space: nowrap; }
   .qh-mxdiff td { font-family: var(--qh-mono); }
   .qh-mxdiff th { font-size: 10.5px; font-weight: 600; letter-spacing: 0.03em; color: var(--fg-tertiary); }
   .qh-mxdiff th.is-t { color: var(--fg-accent); }
-  .qh-mxdiff td.qh-mxdiff-k { font-family: inherit; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-tertiary); }
+  .qh-mxdiff td.qh-mxdiff-k { font-family: inherit; font-size: 11px; font-weight: 600; color: var(--fg-tertiary); }
   .qh-mxdiff td.is-masked { color: var(--fg-tertiary); background: var(--adaptive-light); }
-  /* The unmasked value is the single most-read cell on the screen, so it takes
-     full-contrast ink and lets the brand TINT carry "this is what changes" —
-     the accent-on-accent pairing the chips inherit is 3.16:1, fine on a 10px
-     uppercase label and not fine here. */
   .qh-mxdiff td.is-clear { color: var(--fg-primary); background: var(--brand-adaptive-light); font-weight: 600; }
+  @media (max-width: 1180px) { .qh-mxgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .qh-mxlegend { margin-left: 0; } }
+  @media (max-width: 760px) { .qh-mxset { grid-template-columns: minmax(0, 1fr); gap: 6px; } .qh-mxevidence { padding-left: 12px; } }
   /* Subject combo (CODE brief 2026-08-22 §3): one control for the people list
      AND a principal id QueryHub has never seen. Fixed width so the form row does
      not reflow as it filters, and the popup is absolute — eight matches must not
@@ -2139,6 +2100,10 @@
   .qh-mxcombo-h { flex-shrink: 0; font-size: 11.5px; color: var(--fg-tertiary); }
   .qh-mxcombo-h.is-warn { color: var(--fg-warning); }
   .qh-mxcombo-none { padding: 8px 10px; font-size: 12.5px; color: var(--fg-tertiary); }
+  .qh-mxcombo.is-sm .qh-mxcombo-in { height: 34px; font-size: 13px; background: var(--bg-white); }
+  .qh-mxcombo.is-set .qh-mxcombo-in { border-color: var(--brand-green); }
+  .qh-mxcombo-x { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: inline-flex; padding: 4px; background: none; border: 0; border-radius: 999px; color: var(--fg-tertiary); cursor: pointer; }
+  .qh-mxcombo-x:hover { color: var(--fg-primary); background: var(--adaptive-light); }
 
   /* feedback */
   .qh-fblist { display: flex; flex-direction: column; gap: 10px; }
