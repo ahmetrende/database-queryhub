@@ -26,6 +26,9 @@ from decimal import Decimal
 # Make `from queryhub import ...` work when invoked from the repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+import sqlparse  # noqa: E402
+from sqlparse import tokens as T  # noqa: E402
+
 from queryhub import db, metrics_defs  # noqa: E402
 
 
@@ -40,6 +43,44 @@ FONT_FAMILY = "Manrope"
 
 
 # ----------------------------- helpers -------------------------------------
+
+
+# The view's own cut: left(query, 200).
+_PREVIEW_CHARS = 200
+
+
+def _hide_literals(sql: str | None) -> str:
+    """`sql` with every literal written as `?`, and without its comments.
+
+    This page is published to S3. Masking covers the values a query returns,
+    not the query's own text, so a value typed into a WHERE clause (a phone
+    number, an email) was printed exactly as it was written. Names, keywords
+    and placeholders stay, so the shape of the query can still be read.
+
+    It works on the whole query, never on the view's 200-character cut: a
+    string cut in two lexes as a stray quote followed by plain words, and
+    those words would show. For the same reason, everything after an
+    unmatched quote in the whole query becomes a single `?`.
+    """
+    out = []
+    for ttype, value in sqlparse.lexer.tokenize(sql or ""):
+        if ttype in T.Comment:
+            out.append(" ")
+        elif ttype in T.Literal and ttype != T.String.Symbol:
+            out.append("?")               # strings, numbers, $$...$$
+        elif ttype in T.Error and value in ("'", '"', "$"):
+            out.append("?")               # an unmatched quote: hide the rest
+            break
+        else:
+            out.append(value)
+    return "".join(out)
+
+
+def _with_literals_hidden(row: dict) -> dict:
+    """A low-rating row whose query_preview comes from the whole query."""
+    row = dict(row)
+    row["query_preview"] = _hide_literals(row.pop("query_full", None))[:_PREVIEW_CHARS]
+    return row
 
 
 def _json_default(o):
@@ -163,12 +204,16 @@ def fetch_payload() -> dict:
                 cur, "SELECT * FROM p_metrics_who_can_what ORDER BY name")
 
             # Low-rating feedback table — joined onto rows so the dashboard
-            # can render the feedback text alongside the rating.
-            rating_low = _fetch_all(
+            # can render the feedback text alongside the rating. The whole
+            # query comes along only so its literals are hidden before any of
+            # it is written to the page; the view's preview is cut first.
+            rating_low = [_with_literals_hidden(r) for r in _fetch_all(
                 cur,
-                "SELECT * FROM p_metrics_rating_low_with_feedback "
-                " ORDER BY rated_at DESC",
-            )
+                "SELECT v.*, r.query AS query_full "
+                "  FROM p_metrics_rating_low_with_feedback v "
+                "  JOIN requests r ON r.id = v.request_id "
+                " ORDER BY v.rated_at DESC",
+            )]
 
             # CSV bulk imports — one row per /sql import, denormalized with
             # the target alias and minus self-test traffic. Aggregated
