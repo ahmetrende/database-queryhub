@@ -782,6 +782,10 @@ def _run_note_messages(row: dict, when: str) -> list[dict]:
         out.append({"time": when, "kind": "info",
                     "text": f"{n} statement{'' if n == 1 else 's'} executed: {parts}."})
 
+    # Only the AUTOMATIC routing's replica has a line here. A node a
+    # super-admin chose has none: the client builds that sentence from
+    # `ranOn`, and a server copy would show twice. The executor never records
+    # `replica` for a chosen run, so none can appear.
     replica = notes.get("replica")
     if isinstance(replica, dict):
         from .. import replicas
@@ -800,6 +804,67 @@ def _run_note_messages(row: dict, when: str) -> list[dict]:
         out.append({"time": when, "kind": "info",
                     "text": "More server messages followed than are shown here."})
     return out
+
+
+def _details_of(audit_rows: list[dict], action: str) -> dict | None:
+    """The details of the LAST `action` row, as a dict, or None."""
+    for r in reversed(audit_rows or []):
+        if r.get("action") != action:
+            continue
+        d = r.get("details")
+        if isinstance(d, str):
+            try:
+                d = json.loads(d)
+            except Exception:
+                d = None
+        return d if isinstance(d, dict) else {}
+    return None
+
+
+def _lag(value) -> float | None:
+    try:
+        return None if value is None else round(float(value), 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def ran_on(row: dict, audit_rows: list[dict], alias_of) -> dict | None:
+    """`ranOn` for GET /queries/:id and each GET /history row:
+    {kind, name, forced, lagSeconds}. The web client builds the "ran on"
+    sentence from it; the server writes none for a forced run.
+
+    None until the request has started running (the claim sets executed_at;
+    a request refused before that never ran anywhere).
+
+    `forced` is true only when a super-admin's choice (`requests.run_on`) was
+    HONOURED, and that is read from the `execution_run_on_forced` audit row, not
+    from the column: the column is intent, and the executor ignores it for a
+    requester who has lost the standing -- the same split `result_unmasked`
+    makes for masking. A forced replica is named; otherwise `name` is the
+    connection's own name, because an automatic replica is never named.
+
+    Also None for a read on SQL Server that nobody forced: the executor sends
+    it to the availability group's readable secondary without recording which
+    node served it, and "primary" would be a guess.
+    """
+    if not row.get("executed_at"):
+        return None
+    forced = _details_of(audit_rows, "execution_run_on_forced")
+    if forced is not None:
+        kind = "replica" if forced.get("ran_on") == "replica" else "primary"
+        return {"kind": kind,
+                "name": forced.get("target") or alias_of(row.get("target_server_id")) or "",
+                "forced": True,
+                "lagSeconds": _lag(forced.get("lag_s")) if kind == "replica" else None}
+    engine = (row.get("engine") or "postgres").lower()
+    if engine == "mssql" and (row.get("executed_tier") or "ro") == "ro":
+        return None
+    name = alias_of(row.get("target_server_id")) or ""
+    if row.get("executed_target_id"):
+        started = _details_of(audit_rows, "execution_started") or {}
+        return {"kind": "replica", "name": name, "forced": False,
+                "lagSeconds": _lag(started.get("replica_lag_s"))}
+    return {"kind": "primary", "name": name, "forced": False, "lagSeconds": None}
 
 
 def status_messages(row: dict) -> list[dict]:

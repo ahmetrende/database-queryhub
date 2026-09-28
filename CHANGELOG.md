@@ -9,6 +9,18 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+### Added
+
+- **A super-admin can choose where one query runs:** Auto (as before), the
+  primary, or a named read replica (`runOn` on `POST /queries`, migration 137).
+  See OPERATIONS.md §26.
+  - A chosen replica skips the automatic rules. If it cannot run the query,
+    the request fails and says why; it never falls back to the primary.
+  - Each honoured choice is audited (`execution_run_on_forced`). The status
+    poll and history rows say where a query ran (`ranOn`).
+  - A scheduled request keeps the choice, and now keeps `unmasked` too: the
+    scheduler dropped it, so a scheduled unmasked result came back masked.
+
 ### Changed
 
 - **The trusted-portal seam is ready for its first connection** (AUTH.md §1.2).

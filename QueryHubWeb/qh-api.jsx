@@ -101,6 +101,13 @@ const qhApi = {
                                       '/databases/' + encodeURIComponent(dbn) + '/schema'),
   // Server DB roles (super-only, enforced server-side). {roles:[{name,kind,login,sup,note}]}.
   roles:       (conn)  => qhFetch('/connections/' + encodeURIComponent(conn) + '/roles'),
+  // The read replicas a super-admin can send one query to, with the health the
+  // automatic routing sees (super-only, enforced server-side):
+  // {replicas:[{id,name,healthy,lagSeconds,reason}]}. Submit with
+  // {runOn:'replica', replicaId: id} (or runOn:'primary') on the body of
+  // submit(); status() and each history() row answer with ranOn, from which
+  // the UI builds the "ran on" sentence (the server sends none for a forced run).
+  connectionReplicas: (conn) => qhFetch('/connections/' + encodeURIComponent(conn) + '/replicas'),
   saved:       ()      => qhFetch('/saved'),
   history:     (n=50)  => qhFetch('/history?limit=' + n),
   // Reserve the id a new tab will submit under, so the number on screen is the

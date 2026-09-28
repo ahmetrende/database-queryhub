@@ -68,6 +68,19 @@ def test_unmasked_is_returned():
     )
 
 
+def test_run_on_is_returned():
+    """Same failure, same shape: without it a super-admin's chosen primary or
+    replica is silently run as auto."""
+    assert "run_on" in _returned_columns()
+
+
+def test_the_scheduler_hands_over_the_same_columns():
+    """The scheduler's RETURNING is the other door into executor.submit(). It
+    spelled its own list and had already lost `unmasked` that way."""
+    from queryhub import executor
+    assert executor._SCHEDULED_SELECT_COLS is core_submit.REQUEST_RETURNING
+
+
 def test_no_submit_path_hand_rolls_its_own_returning_list():
     """Two call sites used to spell the list out and drifted from the shared
     constant. Any RETURNING over `requests` must interpolate it instead."""

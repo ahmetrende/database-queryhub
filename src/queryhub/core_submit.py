@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import admins, ast_safety, audit, auto_approve, db, pre_flight
 from . import config as cfg
-from . import profile_sync, query_safety, query_secrets, requesters, targets, teams
+from . import profile_sync, query_safety, query_secrets, replicas, requesters, targets, teams
 
 log = logging.getLogger(__name__)
 
@@ -39,14 +39,16 @@ log = logging.getLogger(__name__)
 # is a silently wrong decision. `unmasked` was the one that proved it: added by
 # migration 093 and never added here, so `request.get("unmasked")` was None on
 # every path and a super-admin's unmasked result came back masked anyway, with
-# the intent recorded in the table the whole time.
+# the intent recorded in the table the whole time. `run_on` (migration 137) is
+# the same kind of intent and would fail the same way: a chosen replica or
+# primary silently run as auto.
 REQUEST_RETURNING = (
     "id, requester_slack_id, requester_name, target_server_id, "
     "database_name, query, wants_result, result_format, justification, status, "
     "decided_by_slack_id, decided_by_name, decided_at, scheduled_for, "
     "requester_dm_channel_id, requester_dm_message_ts, "
     "bundle_id, position, risk_summary, origin, engine, required_tier, "
-    "unmasked"
+    "unmasked, run_on"
 )
 
 
@@ -112,6 +114,10 @@ class Prepared:
     # executor re-derives whether they may, from their super-admin standing
     # at run time. See migrations/093_requests_unmasked.sql.
     unmasked: bool = False
+    # Where a super-admin asked this to run, in its stored form: None (auto),
+    # 'primary' or 'replica:<target id>'. INTENT only, like `unmasked` -- see
+    # migrations/137_request_run_on.sql and executor._run.
+    run_on: str | None = None
 
 
 @dataclass
@@ -165,10 +171,16 @@ def validate_submission(
     user_agent: str | None = None,
     confirmed: bool = False,
     unmasked: bool = False,
+    run_on: str = "auto",
+    replica_id: str | None = None,
 ) -> Prepared | Rejection:
     """Run every submit-time check in the exact order the Slack modal
     always has. Returns a Prepared on success, a Rejection on the first
-    failure."""
+    failure.
+
+    `run_on` is auto | primary | replica; `replica_id` (a target id, as text)
+    names the replica, and may be left out when the target has exactly one.
+    Only the web sends anything but auto."""
     if kill_switch_on():
         return Rejection("kill_switch", kill_switch_message())
 
@@ -267,12 +279,35 @@ def validate_submission(
             "Only a super-admin can run a query with masking turned off.",
             reason="not_super_admin")
 
+    # Choosing where a query runs is the same kind of affordance, refused the
+    # same way: loudly, rather than quietly run as auto.
+    run_on = (run_on or "auto").strip().lower()
+    if run_on not in ("auto", "primary", "replica"):
+        return Rejection("run_on", "runOn must be auto, primary or replica.",
+                         reason="run_on_invalid")
+    if run_on != "auto" and not unrestricted:
+        return Rejection("run_on",
+                         "Only a super-admin can choose where a query runs.",
+                         reason="run_on_not_super_admin")
+
     # Mode required by the query: ro / rw / ddl. Same `unrestricted` the
     # analyze() above used — otherwise a super-admin's procedural block is
     # blocked here, blocked reports 'ro', and the tier written to the row is a
     # read-only label on a role creation.
     required_mode = query_safety.required_mode(query, engine=target.engine,
                                                unrestricted=unrestricted)
+
+    # The stored form of that choice. A replica is resolved to its id here so
+    # the row names one exact server, even when the caller left the id out
+    # because the target has only one.
+    stored_run_on: str | None = None
+    if run_on == "primary":
+        stored_run_on = "primary"
+    elif run_on == "replica":
+        chosen = _chosen_replica(target, required_mode, replica_id)
+        if isinstance(chosen, Rejection):
+            return chosen
+        stored_run_on = f"replica:{chosen}"
 
     # Effective grant: user_target_grants overrides team_target_grants;
     # admins / bypass requesters get a synthetic ddl-on-everything grant.
@@ -542,7 +577,38 @@ def validate_submission(
         client_ip=client_ip,
         user_agent=user_agent,
         unmasked=unmasked,
+        run_on=stored_run_on,
     )
+
+
+def _chosen_replica(target, required_mode: str,
+                    replica_id: str | None) -> int | Rejection:
+    """The target id of the replica a super-admin chose, or why not.
+
+    Checked against the target's ENABLED replicas as they are now; the executor
+    checks again when it runs, because a replica can be switched off, unlinked
+    or promoted in between. The tier is the statement's own: a replica cannot
+    run a write, and nobody should learn that at execution time."""
+    if required_mode != "ro":
+        return Rejection("run_on", "A replica runs read-only statements only.",
+                         reason="replica_read_only")
+    engine = getattr(target, "engine", None) or "postgres"
+    candidates = replicas.replicas_of(target.id) if engine == "postgres" else []
+    unknown = Rejection("run_on", "That replica does not belong to this connection.",
+                        reason="replica_unknown")
+    if not candidates:
+        return unknown
+    wanted = (replica_id or "").strip()
+    if not wanted:
+        if len(candidates) == 1:
+            return candidates[0]["id"]
+        return Rejection("run_on",
+                         f"Pick which replica — this connection has {len(candidates)}.",
+                         reason="replica_required")
+    for r in candidates:
+        if str(r["id"]) == wanted:
+            return r["id"]
+    return unknown
 
 
 # ---- Step 2: auto-approve resolution + INSERT (one transaction) -----------
@@ -800,9 +866,9 @@ def create_request(
                 f" query, wants_result, result_format, justification, scheduled_for, "
                 f" explain_plan, risk_summary, query_fingerprint, status, "
                 f" decided_by_slack_id, decided_by_name, decided_at, decision_reason, "
-                f" origin, engine, required_tier, unmasked, query_secret) "
+                f" origin, engine, required_tier, unmasked, query_secret, run_on) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, "
-                f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s) "
+                f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s) "
                 f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
@@ -826,6 +892,7 @@ def create_request(
                     prep.required_mode,
                     prep.unmasked,
                     query_secret,
+                    prep.run_on,
                 ),
             )
             row = cur.fetchone()
@@ -843,6 +910,8 @@ def create_request(
                     submit_details["client_ip"] = prep.client_ip
                 if prep.user_agent:
                     submit_details["user_agent"] = prep.user_agent
+            if prep.run_on:
+                submit_details["run_on"] = prep.run_on
             approve_actor_name = None
             if aa_grant is not None:
                 submit_details["grant_id"] = aa_grant["id"]
@@ -880,9 +949,9 @@ def create_request(
                 f"({id_col}requester_slack_id, requester_name, target_server_id, database_name, "
                 f" query, wants_result, result_format, justification, scheduled_for, "
                 f" explain_plan, risk_summary, query_fingerprint, origin, "
-                f" engine, required_tier, unmasked, query_secret) "
+                f" engine, required_tier, unmasked, query_secret, run_on) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, "
-                f"        %s, %s, %s, %s) "
+                f"        %s, %s, %s, %s, %s) "
                 f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
@@ -902,6 +971,7 @@ def create_request(
                     prep.required_mode,
                     prep.unmasked,
                     query_secret,
+                    prep.run_on,
                 ),
             )
             row = cur.fetchone()
@@ -918,6 +988,8 @@ def create_request(
                     submit_details["client_ip"] = prep.client_ip
                 if prep.user_agent:
                     submit_details["user_agent"] = prep.user_agent
+            if prep.run_on:
+                submit_details["run_on"] = prep.run_on
             audit.log_in(cur, row["id"], prep.user_id, prep.user_name,
                          "submitted", submit_details)
 

@@ -34,7 +34,7 @@ except ModuleNotFoundError:  # vanilla profile: the [slack] extra isn't installe
 if TYPE_CHECKING:  # only a type hint — no runtime dependency on slack_sdk
     from slack_sdk.web import WebClient
 
-from . import access, admins, audit, cancellation, cell_format, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, query_secrets, ratings, replicas, requesters, row_limits, stmt_guard, targets, teams
+from . import access, admins, audit, cancellation, cell_format, core_submit, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, query_secrets, ratings, replicas, requesters, row_limits, stmt_guard, targets, teams
 from . import config as cfg
 from .slack_app import notifications
 
@@ -499,7 +499,8 @@ def _fall_back_to_primary(request: dict, route, error: BaseException,
     which is the primary."""
     log.warning("request %s: replica %s failed (%s); running it on the primary",
                 request["id"], route.alias, type(error).__name__)
-    replicas.mark_unhealthy(route.target_id, type(error).__name__)
+    replicas.mark_unhealthy(route.target_id,
+                            f"failed a query ({type(error).__name__})")
     for path in csv_paths:
         try:
             path.unlink(missing_ok=True)
@@ -513,6 +514,41 @@ def _fall_back_to_primary(request: dict, route, error: BaseException,
                      {"replica": route.alias,
                       "error": errors.scrub(f"{type(error).__name__}: {error}")})
     return None
+
+
+def _fail_on_chosen_replica(client: WebClient, request: dict, route,
+                            error: Exception, csv_paths: list) -> None:
+    """A replica a super-admin chose failed the query for a reason of its own.
+    Unlike `_fall_back_to_primary` there is no second attempt: the request fails
+    with the replica's name and what it said."""
+    log.warning("request %s: chosen replica %s failed (%s); not running it on "
+                "the primary", request["id"], route.alias, type(error).__name__)
+    replicas.mark_unhealthy(route.target_id,
+                            f"failed a query ({type(error).__name__})")
+    for path in csv_paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    csv_paths.clear()
+    _fail(client, request,
+          f"This query was sent to the read replica `{route.alias}` by choice, "
+          f"and the replica failed it: {errors.scrub(error)}. It was not run on "
+          f"the primary instead. Submit it again with Auto or Primary to run it "
+          f"there.")
+
+
+def _forced_record(run_on, target, route) -> dict | None:
+    """The `execution_run_on_forced` audit details for a choice that is honoured:
+    what was asked for, where it runs, and how far behind the replica was.
+    None for an automatic run."""
+    if run_on.kind == "auto":
+        return None
+    return {"requested": replicas.run_on_value(run_on),
+            "ran_on": "replica" if route is not None else "primary",
+            "target_id": route.target_id if route is not None else target.id,
+            "target": route.alias if route is not None else target.alias,
+            "lag_s": route.lag_s if route is not None else None}
 
 
 def _run(request: dict, client: WebClient) -> None:
@@ -642,6 +678,21 @@ def _run(request: dict, client: WebClient) -> None:
                        "tier": mode,
                        "reason": "super-admin ran this with masking turned off"})
 
+        # Where it runs, the same way: `requests.run_on` is INTENT. A
+        # super-admin may send one request to the primary or to one named
+        # replica; whether that choice still stands is decided here, now. A
+        # requester who has lost the standing runs as if they had not chosen --
+        # the automatic rules decide -- and the dropped choice is recorded on
+        # the execution_started row below.
+        run_on = replicas.parse_run_on(request.get("run_on"))
+        run_on_ignored = None
+        if run_on.kind != "auto" and not admins.is_super_admin(requester):
+            run_on_ignored = request.get("run_on")
+            log.warning("request %s asked to run on %s, but the requester is no "
+                        "longer a super-admin; running it as auto",
+                        request_id, run_on_ignored)
+            run_on = replicas.AUTO
+
         # An engine whose identity is an assumed role has no credential to
         # resolve, and "no credential" must not read as "not provisioned yet"
         # — which is what the two refusals below would tell the user.
@@ -669,7 +720,28 @@ def _run(request: dict, client: WebClient) -> None:
         # (replicas.py). Decided before the claim, so the claim records where it
         # runs -- which the cancel path needs, a backend pid being meaningless
         # on the wrong server.
-        replica = replicas.choose(target, request, mode, db_user, password)
+        #
+        # A super-admin's choice replaces that decision. `primary` never
+        # consults a replica. A chosen replica skips the automatic rules, and
+        # when it cannot run the query the request FAILS here: running it on
+        # the primary instead would hand back the answer they chose not to get.
+        if run_on.kind == "primary":
+            replica = replicas.Decision()
+        elif run_on.kind == "replica":
+            replica = replicas.chosen(target, run_on.replica_id, mode,
+                                      db_user, password)
+            if replica.refused:
+                _fail(client, request,
+                      f"This query was sent to a read replica by choice, and it "
+                      f"cannot run there: {replica.refused}. It was not run on "
+                      f"the primary instead. Submit it again with Auto or "
+                      f"Primary to run it there.")
+                return
+        else:
+            replica = replicas.choose(target, request, mode, db_user, password)
+        # The audit record of a choice that is honoured -- also what `ranOn`
+        # reads on the web. None for an automatic run.
+        forced = _forced_record(run_on, target, replica.route)
 
         timeout_sec = cfg.get_int("query_timeout_sec", 300)
         # Per-user caps: a time-bounded row-limit override raises these
@@ -731,6 +803,10 @@ def _run(request: dict, client: WebClient) -> None:
                              if replica.route else {}),
                           **({"replica_skipped": replica.skipped}
                              if replica.skipped else {}),
+                          # A choice the requester no longer had the standing
+                          # to make, so the automatic rules decided instead.
+                          **({"run_on_ignored": run_on_ignored}
+                             if run_on_ignored else {}),
                           # What the session actually BECAME, and why. `user`
                           # above is only who it connected as; with an
                           # elevation in play that is no longer who ran the
@@ -740,6 +816,14 @@ def _run(request: dict, client: WebClient) -> None:
                                   request["requester_slack_id"], target.id,
                                   mode))}
                              if assume_role else {})})
+            # A super-admin's choice of where it runs, in the same transaction
+            # as the claim: written only when the choice was honoured, and
+            # before the query runs, so a run that then fails is still on the
+            # record -- the same rule `result_unmasked` follows.
+            if forced is not None:
+                audit.log_in(cur, request_id, requester,
+                             request.get("requester_name"),
+                             "execution_run_on_forced", forced)
 
         # SQL Server (MSSQL) uses a separate pyodbc flow — no search_path /
         # SET ROLE / SET LOCAL prelude / EXPLAIN plan / CONCURRENTLY rules.
@@ -752,9 +836,11 @@ def _run(request: dict, client: WebClient) -> None:
             return
 
         if target.engine == "mssql":
+            # `primary` is honoured here too: a read skips the availability
+            # group's readable secondary and goes to the listener.
             _run_mssql(client, request, target, mode, report,
                        db_user, password, timeout_sec, max_rows, max_csv_bytes,
-                       unmask=unmask)
+                       unmask=unmask, force_primary=run_on.kind == "primary")
             return
 
         if target.engine == "clickhouse":
@@ -945,12 +1031,23 @@ def _run(request: dict, client: WebClient) -> None:
                 if (route is None or not replicas.is_fallback_error(e)
                         or _cancel_requested(request["id"])):
                     raise
+                if forced is not None:
+                    # A replica somebody chose on purpose failed for a reason of
+                    # its own. The request fails, naming it; the primary is
+                    # never asked instead.
+                    _fail_on_chosen_replica(client, request, route, e,
+                                            csv_paths_to_cleanup)
+                    return
                 route = _fall_back_to_primary(request, route, e,
                                               csv_paths_to_cleanup)
         _finalize(client, request, stmt_results, csv_paths_to_cleanup,
                   max_csv_bytes=max_csv_bytes, target=target, elapsed=elapsed,
-                  # The requester is told, in the result and the Messages tab.
-                  replica={"lag_s": route.lag_s} if route is not None else None)
+                  # The requester is told, in the result and the Messages tab,
+                  # when the AUTOMATIC routing used a replica. A super-admin's
+                  # choice gets no server line: the web client builds that
+                  # sentence from `ranOn`, and a second copy would show twice.
+                  replica=({"lag_s": route.lag_s}
+                           if route is not None and forced is None else None))
 
     except psycopg.errors.QueryCanceled as e:
         # `statement_timeout` fired (or pg_cancel_backend / lock_timeout).
@@ -1418,7 +1515,7 @@ def _log_athena_cost(request_id: int, target, cur) -> None:
 def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
                db_user: str, password: str, timeout_sec: int,
                max_rows: int, max_csv_bytes: int,
-               unmask: bool = False) -> None:
+               unmask: bool = False, force_primary: bool = False) -> None:
     """SQL Server execution path (pyodbc). Reached only for a WIRED mssql
     target (fail-closed until then), called inside _run's try so the outer
     handler surfaces any error via _fail (the ordering guard applies). Reuses the
@@ -1429,13 +1526,16 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
     resolve_ro_endpoint) and connect straight to that node, so the AG's FQDN
     routing redirect is never used; RW/DDL go to the listener (primary). T-SQL
     has no SET-LOCAL prelude (query_safety rejects a leading SET on this engine)
-    and no PG-style EXPLAIN plan (capture_plan=False)."""
+    and no PG-style EXPLAIN plan (capture_plan=False).
+
+    `force_primary` is a super-admin's `run_on = 'primary'`: a read goes to the
+    listener like a write does, and the readable secondary is not looked up."""
     from . import mssql_exec
     request_id = request["id"]
     main_stmts = [s for s in report.statements if s.kind != "set"]
     result_format = request.get("result_format") or "csv"
     db_name = request["database_name"]
-    if mode == "ro":
+    if mode == "ro" and not force_primary:
         ep = mssql_exec.resolve_ro_endpoint(
             target.host, target.port, db_name, db_user, password,
             timeout_sec=timeout_sec)
@@ -2665,13 +2765,13 @@ def shutdown() -> None:
 # Scheduler — dispatches due `scheduled` requests to the executor
 # =============================================================================
 
-_SCHEDULED_SELECT_COLS = (
-    "id, requester_slack_id, requester_name, target_server_id, "
-    "database_name, query, wants_result, result_format, justification, status, "
-    "decided_by_slack_id, decided_by_name, decided_at, scheduled_for, "
-    "requester_dm_channel_id, requester_dm_message_ts, "
-    "bundle_id, position, origin"
-)
+# The rows the scheduler hands to `submit` are the executor's input like any
+# other, so they carry the shared column list. This list used to be its own,
+# and it had fallen behind that one: `unmasked` (migration 093) was never on
+# it, so a super-admin's SCHEDULED unmasked request ran masked -- the exact
+# failure core_submit.REQUEST_RETURNING's comment describes -- and `run_on`
+# would have been dropped the same way.
+_SCHEDULED_SELECT_COLS = core_submit.REQUEST_RETURNING
 
 
 def dispatch_due(client: WebClient, batch_limit: int = 50) -> int:

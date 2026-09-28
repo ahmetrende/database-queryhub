@@ -1770,7 +1770,9 @@ SELECT current_user;                                        -- back to the login
 A read-only request on a target that has a read replica runs on the replica
 when the replica is healthy, and on the primary otherwise. Nobody picks a
 replica: every list shows the primary's one name, and the request, its grant
-and its history stay on the primary. Code: `src/queryhub/replicas.py`.
+and its history stay on the primary. The one exception is a super-admin, who
+can choose the node for a single query (see "Choosing where one query runs"
+below). Code: `src/queryhub/replicas.py`.
 
 **How a replica is known.** `target_servers.replica_of` points a replica row at
 its primary. The hourly inventory import sets it from `v_server.replica_source`
@@ -1826,6 +1828,56 @@ SELECT r.id, t.alias AS target, x.alias AS ran_on, r.completed_at
  WHERE r.executed_at > now() - interval '1 day'
  ORDER BY r.id DESC;
 ```
+
+**Choosing where one query runs (super-admin).** The web submit takes
+`runOn`: `auto` (the rules above, the default), `primary`, or `replica` with a
+`replicaId` (optional when the connection has exactly one enabled replica).
+Anyone who is not a super-admin is refused with 403. The choice is stored as
+`requests.run_on` (`NULL`, `'primary'`, `'replica:<target id>'`) and, like
+`unmasked`, is re-checked at execution: a requester who is no longer a
+super-admin runs as auto, and `execution_started` records `run_on_ignored`.
+A scheduled submit keeps its choice; the standing is checked when the
+scheduler runs it, not when it was submitted.
+
+- `primary` never consults a replica, at any tier. On SQL Server a read skips
+  the availability group's readable secondary and goes to the listener.
+- A chosen replica skips `replica_routing`, the node-local rule,
+  read-your-writes and the lag limit. Reading a replica's own
+  `pg_stat_activity` is the use this exists for. It must still be an enabled
+  replica of the request's target, the statement must be read-only (the submit
+  refuses anything else with 400), and a fresh probe must find it answering
+  and in recovery. The probe does not need the primary: while the primary is
+  down, the lag is the replica's replay age.
+- A chosen replica that cannot run the query, before or during the run, fails
+  the request. The message names the replica and the reason. It never falls
+  back to the primary. To take a replica away from chosen runs as well as from
+  automatic ones, disable its row.
+
+Every honoured choice writes an `execution_run_on_forced` audit row in the
+claim's transaction: `requested`, `ran_on` (`primary` / `replica`),
+`target_id`, `target` and `lag_s`. `GET /api/queries/<id>` and every
+`GET /api/history` row carry `ranOn` (`kind`, `name`, `forced`,
+`lagSeconds`), read from that row; the web UI builds its "ran on" sentence
+from it. The server writes no Messages line and no Slack line for a chosen
+node, and the "Ran on a read replica ..." line for automatic routing is
+unchanged. `GET /api/connections/<conn>/replicas` shows a super-admin each
+replica's health as automatic routing sees it (the cached check,
+`replica_health_ttl_seconds`).
+
+```sql
+-- Queries a super-admin sent somewhere on purpose, last week
+SELECT a.request_id, a.actor_name, a.details->>'requested' AS requested,
+       a.details->>'target' AS ran_on, a.details->>'lag_s' AS lag_s, a.created_at
+  FROM audit_log a
+ WHERE a.action = 'execution_run_on_forced'
+   AND a.created_at > now() - interval '7 days'
+ ORDER BY a.id DESC;
+```
+
+Masking follows the request's target, the primary, wherever the query runs:
+exemptions and the column catalog are looked up by `target_server_id`, never
+by the replica's own id. An exemption written against a replica's connection
+row therefore never applies.
 
 **Cancel and lockout.** A cancel signals the backend on the server that runs
 the query (`executed_target_id`), with the primary's login.

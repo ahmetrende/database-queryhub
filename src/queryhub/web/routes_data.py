@@ -14,7 +14,7 @@ import psycopg
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from .. import admins, auto_approve, db, errors, favorites, people, query_safety, schema_catalog, targets, teams
+from .. import admins, auto_approve, db, errors, favorites, people, query_safety, replicas, schema_catalog, targets, teams
 from .. import config as cfg
 from . import deps, mapping
 
@@ -305,6 +305,13 @@ def connections(claims: dict = Depends(deps.current_user)):
     pairs = [(t.id, d) for t, _g, dbs in plan for d in dbs]
     refs_map = _catalog_table_refs_map(pairs)
     fns_map = _catalog_functions_map(pairs)
+    # The replicas a super-admin may send one query to (POST /queries runOn).
+    # Nobody else is shown them: for everyone else a replica does not exist as
+    # a name, only as where the primary's reads sometimes run. A super-admin is
+    # an admin, so nobody else pays for the lookup.
+    is_super = is_admin and admins.is_super_admin(uid)
+    replica_map = (replicas.enabled_by_primary(
+        [t.id for t, _g, _d in plan if _is_postgres(t)]) if is_super else {})
 
     out = []
     for t, grant, dbs in plan:
@@ -397,8 +404,15 @@ def connections(claims: dict = Depends(deps.current_user)):
         if tags:
             entry["tags"] = tags if is_admin else {
                 k: v for k, v in tags.items() if k in ("provider", "service")}
+        if is_super:
+            entry["replicas"] = [{"id": str(r["id"]), "name": r["alias"]}
+                                 for r in replica_map.get(t.id, [])]
         out.append(entry)
     return {"connections": out}
+
+
+def _is_postgres(t) -> bool:
+    return (getattr(t, "engine", None) or "postgres") == "postgres"
 
 
 # ---- /saved -----------------------------------------------------------------
@@ -520,7 +534,9 @@ def history(limit: int = 50, claims: dict = Depends(deps.current_user)):
     limit = max(1, min(int(limit), 200))
     rows = db.fetch_all(
         "SELECT id, query, target_server_id, database_name, status, "
-        "       row_count, created_at, decided_by_slack_id, decided_by_name "
+        "       row_count, created_at, decided_by_slack_id, decided_by_name, "
+        # What `ranOn` reads, as the status poll does.
+        "       executed_at, executed_target_id, executed_tier, engine "
         # status <> 'draft': a reserved id from an open tab is not history.
         "FROM requests WHERE requester_slack_id = %s AND status <> 'draft' "
         "ORDER BY id DESC LIMIT %s",
@@ -532,8 +548,36 @@ def history(limit: int = 50, claims: dict = Depends(deps.current_user)):
     # profile had no display name when they decided.
     name_of = people.namer([r.get("decided_by_name") or r.get("decided_by_slack_id")
                             for r in rows])
-    return {"history": [mapping.history_entry(r, _alias_of, state_of, name_of)
-                        for r in rows]}
+    # Each alias once per page: both the entry and `ranOn` name the connection.
+    aliases: dict = {}
+
+    def alias_of(tid):
+        if tid not in aliases:
+            aliases[tid] = _alias_of(tid)
+        return aliases[tid]
+    audits = _ran_on_audits([r["id"] for r in rows if r.get("executed_at")])
+    return {"history": [
+        # The same builder as GET /queries/:id, so a row and its status poll
+        # can never disagree about where the query ran.
+        {**mapping.history_entry(r, alias_of, state_of, name_of),
+         "ranOn": mapping.ran_on(r, audits.get(r["id"], []), alias_of)}
+        for r in rows]}
+
+
+def _ran_on_audits(request_ids: list[int]) -> dict[int, list[dict]]:
+    """The audit rows `mapping.ran_on` reads, for a page of requests in one
+    read: {request id: [{action, details}]}, oldest first like the status
+    poll's. A request that never ran needs none and is not asked about."""
+    if not request_ids:
+        return {}
+    out: dict[int, list[dict]] = {}
+    for r in db.fetch_all(
+            "SELECT request_id, action, details FROM audit_log "
+            " WHERE request_id = ANY(%s) "
+            "   AND action IN ('execution_started', 'execution_run_on_forced') "
+            " ORDER BY id", (list(request_ids),)):
+        out.setdefault(r["request_id"], []).append(r)
+    return out
 
 
 # ---- schema tree + fleet search (v2 new features) ---------------------------
@@ -675,6 +719,63 @@ def connection_roles(conn: str, claims: dict = Depends(deps.current_user)):
         roles.append({"name": rolname, "kind": "user" if login else "group",
                       "login": bool(login), "sup": bool(sup), "note": note})
     return {"roles": roles}
+
+
+# ---- read replicas of a connection (SUPER-ONLY, cached health) ---------------
+#
+# What the "run on" picker offers a super-admin, with the health automatic
+# routing would see: the same per-process check (replicas.health, trusted for
+# `replica_health_ttl_seconds`), measured with the primary's read-only login as
+# routing measures it. `healthy` answers "would Auto use it right now"; a
+# replica that is not healthy can still be chosen -- a chosen replica only has
+# to answer and be in recovery -- and `reason` says what Auto holds against it.
+
+@router.get("/connections/{conn}/replicas")
+def connection_replicas(conn: str, claims: dict = Depends(deps.current_user)):
+    deps.require_whitelisted(claims)
+    if not admins.is_super_admin(claims["sub"]):
+        raise deps._error(403, "forbidden", "Super-admin access required.")
+    t = _target_by_alias(conn)
+    # A replica is not a connection of its own, so its alias is not one here.
+    if t is None or getattr(t, "replica_of", None) is not None:
+        raise deps._error(404, "not_found", f"Unknown connection '{conn}'.")
+    rows = replicas.replicas_of(t.id) if _is_postgres(t) else []
+    if not rows:
+        return {"replicas": []}
+    user, password, why = _ro_login(t)
+    out = []
+    for r in rows:
+        # Never raises: an unreachable replica is an answer, not an error.
+        # (`health` already turns any connection failure into one; the guard
+        # is for whatever else a check can trip over, a config read included.)
+        if why:
+            h = replicas.Health(False, None, why)
+        else:
+            try:
+                h = replicas.health(t, r, user, password)
+            except Exception as e:                  # noqa: BLE001
+                log.warning("replicas: health check of %s raised", r["alias"],
+                            exc_info=True)
+                h = replicas.Health(False, None,
+                                    f"could not be checked ({type(e).__name__})")
+        out.append({"id": str(r["id"]), "name": r["alias"], "healthy": bool(h.ok),
+                    "lagSeconds": None if h.lag_s is None else round(h.lag_s, 1),
+                    "reason": None if h.ok else (h.reason or "not healthy")})
+    return {"replicas": out}
+
+
+def _ro_login(t) -> tuple[str, str, str | None]:
+    """(user, password, None), or ("", "", why) when the primary has no usable
+    read-only login -- which is the one replica routing would use."""
+    try:
+        user, password = targets.get_credentials(t.id, "ro")
+    except Exception:                               # noqa: BLE001
+        log.warning("replicas: no read-only login for target %s", t.id,
+                    exc_info=True)
+        return "", "", "the primary's read-only login is not configured"
+    if password == targets.SENTINEL_PASSWORD:
+        return "", "", "the primary's read-only login is not configured"
+    return user, password, None
 
 
 @router.get("/search")

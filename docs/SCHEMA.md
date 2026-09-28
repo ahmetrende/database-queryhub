@@ -543,6 +543,7 @@ Every `/sql` submission, regardless of outcome. The audit trail.
 | `decided_by_slack_id`, `decided_by_name`, `decision_reason`, `decided_at` | Approver / rejector details. |
 | `executed_at`, `completed_at` | Execution timing. |
 | `executed_target_id` | The read replica that ran this request, when it did not run on `target_server_id` (migration 131). NULL = ran on its own target. The cancel path signals `backend_pid` on this server. |
+| `run_on` | Where a super-admin asked this request to run (migration 137): NULL = auto (replicas.py decides), `'primary'`, or `'replica:<target_servers.id>'`; a CHECK admits only those shapes. Intent only, like `unmasked`: the executor re-checks super-admin standing at run time and runs as auto when it is gone. An honoured choice writes an `execution_run_on_forced` audit row; a chosen replica that cannot run the query fails the request instead of falling back to the primary. See OPERATIONS.md §26. |
 | `row_count`, `truncated` | Result stats. |
 | `error_message` | Filled when status=`failed`. |
 | `csv_file_path` | Local CSV path (under `/var/lib/queryhub/results/`). NULL'd by cleanup. |

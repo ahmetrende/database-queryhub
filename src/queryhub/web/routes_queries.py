@@ -23,6 +23,7 @@ import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
@@ -81,6 +82,13 @@ class QueryIn(BaseModel):
     # not a super-admin, and re-checked against their standing again at
     # execution — see core_submit.validate_submission and executor._run.
     unmasked: bool = False
+    # Where this one query runs: `auto` is the automatic routing (replicas.py),
+    # `primary` never uses a replica, `replica` runs on `replicaId` -- which may
+    # be left out when the connection has exactly one. Super-admin only, and
+    # like `unmasked`, re-checked at execution. `replicaId` is read only when
+    # runOn is `replica`.
+    runOn: Literal["auto", "primary", "replica"] = "auto"
+    replicaId: str | None = None
 
 
 class BatchItemIn(BaseModel):
@@ -171,6 +179,14 @@ _REJECTION_HTTP = {
     "needs_confirmation": (409, "confirmation_required"),
     # Asked for an unmasked result without super-admin standing.
     "not_super_admin": (403, "forbidden"),
+    # Chose where the query runs without super-admin standing, and the three
+    # ways a chosen replica cannot be one: the statement writes, the replica is
+    # not one of this connection's enabled replicas, or there are several and
+    # none was named.
+    "run_on_not_super_admin": (403, "forbidden"),
+    "replica_read_only": (400, "bad_request"),
+    "replica_unknown": (400, "bad_request"),
+    "replica_required": (400, "bad_request"),
     # The access existed and ran out. Its own code, not the `forbidden` it
     # would otherwise share with "you were never allowed here": one is a
     # renewal, the other is a mistake, and they are different screens. The
@@ -303,6 +319,8 @@ def submit_query(body: QueryIn, request: Request,
         user_agent=user_agent,
         confirmed=body.confirmed,
         unmasked=body.unmasked,
+        run_on=body.runOn,
+        replica_id=body.replicaId if body.runOn == "replica" else None,
     )
     if isinstance(prep, core_submit.Rejection):
         _record_refusal(claims, "web", t.id, body.databaseId, body.sql, prep)
@@ -1048,8 +1066,10 @@ def query_cancel(request_id: int, claims: dict = Depends(deps.current_user)):
 def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
     deps.require_whitelisted(claims)
     row = _own_request(request_id, claims["sub"])
+    # `details` rides along for `ranOn`, which reads where the run was sent from
+    # the execution_started and execution_run_on_forced rows -- one read, not two.
     audit_rows = db.fetch_all(
-        "SELECT actor_slack_id, actor_name, action, created_at "
+        "SELECT actor_slack_id, actor_name, action, created_at, details "
         "FROM audit_log WHERE request_id = %s ORDER BY id",
         (request_id,))
     return {
@@ -1066,6 +1086,8 @@ def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
         "rowCount": row.get("row_count"),
         "audit": mapping.audit_entries(audit_rows, claims["sub"]),
         "messages": mapping.status_messages(row),
+        # Where it ran: {kind, name, forced, lagSeconds}, null until it has.
+        "ranOn": mapping.ran_on(row, audit_rows, _alias_of),
     }
 
 
