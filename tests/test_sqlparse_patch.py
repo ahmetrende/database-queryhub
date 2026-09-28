@@ -107,19 +107,38 @@ def _differences(statements):
 
 # --- in place ----------------------------------------------------------------------
 
-def test_the_patch_is_in_place():
-    """If this fails after a sqlparse upgrade, the constructor changed. Re-measure
-    before trusting the new one, then update _MEASURED."""
-    assert sql.TokenList.__init__ is sqlparse_patch.init_from_children
+def test_a_group_takes_its_text_from_its_children():
+    """This module's constructor on sqlparse 0.5, sqlparse's own on 0.6.
+
+    If this fails after a sqlparse upgrade, the constructor changed again.
+    Re-measure before trusting the new one, then teach apply() about it."""
+    assert sqlparse_patch.apply() is True
+    assert sqlparse_patch.joins_children(sql.TokenList.__init__)
 
 
 def test_apply_is_idempotent():
     assert sqlparse_patch.apply() is True
+    installed = sql.TokenList.__init__
     assert sqlparse_patch.apply() is True
-    assert sql.TokenList.__init__ is sqlparse_patch.init_from_children
+    assert sql.TokenList.__init__ is installed
 
 
-def test_a_constructor_it_was_not_measured_against_is_left_alone(monkeypatch):
+class _Upstream:
+    # sqlparse 0.6.0's constructor, character for character.
+    def __init__(self, tokens=None):
+        self.tokens = tokens or []
+        [setattr(token, 'parent', self) for token in self.tokens]
+        super().__init__(None, ''.join(token.value for token in self.tokens))
+        self.is_group = True
+
+
+def test_the_upstream_fix_is_left_in_place(monkeypatch):
+    monkeypatch.setattr(sql.TokenList, "__init__", _Upstream.__init__)
+    assert sqlparse_patch.apply() is True
+    assert sql.TokenList.__init__ is _Upstream.__init__
+
+
+def test_a_constructor_it_does_not_know_is_left_alone(monkeypatch):
     def other(self, tokens=None):
         sqlparse_patch.ORIGINAL(self, tokens)
 

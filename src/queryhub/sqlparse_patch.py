@@ -22,9 +22,11 @@ makes is unchanged. tests/test_sqlparse_patch.py compares the two constructors
 tree for tree, on the test suite's statements and on fuzzed ones. Before this
 shipped, the same comparison also passed on all 7,283 stored requests.
 
-`apply()` replaces only the constructor this was measured against. A sqlparse
-upgrade that changes that constructor is left alone and fails the test above,
-so the change gets looked at rather than being lost without notice.
+sqlparse 0.6.0 made the same change upstream: its constructor joins the
+children's texts. `apply()` recognises that constructor and leaves it in place.
+It replaces only the 0.5 constructor this was measured against. Any other
+constructor is left alone and fails the test above, so the change gets looked at
+rather than being lost without notice.
 """
 from __future__ import annotations
 
@@ -45,6 +47,15 @@ def __init__(self, tokens=None):
     self.is_group = True
 """
 
+# sqlparse 0.6.0, the same place: already joins the children's texts.
+_FIXED_UPSTREAM = """
+def __init__(self, tokens=None):
+    self.tokens = tokens or []
+    [setattr(token, 'parent', self) for token in self.tokens]
+    super().__init__(None, ''.join(token.value for token in self.tokens))
+    self.is_group = True
+"""
+
 ORIGINAL = sql.TokenList.__init__
 
 
@@ -61,21 +72,32 @@ def init_from_children(self, tokens=None):
     self.is_group = True
 
 
-def _is_measured(init) -> bool:
+def source_of(init) -> str | None:
     try:
-        source = textwrap.dedent(inspect.getsource(init))
+        return textwrap.dedent(inspect.getsource(init)).strip()
     except (OSError, TypeError):
-        return False
-    return source.strip() == _MEASURED.strip()
+        return None
+
+
+def joins_children(init) -> bool:
+    """Whether `init` builds a group's text from its children's texts."""
+    return (init is init_from_children
+            or source_of(init) == _FIXED_UPSTREAM.strip())
 
 
 def apply() -> bool:
-    """Install `init_from_children`. True when it is in place."""
-    if sql.TokenList.__init__ is init_from_children:
+    """Make a group's text come from its children. True when it does.
+
+    Installs `init_from_children` over the measured 0.5 constructor. Leaves the
+    0.6 constructor alone, since it already does this. Leaves any other
+    constructor alone too, with a warning.
+    """
+    current = sql.TokenList.__init__
+    if joins_children(current):
         return True
-    if not _is_measured(sql.TokenList.__init__):
-        log.warning("sqlparse TokenList.__init__ is not the one sqlparse_patch "
-                    "was measured against; leaving it alone")
+    if source_of(current) != _MEASURED.strip():
+        log.warning("sqlparse TokenList.__init__ is not one sqlparse_patch "
+                    "knows; leaving it alone")
         return False
     setattr(sql.TokenList, "__init__", init_from_children)
     return True
