@@ -10,10 +10,15 @@ state that would disable everyone, it never disables an admin, a role holder
 or the sync account itself, and a dry run writes nothing. The gate is the sync
 principal arriving through an assertion; an admin role is neither needed nor
 enough.
+
+A run that would disable more than `idp_sync_max_disable` requesters is held
+whole (idp_sync_guard.py): the guard's own states are pinned in
+test_idp_sync_guard.py, and here only what the route does with each verdict.
 """
 import pytest
 from fastapi.testclient import TestClient
 
+from queryhub.idp_sync_guard import Verdict
 from queryhub.web import app as web_app
 from queryhub.web import deps, routes_admin
 
@@ -292,3 +297,120 @@ def test_every_reconcile_writes_an_audit_row(app_client, monkeypatch):
     details = args[4]
     assert details["enabled"] == ["U_NEW"]
     assert details["disabled"] == ["U_GONE"]
+
+
+# ---- the guard on the number of people a run disables -----------------------
+
+EIGHT = [f"U_GONE_{n}" for n in range(8)]
+
+
+def _held_run(monkeypatch, verdict, *, live=EIGHT):
+    """A run that would disable `live`, with the guard's answer fixed, so
+    these read as what the route does with a verdict."""
+    calls = []
+    writes = _people(monkeypatch, live=set(live),
+                     by_email={"new@example.com": "U_NEW"})
+
+    def gate(ids, *, actor=None):
+        calls.append({"ids": list(ids), "actor": actor})
+        return verdict
+    monkeypatch.setattr(routes_admin.idp_sync_guard, "gate", gate)
+    return calls, writes
+
+
+def test_a_run_over_the_limit_changes_nothing_and_says_it_is_waiting(
+        app_client, monkeypatch):
+    """Enables are held with the disables: a list that looks wrong is not
+    applied in part."""
+    app, client = app_client
+    _as(app, monkeypatch, SYNC)
+    calls, writes = _held_run(monkeypatch, Verdict("pending", 5, 8, 3, notified=2))
+    r = client.post("/api/admin/principals/sync",
+                    json={"emails": ["new@example.com"], "admin_emails": []})
+    assert r.status_code == 409
+    err = r.json()["error"]
+    assert err["code"] == "approval_required"
+    assert "8 requesters" in err["message"] and "limit of 5" in err["message"]
+    assert err["state"] == "pending" and err["would_disable"] == 8
+    assert writes == {"enable": [], "disable": [], "audit": []}
+    assert calls == [{"ids": sorted(EIGHT), "actor": SYNC}]
+
+
+def test_a_rejected_list_is_refused_with_the_same_status(app_client, monkeypatch):
+    app, client = app_client
+    _as(app, monkeypatch, SYNC)
+    _, writes = _held_run(monkeypatch, Verdict("rejected", 5, 8, 3))
+    r = client.post("/api/admin/principals/sync",
+                    json={"emails": ["new@example.com"], "admin_emails": []})
+    assert r.status_code == 409
+    assert "rejected" in r.json()["error"]["message"]
+    assert writes == {"enable": [], "disable": [], "audit": []}
+
+
+def test_an_approved_run_applies_and_the_audit_row_names_the_approval(
+        app_client, monkeypatch):
+    app, client = app_client
+    _as(app, monkeypatch, SYNC)
+    _, writes = _held_run(monkeypatch, Verdict("approved", 5, 8, 9))
+    r = client.post("/api/admin/principals/sync",
+                    json={"emails": ["new@example.com"], "admin_emails": []})
+    assert r.status_code == 200, r.text
+    assert writes["disable"] == sorted(EIGHT) and writes["enable"] == ["U_NEW"]
+    assert writes["audit"][0][0][4]["approved_hold"] == 9
+    assert r.json()["guard"] == {"state": "approved", "limit": 5,
+                                 "would_disable": 8, "hold_id": 9}
+
+
+def test_exactly_five_is_within_the_limit_and_needs_no_approval(
+        app_client, monkeypatch):
+    """The real guard, no stub: the limit is inclusive."""
+    app, client = app_client
+    _as(app, monkeypatch, SYNC)
+    writes = _people(monkeypatch, live=set(EIGHT[:5]),
+                     by_email={"new@example.com": "U_NEW"})
+    r = client.post("/api/admin/principals/sync",
+                    json={"emails": ["new@example.com"], "admin_emails": []})
+    assert r.status_code == 200, r.text
+    assert writes["disable"] == sorted(EIGHT[:5])
+    assert r.json()["guard"]["state"] == "within_limit"
+    assert "approved_hold" not in writes["audit"][0][0][4]
+
+
+def test_six_is_over_the_limit_with_the_real_guard_asking_once(
+        app_client, monkeypatch):
+    from queryhub import idp_sync_guard as guard
+    app, client = app_client
+    _as(app, monkeypatch, SYNC)
+    writes = _people(monkeypatch, live=set(EIGHT[:6]),
+                     by_email={"new@example.com": "U_NEW"})
+    opened = []
+    monkeypatch.setattr(guard, "_claim_approval", lambda ids: None)
+    monkeypatch.setattr(guard, "_same_list", lambda ids: None)
+    monkeypatch.setattr(guard, "_open",
+                        lambda ids, lim, actor: opened.append((ids, lim, actor)) or {"id": 1})
+    monkeypatch.setattr(guard, "_notify", lambda hold_id: 2)
+    r = client.post("/api/admin/principals/sync",
+                    json={"emails": ["new@example.com"], "admin_emails": []})
+    assert r.status_code == 409
+    assert opened == [(sorted(EIGHT[:6]), 5, SYNC)]
+    assert writes == {"enable": [], "disable": [], "audit": []}
+
+
+def test_a_dry_run_reports_the_guard_and_never_asks(app_client, monkeypatch):
+    """Looking must not open a hold or send a card: nobody should learn the
+    list by being asked about it."""
+    app, client = app_client
+    _as(app, monkeypatch, SYNC)
+    writes = _people(monkeypatch, live=set(EIGHT),
+                     by_email={"new@example.com": "U_NEW"})
+    monkeypatch.setattr(routes_admin.idp_sync_guard, "gate",
+                        lambda *a, **k: pytest.fail("a dry run called gate"))
+    monkeypatch.setattr(routes_admin.idp_sync_guard, "preview",
+                        lambda ids: Verdict("would_hold", 5, len(ids)))
+    r = client.post("/api/admin/principals/sync",
+                    json={"emails": ["new@example.com"], "admin_emails": [],
+                          "dry_run": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["guard"] == {"state": "would_hold", "limit": 5, "would_disable": 8}
+    assert r.json()["requesters"]["would_disable"] == sorted(EIGHT)
+    assert writes == {"enable": [], "disable": [], "audit": []}

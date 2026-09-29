@@ -40,6 +40,7 @@ they are inert in the vanilla (web-only) profile.
 | `idp_issuer` / `idp_audience` | `idp` / `queryhub` | The `iss` and `aud` an assertion must carry. |
 | `idp_public_keys` | `{}` | JSON object mapping `kid` to the portal's Ed25519 public key (PEM). Empty = no assertion verifies. |
 | `idp_sync_principal` | `""` | The one principal allowed to call the reconcile and the notification outbox routes, through an assertion. Empty = nobody. |
+| `idp_sync_max_disable` | `5` | Most requesters one portal sync may disable before a super-admin must approve it (AUTH.md §1.2). A run over the limit changes nothing, answers 409, and sends every super-admin an approve / reject card. `0` = every disabling run needs approval. |
 | `idp_clock_skew_seconds` | `10` | Clock disagreement tolerated between the portal and this host on an assertion's `iat` and `exp` (0-60). |
 | `idp_outbox_enabled` | `off` | Write a `notification_outbox` row for the portal on each pending submission. Leave off until the portal polls it. |
 | `idp_outbox_retention_days` | `7` | The daily cleanup deletes `notification_outbox` rows older than this, processed or not. |

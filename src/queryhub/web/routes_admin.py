@@ -29,6 +29,7 @@ from .. import (
     engines,
     errors,
     grants,
+    idp_sync_guard,
     manual_runs,
     people,
     pii,
@@ -5550,6 +5551,10 @@ def principals_sync(body: PrincipalSyncIn,
     `dry_run: true` computes the same plan, writes nothing — no audit row
     either — and returns the ids it would change. Run it before the first real
     sync: that one disables every requester the panel leaves out.
+
+    A run that would disable more than `idp_sync_max_disable` requesters
+    (default 5) changes nothing, enables included, and answers 409
+    `approval_required` while the super-admins are asked. See `idp_sync_guard`.
     """
     uid = admin.require_sync_principal(claims)
 
@@ -5594,16 +5599,30 @@ def principals_sync(body: PrincipalSyncIn,
                                "would_disable": disabled_ids},
                 "kept": kept,
                 "admin_drift": drift,
-                "unresolved": unresolved}
+                "unresolved": unresolved,
+                "guard": idp_sync_guard.preview(disabled_ids).as_dict()}
+
+    # Before any write. An approval is spent here, so a failure below leaves it
+    # used: the next run asks again rather than half-trusting a stale yes.
+    verdict = idp_sync_guard.gate(disabled_ids, actor=uid)
+    if not verdict.allowed:
+        log.warning("layer-A reconcile held: would disable %d requesters, "
+                    "limit %d, %s", verdict.count, verdict.limit, verdict.state)
+        raise deps._error(409, "approval_required", verdict.message(),
+                          state=verdict.state, limit=verdict.limit,
+                          would_disable=verdict.count)
 
     for pid in enabled_ids:
         requesters.enable(pid)
     for pid in disabled_ids:
         requesters.disable(pid)
 
-    audit.log(None, uid, "idp-sync", "idp_principal_sync",
-              {"enabled": enabled_ids, "disabled": disabled_ids, "kept": kept,
-               "unresolved": unresolved, "admin_drift": drift})
+    details: dict[str, object] = {
+        "enabled": enabled_ids, "disabled": disabled_ids, "kept": kept,
+        "unresolved": unresolved, "admin_drift": drift}
+    if verdict.state == "approved":
+        details["approved_hold"] = verdict.hold_id
+    audit.log(None, uid, "idp-sync", "idp_principal_sync", details)
 
     log.info("layer-A reconcile: +%d/-%d requesters, %d kept, %d unresolved, "
              "drift %s", len(enabled_ids), len(disabled_ids), len(kept),
@@ -5612,7 +5631,8 @@ def principals_sync(body: PrincipalSyncIn,
                            "disabled": len(disabled_ids)},
             "kept": kept,
             "admin_drift": drift,
-            "unresolved": unresolved}
+            "unresolved": unresolved,
+            "guard": verdict.as_dict()}
 
 
 # ---------------------------------------------------------------------------

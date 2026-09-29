@@ -42,6 +42,16 @@ frontend and the endpoints it calls are explicitly outside it.
     needs no admin role.
   - The notification outbox is written only while `idp_outbox_enabled` is on,
     and the daily cleanup trims it.
+- **A portal sync that would disable more than five requesters waits for a
+  super-admin.** The reconcile disables everyone the panel's list leaves out, so
+  a wrong list (a role not yet granted) would lock that many people out of Slack,
+  the web and MCP within one tick. Such a run now changes nothing and answers
+  `409 approval_required`, and every super-admin gets one Slack card asking
+  whether they approve.
+  - Approve covers those people, once, for 24 hours. Reject keeps the list
+    blocked until it changes.
+  - The limit is `idp_sync_max_disable` (default 5, migration 138). Inert while
+    `idp_assertion_enabled` is off.
 - **The S3 metrics dashboard looks like the admin panel's Metrics view:** the
   same typeface (inlined at build time, so the page stays one file), cards,
   section labels and colours — RW is blue, rejected amber, as in the panel.

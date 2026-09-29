@@ -983,6 +983,17 @@ principal, so a portal can render an approvals queue without owning an admins
 table of its own. The daily cleanup deletes rows older than
 `idp_outbox_retention_days`.
 
+### `idp_sync_hold`
+
+One row per distinct list of people a portal sync wanted to disable and was held
+for (migration 138, AUTH.md §1.2): `would_disable` (sorted Slack ids),
+`limit_at_hold`, `status` (`pending`, `approved`, `rejected`, `superseded`),
+`decided_by_slack_id`, `decided_at`, `applied_at` and `cards` (where each
+super-admin's card was posted, so one decision closes the others). An approval is
+usable once, for 24 hours, by a run whose disable list lies inside
+`would_disable`. Rows are written only when a run exceeds `idp_sync_max_disable`,
+so the table stays small.
+
 ### `schema_tables` / `schema_columns`
 
 Hourly snapshot of every reachable target schema, backing `/sql tables`,

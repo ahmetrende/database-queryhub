@@ -50,11 +50,11 @@ def _kill_switch_message() -> str:
 from slack_bolt import Ack, App
 from slack_sdk.web import WebClient
 
-from .. import access_requests, admins, audit, auto_approve, auto_approve_requests, bundles, csv_import, db, executor, favorites, grants, manual_runs, pre_flight, profile_sync, query_safety, ratings, requesters, schema_catalog, targets, teams, templates
+from .. import access_requests, admins, audit, auto_approve, auto_approve_requests, bundles, csv_import, db, executor, favorites, grants, idp_sync_guard, manual_runs, pre_flight, profile_sync, query_safety, ratings, requesters, schema_catalog, targets, teams, templates
 from .. import config as cfg
 from .. import core_submit
 from .. import core_decide
-from . import access, admin_grant, modal, notifications, ro_window, schema_browser, subcommands
+from . import access, admin_grant, idp_sync_card, modal, notifications, ro_window, schema_browser, subcommands
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +116,10 @@ def register(app: App) -> None:
     app.view(ro_window.MODAL_CALLBACK)(handle_ro_window_submission)
     app.action(ro_window.ACTION_APPROVE)(handle_ro_window_approve)
     app.action(ro_window.ACTION_REJECT)(handle_ro_window_reject)
+
+    # An IDP sync that would disable many requesters waits for a super-admin.
+    app.action(idp_sync_card.ACTION_APPROVE)(handle_idp_sync_approve)
+    app.action(idp_sync_card.ACTION_REJECT)(handle_idp_sync_reject)
 
     # Schema browser (pushed on top of the /sql modal).
     app.action(schema_browser.ACTION_OPEN)(handle_open_schema_browser)
@@ -3336,6 +3340,59 @@ def handle_ro_window_reject(ack: Ack, body: dict, client: WebClient) -> None:
     notifications.dm_requester(
         client, out["request"]["requester_slack_id"],
         f":no_entry: Your auto-approve window request (#{rid}) was rejected.")
+
+
+# --- IDP sync held for approval (idp_sync_guard) ----------------------------
+
+def _replace_card(client: WebClient, channel: str, ts: str, text: str) -> None:
+    """Swap a card's buttons for a plain status line. Best effort: a card that
+    cannot be edited must not undo a decision that is already recorded."""
+    try:
+        notifications._update(
+            client, channel=channel, ts=ts, text=text,
+            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}])
+    except Exception:
+        log.exception("idp sync card: update failed")
+
+
+def _idp_sync_decide(ack: Ack, body: dict, client: WebClient, *, approve: bool) -> None:
+    """Approve or Reject on the card sent to super-admins. The decision and its
+    audit row are `idp_sync_guard.decide`; this closes the card, and the same
+    card in every other super-admin's DM."""
+    ack()
+    actor = body["user"]
+    try:
+        hold_id = int(body["actions"][0]["value"])
+        clicked = (body["container"]["channel_id"], body["container"]["message_ts"])
+    except (KeyError, IndexError, ValueError, TypeError):
+        return
+    try:
+        row = idp_sync_guard.decide(
+            hold_id, approve=approve, actor_id=actor["id"],
+            actor_name=actor.get("name") or actor.get("username"))
+    except idp_sync_guard.HoldDecisionRefused as e:
+        if e.status == 403:
+            notifications.dm_requester(
+                client, actor["id"],
+                ":no_entry: Only a super-admin can decide whether the IDP sync goes ahead.")
+        else:
+            held = idp_sync_guard.get(hold_id)
+            _replace_card(client, *clicked, idp_sync_card.already_text(
+                held["status"] if held else "no longer available"))
+        return
+    text = idp_sync_card.decided_text(row, approved=approve, actor_id=actor["id"])
+    _replace_card(client, *clicked, text)
+    for card in row["cards"]:
+        if (card["channel"], card["ts"]) != clicked:
+            _replace_card(client, card["channel"], card["ts"], text)
+
+
+def handle_idp_sync_approve(ack: Ack, body: dict, client: WebClient) -> None:
+    _idp_sync_decide(ack, body, client, approve=True)
+
+
+def handle_idp_sync_reject(ack: Ack, body: dict, client: WebClient) -> None:
+    _idp_sync_decide(ack, body, client, approve=False)
 
 
 # ---------- schema browser (pushed on top of the /sql modal) ----------

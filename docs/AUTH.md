@@ -130,6 +130,18 @@ rights are neither needed nor enough.
   sync principal itself, which come back in `kept`: disabling their row would
   also switch off the roles it carries. Send `"dry_run": true` first; it
   returns what would change and writes nothing.
+  - **A run that would disable more than `idp_sync_max_disable` requesters
+    (default 5) is held.** It changes nothing, enables included, and answers
+    `409 approval_required`. Every super-admin gets one Slack card ("Do you
+    approve?") naming the people; the panel's list is far likelier to be wrong
+    than that many people to have left the same quarter-hour.
+  - **Approve** covers exactly those people, once, for 24 hours: the next run
+    whose disable list lies inside the approved set applies. **Reject** keeps
+    the same list blocked for as long as it keeps arriving. A different list is
+    a new question, and an undecided one is asked again after a day.
+  - The response carries a `guard` object (`state`, `limit`, `would_disable`);
+    a dry run adds `would_hold` for a list that would be held. Without Slack
+    there is no card: raise `idp_sync_max_disable` for one run instead.
 - `GET /api/admin/notifications/outbox` and
   `POST /api/admin/notifications/outbox/{id}/processed` — the pending-request
   feed and its acknowledgement. Rows are written only while
