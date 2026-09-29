@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
 """Make each team's lead an approver for the targets that team owns.
 
+THE RULE: the lead approves requests TO their team's databases, whoever sends
+them, up to the ceiling (`--max-tier`, default RO). The team owns the data, so
+its lead is the one who knows what a query against it means, and they see who
+is reading it.
+
+It used to be BOTH conditions: FROM my team AND TO my team's databases. A
+person given access to another pod's database then matched no lead at all, and
+their requests went to the admins alone. That was not rare. On 2026-09-29, 58
+of the 120 live single-server personal grants were on a server the grantee's
+own pod does not own, and 28 of the 268 requests decided by a person in the
+previous 30 days were exactly that case. So a row now says "any requester" (all
+teams) for one owned target, and the requester's team no longer matters.
+
 Reads ownership from `target_team` and reconciles `role_assignment`. It used
 to take that ownership as a CSV; migration 115 made it a relation, so the
 answer now lives in the model where a screen can show it and a person can
 correct it — and this script needs no input at all beyond which source to own.
 Fill `target_team` first with `scripts/sync_target_owners.py`, or by hand.
 
-WHY ONE ROW PER TARGET. The rule this exists to express is "the lead approves
-requests FROM their team TO their team's databases" — both conditions, which
-`can_approve` checks as a scoped team plus a scoped target. `scope_target_id`
-holds one target, so a team owning seven databases is seven rows. That is not
+WHY ONE ROW PER TARGET. `scope_target_id` holds one target, so a team owning
+seven databases is seven rows, each with `all_teams`: `can_approve` then checks
+the target and the ceiling, and skips the requester's team. That is not
 a shape worth maintaining by hand: a team gains a service and the set is
 silently wrong until somebody notices a request going to the wrong queue.
 
@@ -28,10 +40,9 @@ WHAT IT DOES NOT DO, each one deliberate:
   an org chart is not a decision to give them approval authority.
 * **It never widens the tier.** `--max-tier` is a ceiling, default `ro`.
 
-WHAT CHANGES WITHOUT IT. A new member of a team needs nothing — the role is
-scoped to the TEAM, so they are covered the moment they appear in
-`team_member`. A new TARGET does need a row, and so does a change of lead;
-those two are what this closes.
+WHAT CHANGES WITHOUT IT. A new member of a team needs nothing — the role does
+not look at the requester's team at all. A new TARGET does need a row, and so
+does a change of lead; those two are what this closes.
 
     python3 scripts/sync_team_approvers.py --source pod-sync
     python3 scripts/sync_team_approvers.py --source pod-sync --apply
@@ -90,10 +101,12 @@ def resolve(cur):
                 if note not in notes:
                     notes.append(note)
                 continue
-            key = (lead["principal_id"], row["team_id"], row["target_id"])
+            # No team in the key: the row admits any requester. Two teams
+            # owning one target under the same lead are therefore one row.
+            key = (lead["principal_id"], None, row["target_id"])
             wanted.add(key)
-            label[key] = (f"{lead['display_name']} → {row['team_name']}"
-                          f" @ {row['alias']}")
+            label.setdefault(key, f"{lead['display_name']} ({row['team_name']})"
+                                  f" @ {row['alias']}, any requester")
     return wanted, label, notes
 
 
@@ -126,12 +139,12 @@ def apply(cur, source: str, p, max_tier: str, actor: str) -> None:
             "INSERT INTO role_assignment "
             "  (principal_id, role, scope_team_id, all_teams, scope_target_id, "
             "   all_targets, max_tier, any_tier, reason, source, created_by) "
-            "VALUES (%s,'approver',%s,FALSE,%s,FALSE,%s,FALSE,%s,%s,"
+            "VALUES (%s,'approver',%s,%s,%s,FALSE,%s,FALSE,%s,%s,"
             "        (SELECT p.id FROM principal p "
             "           JOIN principal_identity i ON i.principal_id = p.id "
             "          WHERE i.provider='slack' AND i.external_id = %s "
             "            AND NOT i.is_deleted LIMIT 1))",
-            (pid, team_id, target_id, max_tier,
+            (pid, team_id, team_id is None, target_id, max_tier,
              f"team lead, synced from {source}", source, actor))
 
 
@@ -162,9 +175,14 @@ def main() -> int:
             print(f"  +  {p['label'].get(key, key)}  (up to {a.max_tier.upper()})")
         for key in p["retier"]:
             print(f"  ~  {p['label'].get(key, key)}  ceiling → {a.max_tier.upper()}")
+        reshaped = {(k[0], k[2]) for k in p["add"]}
         for key in p["drop"]:
             r = p["live"][key]
-            print(f"  -  role {r['id']} no longer owned by that team")
+            if (key[0], key[2]) in reshaped:
+                print(f"  -  role {r['id']} scoped to one team, replaced by the "
+                      f"any-requester row above")
+            else:
+                print(f"  -  role {r['id']} no longer owned by that team")
         for n in p["notes"]:
             print(f"  !  {n}")
         if not (p["add"] or p["drop"] or p["retier"]):

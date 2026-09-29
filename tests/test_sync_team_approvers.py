@@ -1,11 +1,12 @@
 """Making each team's lead an approver for what that team owns.
 
-The rule the pod fleet needs is BOTH conditions: the request comes from my
-team AND it is for one of my team's databases. `can_approve` expresses that as
-a scoped team plus a scoped target — and `scope_target_id` holds one target,
-so a team owning seven databases is seven rows. Twenty-three rows for five
-leads is not a shape anyone maintains by hand, which is why this script
-exists and why what it refuses to do matters more than what it writes.
+The rule: the lead approves requests TO their team's databases, whoever sends
+them, up to the ceiling. It used to require the request to come FROM the team
+as well, which left every cross-pod grant with nobody but the admins to
+approve it. `scope_target_id` holds one target, so a team owning seven
+databases is seven rows. That is not a shape anyone maintains by hand, which
+is why this script exists and why what it refuses to do matters more than what
+it writes.
 """
 import importlib.util
 import sys
@@ -206,3 +207,59 @@ def test_the_connections_screen_can_finally_say_whose_database_it_is():
     join on the hostname."""
     assert '"owners"' in ADMIN_API
     assert "FROM target_team tt" in ADMIN_API
+
+
+# --- any requester, one owned target -----------------------------------------
+
+
+def test_a_row_names_no_team_so_any_requester_is_covered():
+    """The wanted key carries no team, and the insert writes all_teams, so the
+    requester's pod stops mattering."""
+    assert 'key = (lead["principal_id"], None, row["target_id"])' in SRC
+    assert "team_id is None" in SRC
+
+
+def test_the_old_team_scoped_row_is_replaced_not_kept_beside_it():
+    """A live row keyed on a team no longer matches a wanted key, so it lands in
+    `drop` and is revoked in the same run that adds its any-requester twin."""
+    assert "scoped to one team, replaced by the" in SRC
+    assert "any-requester row above" in SRC
+
+
+def _owner_row(target_id, max_tier="ro"):
+    return {"role": "approver", "scope_team_id": None, "all_teams": True,
+            "scope_target_id": target_id, "all_targets": False,
+            "max_tier": max_tier, "any_tier": False}
+
+
+def _request(requester="U0EXAMPLE02", target_id=13, tier="ro"):
+    return {"requester_slack_id": requester, "target_server_id": target_id,
+            "required_tier": tier}
+
+
+@pytest.fixture
+def owner_lead(monkeypatch):
+    from queryhub import access
+    monkeypatch.setattr(access, "roles", lambda pid: [_owner_row(13)])
+
+    def _no_team_lookup(*a, **k):
+        raise AssertionError("an any-requester row must not look up teams")
+    monkeypatch.setattr(access.db, "fetch_all", _no_team_lookup)
+    return access
+
+
+def test_the_owner_lead_approves_a_read_from_another_pod(owner_lead):
+    assert owner_lead.can_approve("U0EXAMPLE01", _request())
+
+
+def test_the_ceiling_still_holds(owner_lead):
+    assert not owner_lead.can_approve("U0EXAMPLE01", _request(tier="rw"))
+
+
+def test_another_server_stays_out_of_scope(owner_lead):
+    assert not owner_lead.can_approve("U0EXAMPLE01", _request(target_id=14))
+
+
+def test_a_lead_never_approves_their_own_request(owner_lead):
+    assert not owner_lead.can_approve("U0EXAMPLE01",
+                                      _request(requester="U0EXAMPLE01"))

@@ -23,6 +23,14 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **A pod lead approves requests on their pod's servers from anyone.** The lead's
+  approver role used to require the request to come from their own pod as well,
+  so a person given access to another pod's database reached nobody but the
+  admins: 58 of 120 single-server personal grants, and 28 of 268 requests
+  decided in 30 days. `scripts/sync_team_approvers.py` now writes each
+  owned-server row for any requester (`all_teams`). The ceiling (RO by default)
+  and the rule that no one approves their own request are unchanged.
+
 - **The trusted-portal seam is ready for its first connection** (AUTH.md §1.2).
   Everything here is inert while `idp_assertion_enabled` is off.
   - An assertion is accepted with up to `idp_clock_skew_seconds` (10) of
