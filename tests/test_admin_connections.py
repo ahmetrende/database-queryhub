@@ -675,3 +675,62 @@ def test_a_target_nobody_owns_says_so_with_an_empty_list(wire):
     wire["owners"] = []
     entry = ra.admin_connections(claims=SUPER)["connections"][0]
     assert entry["owners"] == []
+
+
+# ---------------------------------------------------------------------------
+# A deleted target (migration 139): listed for the record, never enabled
+# ---------------------------------------------------------------------------
+
+def _deleted_row():
+    from datetime import datetime, timezone
+    return _row(enabled=False,
+                deleted_at=datetime(2026, 7, 14, 9, 30, tzinfo=timezone.utc),
+                deleted_reason="inventory reports the instance deleted")
+
+
+def test_a_deleted_target_cannot_be_enabled_and_says_why(wire):
+    """The admin screen used to offer Enable on a target whose instance was
+    gone, because nothing told a deleted row from one waiting for credentials."""
+    wire["row"] = _deleted_row()
+    with pytest.raises(HTTPException) as e:
+        ra.admin_update_connection("prod-beta", ra.ConnectionPatch(enabled=True),
+                                   claims=SUPER)
+    assert e.value.status_code == 409
+    assert e.value.detail["code"] == "deleted"
+    assert "no longer exists" in e.value.detail["message"]
+    assert wire["cur"].calls == [] and wire["audit"] == []
+
+
+def test_supplying_a_password_does_not_get_a_deleted_target_enabled(wire):
+    """The placeholder rule lets a request that brings the password enable the
+    target in one go. The deleted rule has no such way round it."""
+    wire["row"] = _deleted_row()
+    with pytest.raises(HTTPException) as e:
+        ra.admin_update_connection(
+            "prod-beta",
+            ra.ConnectionPatch(enabled=True, credentials={
+                "ro": ra.CredentialIn(username="queryhub_ro", password="pw")}),
+            claims=SUPER)
+    assert e.value.detail["code"] == "deleted"
+
+
+def test_a_bulk_enable_that_names_a_deleted_target_writes_nothing(wire):
+    wire["row"] = _deleted_row()
+    with pytest.raises(HTTPException) as e:
+        ra.admin_bulk_update_connections(
+            ra.BulkConnectionsIn(connections=["prod-beta"], enabled=True), claims=SUPER)
+    assert e.value.status_code == 409
+    refused = e.value.detail["refused"]
+    assert refused[0]["connection"] == "prod-beta"
+    assert "no longer exists" in refused[0]["reason"]
+    assert wire["cur"].calls == []
+
+
+def test_the_listing_says_a_target_is_deleted_and_when(wire):
+    wire["row"] = _deleted_row()
+    out = ra._connection_entry(wire["row"], ["ledger"])
+    assert out["deleted"] is True
+    assert out["deletedAt"].startswith("2026-07-14")
+    assert out["deletedReason"] == "inventory reports the instance deleted"
+    alive = ra._connection_entry(_row(), ["ledger"])
+    assert alive["deleted"] is False and alive["deletedAt"] is None

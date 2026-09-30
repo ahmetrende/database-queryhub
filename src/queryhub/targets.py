@@ -467,7 +467,8 @@ _ADMIN_COLS = (
     "       COALESCE(tags, '{}'::jsonb) AS tags, "
         "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of, "
     "       (SELECT p.alias FROM target_servers p "
-    "         WHERE p.id = target_servers.replica_of) AS replica_of_alias "
+    "         WHERE p.id = target_servers.replica_of) AS replica_of_alias, "
+    "       deleted_at, deleted_reason "
     "FROM target_servers"
 )
 
@@ -509,6 +510,10 @@ def _admin_row(row: dict) -> dict:
         "tags": row.get("tags") or {},
         "replica_of": row.get("replica_of"),
         "replica_of_alias": row.get("replica_of_alias"),
+        # The instance behind it no longer exists (migration 139). Such a row
+        # stays for history and can never be enabled.
+        "deleted_at": row.get("deleted_at"),
+        "deleted_reason": row.get("deleted_reason"),
         "credentials": {
             mode: {
                 "username": row[ucol],
@@ -521,9 +526,40 @@ def _admin_row(row: dict) -> dict:
 
 
 def list_admin_rows() -> list[dict]:
-    """Every target — enabled or not — in admin-editor shape."""
+    """Every target — enabled or not — in admin-editor shape. Deleted targets
+    come last: they are listed for the record, not to be acted on."""
     return [_admin_row(r)
-            for r in db.fetch_all(f"{_ADMIN_COLS} ORDER BY enabled DESC, alias")]
+            for r in db.fetch_all(f"{_ADMIN_COLS} ORDER BY (deleted_at IS NOT NULL), "
+                                  "enabled DESC, alias")]
+
+
+def mark_deleted_in(cur, target_id: int, *, reason: str,
+                    deleted_at=None) -> bool:
+    """Record that a target's instance no longer exists, and disable it.
+
+    Idempotent: a target already marked keeps its first date and reason, so a
+    run that sees it again changes nothing and returns False. Disabling happens
+    in the same statement because the CHECK forbids a deleted target that is
+    enabled.
+    """
+    cur.execute(
+        "UPDATE target_servers "
+        "   SET deleted_at = COALESCE(%s, NOW()), deleted_reason = %s, "
+        "       enabled = FALSE, updated_at = NOW() "
+        " WHERE id = %s AND deleted_at IS NULL",
+        (deleted_at, reason, target_id))
+    return cur.rowcount == 1
+
+
+def clear_deleted_in(cur, target_id: int) -> bool:
+    """Undo `mark_deleted_in` when the instance exists again (recreated under
+    the same endpoint). The target stays disabled: bringing it back is a
+    person's decision, as for any other disabled target."""
+    cur.execute(
+        "UPDATE target_servers SET deleted_at = NULL, deleted_reason = NULL, "
+        "       updated_at = NOW() "
+        " WHERE id = %s AND deleted_at IS NOT NULL", (target_id,))
+    return cur.rowcount == 1
 
 
 def admin_row(target_id: int) -> dict | None:

@@ -131,6 +131,9 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
   Slack DMs are unchanged.
 - **103_pod_inventory** — first shape of the pod inventory (`pod_roster`,
   `pod_service_database`), superseded by 104 the next day.
+- **139_target_deleted** — `target_servers.deleted_at` / `deleted_reason`: the
+  instance behind the target no longer exists. A CHECK forbids such a row being
+  enabled; the inventory sync sets and clears it.
 - **104_pod_tables_rename** — `pod`, `pod_detail`, `pod_mapping`: who is in
   which pod and which database each service talks to, loaded by an external
   collector as full-refresh snapshots. Drops `target_pod_owner`, whose guessed

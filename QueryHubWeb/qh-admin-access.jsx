@@ -93,7 +93,7 @@ function DbMultiPick({ conns, connectionId, databases, onChange }) {
 // Connection pickers list disabled targets too — a grant can legitimately be
 // written before a target is enabled — so the label has to say which is which,
 // or a grant that silently does nothing looks like a grant that works.
-function connLabel(c) { return c.enabled === false ? c.name + ' (disabled)' : c.name; }
+function connLabel(c) { return c.deleted ? c.name + ' (deleted)' : c.enabled === false ? c.name + ' (disabled)' : c.name; }
 // A PERSON is printed as a name (`qhPersonName`, qh-data.jsx 2026-09-17): the
 // directory's `name` is a handle wherever the profile carried none, and the
 // fallback here is the handle itself. A TEAM goes through untouched — a team id
@@ -1567,15 +1567,20 @@ function ConnectionsView({ st, user }) {
           else { av = String(a[sort.key]).toLowerCase(); bv = String(b[sort.key]).toLowerCase(); }
           return av < bv ? -dir : av > bv ? dir : 0;
         });
+        // A deleted connection (its instance no longer exists, migration 139)
+        // is listed LAST, under its own heading, whatever the sort: it is kept
+        // for the record, cannot be enabled, and is never selectable.
+        const gone = rows0.filter(c => c.deleted);
+        const live = rows0.filter(c => !c.deleted);
         // A replica sits UNDER its primary (CODE 2026-09-23 (e)), whatever the
         // sort: it has no identity of its own anyone queries by. A replica whose
         // primary the filter hid stays in place, standalone, so it is not lost.
-        const shown = new Set(rows0.map(c => c.name));
+        const shown = new Set(live.map(c => c.name));
         const rows = [];
-        rows0.forEach(c => {
+        live.forEach(c => {
           if (c.replicaOf && shown.has(c.replicaOf)) return;
           rows.push(c);
-          rows0.filter(r => r.replicaOf === c.name).forEach(r => rows.push(r));
+          live.filter(r => r.replicaOf === c.name).forEach(r => rows.push(r));
         });
         const arrow = (k) => (sort.key === k ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : '');
         const th = (k, label, cls) => <th className={'qh-sort-th' + (sort.key === k ? ' is-sorted' : '') + (cls || '')} onClick={() => toggleSort(k)}>{label}<span className="qh-sort-arw">{arrow(k)}</span></th>;
@@ -1687,7 +1692,24 @@ function ConnectionsView({ st, user }) {
                 </tr>
                 );
               })}
-              {rows.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No connections match your filter.</td></tr>}
+              {gone.length > 0 && <tr><td colSpan={6} className="qh-conn-empty">Deleted — the instance no longer exists. Kept for the record; it cannot be enabled.</td></tr>}
+              {gone.map(c => (
+                <tr key={c.id} className="is-deleted">
+                  <td className="qh-conn-selcol" />
+                  <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b></div></td>
+                  <td className="qh-conn-engtd">
+                    <div className="qh-conn-eng">{c.engine}</div>
+                    {qhProvider(c) && <div className="qh-conn-namecell qh-hostcell" title={qhHostingFull(c)}><img className="qh-prov-logo" src={qhProviderLogo(qhTags(c).provider)} alt="" draggable={false} />{qhHosting(c)}</div>}
+                  </td>
+                  <td>
+                    <span className="qh-expiry is-exp" title={c.deletedReason || 'The instance no longer exists.'}>deleted</span>
+                    {c.deletedAt && <div className="qh-expiry" title={c.deletedReason || ''}>{String(c.deletedAt).slice(0, 10)}</div>}
+                  </td>
+                  <td />
+                  <td className="qh-tright" />
+                </tr>
+              ))}
+              {rows.length === 0 && gone.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No connections match your filter.</td></tr>}
             </tbody>
           </table>
           </div>

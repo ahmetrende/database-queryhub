@@ -23,6 +23,20 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **A target whose instance was deleted shows as deleted and cannot be enabled.** It
+  looked like any other disabled target, and the admin screen offered to enable it.
+  Measured 2026-09-30: 26 of 68 disabled targets were deleted instances, every one
+  with an endpoint that no longer resolved.
+  - `target_servers.deleted_at` / `deleted_reason` (migration 139), with a CHECK that
+    forbids a deleted target that is enabled, so no path can enable one.
+  - The hourly inventory sync marks any target whose instance is gone, enabled or
+    not, and clears the mark (without enabling) if the endpoint comes back.
+  - The admin connection list shows them last, under their own heading, with no
+    controls. Enabling one answers `409 deleted`.
+  - Fixed: an endpoint with both a deleted and a live inventory row (an instance
+    recreated under the same name) was judged by whichever row came last, so a
+    live target could be disabled as deleted. The live row now wins.
+
 - **A pod lead approves requests on their pod's servers from anyone.** The lead's
   approver role used to require the request to come from their own pod as well,
   so a person given access to another pod's database reached nobody but the

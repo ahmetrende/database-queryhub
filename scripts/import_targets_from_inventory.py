@@ -210,7 +210,7 @@ def plan_authoritative_disables(servers: list[dict],
     simply not reach that account. Returns [{id, alias, host, reason,
     detail}, ...]; the caller applies + audits + notifies.
     """
-    by_endpoint = {s["endpoint"]: s for s in servers if s.get("endpoint")}
+    by_endpoint = _endpoint_index(servers)
     live_by_identifier: dict[str, dict] = {}
     for s in servers:
         if not s.get("is_deleted") and s.get("endpoint"):
@@ -236,6 +236,60 @@ def plan_authoritative_disables(servers: list[dict],
                 "detail": f"now at {live['endpoint']}",
             })
     return plans
+
+
+def _endpoint_index(servers: list[dict]) -> dict[str, dict]:
+    """endpoint -> its v_server row, with a LIVE row winning over a deleted one.
+
+    An instance deleted and recreated under the same identifier gets the same
+    endpoint back, and v_server then holds both rows (measured 2026-09-30:
+    three endpoints, two of them enabled targets). A plain dict comprehension
+    kept whichever row came last, and v_server has no ORDER BY, so a live
+    target was one row order away from being disabled as deleted.
+    """
+    out: dict[str, dict] = {}
+    for s in servers:
+        ep = s.get("endpoint")
+        if not ep:
+            continue
+        seen = out.get(ep)
+        if seen is None or (seen.get("is_deleted") and not s.get("is_deleted")):
+            out[ep] = s
+    return out
+
+
+def plan_deletion_marks(servers: list[dict],
+                        targets: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(marks, clears) for `target_servers.deleted_at` (migration 139).
+
+    marks: targets not yet marked whose instance is gone by the same two
+    signals as `plan_authoritative_disables`, enabled or not. Each carries
+    `deleted_at` (v_server's own, for a reported deletion; None means "now")
+    and the `reason` the admin screen shows.
+
+    clears: marked targets whose endpoint is live in v_server again, because
+    the instance was recreated under the same name. Clearing does not enable.
+
+    `targets` rows need id, alias, host and deleted_at. A target with no host
+    (an Athena archive) is not an instance and is skipped.
+    """
+    by_endpoint = _endpoint_index(servers)
+    hosted = [t for t in targets if t.get("host")]
+    marks = []
+    for p in plan_authoritative_disables(
+            servers, [t for t in hosted if t.get("deleted_at") is None]):
+        row = by_endpoint.get(p["host"])
+        reported = row is not None and row.get("is_deleted")
+        marks.append({**p,
+                      "deleted_at": row.get("deleted_at") if reported else None,
+                      "reason": p["reason"] if reported
+                      else f"{p['reason']} ({p['detail']})"})
+    clears = [{"id": t["id"], "alias": t["alias"], "host": t["host"]}
+              for t in hosted
+              if t.get("deleted_at") is not None
+              and (row := by_endpoint.get(t["host"])) is not None
+              and not row.get("is_deleted")]
+    return marks, clears
 
 
 # What an alias may be (the admin form's rule): 1-63 characters, letters,
@@ -610,6 +664,36 @@ def main() -> int:
         if plans:
             _notify_admins_disabled(plans)
 
+    # ---- 3b. MARK DELETED: every target whose instance is gone ----
+    # Step 3 only ever looked at enabled targets, so an instance deleted while
+    # its target was already disabled stayed a plain disabled row that the
+    # admin screen offered to enable. The mark is what keeps it from being
+    # enabled (a CHECK, migration 139) and what moves it to the bottom of the
+    # list. It is cleared, never enabled, if the endpoint comes back to life.
+    marked = cleared = 0
+    if servers:
+        marks, clears = plan_deletion_marks(servers, db.fetch_all(
+            "SELECT id, alias, host, deleted_at FROM target_servers"))
+        if marks or clears:
+            with db.transaction() as cur:
+                marked = sum(targets.mark_deleted_in(cur, m["id"], reason=m["reason"],
+                                                     deleted_at=m["deleted_at"])
+                             for m in marks)
+                cleared = sum(targets.clear_deleted_in(cur, c["id"]) for c in clears)
+                cur.execute(
+                    "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
+                    "VALUES ('inventory-sync', 'inventory sync', 'targets_marked_deleted', "
+                    "        %s::jsonb)",
+                    (json.dumps({"marked": [{"id": m["id"], "alias": m["alias"],
+                                             "reason": m["reason"],
+                                             "deleted_at": m["deleted_at"]} for m in marks],
+                                 "cleared": clears}, default=str),))
+            for m in marks:
+                log.info("marked %s deleted — %s", m["alias"], m["reason"])
+            for c in clears:
+                log.info("cleared the deleted mark on %s — its endpoint is live again",
+                         c["alias"])
+
     # ---- 4. ALIAS POLICY: disable enabled targets the operator's glob
     # policy (bot_config.target_alias_allow/deny_patterns) doesn't want.
     # Opt-in: no-op unless a pattern is configured. Never enables.
@@ -617,9 +701,10 @@ def main() -> int:
     for v in policy_disabled:
         log.info("policy-disabled %s (alias not wanted)", v["alias"])
 
-    log.info("done: inserted=%d disabled=%d auto_disabled=%d "
-             "policy_disabled=%d skipped=%d",
-             inserted, disabled, auto_disabled, len(policy_disabled), skipped)
+    log.info("done: inserted=%d disabled=%d auto_disabled=%d marked_deleted=%d "
+             "cleared_deleted=%d policy_disabled=%d skipped=%d",
+             inserted, disabled, auto_disabled, marked, cleared,
+             len(policy_disabled), skipped)
     return 0
 
 

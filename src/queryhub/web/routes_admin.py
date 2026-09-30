@@ -669,6 +669,11 @@ def _connection_entry(row: dict, databases: list[str]) -> dict:
         # The primary this row is a read replica of, by name; null for every
         # other connection. A replica is listed here and nowhere else.
         "replicaOf": row.get("replica_of_alias"),
+        # The instance behind it no longer exists (migration 139): listed for
+        # the record, never enabled. deletedAt is when it was found gone.
+        "deleted": row.get("deleted_at") is not None,
+        "deletedAt": mapping.iso(row.get("deleted_at")),
+        "deletedReason": row.get("deleted_reason"),
         "credentials": row["credentials"],
         "databases": [{"id": d, "name": d} for d in databases],
     }
@@ -1124,6 +1129,15 @@ def _plan_connection_update(row: dict, body: "ConnectionPatch") -> tuple[dict, d
         # writes no audit row.
         _set("tags", _clean_tags(body.tags))
     if body.enabled is not None and bool(body.enabled) != row["enabled"]:
+        # A deleted target's instance is gone. Enabling it would put a dead
+        # endpoint into every picker; the database's CHECK refuses it anyway,
+        # and this says why instead of surfacing a constraint violation.
+        if body.enabled and row.get("deleted_at") is not None:
+            raise deps._error(
+                409, "deleted",
+                f"'{row['alias']}' is deleted: its instance no longer exists "
+                f"({row.get('deleted_reason') or 'reported gone'}). It stays "
+                f"listed for the record and cannot be enabled.")
         # Enabling is the moment a target becomes reachable by developers, so
         # it is the moment to insist the credential is real. Without this an
         # admin can enable a freshly-imported placeholder, watch it appear in
