@@ -1,9 +1,10 @@
 """Slack UI for /sql grant + /sql revoke — the admin access-granting tools.
 
 Grant modal: pick a Slack user, a target (RDS), tier, optional database
-restriction + reason. Revoke modal: pick a user, see their active grants,
-revoke any with a button. Authorization + DB writes live in `grants.py`;
-Bolt registrations in `handlers.py`. Imports no other slack_app module.
+restriction + reason, and optionally auto-approve for their read-only queries.
+Revoke modal: pick a user, see their active grants, revoke any with a button.
+Authorization + DB writes live in `grants.py`; Bolt registrations in
+`handlers.py`. Imports no other slack_app module.
 """
 from __future__ import annotations
 
@@ -25,6 +26,19 @@ B_DBS = "blk_grant_dbs"
 A_DBS = "act_grant_dbs"
 B_REASON = "blk_grant_reason"
 A_REASON = "act_grant_reason"
+# Auto-approve with the grant: one checkbox, read-only only. RO is at or below
+# every tier the modal can grant, so the box can never ask for more than the
+# grant gives; RW waivers stay on the web screen, where the tier is picked.
+B_AUTO = "blk_grant_auto"
+A_AUTO = "act_grant_auto"
+AUTO_RO = "ro"
+_AUTO_OPTION = {
+    "text": {"type": "plain_text", "text": "Auto-approve read-only queries"},
+    "description": {"type": "plain_text",
+                    "text": "Their RO queries on these targets run without "
+                            "waiting for approval."},
+    "value": AUTO_RO,
+}
 
 # ---- revoke modal ----
 REVOKE_CALLBACK = "admin_revoke_modal"
@@ -41,9 +55,11 @@ def grant_modal(
     tier: str | None = None,
     reason: str | None = None,
     target_ids: list[int] | None = None,
+    auto_approve: bool = False,
 ) -> dict:
     """Build the grant modal. Tier options are limited to what the granting
-    admin may hand out (grants.allowed_tiers).
+    admin may hand out (grants.allowed_tiers). `auto_approve` pre-ticks the
+    auto-approve box, so a re-render keeps it.
 
     The target multi-select uses dispatch_action: when it changes, a handler
     stores the picked target ids in private_metadata and re-renders the view.
@@ -82,6 +98,12 @@ def grant_modal(
                                             "text": "e.g. onboarding to the auth team"}}
     if reason:
         reason_element["initial_value"] = reason
+
+    auto_element: dict = {"type": "checkboxes", "action_id": A_AUTO,
+                          "options": [_AUTO_OPTION]}
+    if auto_approve:
+        # Slack matches an initial option to its option by the whole object.
+        auto_element["initial_options"] = [_AUTO_OPTION]
 
     return {
         "type": "modal",
@@ -129,8 +151,22 @@ def grant_modal(
                 "label": {"type": "plain_text", "text": "Reason (optional)"},
                 "element": reason_element,
             },
+            {
+                # Written in the same transaction as the grant, per database,
+                # and skipped where they already hold an auto-approve that
+                # covers it (grants.covering_waiver).
+                "type": "input", "block_id": B_AUTO, "optional": True,
+                "label": {"type": "plain_text", "text": "Auto-approve"},
+                "element": auto_element,
+            },
         ],
     }
+
+
+def auto_approve_tier(state_values: dict) -> str | None:
+    """'ro' when the auto-approve box is ticked in a submitted view's state."""
+    sel = ((state_values.get(B_AUTO) or {}).get(A_AUTO) or {}).get("selected_options") or []
+    return AUTO_RO if any(o.get("value") == AUTO_RO for o in sel) else None
 
 
 def _grant_line(g: dict) -> str:

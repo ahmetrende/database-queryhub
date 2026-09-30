@@ -49,6 +49,18 @@ function qhGrantDbNames(g) {
   return dbs.includes('*') ? 'all databases' : dbs.join(', ');
 }
 function qhGrantTarget(g) { return g.connectionId + ' / ' + qhGrantDbNames(g); }
+// What a grant that asked for auto-approve says after "Grant added" (PLA-1182).
+// A skipped waiver is named, because "asked for auto-approve, got none" reads
+// as a failure when the truth is that one they already hold covers it.
+function qhGrantAutoSay(r) {
+  const a = r && r.autoApprove;
+  if (!a) return '';
+  const skipped = a.skipped || [], n = a.written || 0;
+  if (!skipped.length) return n ? ' Auto-approve up to ' + a.tier + ' is on.' : '';
+  const why = skipped[0].reason;
+  return n ? ' Auto-approve up to ' + a.tier + ': ' + n + ' added, ' + skipped.length + ' skipped (' + why + ').'
+    : ' Auto-approve skipped: ' + why + '.';
+}
 
 // Empty metrics shell (same keys the Insights view reads) until /admin/metrics loads.
 const QH_METRICS = {
@@ -227,11 +239,15 @@ function useAdminState(pushToast, active, isAdminViewer) {
   // written and the writes share one transaction, so a refusal leaves nothing
   // behind (CODE brief 2026-09-01 §1). The promise is RETURNED here — the
   // multi-person form keeps the picker open on a refusal and needs to know.
+  // The payload is spread FIRST and the named fields are defaults on top: a
+  // field the form sends that this list does not name — `autoApprove` and
+  // `autoApproveTier` (PLA-1182) — still reaches the server. Rebuilding it key
+  // by key is how the result payload lost two fields in a row.
   const addGrant = (g) => {
     const many = (g.subjects || []).filter(Boolean);
     const who = many.length ? many.length + ' people' : g.subject;
-    return qhApi.adminAddGrant({ subjectType: g.subjectType, subject: g.subject, subjects: many.length ? many : null, connectionId: g.connectionId, databaseId: g.databaseId, databases: g.databases || null, tier: g.tier, reason: g.reason || null, expiresAt: g.expiresAt || null })
-      .then(r => { loadGrants(); loadAudit(); pushToast && pushToast('Grant added: ' + who + ' → ' + g.connectionId + ' (' + g.tier + ').'); return r; })
+    return qhApi.adminAddGrant({ ...g, subjects: many.length ? many : null, databases: g.databases || null, reason: g.reason || null, expiresAt: g.expiresAt || null })
+      .then(r => { loadGrants(); if (r && r.autoApprove) loadAuto(); loadAudit(); pushToast && pushToast('Grant added: ' + who + ' → ' + g.connectionId + ' (' + g.tier + ').' + qhGrantAutoSay(r)); return r; })
       .catch(e => { fail(e, 'Add grant failed.'); throw e; });
   };
   const revokeGrant = (id) => {
@@ -564,4 +580,4 @@ function useAdminState(pushToast, active, isAdminViewer) {
   };
 }
 
-Object.assign(window, { useAdminState, qhAgo, qhFmt, qhIso, qhGrantTarget, qhGrantDbNames, qhMaxTier, QH_METRICS });
+Object.assign(window, { useAdminState, qhAgo, qhFmt, qhIso, qhGrantTarget, qhGrantDbNames, qhGrantAutoSay, qhMaxTier, QH_METRICS });

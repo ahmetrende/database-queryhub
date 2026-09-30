@@ -12,13 +12,20 @@ Authorization: an admin may grant only if they are a super-admin
 (unscoped) or carry admins.can_grant, and only up to their own max_tier
 (a super-admin's max_tier is NULL = unlimited). Callers must enforce
 this via authz() before calling grant().
+
+A grant can carry an auto-approve waiver (`auto_approve_tier`), written in the
+SAME transaction as the grant, so the two cannot be half-applied. The waiver
+goes into the legacy `auto_approve_grants` table; the migration-109 mirror
+projects it into `access_grant`. A waiver the person already holds, equal or
+broader, is not written again — see `covering_waiver`.
 """
 from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 
-from . import db
+from . import auto_approve, db
 
 log = logging.getLogger(__name__)
 
@@ -152,6 +159,195 @@ def allowed_tiers(cap: dict) -> list[str]:
             if r <= ceiling]
 
 
+# ---------------------------------------------------------------------------
+# auto-approve that rides with a grant
+# ---------------------------------------------------------------------------
+
+#: The tiers a waiver written with a grant may carry. DDL is not one of them:
+#: a schema change is always looked at by a person, and no screen offers it.
+_WAIVER_TIERS = ("ro", "rw")
+
+
+def check_waiver_tier(mode: str, auto_approve_tier: str | None) -> str | None:
+    """The waiver tier to write beside a `mode` grant, or None for no waiver.
+
+    Raises ValueError for DDL, for an unknown tier, and for a tier above the
+    grant's own. A waiver above the access it comes with would never apply as
+    written — the submit decision caps a waiver at the access (access.py,
+    rule 1) — so it would read as more than it does.
+    """
+    if auto_approve_tier is None:
+        return None
+    tier = str(auto_approve_tier).strip().lower()
+    if tier == "ddl":
+        raise ValueError("Schema changes are always reviewed: auto-approve "
+                         "cannot be DDL.")
+    if tier not in _WAIVER_TIERS:
+        raise ValueError(f"Auto-approve tier must be RO or RW, not "
+                         f"{auto_approve_tier!r}.")
+    grant_tier = (mode or "").strip().lower()
+    if grant_tier not in _TIER_RANK:
+        raise ValueError(f"Unknown grant tier {mode!r}.")
+    if _TIER_RANK[tier] > _TIER_RANK[grant_tier]:
+        raise ValueError(f"Auto-approve up to {tier.upper()} is above the "
+                         f"{grant_tier.upper()} access it comes with. Pick "
+                         f"{grant_tier.upper()} or lower.")
+    return tier
+
+
+def waiver_reason(reason: str | None) -> str:
+    """The reason a waiver written with a grant carries: the grant's own."""
+    why = (reason or "").strip()
+    return f"auto-approve with the grant: {why}" if why else "auto-approve with the grant"
+
+
+def normalise_databases(databases: list[str] | None) -> list[str] | None:
+    """A grant's database list, or None for every database.
+
+    Each name goes through `auto_approve.normalise_scope`, so `*` (or any other
+    spelling of "every database") means every database instead of a database
+    literally named `*`, which is accepted, listed, and matches nothing. The
+    web grant form's "All databases" is `['*']`. One such entry makes the named
+    ones beside it redundant.
+    """
+    names = [auto_approve.normalise_scope(d) for d in (databases or [])]
+    if not names or None in names:
+        return None
+    return list(dict.fromkeys(n for n in names if n is not None))
+
+
+def waiver_scopes(databases: list[str] | None) -> list[str | None]:
+    """One waiver per granted database; [None] when the grant covers them all."""
+    names = normalise_databases(databases)
+    return [None] if names is None else list(names)
+
+
+def _aware(at):
+    """A naive datetime read as UTC, so it compares with the stored ones."""
+    if at is not None and at.tzinfo is None:
+        return at.replace(tzinfo=timezone.utc)
+    return at
+
+
+def covering_waiver(rows: list[dict], tier: str, target_id: int | None,
+                    database_name: str | None, expires_at=None) -> dict | None:
+    """The row in `rows` that already covers a new waiver of this shape, or None.
+
+    Covering means equal or broader on every axis:
+      - scope and tier by `auto_approve.grant_covers`, the rule the submit
+        decision itself applies: a NULL target is every target, a NULL database
+        is every database, and the tier ranks at least as high;
+      - time: it has started, it has not ended, and it does not end before the
+        new one would (no end date is only covered by no end date).
+
+    Writing a waiver that an existing one already covers changes no decision.
+    It only adds a row, and those rows pile up: 28 per-server waivers once sat
+    under a fleet-wide one that made every one of them redundant.
+
+    `rows` are in `auto_approve.active_grants`' shape. The broadest match is
+    returned, so a message can name the row that actually does the work.
+    """
+    now = datetime.now(timezone.utc)
+    want_end = _aware(expires_at)
+
+    def broadness(r):
+        tid = r.get("target_server_id")
+        return (tid is not None,
+                tid is not None and r.get("database_name") is not None,
+                r.get("expires_at") is not None,
+                -_TIER_RANK.get(r.get("max_tier") or "", -1))
+
+    for r in sorted(rows, key=broadness):
+        if not auto_approve.grant_covers(r, tier, target_id, database_name):
+            continue
+        starts, ends = _aware(r.get("starts_at")), _aware(r.get("expires_at"))
+        if starts is not None and starts > now:
+            continue
+        if ends is not None and (ends <= now or want_end is None or ends < want_end):
+            continue
+        return r
+    return None
+
+
+def _until(at) -> str:
+    if at is None:
+        return "no expiry"
+    return f"until {_aware(at):%Y-%m-%d %H:%M} UTC"
+
+
+def describe_waiver(row: dict) -> str:
+    """One plain line naming a waiver, for a message saying why nothing was written."""
+    from . import targets as _targets
+    tid = row.get("target_server_id")
+    if tid is None:
+        where = "every server they can reach"
+    else:
+        t = _targets.get(tid)
+        alias = t.alias if t else f"target {tid}"
+        where = (f"{alias}/{row['database_name']}" if row.get("database_name")
+                 else f"all databases on {alias}")
+    return (f"auto-approve #{row['id']} (up to {(row.get('max_tier') or 'ro').upper()} "
+            f"on {where}, {_until(row.get('expires_at'))})")
+
+
+def _waiver_plan(grantee_id: str, tier: str, target_id: int,
+                 databases: list[str] | None, expires_at) -> list[dict]:
+    """The waivers one grant carries: each database, and what already covers it.
+
+    Read before the transaction opens, so a refusal never holds one open. A
+    TEAM's waiver is left out of what counts as covering: this grant is the
+    person's own, and their own grant on a server displaces their teams' rows
+    there, waivers included (access.py, rule 4). The team's waiver stops
+    reaching them the moment this grant commits.
+    """
+    held = [r for r in auto_approve.active_grants(grantee_id)
+            if r.get("team_id") is None]
+    return [{"database": d,
+             "covered_by": covering_waiver(held, tier, target_id, d, expires_at)}
+            for d in waiver_scopes(databases)]
+
+
+def _write_waivers(cur, *, plan: list[dict], tier: str, granter_id: str,
+                   granter_name: str | None, grantee_id: str, target_id: int,
+                   reason: str | None, expires_at) -> dict:
+    """Write the planned waivers on the grant's own cursor, one audit row each.
+
+    Same transaction as the grant: a waiver that fails to write takes the
+    grant with it, and a grant that fails takes its waiver. The row goes to the
+    legacy table, which the migration-109 mirror projects into `access_grant`
+    with `auto_approve` set — never written into the new model for a person
+    directly, so the mirror stays the one writer of their rows there.
+    """
+    written: list[dict] = []
+    skipped: list[dict] = []
+    for item in plan:
+        cover = item["covered_by"]
+        if cover is not None:
+            by = describe_waiver(cover)
+            skipped.append({"database": item["database"], "covered_by": str(cover["id"]),
+                            "by": by, "reason": "already covered by " + by})
+            continue
+        cur.execute(
+            "INSERT INTO auto_approve_grants "
+            "  (slack_user_id, max_tier, target_server_id, database_name, "
+            "   expires_at, reason, granted_by) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (grantee_id, tier, target_id, item["database"], expires_at,
+             waiver_reason(reason), granter_id))
+        wid = cur.fetchone()["id"]
+        cur.execute(
+            "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
+            "VALUES (%s, %s, 'auto_approve_granted', %s::jsonb)",
+            (granter_id, granter_name, json.dumps({
+                "user": grantee_id, "target_id": target_id,
+                "database": item["database"], "tier": tier, "grant_id": wid,
+                "with_grant": True,
+                "expires_at": _aware(expires_at).isoformat() if expires_at else None,
+            })))
+        written.append({"id": str(wid), "database": item["database"]})
+    return {"tier": tier, "written": written, "skipped": skipped}
+
+
 def grant(
     *,
     granter_id: str,
@@ -164,6 +360,7 @@ def grant(
     reason: str | None,
     notify: bool = True,
     expires_at=None,
+    auto_approve_tier: str | None = None,
 ) -> dict:
     """Whitelist (upsert enabled requester) + upsert the user_target_grants
     row + audit, in one transaction. `grantee_profile` carries name / email
@@ -176,6 +373,13 @@ def grant(
     tells the user. The Slack /sql grant handler passes notify=False and
     sends its own combined DM (one message covering all picked targets).
 
+    `auto_approve_tier` ('ro' / 'rw') also writes an auto-approve waiver for
+    the same target, databases and expiry, in the same transaction: one row per
+    granted database, none where a live waiver of theirs already covers it.
+    ValueError, before anything is written, for a tier above the grant's or
+    DDL. The summary's `auto_approve` says what was written and what was
+    skipped, and why; it is None when no waiver was asked for.
+
     Raises PermissionError for a target that reaches the bot's own metadata
     database. That check lives HERE, not in the callers, because the Slack
     modal had it and the web admin panel did not — so the same operation was
@@ -187,7 +391,11 @@ def grant(
             "This target is the bot's own control-plane database; granting "
             "access to it would allow tampering with the audit log and the "
             "admin list.")
+    waiver_tier = check_waiver_tier(mode, auto_approve_tier)
+    plan = (_waiver_plan(grantee_id, waiver_tier, target_id, databases, expires_at)
+            if waiver_tier else None)
 
+    waived = None
     with db.transaction() as cur:
         # This path notifies on its own (notify_grantee / the modal's
         # combined DM) — keep the auth-event outbox from double-DMing.
@@ -196,7 +404,13 @@ def grant(
             cur, granter_id=granter_id, granter_name=granter_name,
             grantee_id=grantee_id, grantee_profile=grantee_profile,
             target_id=target_id, mode=mode, databases=databases,
-            reason=reason, expires_at=expires_at)
+            reason=reason, expires_at=expires_at,
+            audit_extra=_plan_audit(waiver_tier, plan))
+        if plan is not None and waiver_tier is not None:
+            waived = _write_waivers(
+                cur, plan=plan, tier=waiver_tier, granter_id=granter_id,
+                granter_name=granter_name, grantee_id=grantee_id,
+                target_id=target_id, reason=reason, expires_at=expires_at)
     log.info("access_granted: %s -> %s target=%s mode=%s by=%s",
              granter_id, grantee_id, target_id, mode, granter_id)
     if notify:
@@ -204,24 +418,45 @@ def grant(
         t = _targets.get(target_id)
         notify_grantee(grantee_id, granter_id,
                        [t.alias if t else str(target_id)],
-                       row["mode"], row["allowed_databases"], whitelisted_now)
+                       row["mode"], row["allowed_databases"], whitelisted_now,
+                       auto_approve_tier=_notified_tier(waived))
     return {"mode": row["mode"], "databases": row["allowed_databases"],
-            "whitelisted_now": whitelisted_now}
+            "whitelisted_now": whitelisted_now, "auto_approve": waived}
+
+
+def _plan_audit(tier: str | None, plan: list[dict] | None) -> dict | None:
+    """What the grant's own audit row says about the waiver it came with.
+
+    The skipped ones have no audit row of their own, so this is where the
+    trail records that auto-approve was asked for and which row already did it.
+    """
+    if not tier or plan is None:
+        return None
+    covered = [str(p["covered_by"]["id"]) for p in plan if p["covered_by"] is not None]
+    return {"auto_approve": tier,
+            **({"auto_approve_covered_by": covered} if covered else {})}
+
+
+def _notified_tier(waived: dict | None) -> str | None:
+    """The tier the grantee's DM mentions: only when a waiver was written."""
+    return waived["tier"] if waived and waived["written"] else None
 
 
 def _write_grant(cur, *, granter_id, granter_name, grantee_id, grantee_profile,
-             target_id, mode, databases, reason, expires_at):
+             target_id, mode, databases, reason, expires_at, audit_extra=None):
     """The three statements one grant is made of, on a caller's cursor.
 
     Split out so several grants can share ONE transaction: granting the same
     access to five people is one act, and five transactions can leave three
     written and two not — a half-applied authorization is not something anyone
     can repair from the grants table, because nothing there records what was
-    intended. `grant()` keeps its own transaction for the single case."""
+    intended. `grant()` keeps its own transaction for the single case.
+
+    `audit_extra` is merged into the audit row's details."""
     name = grantee_profile.get("name")
     email = grantee_profile.get("email")
     tz = grantee_profile.get("tz")
-    dbs = databases or None
+    dbs = normalise_databases(databases)
 
     cur.execute(
         "INSERT INTO requesters "
@@ -263,7 +498,7 @@ def _write_grant(cur, *, granter_id, granter_name, grantee_id, grantee_profile,
         (granter_id, granter_name, json.dumps({
             "grantee": grantee_id, "target_id": target_id, "mode": mode,
             "databases": dbs, "whitelisted": whitelisted_now,
-            "reason": reason,
+            "reason": reason, **(audit_extra or {}),
         })),
     )
     return row, whitelisted_now
@@ -280,6 +515,7 @@ def grant_many(
     reason: str | None,
     notify: bool = True,
     expires_at=None,
+    auto_approve_tier: str | None = None,
 ) -> list[dict]:
     """The same grant for several people, in ONE transaction.
 
@@ -288,7 +524,13 @@ def grant_many(
     not a state anyone can act on — the table records what exists, never what
     was meant, so the operator cannot tell a partial write from a deliberate
     one. Anything that can refuse a row (a bad principal, a control-plane
-    target) refuses the whole call before a single statement runs.
+    target, a waiver tier above the grant's) refuses the whole call before a
+    single statement runs.
+
+    `auto_approve_tier` works as in `grant()`: each grantee's waivers are
+    written in this same transaction, and each result carries its own
+    `auto_approve` outcome, since what already covers one person says nothing
+    about the next.
 
     `grantees` is (principal_id, profile) pairs. Notifications are sent AFTER
     the commit, one DM per grantee, and a failure to notify never rolls a
@@ -299,21 +541,32 @@ def grant_many(
             "This target is the bot's own control-plane database; granting "
             "access to it would allow tampering with the audit log and the "
             "admin list.")
+    waiver_tier = check_waiver_tier(mode, auto_approve_tier)
     if not grantees:
         return []
+    plans = {gid: _waiver_plan(gid, waiver_tier, target_id, databases, expires_at)
+             for gid, _profile in grantees} if waiver_tier else {}
 
     results: list[dict] = []
     with db.transaction() as cur:
         cur.execute("SET LOCAL app.auth_dm_suppress = 'on'")
         for gid, profile in grantees:
+            plan = plans.get(gid)
             row, whitelisted_now = _write_grant(
                 cur, granter_id=granter_id, granter_name=granter_name,
                 grantee_id=gid, grantee_profile=profile, target_id=target_id,
                 mode=mode, databases=databases, reason=reason,
-                expires_at=expires_at)
+                expires_at=expires_at, audit_extra=_plan_audit(waiver_tier, plan))
+            waived = None
+            if plan is not None and waiver_tier is not None:
+                waived = _write_waivers(
+                    cur, plan=plan, tier=waiver_tier, granter_id=granter_id,
+                    granter_name=granter_name, grantee_id=gid,
+                    target_id=target_id, reason=reason, expires_at=expires_at)
             results.append({"grantee_id": gid, "mode": row["mode"],
                             "databases": row["allowed_databases"],
-                            "whitelisted_now": whitelisted_now})
+                            "whitelisted_now": whitelisted_now,
+                            "auto_approve": waived})
     for r in results:
         log.info("access_granted: %s -> %s target=%s mode=%s by=%s",
                  granter_id, r["grantee_id"], target_id, mode, granter_id)
@@ -323,40 +576,56 @@ def grant_many(
         alias = [t.alias if t else str(target_id)]
         for r in results:
             notify_grantee(r["grantee_id"], granter_id, alias, r["mode"],
-                           r["databases"], r["whitelisted_now"])
+                           r["databases"], r["whitelisted_now"],
+                           auto_approve_tier=_notified_tier(r["auto_approve"]))
     return results
 
 
 def notify_grantee(grantee_id: str, granter_id: str | None,
                    aliases: list[str], mode: str,
                    databases: list[str] | None,
-                   whitelisted: bool = False) -> None:
+                   whitelisted: bool = False,
+                   auto_approve_tier: str | None = None) -> None:
     """The ONE 'you were granted access' DM, used by every grant path so the
     wording is identical whether the grant came from /sql grant, a script,
     or anywhere else. `aliases` is one or more target aliases sharing the
     same tier + database scope (the Slack modal grants several at once).
-    Best-effort and self-contained (builds its own Slack client from the bot
-    token); never raises — a notification failure must not undo a committed
-    grant."""
+    `auto_approve_tier` adds one line when an auto-approve waiver was written
+    with the grant. Best-effort and self-contained (builds its own Slack
+    client from the bot token); never raises — a notification failure must
+    not undo a committed grant."""
     try:
         from slack_sdk.web import WebClient
 
         from .config import ENV
 
-        tlist = ", ".join(f"`{a}`" for a in aliases) if aliases else "a target"
-        scope = ", ".join(databases) if databases else "all databases"
-        by = f" by <@{granter_id}>" if granter_id else ""
-        extra = " You're now set up in QueryHub." if whitelisted else ""
         client = WebClient(token=ENV.slack_bot_token)
         opened = client.conversations_open(users=grantee_id)
         client.chat_postMessage(
             channel=opened["channel"]["id"],
-            text=(f":white_check_mark: You've been granted *{mode.upper()}* "
-                  f"access to {tlist} ({scope}){by}.{extra} "
-                  f"Use `/sql` to submit queries."),
+            text=grant_message(aliases, mode, databases, granter_id,
+                               whitelisted, auto_approve_tier),
         )
     except Exception:
         log.exception("grantee notification failed for %s", grantee_id)
+
+
+def grant_message(aliases: list[str], mode: str, databases: list[str] | None,
+                  granter_id: str | None = None, whitelisted: bool = False,
+                  auto_approve_tier: str | None = None) -> str:
+    """The text of the grantee's DM, apart from sending it."""
+    tlist = ", ".join(f"`{a}`" for a in aliases) if aliases else "a target"
+    scope = ", ".join(databases) if databases else "all databases"
+    by = f" by <@{granter_id}>" if granter_id else ""
+    extra = " You're now set up in QueryHub." if whitelisted else ""
+    auto = ""
+    if auto_approve_tier:
+        where = "on these" if len(aliases or []) > 1 else "there"
+        auto = (f" Queries up to *{auto_approve_tier.upper()}* {where} run "
+                f"without waiting for approval.")
+    return (f":white_check_mark: You've been granted *{mode.upper()}* "
+            f"access to {tlist} ({scope}){by}.{extra}{auto} "
+            f"Use `/sql` to submit queries.")
 
 
 def revoke(

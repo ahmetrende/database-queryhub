@@ -3633,7 +3633,8 @@ def handle_grant_target_changed(ack: Ack, body: dict, client: WebClient) -> None
             view=admin_grant.grant_modal(
                 allowed_tiers=grants.allowed_tiers(cap),
                 grantees=grantees, target_initial_options=target_opts,
-                tier=tier, reason=reason, target_ids=target_ids))
+                tier=tier, reason=reason, target_ids=target_ids,
+                auto_approve=admin_grant.auto_approve_tier(st) is not None))
     except Exception:
         log.exception("grant: views_update after target change failed")
 
@@ -3661,6 +3662,7 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
                .get("selected_options")) or []
     reason = (state.get(admin_grant.B_REASON, {}).get(admin_grant.A_REASON, {})
               .get("value"))
+    auto_tier = admin_grant.auto_approve_tier(state)
 
     target_ids: list[int] = []
     for o in tsels:
@@ -3682,6 +3684,13 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
             errors[admin_grant.B_TARGET] = "One or more targets are outside your scope."
     if tier not in grants.allowed_tiers(cap):
         errors[admin_grant.B_TIER] = "You can't grant that tier."
+    elif auto_tier:
+        # RO is at or below every grantable tier, so this is the backstop the
+        # server applies anyway, said beside the box rather than after a write.
+        try:
+            grants.check_waiver_tier(tier, auto_tier)
+        except ValueError as e:
+            errors[admin_grant.B_AUTO] = str(e)
     if errors:
         ack({"response_action": "errors", "errors": errors})
         return
@@ -3697,21 +3706,30 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
     # still gets exactly one DM covering every target, which is what the
     # single-user path did. One person failing must not cost the others their
     # grant, so it is caught here and named in the admin's summary instead.
+    # Each grants.grant() call writes the grant AND its auto-approve waiver in
+    # one transaction, so a failure never leaves one without the other.
     granted: list[str] = []
     failed: list[str] = []
+    waived: list[dict] = []
     for grantee in grantees:
         try:
             profile = _slack_profile(client, grantee)
             whitelisted = False
+            wrote_waiver = False
             for tid in target_ids:
                 res = grants.grant(
                     granter_id=user["id"], granter_name=user.get("name"),
                     grantee_id=grantee, grantee_profile=profile,
                     target_id=tid, mode=tier, databases=dbs, reason=reason,
-                    notify=False)  # one combined DM per grantee, below
+                    notify=False,  # one combined DM per grantee, below
+                    auto_approve_tier=auto_tier)
                 whitelisted = whitelisted or res["whitelisted_now"]
+                if res.get("auto_approve"):
+                    waived.append(res["auto_approve"])
+                    wrote_waiver = wrote_waiver or bool(res["auto_approve"]["written"])
             grants.notify_grantee(grantee, user["id"], aliases, tier, dbs,
-                                  whitelisted)
+                                  whitelisted,
+                                  auto_approve_tier=auto_tier if wrote_waiver else None)
             granted.append(f"<@{grantee}>"
                            + (" (whitelisted)" if whitelisted else ""))
         except Exception:
@@ -3723,9 +3741,29 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
     msg = (f":white_check_mark: Granted *{tier.upper()}* on {tlist} ({scope}) "
            f"to {', '.join(granted)}." if granted
            else ":x: No grant was written.")
+    if auto_tier and granted:
+        msg += "\n" + _grant_waiver_summary(auto_tier, waived)
     if failed:
         msg += f"\n:warning: Failed for {', '.join(failed)} — see the bot logs."
     notifications.dm_requester(client, user["id"], msg)
+
+
+def _grant_waiver_summary(tier: str, outcomes: list[dict]) -> str:
+    """The admin's line about the auto-approve that came with the grant.
+
+    A skipped waiver is named, because "asked for auto-approve, got no row"
+    otherwise reads as a failure: the person already had one that covers it.
+    """
+    written = sum(len(o["written"]) for o in outcomes)
+    skipped = [s for o in outcomes for s in o["skipped"]]
+    label = f"Auto-approve up to *{tier.upper()}*"
+    if not skipped:
+        return f":zap: {label} is on for these."
+    by = skipped[0]["by"]
+    if not written:
+        return f":zap: {label} was already in place, so nothing new was written: {by}."
+    return (f":zap: {label}: {written} written, {len(skipped)} skipped because "
+            f"one already covers it (for example {by}).")
 
 
 def handle_revoke_user_options(ack: Ack, payload: dict, body: dict) -> None:

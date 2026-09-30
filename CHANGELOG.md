@@ -11,6 +11,18 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Added
 
+- **A grant can carry auto-approve, in the same transaction.** The web grant
+  form has an Auto-approve box with a tier (RO by default, never above the
+  grant's tier, never DDL); `/sql grant` has an "Auto-approve read-only
+  queries" box. `POST /admin/grants` takes `autoApprove` / `autoApproveTier`.
+  - One waiver per granted database, with the grant's expiry. A waiver that
+    fails to write rolls the grant back.
+  - A waiver the subject already holds, equal or broader, is not written
+    again. The response (`autoApprove`), the toast and the Slack summary name
+    the one that covers it.
+  - A person's waiver goes to `auto_approve_grants` (the migration-109 mirror
+    projects it); a team's is an `access_grant` row in the grant's transaction.
+
 - **A super-admin can choose where one query runs:** Auto (as before), the
   primary, or a named read replica (`runOn` on `POST /queries`, migration 137).
   See OPERATIONS.md §26.
@@ -31,6 +43,18 @@ frontend and the endpoints it calls are explicitly outside it.
   - A marker that cannot be read in full says unknown, never complete.
 
 ### Changed
+
+- **Auto-approve is offered only where the subject can already query.** A
+  waiver skips review; it grants no access. One written elsewhere decided
+  nothing until the day access arrived, already approved.
+  - The Auto-approve form lists nothing until a person or team is picked, then
+    only the connections and databases they reach, with the tier capped at
+    what they hold there.
+  - `POST /admin/auto-grants` and `/auto-grants/bulk` refuse, by name, a
+    target they cannot query and a tier above theirs (`409`, nothing written).
+    Each refusal carries `connectionId` / `databaseId`, so the form marks the
+    row it came from.
+  - A fleet-wide row reads "every server they can reach", not "all databases".
 
 - **A target whose instance was deleted shows as deleted and cannot be enabled.** It
   looked like any other disabled target, and the admin screen offered to enable it.
@@ -137,6 +161,13 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Fixed
 
+- **"All databases" in the web grant forms wrote a grant on a database named
+  `*`.** It matched nothing. Any spelling of every database (`*`, empty, `all`,
+  `any`) now means every database, for person and team grants alike.
+- **A team's auto-approve rows show as the team's.** The list recognised a team
+  by a `(team)` suffix only the prototype's mock sends, so on the real server a
+  team's card read as a person and "Add targets" posted the team's name as a
+  person id, which was refused.
 - **A statement too big to check is refused with a message, not a 500.**
   sqlparse gives up on a statement of more than 10,000 tokens, which is about
   3,000 values in an `IN (...)` list, or one nested more than 100 levels deep.

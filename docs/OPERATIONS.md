@@ -1123,6 +1123,36 @@ before the run falls back to admin approval with a user-facing warning.
 DDL covers everything. Queries above the grant's tier route through
 the normal admin flow.
 
+### With a grant, and only where they can query
+
+A waiver skips review; it grants no access. The web panel and `/sql grant`
+therefore tie the two together:
+
+- **Grant + auto-approve in one step.** The web grant form's Auto-approve box
+  (`POST /admin/grants` with `autoApprove: true`, `autoApproveTier` `ro` by
+  default) and the "Auto-approve read-only queries" box on `/sql grant` write
+  the waiver in the grant's own transaction: one row per granted database
+  (NULL for all of them), same target, same expiry, reason
+  `auto-approve with the grant: <reason>`. A person's row goes into
+  `auto_approve_grants` and the migration-109 mirror projects it; a team's is
+  an `access_grant` row (`auto_approve = TRUE`, `team_id` set, `mirrored_from`
+  NULL). A tier above the grant's, or DDL, is refused before anything is
+  written.
+- **Not written twice.** A waiver the subject already holds that is equal or
+  broader (any target or the same one, any database or the same one, a tier
+  at least as high, started, and ending no sooner) makes the new one
+  redundant, so it is skipped. The response's `autoApprove.skipped`, the web
+  toast and the Slack summary name the covering row. A team's waiver does not
+  count for a person: their own grant on the server displaces the team's rows
+  there.
+- **Only where they can query.** `POST /admin/auto-grants` and
+  `/admin/auto-grants/bulk` refuse (`409`, nothing written) a target or
+  database the subject cannot reach, and a tier above the one they hold there,
+  as read by the effective-access resolvers. A fleet-wide row (no target) is
+  not checked: it already means "every server they can reach". Rows written
+  by hand in SQL are not checked either, so look at the person's Effective
+  access screen first.
+
 ### Grant patterns
 
 ```sql

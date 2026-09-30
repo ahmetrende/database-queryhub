@@ -48,6 +48,10 @@ def env(monkeypatch):
     monkeypatch.setattr(ra, "_target_id_of", lambda c: {"prod-ledger": 53, "prod-orders": 60}.get(c))
     monkeypatch.setattr(ra, "_resolve_team", lambda n: st["team"] if n == "Team Alpha" else None)
     monkeypatch.setattr(auto_approve, "validate_scope", lambda tid, dbn: None)
+    # A waiver is refused where the subject cannot query (test_auto_approve_reach.py).
+    # These tests are about the write, so the subject reaches every target at RW.
+    monkeypatch.setattr(ra, "_person_reach", lambda sid, scopes: {s: "rw" for s in scopes})
+    monkeypatch.setattr(ra, "_team_reach", lambda tid, scopes: {s: "rw" for s in scopes})
     return st
 
 

@@ -1551,6 +1551,43 @@ class GrantIn(BaseModel):
     # before migration 096 has, and what most will keep. A grant given for one
     # afternoon's migration should be able to say so; nothing forces it to.
     expiresAt: str | None = None
+    # Auto-approve with the grant, in the same transaction: one waiver per
+    # granted database, same target and expiry. `autoApproveTier` defaults to
+    # RO and may not exceed `tier`; DDL is refused.
+    autoApprove: bool = False
+    autoApproveTier: str | None = None
+
+
+def _grant_databases(body: GrantIn) -> list[str] | None:
+    """The databases a grant names, or None for every database.
+
+    Folded by `grants.normalise_databases`, for the team branch too, which
+    writes its rows here rather than through `grants`. The grant form's "All
+    databases" is `['*']`, and posted verbatim it became a grant on a database
+    literally named `*`: accepted, listed, and matching nothing.
+    """
+    return grants.normalise_databases(
+        body.databases or ([body.databaseId] if body.databaseId else None))
+
+
+def _auto_outcome(outcomes: list[tuple[str, dict | None]]) -> dict | None:
+    """The response's `autoApprove`: what was written and what was skipped.
+
+    `outcomes` pairs each subject with its `grants` waiver outcome. None when
+    no waiver was asked for, so a client can tell "not asked" from "nothing
+    written".
+    """
+    got = [(s, o) for s, o in outcomes if o is not None]
+    if not got:
+        return None
+    return {
+        "tier": got[0][1]["tier"].upper(),
+        "written": sum(len(o["written"]) for _s, o in got),
+        "ids": [w["id"] for _s, o in got for w in o["written"]],
+        "skipped": [{"subject": s, "database": x["database"],
+                     "coveredBy": x["covered_by"], "reason": x["reason"]}
+                    for s, o in got for x in o["skipped"]],
+    }
 
 
 @router.post("/grants", status_code=201)
@@ -1576,7 +1613,14 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
             "That connection is the bot's own control-plane database — "
             "granting access to it would allow tampering with the audit log "
             "and the admin list.")
-    dbs = body.databases or ([body.databaseId] if body.databaseId else None)
+    dbs = _grant_databases(body)
+    # The waiver's tier is checked before either branch writes, like the date.
+    auto_tier = None
+    if body.autoApprove:
+        try:
+            auto_tier = grants.check_waiver_tier(tier, body.autoApproveTier or "ro")
+        except ValueError as e:
+            raise deps._error(400, "bad_request", str(e))
     # Expiry (migration 096). Parsed here, before either branch writes, so a
     # malformed date is a 400 rather than half a grant. A date already in the
     # past is refused rather than accepted-and-inert: writing a grant that is
@@ -1620,6 +1664,8 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
         #
         # Either way the auth-event trigger on the table written DMs every
         # affected member (migration 060 for the legacy one, 108 for the new).
+        plan = _team_waiver_plan(team, tid, dbs, auto_tier, expires_at) if auto_tier else None
+        waived = None
         with db.transaction() as cur:
             if teams_mod.use_v2():
                 # One row per database, and a row is immutable: changing the
@@ -1639,6 +1685,9 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
                         "VALUES (%s,%s,FALSE,%s,%s,%s,now(),%s,%s)",
                         (team["id"], tid, dbn, dbn is None, tier, expires_at,
                          "granted from the admin panel"))
+                if plan is not None and auto_tier:
+                    waived = _write_team_waivers(cur, team, tid, auto_tier, plan,
+                                                 expires_at, body.reason, uid, claims.get("name"))
             else:
                 cur.execute(
                     "INSERT INTO team_target_grants "
@@ -1653,13 +1702,18 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
             audit.log_in(cur, None, uid, claims.get("name"), "team_grant_added",
                          {"team": team["name"], "team_id": team["id"],
                           "target_id": tid, "databases": dbs, "tier": tier,
-                          "expires_at": expires_at.isoformat() if expires_at else None})
+                          "expires_at": expires_at.isoformat() if expires_at else None,
+                          # As on a person's grant row: asked for, and what covered it.
+                          **({"auto_approve": auto_tier,
+                              "auto_approve_covered_by": [s["covered_by"] for s in waived["skipped"]]}
+                             if waived else {})})
         # A team's subjectName IS its name — same rule the grant list follows,
         # so a client can read subjectName on every row without branching.
         return {"id": f"t:{team['id']}:{tid}", "subjectType": "team",
                 "subject": team["name"], "subjectName": team["name"],
                 "connectionId": body.connectionId,
-                "databases": dbs or "*", "tier": tier.upper()}
+                "databases": dbs or "*", "tier": tier.upper(),
+                "autoApprove": _auto_outcome([(team["name"], waived)])}
 
     subjects = [x for x in (body.subjects or []) if x] or (
         [body.subject] if body.subject else [])
@@ -1682,11 +1736,15 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
             seen.add(sid)
             ordered.append(sid)
 
-    written = grants.grant_many(
-        granter_id=uid, granter_name=claims.get("name"),
-        grantees=[(sid, _slack_profile(sid)) for sid in ordered],
-        target_id=tid, mode=tier, databases=dbs, reason=body.reason,
-        notify=True, expires_at=expires_at)
+    try:
+        written = grants.grant_many(
+            granter_id=uid, granter_name=claims.get("name"),
+            grantees=[(sid, _slack_profile(sid)) for sid in ordered],
+            target_id=tid, mode=tier, databases=dbs, reason=body.reason,
+            notify=True, expires_at=expires_at, auto_approve_tier=auto_tier)
+    except ValueError as e:
+        # The waiver tier, refused by grants before anything was written.
+        raise deps._error(400, "bad_request", str(e))
     summary = written[0]
     body_subject = ordered[0]
     # `subjectName` so the caller can land on the person it just created.
@@ -1708,7 +1766,77 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
             "subjectName": (row or {}).get("name"),
             "connectionId": body.connectionId,
             "databases": summary["databases"] or "*",
-            "tier": summary["mode"].upper()}
+            "tier": summary["mode"].upper(),
+            # What came with the grant: written, or skipped because a waiver
+            # they already hold covers it (and which one). None = not asked.
+            "autoApprove": _auto_outcome([(r["grantee_id"], r.get("auto_approve"))
+                                          for r in written])}
+
+
+def _team_waiver_plan(team: dict, tid: int, dbs: list[str] | None, tier: str,
+                      expires_at) -> list[dict]:
+    """The waivers a team grant carries, and which of them the team already has.
+
+    A team's waiver has no legacy home -- `auto_approve_grants` is keyed on one
+    person -- so the old model cannot hold one. Refused there before anything
+    is written, as the bulk route refuses it. Otherwise it is the same rule as
+    a person's (`grants.covering_waiver`), asked of the team's own waivers.
+    """
+    if not teams_mod.use_v2():
+        raise deps._error(400, "bad_request",
+                          "Team waivers need the new access model.")
+    held = [{"id": f"ag:{r['id']}", "max_tier": r["tier"],
+             "target_server_id": r["target_id"], "database_name": r["database_name"],
+             "starts_at": r["valid_from"], "expires_at": r["valid_until"]}
+            for r in db.fetch_all(
+                "SELECT id, tier, target_id, database_name, valid_from, valid_until "
+                "  FROM access_grant "
+                " WHERE team_id = %s AND auto_approve "
+                "   AND revoked_at IS NULL AND NOT is_deleted", (team["id"],))]
+    return [{"database": d,
+             "covered_by": grants.covering_waiver(held, tier, tid, d, expires_at)}
+            for d in grants.waiver_scopes(dbs)]
+
+
+def _write_team_waivers(cur, team: dict, tid: int, tier: str, plan: list[dict],
+                        expires_at, reason: str | None, uid: str,
+                        uname: str | None) -> dict:
+    """Write a team grant's waivers on the grant's own cursor, one audit row each.
+
+    `access_grant_live_uq` allows one row per (team, scope, tier, auto_approve)
+    and counts an ended row nobody revoked. So a row on the same scope and tier
+    that did NOT cover this one (it ends sooner, or has ended) is superseded,
+    not duplicated: revoked, then written again, the way a team grant's tier
+    change is. The auth-event trigger tells every member, as for the grant.
+    """
+    written: list[dict] = []
+    skipped: list[dict] = []
+    for item in plan:
+        cover = item["covered_by"]
+        if cover is not None:
+            by = grants.describe_waiver(cover)
+            skipped.append({"database": item["database"], "covered_by": str(cover["id"]),
+                            "by": by, "reason": "already covered by " + by})
+            continue
+        cur.execute(
+            "UPDATE access_grant SET revoked_at = NOW(), "
+            "       revoked_by = (SELECT p.id FROM principal p "
+            "         JOIN principal_identity i ON i.principal_id = p.id "
+            "        WHERE i.provider = 'slack' AND i.external_id = %s "
+            "          AND NOT i.is_deleted LIMIT 1) "
+            " WHERE team_id = %s AND target_id = %s AND auto_approve AND tier = %s "
+            "   AND database_name IS NOT DISTINCT FROM %s::text "
+            "   AND revoked_at IS NULL AND NOT is_deleted",
+            (uid, team["id"], tid, tier, item["database"]))
+        wid = _insert_team_waiver(cur, team["id"], tier, tid, item["database"],
+                                  expires_at, None, grants.waiver_reason(reason), uid)
+        audit.log_in(cur, None, uid, uname, "auto_approve_granted",
+                     {"subject_type": "team", "team_id": team["id"],
+                      "target_id": tid, "database": item["database"], "tier": tier,
+                      "grant_id": f"ag:{wid}", "with_grant": True,
+                      "expires_at": expires_at.isoformat() if expires_at else None})
+        written.append({"id": f"ag:{wid}", "database": item["database"]})
+    return {"tier": tier, "written": written, "skipped": skipped}
 
 
 @router.delete("/grants/{gid}", status_code=204)
@@ -3170,6 +3298,98 @@ def admin_team_effective_access(team_id: int, claims: dict = Depends(deps.curren
     }
 
 
+# ---- Auto-approve: only where the subject can already query -----------------
+#
+# A waiver waives the WAIT; it grants no access (access.py, rule 1). Written on
+# a server the subject cannot reach, it sits in the table reading as an
+# exemption and decides nothing -- until the day somebody grants them that
+# server, when it arrives pre-authorised with nobody having decided it. The
+# screen offers only what the subject reaches; these routes refuse the rest,
+# by name, from the same resolvers the effective-access screens ask.
+
+_WAIVER_RANK = {"ro": 0, "rw": 1, "ddl": 2}
+
+
+def _top_tier(tiers) -> str | None:
+    tiers = [t for t in tiers if t]
+    return max(tiers, key=lambda t: _WAIVER_RANK[t]) if tiers else None
+
+
+def _person_reach(slack_id: str, scopes: list[tuple[int, str | None]]) -> dict:
+    """{(target_id, database or None): the highest tier they hold there, or None}.
+
+    `teams.effective_grants_for_user` (plus `access.resolve_databases` per
+    database under the new model) is what the effective-access screen reads,
+    so a target this check refuses is one that screen does not list. A NULL
+    database asks about the whole server: the highest tier across the
+    databases they reach there, because the submit decision caps a waiver at
+    the access on each database anyway.
+    """
+    by_target = teams.effective_grants_for_user(slack_id, sorted({t for t, _d in scopes}))
+    named = [(t, d) for t, d in scopes if d is not None and by_target.get(t)]
+    if not named:
+        per_db: dict = {}
+    elif teams_mod.use_v2():
+        per_db = {p: (res or {}).get("tier")
+                  for p, (res, _row) in access_model.resolve_databases(slack_id, named).items()}
+    else:
+        per_db = {p: teams.effective_mode_for_database(slack_id, *p) for p in named}
+    out: dict = {}
+    for t, d in scopes:
+        g = by_target.get(t)
+        out[(t, d)] = None if g is None else (g.get("mode") if d is None else per_db.get((t, d)))
+    return out
+
+
+def _team_reach(team_id: int, scopes: list[tuple[int, str | None]]) -> dict:
+    """The same answer for a team, from its own live grant rows.
+
+    A team's rows involve no precedence -- that arises between a person and
+    their teams -- so they are read, not resolved, exactly as the team's
+    effective-access view reads them (`_team_rows_v2`).
+    """
+    rows, _members, _approvers = _team_rows_v2(team_id)
+    live = [r for r in rows if not r["auto_approve"] and r["target_id"]]
+    out: dict = {}
+    for t, d in scopes:
+        on = [r for r in live if r["target_id"] == t
+              and (d is None or r["all_databases"] or r["database_name"] == d)]
+        out[(t, d)] = _top_tier(r["tier"] for r in on)
+    return out
+
+
+def _reach_refusals(subject: str, team: dict | None, tier: str,
+                    items: list[dict]) -> list[dict]:
+    """Every item the subject cannot take this waiver on, and why, by name.
+
+    `items` carry `tid`, `db` (None = every database), `label`, and the
+    `connectionId` / `databaseId` the request sent, which come back on each
+    refusal so a form can mark the row it came from. A fleet-wide waiver (no
+    target) names no server and is not checked: it means "wherever they can
+    reach", which is what the submit decision already caps it to.
+    """
+    scoped = [i for i in items if i["tid"] is not None]
+    if not scoped:
+        return []
+    pairs = [(i["tid"], i["db"]) for i in scoped]
+    held = _team_reach(team["id"], pairs) if team is not None else _person_reach(subject, pairs)
+    who = f"Team {team['name']}" if team is not None else "They"
+    out = []
+    for i in scoped:
+        have = held.get((i["tid"], i["db"]))
+        if have is None:
+            reason = (f"{who} cannot query {i['label']}. Auto-approve only skips "
+                      "review where access already exists — grant access first.")
+        elif _WAIVER_RANK[tier] > _WAIVER_RANK[have]:
+            reason = (f"{who} can only run {have.upper()} on {i['label']}, so an "
+                      f"{tier.upper()} auto-approve would promise more than that.")
+        else:
+            continue
+        out.append({"target": i["label"], "connectionId": i["connectionId"],
+                    "databaseId": i["databaseId"], "reason": reason})
+    return out
+
+
 class AutoGrantIn(BaseModel):
     user: str
     connectionId: str
@@ -3239,6 +3459,12 @@ def admin_create_auto_grant(body: AutoGrantIn,
         auto_approve.validate_scope(tid, db_scope)
     except auto_approve.ScopeError as e:
         raise deps._error(400, "bad_request", str(e))
+    refused = _reach_refusals(body.user, None, tier, [{
+        "tid": tid, "db": db_scope, "connectionId": body.connectionId,
+        "databaseId": body.databaseId,
+        "label": body.connectionId + (f"/{db_scope}" if db_scope else "")}])
+    if refused:
+        raise deps._error(409, "conflict", refused[0]["reason"], refused=refused)
     # NOT suppressing app.auth_dm_suppress: the auth-event trigger DMs the user.
     with db.transaction() as cur:
         new_id = _insert_user_waiver(cur, body.user, tier, tid, db_scope,
@@ -3387,9 +3613,10 @@ def admin_bulk_create_auto_grants(body: BulkAutoGrantIn,
 
     Granting one person an exemption on four targets meant picking the person
     four times. Every target is checked with the single route's rules first --
-    a known connection, a database that exists there -- and if any is refused,
-    nothing is written and every refusal comes back. A TEAM can be the subject
-    too: its waiver reaches every member, the way a team grant does.
+    a known connection, a database that exists there, one the subject can
+    already query at the tier asked for -- and if any is refused, nothing is
+    written and every refusal comes back. A TEAM can be the subject too: its
+    waiver reaches every member, the way a team grant does.
     """
     uid = admin.require_admin(claims, "access")
     stype = (body.subjectType or "user").lower()
@@ -3415,31 +3642,40 @@ def admin_bulk_create_auto_grants(body: BulkAutoGrantIn,
         raise deps._error(400, "bad_request",
                           "subject must be a principal id: a Slack user id or local:<username>.")
 
-    plan, refused, seen = [], [], set()
+    # Every refusal names its target and carries the connection and database
+    # the request sent, so the form can mark the row it came from.
+    plan: list[dict] = []
+    refused: list[dict] = []
+    seen: set = set()
     for t in body.targets:
         label = t.connectionId + (f"/{t.databaseId}" if t.databaseId else "")
+        sent = {"connectionId": t.connectionId, "databaseId": t.databaseId}
         tid = _target_id_of(t.connectionId)
         if tid is None:
-            refused.append({"target": label, "reason": "Unknown connection."})
+            refused.append({"target": label, **sent, "reason": "Unknown connection."})
             continue
         db_scope = auto_approve.normalise_scope(t.databaseId)
         try:
             auto_approve.validate_scope(tid, db_scope)
         except auto_approve.ScopeError as e:
-            refused.append({"target": label, "reason": str(e)})
+            refused.append({"target": label, **sent, "reason": str(e)})
             continue
         if (tid, db_scope) in seen:
             continue
         seen.add((tid, db_scope))
-        plan.append((tid, db_scope, label))
+        plan.append({"tid": tid, "db": db_scope, "label": label, **sent})
+    unreachable = _reach_refusals(body.subject, team, tier, plan)
+    refused += unreachable
     if team is not None and plan:
         live = {(r["target_id"], r["database_name"]) for r in db.fetch_all(
             "SELECT target_id, database_name FROM access_grant "
             " WHERE team_id = %s AND auto_approve AND tier = %s "
             "   AND revoked_at IS NULL AND NOT is_deleted", (team["id"], tier))}
-        for tid, db_scope, label in plan:
-            if (tid, db_scope) in live:
-                refused.append({"target": label,
+        named = {x["target"] for x in unreachable}      # one refusal per target
+        for p in plan:
+            if (p["tid"], p["db"]) in live and p["label"] not in named:
+                refused.append({"target": p["label"], "connectionId": p["connectionId"],
+                                "databaseId": p["databaseId"],
                                 "reason": "The team already holds this waiver."})
     if refused:
         raise deps._error(
@@ -3448,11 +3684,12 @@ def admin_bulk_create_auto_grants(body: BulkAutoGrantIn,
             "nothing was written.", refused=refused)
     # `applied` is a count, as on the connections bulk route: 0 for a dry run.
     if body.dryRun:
-        return {"applied": 0, "targets": [label for _t, _d, label in plan]}
+        return {"applied": 0, "targets": [p["label"] for p in plan]}
 
     ids = []
     with db.transaction() as cur:
-        for tid, db_scope, label in plan:
+        for p in plan:
+            tid, db_scope = p["tid"], p["db"]
             if team is not None:
                 wid = _insert_team_waiver(cur, team["id"], tier, tid, db_scope,
                                           body.expiresAt, body.expiresInMinutes,
@@ -3467,7 +3704,7 @@ def admin_bulk_create_auto_grants(body: BulkAutoGrantIn,
                           "user": body.subject if team is None else None,
                           "team_id": team["id"] if team is not None else None,
                           "target_id": tid, "database": db_scope, "tier": tier})
-    return {"applied": len(ids), "ids": ids, "targets": [label for _t, _d, label in plan]}
+    return {"applied": len(ids), "ids": ids, "targets": [p["label"] for p in plan]}
 
 
 # ---- Endpoint / access requests: decision (super-admin) ---------------------

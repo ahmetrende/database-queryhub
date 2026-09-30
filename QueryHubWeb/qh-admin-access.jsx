@@ -334,13 +334,26 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
 }
 
 // ---------- Grants (flat by-grant form, used in By-grant inline edit) ----------
+// Tier order for the auto-approve controls below. Local: QH_TIER_RANK lives in
+// qh-admin-data.jsx and is not on window.
+const AUTO_TIER_RANK = { RO: 0, RW: 1, DDL: 2 };
 function GrantForm({ init, actor, st, people, teams, onDone }) {
-  const [f, setF] = useAcc(() => ({ ...init, ...expForm(init.expiresAt) }));
+  const [f, setF] = useAcc(() => ({ ...init, ...expForm(init.expiresAt), autoApprove: false, autoTier: 'RO' }));
   const conns = st.connections || [];
   const editing = !!f.id;
+  // Auto-approve with the grant (PLA-1182): the server writes it in the SAME
+  // transaction, one waiver per database, with the grant's end date — and skips
+  // it where the subject already holds one that covers it (the toast names it).
+  // Offered when adding only: an edit re-posts the grant, and a waiver is not
+  // part of what it edits. Capped at the grant's own tier and never DDL —
+  // schema changes are always reviewed, and a tier the server refuses is a
+  // control that lies.
+  const autoTiers = ['RO', 'RW'].filter(t => AUTO_TIER_RANK[t] <= AUTO_TIER_RANK[f.tier]);
+  const autoTier = autoTiers.indexOf(f.autoTier) >= 0 ? f.autoTier : autoTiers[autoTiers.length - 1];
   const save = () => {
     if (!f.subject.trim() || expBad(f)) return;
-    const payload = { subjectType: f.subjectType, subject: f.subject.trim(), connectionId: f.connectionId, databases: f.databases, tier: f.tier, expiresAt: expIso(f) };
+    const payload = { subjectType: f.subjectType, subject: f.subject.trim(), connectionId: f.connectionId, databases: f.databases, tier: f.tier, expiresAt: expIso(f),
+      ...(!editing && f.autoApprove ? { autoApprove: true, autoApproveTier: autoTier } : {}) };
     if (editing) st.updateGrant({ ...payload, id: f.id }, actor); else Promise.resolve(st.addGrant(payload, actor)).catch(() => {});
     onDone();
   };
@@ -358,9 +371,23 @@ function GrantForm({ init, actor, st, people, teams, onDone }) {
       <TierSelect value={f.tier} onChange={v => setF({ ...f, tier: v })} />
       <DbMultiPick conns={conns} connectionId={f.connectionId} databases={f.databases} onChange={dbs => setF({ ...f, databases: dbs })} />
       <ExpiryPick f={f} onChange={p => setF({ ...f, ...p })} />
+      {!editing && (
+        <>
+          <label className="qh-percopy-tm">
+            <input type="checkbox" checked={!!f.autoApprove} onChange={e => setF({ ...f, autoApprove: e.target.checked })} />
+            Auto-approve <span className="qh-percopy-warn">skips DBA review</span>
+          </label>
+          {f.autoApprove && (
+            <div className="qh-seg qh-seg-sm" aria-label="Auto-approve up to">
+              {autoTiers.map(t => <button key={t} type="button" className={'qh-seg-opt' + (autoTier === t ? ' is-active' : '')} onClick={() => setF({ ...f, autoTier: t })}>up to {t}</button>)}
+            </div>
+          )}
+        </>
+      )}
       <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={save}>{editing ? 'Save' : 'Add'}</button>
       {editing && <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone}>Cancel</button>}
       <ExpiryNote f={f} subjectType={f.subjectType} />
+      {!editing && f.autoApprove && <div className="qh-exp-note">{f.subjectType === 'team' ? 'Every member’s' : 'Their'} {autoTier === 'RO' ? 'reads' : 'reads and writes'} on this grant run without a DBA{f.ttl && f.ttl !== 'none' ? ', until the grant ends' : ', with no end date'}. Where an auto-approve they already hold covers it, none is added.</div>}
     </div>
   );
 }
@@ -493,6 +520,13 @@ function GrantsView({ st, user }) {
 // rule, read by both the form and the table, so a row cannot describe a scope
 // the form would never produce.
 const autoAllDbs = (id) => !id || ['*', 'all', 'any'].indexOf(String(id).toLowerCase()) >= 0;
+// A row with no connection is FLEET-WIDE: it waives the wait wherever the
+// subject can already query, now and later — never "all databases" of nothing.
+const AUTO_EVERYWHERE = 'every server they can reach';
+function autoScopeLabel(a) {
+  if (!a.connectionId) return AUTO_EVERYWHERE;
+  return a.connectionId + ' · ' + (autoAllDbs(a.databaseId) ? 'all databases' : a.databaseId);
+}
 function AutoForm({ init, actor, st, onDone }) {
   const [f, setF] = useAcc(init);
   const conns = st.connections || [];
@@ -628,7 +662,9 @@ function AutoView({ st, user }) {
                   ? <div key={a.id} className="qh-autosub-edit"><AutoForm init={{ ...a, ttl: 'keep' }} actor={actor} st={st} onDone={() => setEditId(null)} /></div>
                   : (() => { const ex = expiryLabel(a.expiresAt); return (
                     <div key={a.id} className="qh-autosub-row">
-                      <span className="qh-autosub-t">{a.connectionId}<span className="qh-autosub-db">{autoAllDbs(a.databaseId) ? 'all databases' : a.databaseId}</span></span>
+                      <span className="qh-autosub-t">{a.connectionId
+                        ? <>{a.connectionId}<span className="qh-autosub-db">{autoAllDbs(a.databaseId) ? 'all databases' : a.databaseId}</span></>
+                        : <span className="qh-autosub-db">{AUTO_EVERYWHERE}</span>}</span>
                       <TierBadge tier={a.tier} sm />
                       <span className={'qh-expiry ' + ex.cls}>{ex.text}</span>
                       <span className="qh-autosub-by">by {qhPersonName(a.createdByName || a.createdBy) || '—'}</span>
@@ -654,7 +690,8 @@ function AutoView({ st, user }) {
             return (
               <tr key={a.id}>
                 <td><b>{qhPersonName(a.userName || a.user)}</b>{a.userName && a.userName !== a.user && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{a.user}</div>}</td>
-                <td className="qh-mono">{a.connectionId}{autoAllDbs(a.databaseId) ? <span className="qh-muted"> · all databases</span> : '/' + a.databaseId}</td>
+                <td className="qh-mono">{!a.connectionId ? <span className="qh-muted">{AUTO_EVERYWHERE}</span>
+                  : <>{a.connectionId}{autoAllDbs(a.databaseId) ? <span className="qh-muted"> · all databases</span> : '/' + a.databaseId}</>}</td>
                 <td><TierBadge tier={a.tier} sm /></td>
                 <td><span className={'qh-expiry ' + ex.cls}>{ex.text}</span></td>
                 <td className="qh-muted">{qhPersonName(a.createdByName || a.createdBy) || '—'}</td>
@@ -677,7 +714,9 @@ function AutoView({ st, user }) {
 function autoSubjects(rows, people) {
   const m = new Map();
   rows.forEach(a => {
-    const team = / \(team\)$/.test(a.user || '');
+    // The server says `subjectType: 'team'` and sends the team's plain name;
+    // the prototype mock suffixes it instead. Either marks a team.
+    const team = a.subjectType === 'team' || / \(team\)$/.test(a.user || '');
     if (!m.has(a.user)) {
       const p = (people || []).find(x => x.handle === a.user || x.id === a.user);
       const name = team ? a.user.replace(/ \(team\)$/, '') : qhPersonName(a.userName || (p && p.name) || a.user);
@@ -698,42 +737,118 @@ function autoSubjects(rows, people) {
 // the server refuses is a control that lies. Duplicates, and targets the
 // subject already holds, are marked before Save; whatever the server still
 // refuses comes back on its own row, and nothing is written.
+//
+// The form offers only what the subject can already QUERY (PLA-1182). A waiver
+// is not a grant — it skips review, it gives no access — so one written where
+// they hold nothing decides nothing, and arrives pre-authorised the day they
+// are granted that server. The connections, the databases and the tier ceiling
+// all come from the subject's effective access, the answer the Effective access
+// screen draws; the server refuses anything else, by name.
 const AUTO_WINDOWS = [['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['none', 'No end date']];
+function autoHigher(a, b) { return !a ? b : !b ? a : (AUTO_TIER_RANK[b] > AUTO_TIER_RANK[a] ? b : a); }
+function autoLower(a, b) { return !a ? b : !b ? a : (AUTO_TIER_RANK[b] < AUTO_TIER_RANK[a] ? b : a); }
+// { [connectionId]: { top: 'RW', all: bool, dbs: { [database]: 'RO' } } }, from
+// GET /admin/people/:id/effective-access or /admin/teams/:id/effective-access.
+// A row with `perDatabase` is read from it — a team's names null for "every
+// database"; a row without one gives its tier for `databases` / `allDatabases`.
+// An admin reaches every connection as DDL, with no per-database rows.
+function qhAutoReach(eff) {
+  const out = {};
+  ((eff && eff.access) || []).forEach(a => {
+    if (!a || !a.connectionId) return;
+    const tier = String(a.tier || '').toUpperCase() || null;
+    const e = out[a.connectionId] || (out[a.connectionId] = { top: null, all: false, dbs: {} });
+    e.top = autoHigher(e.top, tier);
+    if (a.allDatabases) e.all = true;
+    const per = a.perDatabase || [];
+    if (per.length) per.forEach(p => {
+      if (p.database == null) { e.all = true; return; }
+      e.dbs[p.database] = autoHigher(e.dbs[p.database], String(p.tier || tier || '').toUpperCase() || null);
+    });
+    else (a.databases || []).forEach(d => { e.dbs[d] = autoHigher(e.dbs[d], tier); });
+  });
+  return out;
+}
 function AutoBulkForm({ st, actor, lockType, lockUser, lockName, existing, onDone }) {
   const conns = (st.connections || []).filter(c => c.enabled !== false);
   const teams = st.teams || [];
-  const blankRow = () => ({ k: Math.random().toString(36).slice(2), connectionId: (conns[0] || {}).id || '', databaseId: null });
+  const blankRow = (c) => ({ k: Math.random().toString(36).slice(2), connectionId: (c || {}).id || '', databaseId: null });
   const [type, setType] = useAcc(lockType || 'user');
   const [who, setWho] = useAcc(lockUser || '');
-  const [rows, setRows] = useAcc(() => [blankRow()]);
+  const [rows, setRows] = useAcc([]);
   const [tier, setTier] = useAcc('RO');
   const [ttl, setTtl] = useAcc('30');
   const [reason, setReason] = useAcc('');
   const [busy, setBusy] = useAcc(false);
   const [err, setErr] = useAcc(null);
   const [refused, setRefused] = useAcc({});   // row key -> the server's reason
+  const [reach, setReach] = useAcc(null);     // null until the subject's reach has loaded
+  const [reachErr, setReachErr] = useAcc(null);
+  const [reachTry, setReachTry] = useAcc(0);
+  const subj = who.trim();
+  const teamRow = type === 'team' ? teams.find(t => t.name === subj) : null;
+  React.useEffect(() => {
+    setReach(null); setReachErr(null); setRows([]); setRefused({});
+    if (!subj) return undefined;
+    if (type === 'team' && !teamRow) { setReachErr('There is no team named ' + subj + ' in the list.'); return undefined; }
+    let live = true;
+    Promise.resolve(type === 'team' ? st.teamEffectiveAccess(teamRow.id) : st.effectiveAccess(subj))
+      .then(eff => {
+        if (!live) return;
+        const m = qhAutoReach(eff);
+        const first = conns.find(c => m[c.id]);
+        setReach(m); setRows(first ? [blankRow(first)] : []);
+      })
+      .catch(e => { if (live) setReachErr((e && e.message) || 'Could not load what they can reach.'); });
+    return () => { live = false; };
+  }, [type, subj, reachTry]);
+  const reachable = reach ? conns.filter(c => reach[c.id]) : [];
+  // The databases a row may name: every one when they reach the whole
+  // connection, otherwise only the ones they hold.
+  const dbsFor = (c) => {
+    const e = c && reach && reach[c.id];
+    if (!e) return [];
+    if (e.all) return c.databases || [];
+    return Object.keys(e.dbs).sort().map(n => (c.databases || []).find(d => d.id === n || d.name === n) || { id: n, name: n });
+  };
+  // The tier they hold where a row points — the database's own, or the
+  // connection's highest for "All databases" (the server's rule too). ONE tier
+  // is written for every row, so the offer is capped by the lowest of them.
+  const capOf = (r) => {
+    const e = reach && reach[r.connectionId];
+    if (!e) return null;
+    return r.databaseId ? (e.dbs[r.databaseId] || (e.all ? e.top : null)) : e.top;
+  };
+  const cap = rows.reduce((c, r) => autoLower(c, capOf(r) || 'RO'), null) || 'RO';
+  const tiers = ['RO', 'RW'].filter(t => AUTO_TIER_RANK[t] <= AUTO_TIER_RANK[cap]);
+  const useTier = tiers.indexOf(tier) >= 0 ? tier : tiers[tiers.length - 1];
   const set = (k, patch) => {
     setRows(rs => rs.map(r => r.k === k ? { ...r, ...patch } : r)); setErr(null);
     setRefused(x => { if (!x[k]) return x; const n = { ...x }; delete n[k]; return n; });
   };
-  // A team's rows are stored as `<name> (team)` — the key the list groups by.
-  const held = existing || (st.autoGrants || []).filter(a => a.user === (type === 'team' ? who + ' (team)' : who));
+  // The server sends a team's rows as its plain name with `subjectType:
+  // 'team'`; the prototype mock stores `<name> (team)`. Either is this team.
+  const held = existing || (st.autoGrants || []).filter(a => type === 'team'
+    ? (a.user === subj + ' (team)' || (a.subjectType === 'team' && a.user === subj))
+    : (a.user === subj && a.subjectType !== 'team'));
   const keyOf = (r) => r.connectionId + '/' + (r.databaseId || '*');
   const dupeIn = (r, i) => rows.findIndex(x => keyOf(x) === keyOf(r)) !== i;
   const heldBy = (r) => held.find(a => a.connectionId === r.connectionId && (a.databaseId || '*') === (r.databaseId || '*'));
-  const bad = !who.trim() || !rows.length || rows.some((r, i) => dupeIn(r, i) || heldBy(r)) || busy;
+  const bad = !subj || !reach || !rows.length || rows.some((r, i) => dupeIn(r, i) || heldBy(r)) || busy;
   const win = (AUTO_WINDOWS.find(w => w[0] === ttl) || [])[1];
   const whoName = lockName || (type === 'team' ? who : qhPersonName(((st.people || []).find(p => p.handle === who || p.id === who) || {}).name || who));
   const pickType = (v) => { setType(v); setWho(''); setErr(null); setRefused({}); };
   const save = () => {
     if (bad) return;
     setBusy(true); setErr(null); setRefused({});
-    st.addAutoGrants({ subjectType: type, subject: who.trim(), targets: rows, tier, reason: reason.trim() || null,
+    st.addAutoGrants({ subjectType: type, subject: subj, targets: rows, tier: useTier, reason: reason.trim() || null,
       expiresAt: ttl === 'none' ? null : qhIso(new Date(Date.now() + 86400000 * parseInt(ttl, 10))) })
       .then(() => { setBusy(false); onDone(); })
       .catch(e => {
         const list = (e && e.refused) || [], m = {};
-        list.forEach(x => { const t = x.target || {};
+        // The server names a refused target by label and sends the connection
+        // and database it came from beside it; the mock sends them as `target`.
+        list.forEach(x => { const t = (x.target && typeof x.target === 'object') ? x.target : x;
           const r = rows.find(y => y.connectionId === t.connectionId && (y.databaseId || null) === (t.databaseId || null));
           if (r && !m[r.k]) m[r.k] = x.reason; });
         setRefused(m); setBusy(false);
@@ -742,7 +857,7 @@ function AutoBulkForm({ st, actor, lockType, lockUser, lockName, existing, onDon
           : ((e && e.message) || 'Nothing was created.'));
       });
   };
-  const does = tier === 'RO' ? 'reads' : 'reads and writes';
+  const does = useTier === 'RO' ? 'reads' : 'reads and writes';
   return (
     <div className="qh-autobulk">
       {!lockUser && (
@@ -760,32 +875,38 @@ function AutoBulkForm({ st, actor, lockType, lockUser, lockName, existing, onDon
               </select>}
         </div>
       )}
-      {held.length > 0 && who && <div className="qh-autobulk-held">Already auto-approved on {held.map(a => a.connectionId + ' · ' + (a.databaseId || 'all databases')).join(', ')}.</div>}
+      {held.length > 0 && who && <div className="qh-autobulk-held">Already auto-approved on {held.map(autoScopeLabel).join(', ')}.</div>}
       <div className="qh-autobulk-rows">
-        <div className="qh-autobulk-hd"><span>Connection</span><span>Database</span><span></span></div>
-        {rows.map((r, i) => {
-          const conn = conns.find(c => c.id === r.connectionId);
-          const flag = dupeIn(r, i) ? 'Listed twice' : heldBy(r) ? 'Already exempt here — edit that row instead' : (refused[r.k] || null);
-          return (
-            <div key={r.k} className={'qh-autobulk-row' + (flag ? ' is-bad' : '')}>
-              <select className="qh-select" value={r.connectionId} onChange={e => set(r.k, { connectionId: e.target.value, databaseId: null })}>{conns.map(c => <option key={c.id} value={c.id}>{connLabel(c)}</option>)}</select>
-              <select className="qh-select" value={r.databaseId || ''} onChange={e => set(r.k, { databaseId: e.target.value || null })}>
-                <option value="">All databases</option>
-                {(conn ? conn.databases : []).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-              </select>
-              <button className="qh-bulk-chipx" style={rows.length === 1 ? { visibility: 'hidden' } : undefined} disabled={rows.length === 1} onClick={() => setRows(rs => rs.filter(x => x.k !== r.k))} aria-label="Remove this target"><AIcon.x /></button>
-              {flag && <div className="qh-autobulk-flag">{flag}</div>}
-            </div>
-          );
-        })}
-        <button className="qh-linkbtn" onClick={() => setRows(rs => rs.concat([blankRow()]))}><AIcon.plus />Another target</button>
+        {!subj ? <div className="qh-autobulk-held">Pick the person or team first. The connections they can already query appear here.</div>
+          : reachErr ? <div className="qh-roleform-err">{reachErr} <button className="qh-linkbtn" onClick={() => setReachTry(n => n + 1)}>Try again</button></div>
+          : !reach ? <div className="qh-autobulk-held">Loading what {whoName} can query…</div>
+          : !reachable.length ? <div className="qh-autobulk-held">{whoName} cannot query any connection yet. Auto-approve only skips review where access already exists, so grant access first.</div>
+          : <>
+            <div className="qh-autobulk-hd"><span>Connection</span><span>Database</span><span></span></div>
+            {rows.map((r, i) => {
+              const conn = reachable.find(c => c.id === r.connectionId);
+              const flag = dupeIn(r, i) ? 'Listed twice' : heldBy(r) ? 'Already exempt here — edit that row instead' : (refused[r.k] || null);
+              return (
+                <div key={r.k} className={'qh-autobulk-row' + (flag ? ' is-bad' : '')}>
+                  <select className="qh-select" value={r.connectionId} onChange={e => set(r.k, { connectionId: e.target.value, databaseId: null })}>{reachable.map(c => <option key={c.id} value={c.id}>{connLabel(c)}</option>)}</select>
+                  <select className="qh-select" value={r.databaseId || ''} onChange={e => set(r.k, { databaseId: e.target.value || null })}>
+                    <option value="">All databases</option>
+                    {dbsFor(conn).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                  <button className="qh-bulk-chipx" style={rows.length === 1 ? { visibility: 'hidden' } : undefined} disabled={rows.length === 1} onClick={() => setRows(rs => rs.filter(x => x.k !== r.k))} aria-label="Remove this target"><AIcon.x /></button>
+                  {flag && <div className="qh-autobulk-flag">{flag}</div>}
+                </div>
+              );
+            })}
+            <button className="qh-linkbtn" onClick={() => setRows(rs => rs.concat([blankRow(reachable[0])]))}><AIcon.plus />Another target</button>
+          </>}
       </div>
       <div className="qh-autobulk-opts">
         <div className="qh-autobulk-opt"><span className="qh-rolefield-l">Up to</span>
-          <div className="qh-seg qh-seg-sm">{['RO', 'RW'].map(t => <button key={t} className={'qh-seg-opt' + (tier === t ? ' is-active' : '')} onClick={() => { setTier(t); setErr(null); }}>{t}</button>)}</div></div>
+          <div className="qh-seg qh-seg-sm">{tiers.map(t => <button key={t} className={'qh-seg-opt' + (useTier === t ? ' is-active' : '')} onClick={() => { setTier(t); setErr(null); }}>{t}</button>)}</div></div>
         <div className="qh-autobulk-opt"><span className="qh-rolefield-l">For</span>
           <select className="qh-select" value={ttl} onChange={e => { setTtl(e.target.value); setErr(null); }}>{AUTO_WINDOWS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></div>
-        <span className="qh-autobulk-note">One tier and one window for every target here.</span>
+        <span className="qh-autobulk-note">One tier and one window for every target here.{reach && rows.length && cap === 'RO' ? ' Only RO: on at least one of these they can only read.' : ''}</span>
       </div>
       <input className="qh-input qh-input-sm qh-autobulk-why" placeholder="Why (optional, kept on every row)" value={reason} onChange={e => setReason(e.target.value)} />
       {err && <div className="qh-roleform-err">{err}</div>}
@@ -1726,4 +1847,4 @@ function ConnectionsView({ st, user }) {
 // a grant can end — a second copy of either is a second set of rules.
 // `AccGroupBy` goes with them: the Roles screen groups by team, and its own
 // segmented control would be a second grouping idiom on one page.
-Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy });
+Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach });

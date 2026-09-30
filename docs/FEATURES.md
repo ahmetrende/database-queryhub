@@ -29,7 +29,9 @@ your problem. This is the complete inventory, for when it is.
 - **Auto-approve grants** — per-user, time-bounded, tier-scoped
   exemption from admin approval. RO-only or up to DDL; matching
   queries skip the approval gate and dispatch immediately. Admins
-  get a short FYI DM with the query inline.
+  get a short FYI DM with the query inline. The admin panel offers them
+  only where the person or team can already query, and a grant can
+  carry one in the same step.
 - **CSV bulk import** — `/sql import` (import-granted users) uploads a
   CSV and the bot `COPY`s it into the `dba` schema: a new auto-created
   table (all TEXT) or an existing `dba.*` table. Admin-approved; the
@@ -73,9 +75,10 @@ your problem. This is the complete inventory, for when it is.
   30-day cooldown, optional free-text feedback for low ratings.
 - **Slack-native access grants** — `/sql grant` opens a modal to grant a
   Slack user access: pick the user, one or more RDS targets, the tier
-  (RO/RW/DDL) and optional database restriction. Granting also
-  whitelists the user if needed (a grant is otherwise dormant), DMs
-  them, and audits it. `/sql revoke` lists a user's grants and removes
+  (RO/RW/DDL) and optional database restriction, and optionally
+  auto-approve for their read-only queries, written with the grant.
+  Granting also whitelists the user if needed (a grant is otherwise
+  dormant), DMs them, and audits it. `/sql revoke` lists a user's grants and removes
   any. Gated by the `admins.can_grant` capability (super-admins
   implicitly); a granter can't exceed their own tier ceiling or scope,
   and the bot's own control-plane DB is never grantable here.
