@@ -230,6 +230,9 @@ def refresh(monkeypatch):
                         lambda *a: {"alert": False, "recovered": False})
     monkeypatch.setattr(mod, "_announce", lambda n: None)
     monkeypatch.setattr(mod, "_attempted_within", lambda tid, hours: tid == 4)
+    # The hourly run also reads the Athena archives' freshness markers; that
+    # pass has its own tests (test_archive_freshness_flow.py).
+    monkeypatch.setattr(mod, "refresh_archive_freshness", lambda only_alias=None: 0)
     return mod, ran
 
 

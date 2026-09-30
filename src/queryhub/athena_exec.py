@@ -25,9 +25,12 @@ Two deliberate shapes:
 """
 from __future__ import annotations
 
+import contextlib
+import json
 import logging
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
@@ -546,13 +549,39 @@ def _fmt_bytes(n: int) -> str:
     return f"{n} B"
 
 
-def risk_hint(cfg: dict, sql: str, *, database: str | None = None) -> str | None:
-    """One line for the approver: what this query can cost, and what it leaves
-    out. Returns None when nothing useful can be said — a hint nobody can act
-    on is worse than no hint, because it teaches people to skip the line.
+def risk_hint(cfg: dict, sql: str, *, database: str | None = None,
+              freshness: dict | None = None) -> str | None:
+    """One line for the approver: what this query can cost, what it leaves
+    out, and -- when `freshness` is given -- how far the archive reaches.
+    Returns None when nothing useful can be said — a hint nobody can act on is
+    worse than no hint, because it teaches people to skip the line.
+
+    `freshness` is the stored verdict on the archive's freshness marker (see
+    parse_marker); None means the target names no marker, and then no sentence
+    is added. With a verdict the sentence is always added, alone when the cost
+    part has nothing to say: "unknown" is an answer the approver needs, unlike
+    an unknown cost bound.
 
     Never raises: an estimate is a courtesy and must never be the reason a
     submission fails."""
+    try:
+        cost = _cost_hint(cfg, sql, database=database)
+    except Exception:
+        log.info("athena: no cost hint for this query", exc_info=True)
+        cost = None
+    if freshness is None:
+        return cost
+    try:
+        coverage = freshness_sentence(freshness, stale_hours=_stale_hours())
+    except Exception:
+        # A verdict that cannot be rendered is not one to report as complete.
+        log.info("athena: could not render the freshness verdict", exc_info=True)
+        coverage = _COVERAGE_UNKNOWN
+    return f"{cost} {coverage}" if cost else coverage
+
+
+def _cost_hint(cfg: dict, sql: str, *, database: str | None = None) -> str | None:
+    """The cost half of risk_hint: the scan bound, and the rows it leaves out."""
     try:
         est = scan_estimate(cfg, sql, database=database)
     except Exception:
@@ -607,3 +636,292 @@ def _dateless_partition(cfg: dict, database: str, table: str) -> str | None:
             if value in _DATELESS_PARTITIONS:
                 return f"{keys[0]}={value}"
     return None
+
+
+# ---------------------------------------------------------------------------
+# How far the archive reaches: the freshness marker.
+# ---------------------------------------------------------------------------
+#
+# A query on an archive is only as good as the archive is complete, and nothing
+# in the query tells the approver how complete that is. The pipeline that
+# writes the archive knows, and says so in one JSON object written with a
+# single PutObject -- so a reader sees the old marker or the new one, never half
+# of either. `engine_config.freshness_marker` names it (`s3://bucket/key`).
+#
+#   covered_through  Every row up to this moment is in the archive and visible.
+#   computed_at      When the marker was written. It proves the pipeline is
+#                    alive: it advances even on a night with nothing to move,
+#                    when covered_through does not, so an idle pipeline and a
+#                    dead one look different.
+#   known_gaps       Optional [{from, to}]: holes whose bounds are known.
+#
+# The reading rules are the contract agreed with the archive side, and they all
+# guard one failure: saying "complete" on less information than it takes.
+#
+#   * A field this code does not know is ignored, so the writer can add one
+#     without a change here.
+#   * covered_through missing, not a string, unparseable or without a time zone
+#     makes the verdict "unknown". A naive timestamp is not "probably UTC":
+#     guessing the zone is guessing the date.
+#   * known_gaps absent or [] is "complete". Anything that cannot be read in
+#     full is "unknown": a gap list we failed to parse is not an absence of
+#     gaps, and falling back to "complete" would make the strongest claim on
+#     the least information.
+#   * computed_at unreadable keeps the coverage verdict and says the marker's
+#     time is unknown. Coverage and liveness are separate answers.
+#
+# Staleness is judged when the hint is BUILT for a submission, from computed_at,
+# and never stored with the verdict: a verdict read yesterday still reports its
+# age correctly, and a new `athena_freshness_stale_hours` applies without a
+# re-read.
+
+_MARKER_MAX_BYTES = 64 * 1024       # a marker is a few hundred bytes
+_STALE_HOURS_DEFAULT = 36
+_COVERAGE_UNKNOWN = "Archive coverage unknown."
+# `%b` follows the process locale; the approver's sentence must not.
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def unknown_verdict(reason: str, *, computed_at: str | None = None) -> dict:
+    """A verdict that claims no coverage at all. `known_gaps` is None, not []:
+    an empty list would say "we looked and there are none"."""
+    return {"state": "unknown", "covered_through": None,
+            "computed_at": computed_at, "known_gaps": None, "reason": reason}
+
+
+def _parse_ts(value) -> tuple[datetime | None, str | None]:
+    """(the moment in UTC, None) for a tz-aware ISO-8601 string, else
+    (None, what is wrong with it)."""
+    if not isinstance(value, str):
+        return None, "is not a string"
+    text = value[:-1] + "+00:00" if value[-1:] in ("Z", "z") else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None, "is not an ISO-8601 timestamp"
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None, "has no time zone"
+    try:
+        return parsed.astimezone(timezone.utc), None
+    except (OverflowError, ValueError):     # year 1 or 9999 pushed past the edge
+        return None, "is out of range"
+
+
+def _iso(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_gaps(doc: dict) -> tuple[list[dict] | None, str | None]:
+    """(gaps, None) when known_gaps is absent or readable in full, else
+    (None, what is wrong). Extra keys on a gap (a row estimate, say) are
+    ignored like any other unknown field; a missing bound is not."""
+    if "known_gaps" not in doc:
+        return [], None
+    raw = doc["known_gaps"]
+    if not isinstance(raw, list):
+        return None, "is not a list"
+    gaps: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict) or "from" not in item or "to" not in item:
+            return None, "has an item without from and to"
+        start, why_start = _parse_ts(item["from"])
+        end, why_end = _parse_ts(item["to"])
+        if start is None or end is None:
+            return None, f"has a bound that {why_start or why_end}"
+        if end < start:
+            return None, "has a gap that ends before it starts"
+        gaps.append({"from": _iso(start), "to": _iso(end)})
+    return gaps, None
+
+
+def parse_marker(body: bytes) -> dict:
+    """The verdict on one freshness marker, from its bytes. Pure; never raises.
+
+    Returns {'state', 'covered_through', 'computed_at', 'known_gaps', 'reason'}:
+
+    * state -- 'complete', 'complete_with_gaps' or 'unknown';
+    * covered_through, computed_at -- ISO-8601 UTC strings, or None;
+    * known_gaps -- [{'from', 'to'}], [] when there are none, None when they
+      could not be read;
+    * reason -- None when the marker was read in full, else what was wrong
+      with it: the cause of 'unknown', or the computed_at that was unreadable.
+
+    JSON-serialisable as it stands, because it is stored as it stands."""
+    try:
+        doc = json.loads(body)
+    except Exception:            # not JSON, not UTF-8, or nested past the limit
+        return unknown_verdict("not JSON")
+    if not isinstance(doc, dict):
+        return unknown_verdict("not a JSON object")
+
+    if "computed_at" in doc:
+        computed, computed_why = _parse_ts(doc["computed_at"])
+    else:
+        computed, computed_why = None, "is missing"
+    computed_at = _iso(computed) if computed else None
+
+    if "covered_through" not in doc:
+        return unknown_verdict("covered_through is missing", computed_at=computed_at)
+    covered, why = _parse_ts(doc["covered_through"])
+    if covered is None:
+        return unknown_verdict(f"covered_through {why}", computed_at=computed_at)
+
+    gaps, why = _parse_gaps(doc)
+    if gaps is None:
+        return unknown_verdict(f"known_gaps {why}", computed_at=computed_at)
+
+    return {
+        "state": "complete_with_gaps" if gaps else "complete",
+        "covered_through": _iso(covered),
+        "computed_at": computed_at,
+        "known_gaps": gaps,
+        "reason": None if computed else f"computed_at {computed_why}",
+    }
+
+
+def _split_s3_uri(uri) -> tuple[str, str]:
+    """('bucket', 'path/to/key') from 's3://bucket/path/to/key'."""
+    if not isinstance(uri, str) or not uri.startswith("s3://"):
+        raise ValueError(f"freshness_marker is not an s3:// URI: {uri!r}")
+    bucket, _, key = uri[len("s3://"):].partition("/")
+    if not bucket or not key:
+        raise ValueError(f"freshness_marker needs a bucket and a key: {uri!r}")
+    return bucket, key
+
+
+def _error_code(exc: BaseException) -> str | None:
+    """The AWS error code on a botocore ClientError, else None."""
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        return (response.get("Error") or {}).get("Code") or None
+    return None
+
+
+def read_freshness(cfg: dict) -> dict | None:
+    """Read this archive's freshness marker and return the verdict on it, with
+    `read_at` added. None when engine_config names no `freshness_marker`.
+
+    S3 trouble is an answer, not an exception: no object is 'unknown' with
+    reason 'no marker', any other failure -- the assume-role included -- is
+    'unknown' / 'unreadable', and is logged. The object is read under the same
+    assumed role as every other call for this target."""
+    uri = (cfg or {}).get("freshness_marker")
+    if not uri:
+        return None
+    read_at = _iso(datetime.now(timezone.utc))
+    try:
+        bucket, key = _split_s3_uri(uri)
+        s3 = session(cfg).client("s3", region_name=cfg["region"])
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        with contextlib.closing(obj["Body"]) as stream:
+            body = stream.read(_MARKER_MAX_BYTES + 1)
+    except Exception as e:
+        if _error_code(e) in ("NoSuchKey", "404", "NotFound"):
+            verdict = unknown_verdict("no marker")
+        else:
+            log.warning("athena: freshness marker %s unreadable", uri, exc_info=True)
+            verdict = unknown_verdict("unreadable")
+    else:
+        if len(body) > _MARKER_MAX_BYTES:
+            log.warning("athena: freshness marker %s is over %d bytes; not read",
+                        uri, _MARKER_MAX_BYTES)
+            verdict = unknown_verdict("too large to be a marker")
+        else:
+            verdict = parse_marker(body)
+    verdict["read_at"] = read_at
+    return verdict
+
+
+def _fmt_utc(moment: datetime, *, round_up: bool = False) -> str:
+    """`%d %b %Y %H:%M` in UTC, with the English month whatever the locale.
+
+    Dropping the seconds moves a time earlier. That is the safe direction for
+    covered_through and for the start of a gap, and the wrong one for the end
+    of a gap, so `round_up` moves that one to the next minute instead: no bound
+    is ever shown claiming more coverage than the marker gave."""
+    moment = moment.astimezone(timezone.utc)
+    if round_up and (moment.second or moment.microsecond):
+        try:
+            moment = moment.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        except OverflowError:
+            pass
+    return (f"{moment.day:02d} {_MONTHS[moment.month - 1]} {moment.year} "
+            f"{moment.hour:02d}:{moment.minute:02d}")
+
+
+def _stored_gaps(raw) -> list[tuple[datetime, datetime]] | None:
+    """The gaps of a stored verdict, or None when they do not hold together."""
+    if not isinstance(raw, list) or not raw:
+        return None
+    out = []
+    for gap in raw:
+        if not isinstance(gap, dict):
+            return None
+        start, _ = _parse_ts(gap.get("from"))
+        end, _ = _parse_ts(gap.get("to"))
+        if start is None or end is None:
+            return None
+        out.append((start, end))
+    return out
+
+
+def _stale_clause(age_hours: float) -> str:
+    if age_hours >= 48:
+        return (f"The freshness marker has not been updated for "
+                f"{int(age_hours // 24)} days.")
+    hours = max(1, int(age_hours))
+    return (f"The freshness marker has not been updated for {hours} "
+            f"hour{'' if hours == 1 else 's'}.")
+
+
+def freshness_sentence(verdict: dict | None, *, stale_hours: float,
+                       now: datetime | None = None) -> str:
+    """What the approver reads about a stored verdict (see parse_marker).
+
+    "Archive complete up to 25 Aug 2026 12:00 UTC.", followed by the known gaps
+    when there are any, or "Archive coverage unknown." -- then a warning when
+    computed_at is more than `stale_hours` before `now`, or, on a verdict that
+    claims coverage, when computed_at is unknown.
+
+    The verdict comes back from a jsonb column anyone with psql can edit, so it
+    is not trusted either: one that does not hold together reads as unknown,
+    never as complete."""
+    v = verdict if isinstance(verdict, dict) else {}
+    state = v.get("state")
+    covered, _ = _parse_ts(v.get("covered_through"))
+
+    text, claims = _COVERAGE_UNKNOWN, False
+    if covered is not None and state == "complete" and not v.get("known_gaps"):
+        text, claims = f"Archive complete up to {_fmt_utc(covered)} UTC.", True
+    elif covered is not None and state == "complete_with_gaps":
+        gaps = _stored_gaps(v.get("known_gaps"))
+        if gaps:
+            listed = ", ".join(f"{_fmt_utc(a)}–{_fmt_utc(b, round_up=True)} UTC"
+                               for a, b in gaps)
+            text = (f"Archive complete up to {_fmt_utc(covered)} UTC. "
+                    f"Known gaps: {listed}.")
+            claims = True
+
+    computed, _ = _parse_ts(v.get("computed_at"))
+    if computed is None:
+        # On "unknown" this would only repeat the first sentence.
+        return f"{text} The freshness marker's time is unknown." if claims else text
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    age_hours = (now - computed).total_seconds() / 3600
+    if age_hours > max(stale_hours, 0):
+        text = f"{text} {_stale_clause(age_hours)}"
+    return text
+
+
+def _stale_hours() -> int:
+    """`athena_freshness_stale_hours`, or its default if it cannot be read."""
+    from . import config
+    try:
+        return config.get_int("athena_freshness_stale_hours", _STALE_HOURS_DEFAULT)
+    except Exception:
+        log.warning("athena: athena_freshness_stale_hours is unreadable; using %d",
+                    _STALE_HOURS_DEFAULT, exc_info=True)
+        return _STALE_HOURS_DEFAULT

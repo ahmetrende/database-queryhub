@@ -131,13 +131,17 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
   Slack DMs are unchanged.
 - **103_pod_inventory** — first shape of the pod inventory (`pod_roster`,
   `pod_service_database`), superseded by 104 the next day.
-- **139_target_deleted** — `target_servers.deleted_at` / `deleted_reason`: the
-  instance behind the target no longer exists. A CHECK forbids such a row being
-  enabled; the inventory sync sets and clears it.
 - **104_pod_tables_rename** — `pod`, `pod_detail`, `pod_mapping`: who is in
   which pod and which database each service talks to, loaded by an external
   collector as full-refresh snapshots. Drops `target_pod_owner`, whose guessed
   ownership map they replace.
+- **139_target_deleted** — `target_servers.deleted_at` / `deleted_reason`: the
+  instance behind the target no longer exists. A CHECK forbids such a row being
+  enabled; the inventory sync sets and clears it.
+- **140_archive_freshness** — `target_servers.archive_freshness` (jsonb): the
+  verdict the hourly catalog refresh read from an Athena archive's freshness
+  marker (`engine_config.freshness_marker`), which the approver's hint reports.
+  New `bot_config`: `athena_freshness_stale_hours` (36).
 
 ---
 
@@ -317,6 +321,7 @@ Fernet-encrypted with the master key on disk and stored as ciphertext in
 | `tags` | JSONB object (CHECK enforces object shape) describing where the target actually runs. |
 | `enabled` | Soft-delete flag. Disabled targets disappear from the modal (admins still see them). |
 | `replica_of` | The primary this row is a read replica of (migration 131; linked from the inventory's `replica_source` by `import_targets_from_inventory.py`). A replica never appears in a picker and cannot be submitted to. When it is `enabled` and healthy it runs its primary's read-only requests, with the primary's login — see OPERATIONS.md §26. |
+| `archive_freshness` | Athena only (migration 140). The last verdict the hourly catalog refresh read from the archive's freshness marker (`engine_config.freshness_marker`): `{state, covered_through, computed_at, known_gaps, reason, read_at}`, where `state` is `complete`, `complete_with_gaps` or `unknown` and timestamps are ISO-8601 UTC. The submit path turns it into one sentence of the approver's hint; staleness is worked out from `computed_at` at that point, never stored. NULL = no marker named, or not read yet. Written without touching `updated_at`. See CONFIGURATION.md, "Amazon Athena targets". |
 | `notes` | Free text — describe purpose, owner, on-call team, etc. |
 | `created_at`, `updated_at` | Timestamps. |
 

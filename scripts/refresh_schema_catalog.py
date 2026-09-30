@@ -15,6 +15,11 @@ somebody asking why a table they just created is missing. After
 `schema_refresh_alert_after` consecutive failures (default 3, i.e. ~3 hours)
 the admins get one DM, and one more when it recovers.
 
+The same run reads each Athena archive's freshness marker
+(`engine_config.freshness_marker`), enabled or not, and stores the verdict in
+`target_servers.archive_freshness`; the approver's hint says how far the archive
+reaches from it (athena_exec.read_freshness).
+
 Run hourly from the host scheduler:
     python3 scripts/refresh_schema_catalog.py [--target ALIAS] [--database DB]
 
@@ -141,6 +146,48 @@ def _attempted_within(target_id: int, hours: int) -> bool:
     return row is not None
 
 
+def refresh_archive_freshness(only_alias: str | None = None) -> int:
+    """Read and store the freshness marker of every Athena target that names
+    one (`engine_config.freshness_marker`), enabled or not. Returns how many
+    could not be refreshed. Never raises.
+
+    Disabled ones too, because that is when it matters: an archive target is
+    enabled once its archive is ready, and the first approver after that
+    should see the coverage, not "unknown" until the next hour. Each target is
+    on its own, so one that fails is logged and counted and the rest are still
+    read. A marker S3 cannot serve is not a failure here: read_freshness turns
+    it into an "unknown" verdict, and that is stored like any other."""
+    from queryhub import athena_exec
+
+    try:
+        archives = [t for t in targets_mod.list_all()
+                    if t.engine == "athena"
+                    and (t.engine_config or {}).get("freshness_marker")
+                    and (only_alias is None or t.alias == only_alias)]
+    except Exception:  # noqa: BLE001 — never sink the catalog run
+        log.exception("archive freshness: could not list the Athena targets")
+        return 1
+
+    failures = 0
+    for target in archives:
+        try:
+            verdict = athena_exec.read_freshness(athena_exec.config_of(target))
+            if verdict is None:
+                continue
+            targets_mod.set_archive_freshness(target.id, verdict)
+        except Exception as e:  # noqa: BLE001 — one target must not stop the rest
+            failures += 1
+            log.warning("%s/freshness: not refreshed: %s: %s",
+                        target.alias, type(e).__name__, e)
+            continue
+        log.log(logging.WARNING if verdict["state"] == "unknown" else logging.INFO,
+                "%s/freshness: %s (covered through %s, computed at %s%s)",
+                target.alias, verdict["state"], verdict.get("covered_through"),
+                verdict.get("computed_at"),
+                f"; {verdict['reason']}" if verdict.get("reason") else "")
+    return failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", help="only this target alias")
@@ -178,6 +225,14 @@ def main() -> int:
         fleet = [t for t in fleet if t.engine != "clickhouse"]
 
     failures = 0
+    # The archives' freshness markers, first: nothing that goes wrong in the
+    # catalog loop below can then leave them unread, and the pass never raises.
+    # Not in the every-minute ClickHouse mode (a marker is written once a
+    # night, and that mode exists to read as little as possible), and not on a
+    # --database run, which names something a marker is not.
+    if not args.clickhouse_when_fresh and not args.database:
+        failures += refresh_archive_freshness(only_alias=args.target)
+
     notices: list[tuple[str, str]] = []   # (alias, message)
     alert_after = cfg.get_int("schema_refresh_alert_after", 3)
     for target in fleet:

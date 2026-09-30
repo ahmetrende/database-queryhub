@@ -458,12 +458,16 @@ def validate_submission(
     # not a size, and nothing tells you the size before the query runs — so the
     # hint is an upper bound read from the objects the query could touch. Same
     # slot as the Postgres risk line, because it answers the same question:
-    # what is this about to do that I would want to know first.
+    # what is this about to do that I would want to know first. On an archive
+    # that question has a second half -- are the rows I am asking for in it at
+    # all -- so the hint also says how far the archive reaches.
     if (getattr(target, "engine", None) or "postgres") == "athena":
         try:
             from . import athena_exec
+            athena_cfg = athena_exec.config_of(target)
             risk_summary = athena_exec.risk_hint(
-                athena_exec.config_of(target), query, database=database)
+                athena_cfg, query, database=database,
+                freshness=_archive_freshness(target, athena_cfg))
         except Exception:
             log.exception("athena risk hint failed; continuing without one")
 
@@ -609,6 +613,27 @@ def _chosen_replica(target, required_mode: str,
         if str(r["id"]) == wanted:
             return r["id"]
     return unknown
+
+
+def _archive_freshness(target, athena_cfg: dict) -> dict | None:
+    """The freshness verdict an archive target's risk hint reports.
+
+    The one the hourly refresh stored, read here rather than from S3 so a
+    submit never waits on a GetObject. None only when the target names no
+    marker. A marker that is named but has no stored verdict -- not read yet,
+    or unreadable from here -- is reported as unknown: the contract has two
+    answers, a date or "unknown", and saying nothing would be a third, one an
+    approver could read as "nothing to worry about"."""
+    if not athena_cfg.get("freshness_marker"):
+        return None
+    from . import athena_exec
+    try:
+        stored = targets.archive_freshness(target.id)
+    except Exception:
+        log.warning("archive freshness unreadable for target %s; reporting it "
+                    "as unknown", target.id, exc_info=True)
+        return athena_exec.unknown_verdict("stored verdict unreadable")
+    return stored or athena_exec.unknown_verdict("not read yet")
 
 
 # ---- Step 2: auto-approve resolution + INSERT (one transaction) -----------

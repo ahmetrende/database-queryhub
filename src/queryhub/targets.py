@@ -329,6 +329,29 @@ def displace_in(cur, claim: AliasClaim) -> None:
         raise AliasTaken(old)
 
 
+def archive_freshness(target_id: int) -> dict | None:
+    """The last verdict read from an archive target's freshness marker
+    (migration 140; athena_exec.parse_marker has the shape), or None when none
+    is stored. Written hourly by the catalog refresh, read at submit time."""
+    row = db.fetch_one(
+        "SELECT archive_freshness FROM target_servers WHERE id = %s",
+        (target_id,),
+    )
+    value = row.get("archive_freshness") if row else None
+    return value if isinstance(value, dict) else None
+
+
+def set_archive_freshness(target_id: int, verdict: dict | None) -> None:
+    """Store an archive target's freshness verdict.
+
+    Writes that one column. Not `updated_at`: that says a person changed the
+    connection, and an hourly read of somebody else's file is not that."""
+    db.execute(
+        "UPDATE target_servers SET archive_freshness = %s WHERE id = %s",
+        (Json(verdict) if verdict is not None else None, target_id),
+    )
+
+
 def get_password(target_id: int) -> str:
     row = db.fetch_one(
         "SELECT password_encrypted FROM target_servers WHERE id = %s",

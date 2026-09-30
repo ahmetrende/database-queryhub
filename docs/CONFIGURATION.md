@@ -215,6 +215,48 @@ without a certificate check.
 | `mssql_multi_subnet_failover` | `true` | Set `MultiSubnetFailover=yes` on the connection. |
 | `mssql_trust_server_cert` | `false` | Trust a self-signed server certificate, for SQL Server targets that neither TLS host list names. |
 
+## Amazon Athena targets
+
+An Athena target has no host to connect to and no stored credential. It is
+described by `target_servers.engine_config`, a JSON object per target:
+
+| Key | Required | What it is |
+|---|---|---|
+| `region` | yes | AWS region of the workgroup and the Glue catalog. |
+| `workgroup` | yes | Athena workgroup the queries run in. Its scan limit caps every query. |
+| `database` | yes | Glue database a query runs in by default. |
+| `role_arn` | yes | Read-only role the gateway assumes for every call: Glue, Athena and S3. |
+| `catalog` | no | Data catalog. Default `AwsDataCatalog`. |
+| `freshness_marker` | no | `s3://bucket/key` of the archive's freshness marker. When set, the approver's hint says how far the archive reaches. |
+
+The freshness marker is one JSON object that the archive writes with a single
+PutObject:
+
+- `covered_through`: every row up to this moment is in the archive. ISO-8601
+  with a time zone (`Z` or an offset).
+- `computed_at`: when the marker was written, in the same format.
+- `known_gaps` (optional): `[{"from": ..., "to": ...}]`, holes with known bounds.
+
+Other fields are ignored. The hourly catalog refresh reads the marker for every
+Athena target that names one, enabled or not, and stores the verdict in
+`target_servers.archive_freshness` (migration 140). The hint then says
+"Archive complete up to 25 Aug 2026 12:00 UTC." and lists any known gaps. It says
+"Archive coverage unknown." when there is no marker, when S3 refuses the read, or
+when `covered_through` or `known_gaps` cannot be read in full. The assumed role
+needs `s3:GetObject` on the marker, and `s3:ListBucket` on its bucket: without it
+S3 answers a missing marker with a refusal, which reads as unreadable, not absent.
+
+```sql
+UPDATE target_servers
+   SET engine_config = engine_config
+       || '{"freshness_marker": "s3://example-archive/balance/_meta/ledgers-watermark.json"}'
+ WHERE alias = 'example-archive';
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `athena_freshness_stale_hours` | `36` | Hours after the marker's `computed_at` before the hint adds "The freshness marker has not been updated for N hours" (in days from 48 hours). Worked out when the hint is built, so a change applies from the next submission. |
+
 ---
 
 Grants, admins, teams and targets are **not** in `bot_config` — they live in

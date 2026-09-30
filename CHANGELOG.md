@@ -20,6 +20,15 @@ frontend and the endpoints it calls are explicitly outside it.
     poll and history rows say where a query ran (`ranOn`).
   - A scheduled request keeps the choice, and now keeps `unmasked` too: the
     scheduler dropped it, so a scheduled unmasked result came back masked.
+- **An Athena approver sees how far the archive reaches.** The hint adds
+  "Archive complete up to <date> UTC", with any known gaps, or "Archive coverage
+  unknown". It comes from the marker the archive writes
+  (`engine_config.freshness_marker`); see docs/CONFIGURATION.md.
+  - The hourly catalog refresh reads it, for enabled and disabled targets, and
+    stores the verdict in `target_servers.archive_freshness` (migration 140).
+  - A marker not rewritten within `athena_freshness_stale_hours` (36) adds a
+    warning.
+  - A marker that cannot be read in full says unknown, never complete.
 
 ### Changed
 

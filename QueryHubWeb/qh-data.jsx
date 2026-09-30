@@ -301,6 +301,12 @@ const QH_ENGINES = {
   // a query cannot read (2026-09-23 (d)). `catalogLabel: null` hides it.
   clickhouse: { label: 'ClickHouse', badge: 'CH', q: ['`', '`'], foldsLower: false, rolesLabel: 'Users & roles', catalogLabel: null,
     system: {} },
+  // An S3 archive read through Athena (Trino SQL: double quotes, unquoted names
+  // fold to lower case). No system node for the same reason as ClickHouse:
+  // `information_schema` is refused on this engine. Access is the IAM role the
+  // gateway assumes; there are no database users.
+  athena: { label: 'Amazon Athena', badge: 'ATHENA', q: ['"', '"'], foldsLower: true, rolesLabel: 'IAM roles', catalogLabel: null,
+    system: {} },
   couchbase: { label: 'Couchbase', badge: 'CB', q: ['`', '`'], foldsLower: false, rolesLabel: 'Users & roles', catalogLabel: 'System keyspaces',
     system: { 'system': ['system:keyspaces', 'system:indexes', 'system:datastores', 'system:dual'] } },
 };
@@ -320,6 +326,14 @@ const QH_SHOW_ENV_TAGS = false;
 // advertise capability the product does not have (CODE_TO_DESIGN_BRIEF
 // 2026-07-30). `clickhouse` stays: it executes, read-only (2026-09-23 (d)).
 const QH_ENGINE_LOGO = { postgres: '/brand/engines/postgres.svg', mssql: '/brand/engines/mssql.svg', clickhouse: '/brand/engines/clickhouse.svg' };
+// An engine with no logo file (`athena`, until design supplies one) gets a plain
+// grey cylinder, inline so it needs no asset. Not the Postgres logo: in the tree
+// the logo is the only thing that says what engine a connection is, and an
+// archive drawn as Postgres invites Postgres SQL.
+const QH_ENGINE_LOGO_GENERIC = 'data:image/svg+xml,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#8b93a1" stroke-width="1.8" stroke-linecap="round">' +
+  '<ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v13c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-13"/>' +
+  '<path d="M4.5 12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3"/></svg>');
 // `window.__resources` only exists in the standalone/offline export, where the
 // bundler has inlined each logo and swapped the path for a blob URL (see the
 // ext-resource-dependency metas in QueryHub.html).
@@ -327,8 +341,8 @@ const QH_ENGINE_LOGO = { postgres: '/brand/engines/postgres.svg', mssql: '/brand
 // the site root. The design prototype is opened from a subpath, so there the
 // leading slash is dropped and the file resolves relative to the page.
 function qhEngineLogo(conn) {
-  let id = qhEngineId(conn && conn.engine);
-  if (!QH_ENGINE_LOGO[id]) id = 'postgres';
+  const id = qhEngineId(conn && conn.engine);
+  if (!QH_ENGINE_LOGO[id]) return QH_ENGINE_LOGO_GENERIC;
   const r = window.__resources;
   if (r && r['engine_' + id]) return r['engine_' + id];
   const p = QH_ENGINE_LOGO[id];
@@ -340,6 +354,7 @@ function qhEngineId(engineStr) {
   if (s.includes('oracle')) return 'oracle';
   if (s.includes('mysql') || s.includes('maria')) return 'mysql';
   if (s.includes('clickhouse')) return 'clickhouse';
+  if (s.includes('athena')) return 'athena';
   if (s.includes('couchbase')) return 'couchbase';
   return 'postgres';
 }
@@ -697,7 +712,8 @@ function qhSchemaFor(conn, db) {
   const eng = qhEngineId(conn && conn.engine);
   if (eng === 'mssql') return 'dbo';
   if (eng === 'oracle') return (db && db.name) || 'APP';
-  if (eng === 'mysql' || eng === 'clickhouse') return (db && db.name) || 'default';
+  // Athena has no schema level; the Glue database fills both (athena_exec.py).
+  if (eng === 'mysql' || eng === 'clickhouse' || eng === 'athena') return (db && db.name) || 'default';
   if (eng === 'couchbase') return '_default';
   return 'public';
 }
