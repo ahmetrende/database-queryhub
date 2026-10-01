@@ -228,16 +228,29 @@ described by `target_servers.engine_config`, a JSON object per target:
 | `role_arn` | yes | Read-only role the gateway assumes for every call: Glue, Athena and S3. |
 | `catalog` | no | Data catalog. Default `AwsDataCatalog`. |
 | `freshness_marker` | no | `s3://bucket/key` of the archive's freshness marker. When set, the approver's hint says how far the archive reaches. |
-| `auto_approve` | no | Default `false`: auto-approve waivers and the fingerprint approval cache do not apply, so every query goes to an approver. Set `true` to let them apply. |
+| `auto_approve` | no | Unset by default: only a waiver that names this target, or the fleet-wide waiver of the owning team's lead, applies, and the fingerprint approval cache never does. `true` lets every waiver and the cache apply; `false` lets none apply. |
 
-Auto-approve is off on Athena because a query's cost depends on the partitions
-it reads, and neither a waiver nor a fingerprint match sees which ones. Only a
-JSON `true` or `false` counts; any other value means the default. A
-super-admin's own query is auto-approved either way. With auto-approve off,
-neither the Slack badge nor the web editor and connection list say a query
-will skip review, and a request for an auto-approve window on the target is
-refused. The key works the same on a PostgreSQL, SQL Server or ClickHouse
-target, where the default is `true`.
+Auto-approve is limited on Athena because a query's cost depends on the
+partitions it reads, and neither a fleet-wide waiver nor a fingerprint match
+sees which ones. With the key unset:
+
+- A waiver that names the target applies as usual.
+- A fleet-wide waiver applies only for the lead of the team that owns the
+  target: someone with a live `approver` role scoped to it, which
+  `scripts/sync_team_approvers.py --source pod-sync` writes from
+  `target_team`. Anyone else's query goes to an approver (that lead or an
+  admin), even when they can reach every target and hold a fleet-wide waiver.
+- The fingerprint approval cache never applies.
+- A request for an auto-approve window on the target is refused. The lead
+  needs none, and a window would take a member's reads out of the lead's
+  review.
+
+Only a JSON `true` or `false` counts; any other value means the default.
+`false` turns off the two waivers above as well. A super-admin's own query is
+auto-approved either way. The Slack badge, the web editor and the connection
+list say a query will skip review only where one of these rules lets it. The
+key works the same on a PostgreSQL, SQL Server or ClickHouse target, where the
+default is `true`.
 
 ```sql
 UPDATE target_servers

@@ -181,8 +181,13 @@ def _waiver_scopes(principal_id: str, rows: list[dict]) -> list[dict]:
     promises a waiver the submit path would refuse. A team row with no
     database cannot be asked that question and is left off: the badge may
     undersell, it must not oversell.
+
+    Each row is also asked `auto_approve.waiver_applies`, as the submit path
+    asks it. A waiver naming a connection where it may not decide is left off,
+    and an every-connection one names the connections it does not reach: on an
+    Athena archive it reaches only the lead of the team that owns it.
     """
-    out, seen = [], set()
+    out, seen, closed = [], set(), None
     for r in rows:
         tid, dbn = r.get("target_server_id"), r.get("database_name")
         if (tid, dbn) in seen:
@@ -191,43 +196,45 @@ def _waiver_scopes(principal_id: str, rows: list[dict]) -> list[dict]:
                 principal_id, tid, dbn):
             continue
         seen.add((tid, dbn))
-        out.append({"tid": tid, "database": dbn, "tier": r["max_tier"],
-                    "until": auto_approve.fmt_until(r.get("expires_at")),
-                    "team": r.get("team_name") if r.get("team_id") is not None else None})
+        x = {"tid": tid, "database": dbn, "tier": r["max_tier"],
+             "until": auto_approve.fmt_until(r.get("expires_at")),
+             "team": r.get("team_name") if r.get("team_id") is not None else None}
+        if tid is None:
+            # Where an every-connection waiver does not apply depends on the
+            # target and on the holder, never on the row, so it is read once.
+            if closed is None:
+                closed = _closed_to_waivers(principal_id, r)
+            x["alias"], x["except"] = None, closed
+        else:
+            t = targets.get(tid)
+            if t is not None and not auto_approve.waiver_applies(t, r, principal_id):
+                continue
+            x["alias"] = t.alias if t else f"target #{tid}"
+        out.append(x)
 
     # A waiver that contains another at the same tier or above makes the
     # narrower one say nothing: listing three servers for someone covered on
     # every connection hid the one fact that mattered behind "and 2 more".
+    # An every-connection waiver contains nothing on a connection it does not
+    # reach, so a waiver naming that connection stays listed.
     def contains(a, b):
         wider = a["tid"] is None or (a["tid"] == b["tid"] and a["database"] is None)
-        return (a is not b and wider
+        reaches = a["tid"] is not None or b["alias"] not in a["except"]
+        return (a is not b and wider and reaches
                 and auto_approve._TIER_RANK[a["tier"]] >= auto_approve._TIER_RANK[b["tier"]])
     out = [b for b in out if not any(contains(a, b) for a in out)]
     out.sort(key=lambda x: (x["tid"] is not None, x["database"] is not None))
-    # No waiver applies on a connection that keeps auto-approve off (an Athena
-    # archive): a waiver scoped to one is left off, and "every connection"
-    # names the ones it does not reach.
-    shown, closed = [], None
-    for x in out:
-        if x["tid"] is None:
-            if closed is None:
-                closed = _closed_to_waivers(principal_id)
-            x["alias"], x["except"] = None, closed
-        else:
-            t = targets.get(x["tid"])
-            if t is not None and not engines.auto_approve_allowed(t):
-                continue
-            x["alias"] = t.alias if t else f"target #{x['tid']}"
-        shown.append(x)
-    return shown
+    return out
 
 
-def _closed_to_waivers(principal_id: str) -> list[str]:
-    """Aliases of the connections this person can query where no waiver
-    applies, because the target keeps auto-approve off. Read from the full
-    target rows: whether a target turns it back on is in its engine_config."""
+def _closed_to_waivers(principal_id: str, waiver: dict) -> list[str]:
+    """Aliases of the connections this person can query where this
+    every-connection waiver does not apply (`auto_approve.waiver_applies`): a
+    target that keeps auto-approve off, unless they lead the team that owns
+    it. Read from the full target rows: whether a target turns it back on is
+    in its engine_config."""
     return sorted(t.alias for t in targets.list_enabled()
-                  if not engines.auto_approve_allowed(t)
+                  if not auto_approve.waiver_applies(t, waiver, principal_id)
                   and teams.can_use_target(principal_id, t.id))
 
 
@@ -242,7 +249,7 @@ def _auto_approve_banner(principal_id: str | None) -> list[dict]:
     covered on one server could never ask for a window on another from Slack.
     The button is now always offered; only the prominent burst nudge stands
     down, and only when the burst's own database is already covered or sits on
-    a target that keeps auto-approve off.
+    a target where no window is offered (an Athena archive).
 
     Always returns a list; never raises (the modal must open regardless)."""
     if not principal_id:
@@ -260,17 +267,21 @@ def _auto_approve_banner(principal_id: str | None) -> list[dict]:
     except Exception:
         burst = None  # detection must never block the modal
     covered = False
+    t = None
     if burst:
         try:
-            covered = auto_approve.effective_grant(
+            t = targets.get(burst["target_server_id"])
+            covered = t is not None and auto_approve.effective_grant(
                 principal_id, "ro", target_server_id=burst["target_server_id"],
-                database_name=burst["database_name"], rows=rows) is not None
+                database_name=burst["database_name"], rows=rows,
+                applies=lambda g: auto_approve.waiver_applies(t, g, principal_id),
+            ) is not None
         except Exception:
             covered = False
-    # The nudge offers a window on the burst's own target, and a window does
-    # nothing where auto-approve is off (an Athena archive).
-    t = targets.get(burst["target_server_id"]) if burst and not covered else None
-    if burst and t is not None and engines.auto_approve_allowed(t):
+    # The nudge offers a window on the burst's own target, and no window is
+    # offered where the target does not let everything skip review (an Athena
+    # archive): submit_window refuses one there.
+    if burst and not covered and t is not None and engines.auto_approve_allowed(t):
         blocks.extend(ro_window.nudge_blocks(
             count=burst["count"],
             window_min=cfg.get_int("ro_burst_window_min", 10),

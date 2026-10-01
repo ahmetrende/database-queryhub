@@ -161,10 +161,13 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Fixed
 
-- **Athena archive queries are reviewed, even for someone with auto-approve.**
-  A fleet-wide waiver or a fingerprint match would have run them with no
-  review. To allow it, set `engine_config.auto_approve` to `true` on the target
-  (docs/CONFIGURATION.md). A super-admin's own query is unchanged.
+- **Athena archive queries are reviewed, except the owning team lead's.** A
+  fleet-wide waiver or a fingerprint match would have run anyone's with no
+  review. Now a fleet-wide waiver applies there only for the lead of the team
+  that owns the archive, and a waiver that names the archive applies as usual.
+  The fingerprint cache never applies, and no auto-approve window is offered.
+  `engine_config.auto_approve` set to `true` or `false` on the target overrides
+  all of it (docs/CONFIGURATION.md). A super-admin's own query is unchanged.
 - **"All databases" in the web grant forms wrote a grant on a database named
   `*`.** It matched nothing. Any spelling of every database (`*`, empty, `all`,
   `any`) now means every database, for person and team grants alike.

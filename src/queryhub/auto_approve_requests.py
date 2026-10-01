@@ -114,7 +114,8 @@ def submit_window(*, principal_id: str, name: str | None, target_id: int,
     offered lengths, the reason says something, the requester can reach the
     target (and the database, when one is named -- the approval carries it into
     the waiver), there is not already a request pending for it, and the target
-    lets a waiver apply at all.
+    offers windows at all (an Athena archive does not, unless its engine_config
+    turns auto-approve on).
 
     Returns (row, target). Notifying the admins is the caller's, because it
     needs a Slack client and the two surfaces hold theirs differently.
@@ -153,13 +154,18 @@ def submit_window(*, principal_id: str, name: str | None, target_id: int,
     t = targets.get(target_id)
     if t is None:
         raise WindowRequestRefused("target", "That target no longer exists.", 404)
-    # A window is a waiver, and no waiver applies where the target keeps
-    # auto-approve off (an Athena archive). Approving one would tell the
-    # requester their reads skip review there while every one of them waits.
+    # A window is a waiver that names its target, and on an Athena archive such
+    # a waiver applies (auto_approve.waiver_applies). None is offered there all
+    # the same. The rule on an archive is that a member's queries go to the
+    # owning team's lead and an admin, and a window, which the read-burst nudge
+    # invites anyone to ask for, would take them out of that review. The lead
+    # needs none: their own fleet-wide waiver already applies there. An admin
+    # who decides otherwise for one person can still write a waiver that names
+    # the archive.
     if not engines.auto_approve_allowed(t):
         raise WindowRequestRefused(
-            "target", "Queries on this connection are always reviewed, so a "
-            "window would not apply.", 409)
+            "target", "Auto-approve windows are not offered on this connection; "
+            "its queries are reviewed by an approver.", 409)
     if tier == "rw":
         # A waiver covers what the access allows and no more, so asking to skip
         # review on writes needs write access to start with. Asked of the

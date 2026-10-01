@@ -131,6 +131,23 @@ def is_super_admin(principal_id: str) -> bool:
                for r in roles(principal_id))
 
 
+def approves_target(principal_id: str, target_id: int) -> bool:
+    """Whether this principal holds a live approver role scoped to this target.
+
+    That is how the access model records the lead of the team that owns a
+    target: `scripts/sync_team_approvers.py --source pod-sync` writes one such
+    row per (lead, owned target), derived from `target_team`. Reading the row
+    rather than the ownership keeps one source of truth, and it inherits what
+    `roles` already enforces: live, not revoked, not deleted, and nothing for a
+    disabled principal.
+
+    By name only. A row for every target (`all_targets`, whose
+    `scope_target_id` is NULL) does not count, and neither does an admin role.
+    """
+    return any(r["role"] == "approver" and r["scope_target_id"] == target_id
+               for r in roles(principal_id))
+
+
 # ---------------------------------------------------------------------------
 # grants
 # ---------------------------------------------------------------------------

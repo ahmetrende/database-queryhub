@@ -1781,6 +1781,11 @@ def _team_waiver_plan(team: dict, tid: int, dbs: list[str] | None, tier: str,
     person -- so the old model cannot hold one. Refused there before anything
     is written, as the bulk route refuses it. Otherwise it is the same rule as
     a person's (`grants.covering_waiver`), asked of the team's own waivers.
+
+    As for a person, a held waiver covers only where it may decide. A team is
+    no holder: on an Athena archive its fleet-wide waiver reaches the owning
+    team's lead and no other member, so it never covers one that names the
+    archive and reaches them all (`auto_approve.waiver_applies`, holder None).
     """
     if not teams_mod.use_v2():
         raise deps._error(400, "bad_request",
@@ -1793,6 +1798,8 @@ def _team_waiver_plan(team: dict, tid: int, dbs: list[str] | None, tier: str,
                 "  FROM access_grant "
                 " WHERE team_id = %s AND auto_approve "
                 "   AND revoked_at IS NULL AND NOT is_deleted", (team["id"],))]
+    target = targets.get(tid)
+    held = [w for w in held if auto_approve.waiver_applies(target, w, None)]
     return [{"database": d,
              "covered_by": grants.covering_waiver(held, tier, tid, d, expires_at)}
             for d in grants.waiver_scopes(dbs)]

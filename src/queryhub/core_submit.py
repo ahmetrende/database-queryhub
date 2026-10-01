@@ -424,20 +424,22 @@ def validate_submission(
     # normal approval and the reason is needed after all. And any error resolving
     # the grant leaves the requirement in place.
     #
-    # A waiver only exempts where create_request will let it decide: on a target
-    # that keeps auto-approve off (an Athena archive), the request reaches an
-    # approver whatever the requester holds.
+    # A waiver only exempts where create_request will let it decide, so it is
+    # asked the same question: on an Athena archive only a waiver that names
+    # it, or the owning team's lead's, applies (auto_approve.waiver_applies),
+    # and everyone else's request reaches an approver.
     justification = (justification or "").strip() or None
     auto_approve_exempt = False
     if not justification and not (schedule_date or schedule_time):
         try:
             auto_approve_exempt = (
                 admins.is_super_admin(user_id)
-                or (engines.auto_approve_allowed(target)
-                    and auto_approve.effective_grant(
-                        user_id, required_mode,
-                        target_server_id=target_server_id,
-                        database_name=database) is not None))
+                or auto_approve.effective_grant(
+                    user_id, required_mode,
+                    target_server_id=target_server_id,
+                    database_name=database,
+                    applies=lambda g: auto_approve.waiver_applies(
+                        target, g, user_id)) is not None)
         except Exception:
             log.exception(
                 "auto-approve lookup failed while deciding whether a "
@@ -803,22 +805,30 @@ def create_request(
     #     a grant that expires before the run time must fall back to the
     #     normal approval flow (with a note to the user).
     #
-    # Neither a waiver nor the fingerprint cache decides on a target that keeps
-    # auto-approve off (an Athena archive, unless its engine_config says
-    # otherwise). The request goes to an approver like anybody else's. The
-    # lookup still runs so that a waiver holder, whose reads skip review
-    # everywhere else, is told why this one waits.
-    aa_allowed = engines.auto_approve_allowed(prep.target)
+    # A waiver decides only where auto_approve.waiver_applies lets it. On most
+    # targets that is every waiver. On an Athena archive (unless its
+    # engine_config says otherwise) it is one that names the archive, or the
+    # fleet-wide one of the owning team's lead, and anybody else's request goes
+    # to an approver. The waivers it turns away are kept, so that a holder whose
+    # reads skip review everywhere else is told why this one waits.
+    refused: list[dict] = []
+
+    def applies(g: dict) -> bool:
+        if auto_approve.waiver_applies(prep.target, g, prep.user_id):
+            return True
+        refused.append(g)
+        return False
+
     aa_now = auto_approve.effective_grant(
         prep.user_id, prep.required_mode,
         target_server_id=prep.target.id, database_name=prep.database,
+        applies=applies,
     )
     aa_warn = None
-    if aa_now is not None and not aa_allowed:
+    if aa_now is None and refused:
         log.info("auto-approve: waiver %s not applied for %s on %s: auto-approve "
-                 "is off for this target (engine %s)", aa_now["id"], prep.user_id,
+                 "is off for this target (engine %s)", refused[0]["id"], prep.user_id,
                  prep.target.alias, prep.target.engine)
-        aa_now = None
         aa_warn = (":warning: Auto-approve is off for this connection, so this "
                    "request needs admin approval.")
     aa_grant = aa_now
@@ -827,6 +837,7 @@ def create_request(
             prep.user_id, prep.required_mode,
             target_server_id=prep.target.id, database_name=prep.database,
             at_time=prep.sched_for,
+            applies=lambda g: auto_approve.waiver_applies(prep.target, g, prep.user_id),
         )
         if aa_at_sched is None:
             aa_grant = None  # fall back to normal approval
@@ -847,14 +858,16 @@ def create_request(
     # the fingerprint so this request seeds the cache, but a super-admin
     # already auto-approves as super — matching the cache on top of that
     # would only mislabel the decision as "fingerprint" and send a redundant
-    # auto-approve notification, so skip the lookup for them. Where
-    # auto-approve is off it is skipped for everybody: the fingerprint ignores
+    # auto-approve notification, so skip the lookup for them. Where the target
+    # does not let everything skip review (an Athena archive) it is skipped for
+    # everybody, the owning team's lead included: the fingerprint ignores
     # literal values, and on Athena those decide how much a query scans.
+    cache_allowed = engines.auto_approve_allowed(prep.target)
     query_fingerprint: str | None = None
     fp_hit: dict | None = None
     if prep.required_mode == "ro":
         query_fingerprint = ast_safety.fingerprint(prep.query, engine=prep.target.engine)
-        if not super_auto and aa_grant is None and query_fingerprint and aa_allowed:
+        if not super_auto and aa_grant is None and query_fingerprint and cache_allowed:
             fp_hit = auto_approve.fingerprint_cache_hit(
                 prep.user_id, prep.target.id, prep.database, query_fingerprint,
             )

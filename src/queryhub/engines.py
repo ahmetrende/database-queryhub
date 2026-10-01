@@ -39,8 +39,10 @@ Three engines carry a spec today:
     in a SELECT (measured against the parser, 2026-09-19). A federated
     catalog is reached by naming it, so the cross-catalog rule written for
     SQL Server does that job here unchanged. Executes through
-    athena_exec.py. Its queries are reviewed even for a waiver holder,
-    unless the target turns auto-approve on (`auto_approve_allowed`).
+    athena_exec.py. Its queries are reviewed even for most waiver
+    holders: only a waiver that names the target, or the owning team's
+    lead's, applies there (`auto_approve.waiver_applies`), unless the
+    target turns auto-approve on or off (`auto_approve_override`).
 
 `WIRED_ENGINES` gates execution: an engine can carry a spec (so its
 safety profile is enforced the moment a target is tagged with it) before
@@ -147,7 +149,9 @@ class EngineSpec:
     # Whether an auto-approve waiver or the fingerprint approval cache may
     # skip review on this engine's targets when the target itself says
     # nothing. A target overrides it with `engine_config.auto_approve`; read
-    # it through `auto_approve_allowed`, never from here directly. A
+    # it through `auto_approve_allowed`, never from here directly. False does
+    # not shut every waiver out: `auto_approve.waiver_applies` still lets one
+    # that names the target, or the owning team's lead's, decide. A
     # super-admin's own submission is a separate rule and does not ask.
     auto_approve_default: bool = True
 
@@ -395,7 +399,10 @@ CLICKHOUSE = EngineSpec(
 # wider date range scans more data and costs more. A fleet-wide waiver was not
 # granted with that in mind, and the fingerprint cache ignores literal values by
 # design, so either one would let through the expensive variant of a query
-# whose cheap variant was approved once.
+# whose cheap variant was approved once. Two waivers still apply (operator
+# rule, 2026-10-01): one that names the archive, and the fleet-wide one of the
+# lead of the team that owns it, who reviews everyone else's queries there
+# (`auto_approve.waiver_applies`).
 
 ATHENA = EngineSpec(
     name="athena",
@@ -413,7 +420,7 @@ ATHENA = EngineSpec(
     driver="athena",
     default_port=443,            # HTTPS to the regional Athena endpoint
     requires_credentials=False,  # the gateway assumes a role; nothing is stored
-    auto_approve_default=False,  # reviewed unless engine_config.auto_approve
+    auto_approve_default=False,  # reviewed, bar two waivers (see above)
 )
 
 
@@ -431,25 +438,39 @@ def spec(engine: str | None) -> EngineSpec:
     return _ENGINES.get((engine or "postgres").strip().lower(), POSTGRES)
 
 
+def auto_approve_override(target) -> bool | None:
+    """The target's own answer, `engine_config.auto_approve`, or None.
+
+    Only a JSON boolean is an answer. Anything else there (the string "false",
+    a 0, null) is not, and means the engine's default: a string that reads as
+    false must not act as true, and a typo must not switch on what the engine
+    keeps off.
+    """
+    config = getattr(target, "engine_config", None)
+    override = config.get("auto_approve") if isinstance(config, dict) else None
+    return override if isinstance(override, bool) else None
+
+
 def auto_approve_allowed(target) -> bool:
-    """May an auto-approve waiver or the fingerprint cache skip review here?
+    """May ANYTHING skip review here: every waiver, and the fingerprint cache?
 
-    The one place that answers it. Everything that decides auto-approval, or
-    tells someone a query will be auto-approved, asks this first.
+    The fingerprint cache asks this and nothing else, and so does anything that
+    offers or announces auto-approval with no waiver in hand (the read-burst
+    nudge, a window request). A waiver asks `auto_approve.waiver_applies`,
+    which starts here: where this says no only because the engine keeps
+    auto-approve off, a waiver that names the target, or the owning team's
+    lead's, still applies.
 
-    `engine_config.auto_approve` on the target wins when it is a JSON boolean.
-    Anything else there (the string "false", a 0, null) is not an answer and
-    falls back to the engine's default: a string that reads as false must not
-    act as true, and a typo must not switch on what the engine keeps off.
+    `engine_config.auto_approve` on the target wins when it is a JSON boolean
+    (`auto_approve_override`); otherwise the engine's default decides.
 
     No target means no exemption. A super-admin's own submission is a separate
     rule, decided by the caller, and does not ask this.
     """
     if target is None:
         return False
-    config = getattr(target, "engine_config", None)
-    override = config.get("auto_approve") if isinstance(config, dict) else None
-    if isinstance(override, bool):
+    override = auto_approve_override(target)
+    if override is not None:
         return override
     return spec(getattr(target, "engine", None)).auto_approve_default
 

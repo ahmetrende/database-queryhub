@@ -1280,9 +1280,9 @@ def _maybe_dm_ro_burst(client: WebClient, principal_id: str, required_mode: str)
         burst = modal._recent_ro_burst(principal_id)
         if not burst or burst["count"] != cfg.get_int("ro_burst_threshold", 3):
             return
-        # The nudge offers a window on the burst's own target, so there is
-        # nothing to offer where auto-approve is off (an Athena archive): the
-        # window would be granted and never apply.
+        # The nudge offers a window on the burst's own target, and no window
+        # is offered where the target does not let everything skip review (an
+        # Athena archive): submit_window refuses one there.
         t = targets.get(burst["target_server_id"])
         if t is None or not engines.auto_approve_allowed(t):
             return
@@ -1292,7 +1292,8 @@ def _maybe_dm_ro_burst(client: WebClient, principal_id: str, required_mode: str)
         # while they queued reads on another.
         if auto_approve.effective_grant(
                 principal_id, "ro", target_server_id=burst["target_server_id"],
-                database_name=burst["database_name"]) is not None:
+                database_name=burst["database_name"],
+                applies=lambda g: auto_approve.waiver_applies(t, g, principal_id)) is not None:
             return
         blocks = ro_window.nudge_blocks(
             count=burst["count"],
@@ -1620,22 +1621,22 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
     ack()
 
     # Per-item auto-approve decision — same logic as single-shot:
-    # cover at submit time AND at scheduled run time (if scheduled), and
-    # nothing on a target that keeps auto-approve off (an Athena archive).
+    # cover at submit time AND at scheduled run time (if scheduled), counting
+    # only a waiver that may decide on the item's target (on an Athena
+    # archive: one that names it, or the owning team's lead's).
     aa_grants: list[dict | None] = []
     aa_expired_warning_items: list[int] = []   # 1-based positions
-    aa_allowed: dict[int, bool] = {}           # per target, asked once
+    aa_targets: dict[int, targets.TargetServer | None] = {}   # read once each
     for i, vi in enumerate(validated_items, start=1):
         tid = vi["target_server_id"]
-        if tid not in aa_allowed:
-            aa_allowed[tid] = engines.auto_approve_allowed(targets.get(tid))
-        if not aa_allowed[tid]:
-            aa_grants.append(None)
-            continue
+        if tid not in aa_targets:
+            aa_targets[tid] = targets.get(tid)
+        t = aa_targets[tid]
         g = auto_approve.effective_grant(
             user["id"], vi["required_mode"],
             target_server_id=vi["target_server_id"],
             database_name=vi["database_name"],
+            applies=lambda r: auto_approve.waiver_applies(t, r, user["id"]),
         )
         if g is not None and sched_for is not None:
             g_at_sched = auto_approve.effective_grant(
@@ -1643,6 +1644,7 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
                 target_server_id=vi["target_server_id"],
                 database_name=vi["database_name"],
                 at_time=sched_for,
+                applies=lambda r: auto_approve.waiver_applies(t, r, user["id"]),
             )
             if g_at_sched is None:
                 aa_expired_warning_items.append(i)

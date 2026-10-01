@@ -299,9 +299,17 @@ def _waiver_plan(grantee_id: str, tier: str, target_id: int,
     person's own, and their own grant on a server displaces their teams' rows
     there, waivers included (access.py, rule 4). The team's waiver stops
     reaching them the moment this grant commits.
+
+    A held waiver covers only where it may decide (`auto_approve.waiver_applies`).
+    On an Athena archive a fleet-wide one reaches only the lead of the team that
+    owns it, so for anyone else a waiver that names the archive is not
+    redundant, and "already covered" would be false.
     """
+    from . import targets as _targets
+    target = _targets.get(target_id)
     held = [r for r in auto_approve.active_grants(grantee_id)
-            if r.get("team_id") is None]
+            if r.get("team_id") is None
+            and auto_approve.waiver_applies(target, r, grantee_id)]
     return [{"database": d,
              "covered_by": covering_waiver(held, tier, target_id, d, expires_at)}
             for d in waiver_scopes(databases)]

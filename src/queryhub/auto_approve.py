@@ -10,13 +10,19 @@ If multiple grants for the same user match, the most permissive
 still valid at the scheduled run time?" — the submit handler calls
 effective_grant(at_time=scheduled_for) and falls back to manual
 approval if it returns None.
+
+Whether a matching grant may DECIDE on a given target is a second question,
+`waiver_applies`, which every caller passes to `effective_grant` as
+`applies`. On most targets the answer is always yes; on an Athena archive
+only a waiver that names it, or the owning team's lead's, applies.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from . import config as cfg
-from . import db
+from . import db, engines
 
 # Tier ordering — ddl is the most permissive.
 _TIER_RANK = {"ro": 0, "rw": 1, "ddl": 2}
@@ -197,6 +203,47 @@ def _team_waiver_applies(principal_id: str,
     return access.team_waivers_reach(principal_id, target_server_id, database_name)
 
 
+def waiver_applies(target, waiver: dict | None, holder: str | None) -> bool:
+    """May this waiver decide a request by `holder` on `target`?
+
+    The one place that answers it. Every caller of `effective_grant` in the
+    package passes it as `applies`, and a test reads the package to fail one
+    that does not (tests/test_auto_approve_engine_gate.py).
+
+    - Where the target lets anything skip review (`engines.auto_approve_allowed`:
+      the engine's default, or `engine_config.auto_approve: true`), every
+      waiver applies, as it always has.
+    - Where the target says `engine_config.auto_approve: false`, none does.
+    - Where the ENGINE keeps auto-approve off and the target says nothing (an
+      Athena archive), two do. A waiver that names this target applies as
+      usual. A fleet-wide one applies only when its holder is the lead of the
+      team that owns the target, which the access model records as an approver
+      role scoped to it (`access.approves_target`). That is the operator's rule
+      (2026-10-01): the lead has auto-approve there, and everyone else's query
+      goes to the lead and an admin. Somebody who reaches every target holds a
+      fleet-wide waiver for reasons that never weighed what an archive query
+      costs.
+
+    The role is read as it is now, also for a run scheduled later, as a team
+    waiver's reach is. No target or no waiver means no. A super-admin's own
+    submission is a separate rule, decided by the caller.
+    """
+    if target is None or not waiver:
+        return False
+    if engines.auto_approve_allowed(target):
+        return True
+    if engines.auto_approve_override(target) is not None:
+        return False                    # the target itself turned it off
+    target_id = getattr(target, "id", None)
+    named = waiver.get("target_server_id")
+    if named is not None:
+        return named == target_id
+    if not holder or target_id is None:
+        return False
+    from . import access                # lazy, as in _team_waiver_applies
+    return access.approves_target(holder, target_id)
+
+
 def effective_grant(
     principal_id: str,
     required_mode: str,
@@ -204,6 +251,8 @@ def effective_grant(
     database_name: str | None = None,
     at_time: datetime | None = None,
     rows: list[dict] | None = None,
+    *,
+    applies: Callable[[dict], bool] | None = None,
 ) -> dict | None:
     """Return the auto-approve grant row that covers (user, mode, target,
     db) at `at_time` (defaults to NOW()). Multiple matches → most permissive
@@ -212,7 +261,13 @@ def effective_grant(
     grants match any target.
 
     `rows` supplies the principal's live grants instead of reading them, for a
-    caller asking about many scopes at once — see `active_grants`."""
+    caller asking about many scopes at once — see `active_grants`.
+
+    `applies` is asked of each covering row in that order, and a row it refuses
+    is passed over, so the answer is the best waiver that may decide HERE.
+    Callers pass `waiver_applies` for the target. Filtering the answer instead
+    would lose a waiver: on an Athena archive a fleet-wide row that does not
+    apply sorts ahead of one that names the archive and does."""
     if required_mode not in _TIER_RANK:
         return None
     at = at_time or datetime.now(timezone.utc)
@@ -241,13 +296,17 @@ def effective_grant(
     # waits for review.
     team_ok = None
     for c in candidates:
-        if c.get("team_id") is None:
-            return c
-        if team_ok is None:
-            team_ok = _team_waiver_applies(principal_id,
-                                           target_server_id, database_name)
-        if team_ok:
-            return c
+        if c.get("team_id") is not None:
+            if team_ok is None:
+                team_ok = _team_waiver_applies(principal_id,
+                                               target_server_id, database_name)
+            if not team_ok:
+                continue
+        # Asked after the reach test, so a caller that keeps the refused rows
+        # (to tell their holder why) only ever sees waivers they really hold.
+        if applies is not None and not applies(c):
+            continue
+        return c
     return None
 
 

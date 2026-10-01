@@ -14,7 +14,7 @@ import psycopg
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from .. import admins, auto_approve, db, engines, errors, favorites, people, query_safety, replicas, schema_catalog, targets, teams
+from .. import admins, auto_approve, db, errors, favorites, people, query_safety, replicas, schema_catalog, targets, teams
 from .. import config as cfg
 from . import deps, mapping
 
@@ -317,14 +317,13 @@ def connections(claims: dict = Depends(deps.current_user)):
     for t, grant, dbs in plan:
         db_entries = []
         auto_ro_any = False
-        # A waiver decides nothing where the target keeps auto-approve off (an
-        # Athena archive), so the flag must not promise it there either.
-        aa_on = engines.auto_approve_allowed(t)
         for d in dbs:
-            aa = aa_on and auto_approve.effective_grant(uid, "ro",
-                                                        target_server_id=t.id,
-                                                        database_name=d,
-                                                        rows=auto_rows) is not None
+            # Promised only where a waiver may decide, as create_request asks
+            # it: on an Athena archive, one that names it, or the owning
+            # team's lead's (auto_approve.waiver_applies).
+            aa = auto_approve.effective_grant(
+                uid, "ro", target_server_id=t.id, database_name=d, rows=auto_rows,
+                applies=lambda g: auto_approve.waiver_applies(t, g, uid)) is not None
             auto_ro_any = auto_ro_any or aa
             refs = refs_map.get((t.id, d), [])
             fns = fns_map.get((t.id, d), [])
