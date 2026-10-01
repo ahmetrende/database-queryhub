@@ -138,12 +138,15 @@ def active_waivers_block(scopes: list[dict], limit: int = 3) -> dict:
     place attached, which read as everywhere to someone covered on one server.
     `scopes` is what `modal._waiver_scopes` builds: alias (None = every
     connection), database (None = every database there), tier, until, and the
-    team a waiver comes from, if any.
+    team a waiver comes from, if any. An every-connection scope also carries
+    `except`, the connections no waiver reaches.
     """
     parts = []
     for s in scopes[:limit]:
         where = ("every connection" if s["alias"] is None
                  else _scope_label(s["alias"], s["database"]))
+        if s["alias"] is None and s.get("except"):
+            where += " except " + ", ".join(f"`{a}`" for a in s["except"])
         via = f", via {s['team']}" if s.get("team") else ""
         parts.append(f"{where} (up to *{s['tier'].upper()}*, {s['until']}{via})")
     more = len(scopes) - limit

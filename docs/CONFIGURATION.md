@@ -134,7 +134,7 @@ default rather than stopping the process.
 
 | Key | Default | What it does |
 |---|---|---|
-| `fingerprint_cache_enabled` | `on` | Auto-approve a re-submission identical to a previously approved query. |
+| `fingerprint_cache_enabled` | `on` | Auto-approve a re-submission identical to a previously approved query. Not on an Athena target unless it allows auto-approve (see "Amazon Athena targets"). |
 | `fingerprint_cache_ttl_days` | `30` | How long a fingerprint stays eligible for auto-approve. |
 | `require_justification` | `false` | Require a justification note on every submission. |
 | `max_open_access_requests_per_user` | `5` | Cap on pending target-access requests per user. |
@@ -228,6 +228,22 @@ described by `target_servers.engine_config`, a JSON object per target:
 | `role_arn` | yes | Read-only role the gateway assumes for every call: Glue, Athena and S3. |
 | `catalog` | no | Data catalog. Default `AwsDataCatalog`. |
 | `freshness_marker` | no | `s3://bucket/key` of the archive's freshness marker. When set, the approver's hint says how far the archive reaches. |
+| `auto_approve` | no | Default `false`: auto-approve waivers and the fingerprint approval cache do not apply, so every query goes to an approver. Set `true` to let them apply. |
+
+Auto-approve is off on Athena because a query's cost depends on the partitions
+it reads, and neither a waiver nor a fingerprint match sees which ones. Only a
+JSON `true` or `false` counts; any other value means the default. A
+super-admin's own query is auto-approved either way. With auto-approve off,
+neither the Slack badge nor the web editor and connection list say a query
+will skip review, and a request for an auto-approve window on the target is
+refused. The key works the same on a PostgreSQL, SQL Server or ClickHouse
+target, where the default is `true`.
+
+```sql
+UPDATE target_servers
+   SET engine_config = COALESCE(engine_config, '{}') || '{"auto_approve": true}'
+ WHERE alias = 'example-archive';
+```
 
 The freshness marker is one JSON object that the archive writes with a single
 PutObject:

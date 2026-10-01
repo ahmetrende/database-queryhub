@@ -50,7 +50,7 @@ def _kill_switch_message() -> str:
 from slack_bolt import Ack, App
 from slack_sdk.web import WebClient
 
-from .. import access_requests, admins, audit, auto_approve, auto_approve_requests, bundles, csv_import, db, executor, favorites, grants, idp_sync_guard, manual_runs, pre_flight, profile_sync, query_safety, ratings, requesters, schema_catalog, targets, teams, templates
+from .. import access_requests, admins, audit, auto_approve, auto_approve_requests, bundles, csv_import, db, engines, executor, favorites, grants, idp_sync_guard, manual_runs, pre_flight, profile_sync, query_safety, ratings, requesters, schema_catalog, targets, teams, templates
 from .. import config as cfg
 from .. import core_submit
 from .. import core_decide
@@ -1280,6 +1280,12 @@ def _maybe_dm_ro_burst(client: WebClient, principal_id: str, required_mode: str)
         burst = modal._recent_ro_burst(principal_id)
         if not burst or burst["count"] != cfg.get_int("ro_burst_threshold", 3):
             return
+        # The nudge offers a window on the burst's own target, so there is
+        # nothing to offer where auto-approve is off (an Athena archive): the
+        # window would be granted and never apply.
+        t = targets.get(burst["target_server_id"])
+        if t is None or not engines.auto_approve_allowed(t):
+            return
         # Noise only when the burst's OWN database already skips review. A
         # waiver somewhere else says nothing about this one: asking "any
         # waiver at all" silenced the nudge for everyone covered on one server
@@ -1288,13 +1294,11 @@ def _maybe_dm_ro_burst(client: WebClient, principal_id: str, required_mode: str)
                 principal_id, "ro", target_server_id=burst["target_server_id"],
                 database_name=burst["database_name"]) is not None:
             return
-        t = targets.get(burst["target_server_id"])
-        alias = t.alias if t else f"target #{burst['target_server_id']}"
         blocks = ro_window.nudge_blocks(
             count=burst["count"],
             window_min=cfg.get_int("ro_burst_window_min", 10),
             window_minutes=cfg.get_int("ro_window_minutes", 60),
-            target_alias=alias,
+            target_alias=t.alias,
             target_server_id=burst["target_server_id"],
             database_name=burst["database_name"],
             has_active_grant=False,
@@ -1616,10 +1620,18 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
     ack()
 
     # Per-item auto-approve decision — same logic as single-shot:
-    # cover at submit time AND at scheduled run time (if scheduled).
+    # cover at submit time AND at scheduled run time (if scheduled), and
+    # nothing on a target that keeps auto-approve off (an Athena archive).
     aa_grants: list[dict | None] = []
     aa_expired_warning_items: list[int] = []   # 1-based positions
+    aa_allowed: dict[int, bool] = {}           # per target, asked once
     for i, vi in enumerate(validated_items, start=1):
+        tid = vi["target_server_id"]
+        if tid not in aa_allowed:
+            aa_allowed[tid] = engines.auto_approve_allowed(targets.get(tid))
+        if not aa_allowed[tid]:
+            aa_grants.append(None)
+            continue
         g = auto_approve.effective_grant(
             user["id"], vi["required_mode"],
             target_server_id=vi["target_server_id"],

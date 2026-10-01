@@ -39,6 +39,10 @@ def env(monkeypatch):
     monkeypatch.setattr(modal, "_recent_ro_burst", lambda pid: state["burst"])
     monkeypatch.setattr(modal.targets, "get",
                         lambda tid: SimpleNamespace(alias=ALIASES.get(tid, "x")))
+    # An every-connection badge names the connections no waiver reaches, which
+    # it reads from the fleet. None here; test_auto_approve_engine_gate.py has
+    # the ones that do.
+    monkeypatch.setattr(modal.targets, "list_enabled", lambda: [])
     monkeypatch.setattr(handlers.notifications, "dm_requester",
                         lambda client, pid, text=None, blocks=None: state["dms"].append(blocks))
     return state

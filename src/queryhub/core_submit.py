@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import admins, ast_safety, audit, auto_approve, db, pre_flight
+from . import admins, ast_safety, audit, auto_approve, db, engines, pre_flight
 from . import config as cfg
 from . import profile_sync, query_safety, query_secrets, replicas, requesters, targets, teams
 
@@ -423,16 +423,21 @@ def validate_submission(
     # may expire before the run time, in which case the caller falls back to
     # normal approval and the reason is needed after all. And any error resolving
     # the grant leaves the requirement in place.
+    #
+    # A waiver only exempts where create_request will let it decide: on a target
+    # that keeps auto-approve off (an Athena archive), the request reaches an
+    # approver whatever the requester holds.
     justification = (justification or "").strip() or None
     auto_approve_exempt = False
     if not justification and not (schedule_date or schedule_time):
         try:
             auto_approve_exempt = (
                 admins.is_super_admin(user_id)
-                or auto_approve.effective_grant(
-                    user_id, required_mode,
-                    target_server_id=target_server_id,
-                    database_name=database) is not None)
+                or (engines.auto_approve_allowed(target)
+                    and auto_approve.effective_grant(
+                        user_id, required_mode,
+                        target_server_id=target_server_id,
+                        database_name=database) is not None))
         except Exception:
             log.exception(
                 "auto-approve lookup failed while deciding whether a "
@@ -797,12 +802,26 @@ def create_request(
     #   - if scheduled_for is in the future, also evaluate at that moment;
     #     a grant that expires before the run time must fall back to the
     #     normal approval flow (with a note to the user).
+    #
+    # Neither a waiver nor the fingerprint cache decides on a target that keeps
+    # auto-approve off (an Athena archive, unless its engine_config says
+    # otherwise). The request goes to an approver like anybody else's. The
+    # lookup still runs so that a waiver holder, whose reads skip review
+    # everywhere else, is told why this one waits.
+    aa_allowed = engines.auto_approve_allowed(prep.target)
     aa_now = auto_approve.effective_grant(
         prep.user_id, prep.required_mode,
         target_server_id=prep.target.id, database_name=prep.database,
     )
-    aa_grant = aa_now
     aa_warn = None
+    if aa_now is not None and not aa_allowed:
+        log.info("auto-approve: waiver %s not applied for %s on %s: auto-approve "
+                 "is off for this target (engine %s)", aa_now["id"], prep.user_id,
+                 prep.target.alias, prep.target.engine)
+        aa_now = None
+        aa_warn = (":warning: Auto-approve is off for this connection, so this "
+                   "request needs admin approval.")
+    aa_grant = aa_now
     if aa_now is not None and prep.sched_for is not None:
         aa_at_sched = auto_approve.effective_grant(
             prep.user_id, prep.required_mode,
@@ -828,12 +847,14 @@ def create_request(
     # the fingerprint so this request seeds the cache, but a super-admin
     # already auto-approves as super — matching the cache on top of that
     # would only mislabel the decision as "fingerprint" and send a redundant
-    # auto-approve notification, so skip the lookup for them.
+    # auto-approve notification, so skip the lookup for them. Where
+    # auto-approve is off it is skipped for everybody: the fingerprint ignores
+    # literal values, and on Athena those decide how much a query scans.
     query_fingerprint: str | None = None
     fp_hit: dict | None = None
     if prep.required_mode == "ro":
         query_fingerprint = ast_safety.fingerprint(prep.query, engine=prep.target.engine)
-        if not super_auto and aa_grant is None and query_fingerprint:
+        if not super_auto and aa_grant is None and query_fingerprint and aa_allowed:
             fp_hit = auto_approve.fingerprint_cache_hit(
                 prep.user_id, prep.target.id, prep.database, query_fingerprint,
             )

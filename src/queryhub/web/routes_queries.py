@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 
 from .. import people
 from .. import admins, audit as audit_mod
-from .. import cancellation, core_submit, db, origins, pii, pre_flight, profile_sync, query_safety, requesters
+from .. import cancellation, core_submit, db, engines, origins, pii, pre_flight, profile_sync, query_safety, requesters
 from .. import config as cfg
 from . import deps, mapping, sessions
 from .routes_data import _alias_of, _target_by_alias
@@ -596,9 +596,13 @@ def submit_batch(body: BatchIn, request: Request,
     sched_for = preps[0].sched_for
     # Phase-23 policy: a super-admin's own submissions auto-approve (all tiers).
     super_auto = admins.is_super_admin(uid)
-    # Per-item grant-based auto-approve — cover NOW and (if scheduled) at run time.
+    # Per-item grant-based auto-approve — cover NOW and (if scheduled) at run
+    # time, and never on a target that keeps auto-approve off (an Athena archive).
     aa_grants: list[dict | None] = []
     for p in preps:
+        if not engines.auto_approve_allowed(p.target):
+            aa_grants.append(None)
+            continue
         g = auto_approve.effective_grant(uid, p.required_mode,
                                          target_server_id=p.target.id,
                                          database_name=p.database)
@@ -766,7 +770,9 @@ def classify_query(body: ClassifyIn, claims: dict = Depends(deps.current_user)):
     if not safety.blocked and not exceeds:
         if unrestricted:
             will_auto = True
-        else:
+        elif engines.auto_approve_allowed(t):
+            # Only where a waiver may decide: on a target that keeps
+            # auto-approve off (an Athena archive) create_request lets none.
             from .. import auto_approve
             will_auto = auto_approve.effective_grant(
                 uid, required, target_server_id=t.id, database_name=database,

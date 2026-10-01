@@ -113,12 +113,13 @@ def submit_window(*, principal_id: str, name: str | None, target_id: int,
     enforces the same ones: the bot is not halted, the window is one of the
     offered lengths, the reason says something, the requester can reach the
     target (and the database, when one is named -- the approval carries it into
-    the waiver), and there is not already a request pending for it.
+    the waiver), there is not already a request pending for it, and the target
+    lets a waiver apply at all.
 
     Returns (row, target). Notifying the admins is the caller's, because it
     needs a Slack client and the two surfaces hold theirs differently.
     """
-    from . import auto_approve, core_submit, targets, teams
+    from . import auto_approve, core_submit, engines, targets, teams
     if core_submit.kill_switch_on():
         raise WindowRequestRefused("reason", core_submit.kill_switch_message(), 503)
     tier = (tier or "ro").strip().lower()
@@ -152,6 +153,13 @@ def submit_window(*, principal_id: str, name: str | None, target_id: int,
     t = targets.get(target_id)
     if t is None:
         raise WindowRequestRefused("target", "That target no longer exists.", 404)
+    # A window is a waiver, and no waiver applies where the target keeps
+    # auto-approve off (an Athena archive). Approving one would tell the
+    # requester their reads skip review there while every one of them waits.
+    if not engines.auto_approve_allowed(t):
+        raise WindowRequestRefused(
+            "target", "Queries on this connection are always reviewed, so a "
+            "window would not apply.", 409)
     if tier == "rw":
         # A waiver covers what the access allows and no more, so asking to skip
         # review on writes needs write access to start with. Asked of the
