@@ -13,12 +13,15 @@ Admin-only subcommands check admins.is_admin first.
 from __future__ import annotations
 
 import difflib
+import functools
 import logging
+import re
 from datetime import timezone
 
 from slack_sdk.web import WebClient
 
-from .. import admins, audit, bundles, csv_import, db, grants, schema_catalog, teams, templates
+from .. import (admins, audit, bundles, csv_import, db, engines, grants, schema_catalog, teams,
+                templates)
 from .. import config as cfg
 from .. import targets as targets_mod
 from . import admin_grant, modal, notifications
@@ -81,6 +84,38 @@ def _trunc(s: str, w: int) -> str:
     if len(s) > w:
         return s[: w - 1] + "…"
     return s.ljust(w)
+
+
+# One `user_grants` entry of p_metrics_who_can_what: `alias[/database](tier)`,
+# or `*` for every target (migration 135).
+_GRANT_TEXT = re.compile(r"^(?P<head>.*)\((?P<tier>ro|rw|ddl)\)$")
+
+
+def _engine_lookup():
+    """alias -> engine, read on first use and once per command."""
+    by_alias: dict | None = None
+
+    def engine_of(alias: str):
+        nonlocal by_alias
+        if by_alias is None:
+            by_alias = {t.alias: t.engine for t in targets_mod.list_all()}
+        return by_alias.get(alias)
+    return engine_of
+
+
+def _shown_grant_texts(texts, is_super, engine_of) -> list[str]:
+    """`user_grants` as a screen shows them: a grant on an Athena archive reads
+    RO unless its holder is a super-admin (`engines.shown_tier`; the row is
+    unchanged). `is_super` is asked only for an entry the cap would change, and
+    the alias map is read only when an entry is above RO."""
+    out = []
+    for text in texts or []:
+        m = _GRANT_TEXT.match(text)
+        if m and m["tier"] != "ro":
+            engine = engine_of(m["head"].split("/", 1)[0])
+            text = f"{m['head']}({engines.shown_tier(engine, m['tier'], is_super)})"
+        out.append(text)
+    return out
 
 
 def _fmt_grants_summary(row: dict) -> str:
@@ -176,7 +211,10 @@ def _handle_whoami(user_id, rest, client, respond, body):
             )
     lines.append(f"Bypass      : {'yes' if row['is_bypass'] else 'no'}")
     lines.append(f"Teams       : {', '.join(row['teams']) if row['teams'] else '-'}")
-    lines.append(f"User grants : {', '.join(row['user_grants']) if row['user_grants'] else '-'}")
+    user_grants = _shown_grant_texts(
+        row["user_grants"], functools.cache(lambda: admins.is_super_admin(user_id)),
+        _engine_lookup())
+    lines.append(f"User grants : {', '.join(user_grants) if user_grants else '-'}")
     _respond(respond, "*Your roles + grants:*\n" + _code_block(lines))
 
 
@@ -258,7 +296,11 @@ def _handle_roles(user_id, rest, client, respond, body):
         return
     header = f"{_trunc('NAME', 22)} {_trunc('SLACK_ID', 13)} ROLE / GRANTS"
     lines = [header]
+    is_super = functools.cache(admins.is_super_admin)
+    engine_of = _engine_lookup()
     for r in rows:
+        r = {**r, "user_grants": _shown_grant_texts(
+            r["user_grants"], functools.partial(is_super, r["slack_user_id"]), engine_of)}
         lines.append(
             f"{_trunc(r['name'], 22)} "
             f"{_trunc(r['slack_user_id'], 13)} "
@@ -451,8 +493,10 @@ def _handle_one_team(team_name, respond):
                   (f" (+{len(g['allowed_databases']) - 5} more)"
                    if len(g["allowed_databases"]) > 5 else "")
             role_bit = f" role={g['target_role']}" if g["target_role"] else ""
+            # A team is never a super-admin: on an Athena archive it reads RO.
+            mode = engines.shown_tier(g.get("engine"), g["mode"])
             lines.append(
-                f"  • {_trunc(g['alias'], 28)} [{g['mode'].upper():>3}] "
+                f"  • {_trunc(g['alias'], 28)} [{mode.upper():>3}] "
                 f"{dbs}{role_bit}"
             )
     else:

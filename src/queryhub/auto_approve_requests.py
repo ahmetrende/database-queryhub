@@ -159,9 +159,9 @@ def submit_window(*, principal_id: str, name: str | None, target_id: int,
     # the same. The rule on an archive is that a member's queries go to the
     # owning team's lead and an admin, and a window, which the read-burst nudge
     # invites anyone to ask for, would take them out of that review. The lead
-    # needs none: their own fleet-wide waiver already applies there. An admin
-    # who decides otherwise for one person can still write a waiver that names
-    # the archive.
+    # and the admins need none: their role already lets their reads through
+    # there (auto_approve.decision). An admin who decides otherwise for one
+    # person can still write a waiver that names the archive.
     if not engines.auto_approve_allowed(t):
         raise WindowRequestRefused(
             "target", "Auto-approve windows are not offered on this connection; "

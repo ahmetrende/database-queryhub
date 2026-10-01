@@ -139,7 +139,8 @@ def active_waivers_block(scopes: list[dict], limit: int = 3) -> dict:
     `scopes` is what `modal._waiver_scopes` builds: alias (None = every
     connection), database (None = every database there), tier, until, and the
     team a waiver comes from, if any. An every-connection scope also carries
-    `except`, the connections it does not reach.
+    `except`, the connections it does not reach. On an Athena archive reached
+    by role rather than by a waiver, `until` names the role ("as an admin").
     """
     parts = []
     for s in scopes[:limit]:

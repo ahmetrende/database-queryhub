@@ -9,6 +9,7 @@ is an alternative surface, never a parallel or bypass path.
 """
 from __future__ import annotations
 
+import functools
 import json
 import logging
 from datetime import datetime, timezone
@@ -1782,10 +1783,9 @@ def _team_waiver_plan(team: dict, tid: int, dbs: list[str] | None, tier: str,
     is written, as the bulk route refuses it. Otherwise it is the same rule as
     a person's (`grants.covering_waiver`), asked of the team's own waivers.
 
-    As for a person, a held waiver covers only where it may decide. A team is
-    no holder: on an Athena archive its fleet-wide waiver reaches the owning
-    team's lead and no other member, so it never covers one that names the
-    archive and reaches them all (`auto_approve.waiver_applies`, holder None).
+    As for a person, a held waiver covers only where it may decide
+    (`auto_approve.waiver_applies`): nowhere on a target whose engine_config
+    turns auto-approve off.
     """
     if not teams_mod.use_v2():
         raise deps._error(400, "bad_request",
@@ -1799,7 +1799,7 @@ def _team_waiver_plan(team: dict, tid: int, dbs: list[str] | None, tier: str,
                 " WHERE team_id = %s AND auto_approve "
                 "   AND revoked_at IS NULL AND NOT is_deleted", (team["id"],))]
     target = targets.get(tid)
-    held = [w for w in held if auto_approve.waiver_applies(target, w, None)]
+    held = [w for w in held if auto_approve.waiver_applies(target, w)]
     return [{"database": d,
              "covered_by": grants.covering_waiver(held, tier, tid, d, expires_at)}
             for d in grants.waiver_scopes(dbs)]
@@ -2708,6 +2708,9 @@ def _effective_access_legacy(slack_id: str) -> tuple[list, list, dict | None]:
     grants_by_target = teams.effective_grants_for_user(
         slack_id, [t.id for t in all_targets])
     alias_by_id = {t.id: t.alias for t in all_targets}
+    # Except a super-admin, nobody's archive row reads above RO
+    # (engines.shown_tier); asked only if an archive row would change.
+    is_super = functools.cache(lambda: admins.is_super_admin(slack_id))
 
     out = []
     for t in all_targets:
@@ -2719,7 +2722,8 @@ def _effective_access_legacy(slack_id: str) -> tuple[list, list, dict | None]:
         out.append({
             "connectionId": t.alias,
             "enabled": t.enabled,
-            "tier": (g.get("mode") or "ro").upper(),
+            "tier": engines.shown_tier(getattr(t, "engine", None),
+                                       g.get("mode") or "ro", is_super).upper(),
             # NULL means every database on the target, which is not the same
             # as an empty list and must not render as "no databases".
             "databases": sorted(g["allowed_databases"]) if g.get("allowed_databases") else None,
@@ -2823,6 +2827,14 @@ def _effective_access_v2(slack_id: str) -> tuple[list, list, dict | None]:
     team_name = {r["id"]: r["name"] for r in db.fetch_all(
         "SELECT id, COALESCE(display_name, name) AS name FROM team WHERE id = ANY(%s)",
         (team_ids,))} if team_ids else {}
+    # Except a super-admin, nobody's archive row reads above RO
+    # (engines.shown_tier). Capped per database, before the rows are grouped,
+    # so an archive never splits into an RW row and an RO row. Asked only if
+    # an archive row would change.
+    is_super = functools.cache(lambda: access_model.is_super_admin(slack_id))
+
+    def shown(t, tier):
+        return engines.shown_tier(getattr(t, "engine", None), tier, is_super).upper()
 
     out = []
     for t in have:
@@ -2836,7 +2848,7 @@ def _effective_access_v2(slack_id: str) -> tuple[list, list, dict | None]:
             res, row = decided.get((t.id, d), (None, None))
             if res is None:
                 continue
-            per.append({"database": d, "tier": res["tier"].upper(),
+            per.append({"database": d, "tier": shown(t, res["tier"]),
                         "source": access_model.legacy_shape(res)["source"],
                         "sourceTeam": team_name.get(row["team_id"]) if row and row.get("team_id") else None,
                         "expiresAt": mapping.iso(row["valid_until"]) if row else None})
@@ -2869,7 +2881,7 @@ def _effective_access_v2(slack_id: str) -> tuple[list, list, dict | None]:
                           "mixedTiers": mixed})
         else:
             # An admin, a bypass, or a server with no catalog to enumerate yet.
-            entry.update({"key": t.alias, "tier": (g.get("mode") or "ro").upper(),
+            entry.update({"key": t.alias, "tier": shown(t, g.get("mode") or "ro"),
                           "source": g.get("source"), "sourceTeam": None, "expiresAt": None,
                           "perDatabase": [], "mixedTiers": False})
         out.append(entry)
@@ -3240,8 +3252,12 @@ def admin_team_effective_access(team_id: int, claims: dict = Depends(deps.curren
             "connectionId": alias(r["target_id"]),
             "enabled": getattr(tmeta.get(r["target_id"]), "enabled", None),
             "perDatabase": []})
+        # A team is never a super-admin, so its row on an Athena archive reads
+        # RO whatever the grant says (engines.shown_tier). The row is unchanged.
         e["perDatabase"].append({"database": None if r["all_databases"] else r["database_name"],
-                                 "tier": r["tier"].upper(),
+                                 "tier": engines.shown_tier(
+                                     getattr(tmeta.get(r["target_id"]), "engine", None),
+                                     r["tier"]).upper(),
                                  "expiresAt": mapping.iso(r["valid_until"])})
     access_out = []
     for e in access_by.values():
@@ -3263,6 +3279,14 @@ def admin_team_effective_access(team_id: int, claims: dict = Depends(deps.curren
             for tid, e in access_by.items()})
     else:
         overrides = _overrides_legacy(members, sorted(access_by))
+    # A member's own grant on an archive reads RO too, unless they are a
+    # super-admin -- asked only for an entry the cap would change.
+    is_super = functools.cache(lambda handle: bool(handle) and admins.is_super_admin(handle))
+    for tid, entries in overrides.items():
+        engine = getattr(tmeta.get(tid), "engine", None)
+        for x in entries:
+            x["tier"] = engines.shown_tier(engine, x["tier"],
+                                           functools.partial(is_super, x.get("handle")))
     for e in access_out:
         tid = next((k for k, v in access_by.items() if v["connectionId"] == e["connectionId"]), None)
         e["source"] = "team"
@@ -5657,14 +5681,16 @@ def admin_audit_search(body: AuditSearchIn,
 
 
 def _audit_via(r: dict, names: dict) -> str | None:
-    """How a machine came to act. Three outcomes, and the screen renders each
+    """How a machine came to act. Four outcomes, and the screen renders each
     differently, so they must stay distinguishable:
 
     * a window that still exists — named, subject to target at a tier;
     * a window whose id is on the row but which has since been deleted —
       `auto_approve_grants` has no `revoked_at`, rows are removed, and 2 of the
       4,477 auto-approvals on this trail point at one that is gone;
-    * a fingerprint match, which names the earlier request instead.
+    * a fingerprint match, which names the earlier request instead;
+    * the archive rule's role half, with no waiver to name: the `basis` the
+      decision recorded (`archive: admin`, `archive: owner lead`).
 
     None means the row is not a machine action at all.
     """
@@ -5672,6 +5698,8 @@ def _audit_via(r: dict, names: dict) -> str | None:
     fp = d.get("fingerprint_match_request_id")
     if fp:
         return f"query fingerprint matched request #{fp}"
+    if isinstance(d, dict) and d.get("basis") and not d.get("grant_id"):
+        return f"auto-approve rule · {d['basis']}"
     if not d.get("grant_id"):
         return None
     if not r.get("via_user"):

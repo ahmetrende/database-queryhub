@@ -424,22 +424,18 @@ def validate_submission(
     # normal approval and the reason is needed after all. And any error resolving
     # the grant leaves the requirement in place.
     #
-    # A waiver only exempts where create_request will let it decide, so it is
-    # asked the same question: on an Athena archive only a waiver that names
-    # it, or the owning team's lead's, applies (auto_approve.waiver_applies),
-    # and everyone else's request reaches an approver.
+    # Exempt only where create_request will auto-approve, so it is asked the
+    # same question (auto_approve.decision): on an Athena archive that is a
+    # read by an admin, the owning team's lead or a waiver holder, and
+    # everyone else's request reaches an approver.
     justification = (justification or "").strip() or None
     auto_approve_exempt = False
     if not justification and not (schedule_date or schedule_time):
         try:
             auto_approve_exempt = (
                 admins.is_super_admin(user_id)
-                or auto_approve.effective_grant(
-                    user_id, required_mode,
-                    target_server_id=target_server_id,
-                    database_name=database,
-                    applies=lambda g: auto_approve.waiver_applies(
-                        target, g, user_id)) is not None)
+                or auto_approve.decision(user_id, required_mode, target,
+                                         database) is not None)
         except Exception:
             log.exception(
                 "auto-approve lookup failed while deciding whether a "
@@ -799,31 +795,23 @@ def create_request(
     Returns a Rejection (not raised) if the per-user rate limit or the
     duplicate guard is tripped at INSERT time by a concurrent submission
     that raced validate_submission()."""
-    # Auto-approve resolution. Two grants are checked:
-    #   - effective_grant(NOW()) — does the user qualify at submit time?
+    # Auto-approve resolution. Two moments are checked:
+    #   - decision(NOW()) — does the user qualify at submit time?
     #   - if scheduled_for is in the future, also evaluate at that moment;
     #     a grant that expires before the run time must fall back to the
     #     normal approval flow (with a note to the user).
     #
-    # A waiver decides only where auto_approve.waiver_applies lets it. On most
-    # targets that is every waiver. On an Athena archive (unless its
-    # engine_config says otherwise) it is one that names the archive, or the
-    # fleet-wide one of the owning team's lead, and anybody else's request goes
-    # to an approver. The waivers it turns away are kept, so that a holder whose
-    # reads skip review everywhere else is told why this one waits.
+    # The decision is auto_approve.decision's, the one every announcement asks.
+    # On most targets that is the best covering waiver. On an Athena archive
+    # (unless its engine_config says otherwise) it is a read by an admin, the
+    # owning team's lead, or the holder of a waiver that covers it, and anybody
+    # else's request goes to an approver. `aa_grant` then holds the waiver, or
+    # the archive rule's basis (`basis`, no waiver id). The waivers a target
+    # turns away (engine_config.auto_approve: false) are kept, so that a holder
+    # whose reads skip review everywhere else is told why this one waits.
     refused: list[dict] = []
-
-    def applies(g: dict) -> bool:
-        if auto_approve.waiver_applies(prep.target, g, prep.user_id):
-            return True
-        refused.append(g)
-        return False
-
-    aa_now = auto_approve.effective_grant(
-        prep.user_id, prep.required_mode,
-        target_server_id=prep.target.id, database_name=prep.database,
-        applies=applies,
-    )
+    aa_now = auto_approve.decision(prep.user_id, prep.required_mode, prep.target,
+                                   prep.database, refused=refused)
     aa_warn = None
     if aa_now is None and refused:
         log.info("auto-approve: waiver %s not applied for %s on %s: auto-approve "
@@ -833,12 +821,9 @@ def create_request(
                    "request needs admin approval.")
     aa_grant = aa_now
     if aa_now is not None and prep.sched_for is not None:
-        aa_at_sched = auto_approve.effective_grant(
-            prep.user_id, prep.required_mode,
-            target_server_id=prep.target.id, database_name=prep.database,
-            at_time=prep.sched_for,
-            applies=lambda g: auto_approve.waiver_applies(prep.target, g, prep.user_id),
-        )
+        aa_at_sched = auto_approve.decision(prep.user_id, prep.required_mode,
+                                            prep.target, prep.database,
+                                            at_time=prep.sched_for)
         if aa_at_sched is None:
             aa_grant = None  # fall back to normal approval
             aa_warn = (
@@ -860,8 +845,9 @@ def create_request(
     # would only mislabel the decision as "fingerprint" and send a redundant
     # auto-approve notification, so skip the lookup for them. Where the target
     # does not let everything skip review (an Athena archive) it is skipped for
-    # everybody, the owning team's lead included: the fingerprint ignores
-    # literal values, and on Athena those decide how much a query scans.
+    # everybody: the fingerprint ignores literal values, and on Athena those
+    # decide how much a query scans. A member's repeat archive query is
+    # reviewed again.
     cache_allowed = engines.auto_approve_allowed(prep.target)
     query_fingerprint: str | None = None
     fp_hit: dict | None = None
@@ -973,11 +959,11 @@ def create_request(
                 submit_details["run_on"] = prep.run_on
             approve_actor_name = None
             if aa_grant is not None:
-                submit_details["grant_id"] = aa_grant["id"]
-                submit_details["max_tier"] = aa_grant["max_tier"]
+                # The waiver's id, or the archive rule's basis when no waiver
+                # decided: `grant_id` never names something that is not one.
+                submit_details.update(auto_approve.audit_details(aa_grant))
                 approve_details = {
-                    "grant_id": aa_grant["id"],
-                    "max_tier": aa_grant["max_tier"],
+                    **auto_approve.audit_details(aa_grant),
                     "scheduled_for": str(prep.sched_for) if prep.sched_for else None,
                 }
                 approve_action = "auto_approved"
@@ -1147,7 +1133,7 @@ def dispatch_and_notify(
         if outcome.aa_grant is not None:
             notifications.dm_admins_auto_approved(
                 client, row, prep.target, outcome.aa_grant)
-            why = (f"(grant #{outcome.aa_grant['id']}, "
+            why = (f"({auto_approve.basis_label(outcome.aa_grant)}, "
                    f"max_tier={outcome.aa_grant['max_tier']})")
         elif outcome.fp_hit is not None:
             notifications.dm_admins_auto_approved_fingerprint(

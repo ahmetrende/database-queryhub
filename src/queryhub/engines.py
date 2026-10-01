@@ -39,10 +39,12 @@ Three engines carry a spec today:
     in a SELECT (measured against the parser, 2026-09-19). A federated
     catalog is reached by naming it, so the cross-catalog rule written for
     SQL Server does that job here unchanged. Executes through
-    athena_exec.py. Its queries are reviewed even for most waiver
-    holders: only a waiver that names the target, or the owning team's
-    lead's, applies there (`auto_approve.waiver_applies`), unless the
-    target turns auto-approve on or off (`auto_approve_override`).
+    athena_exec.py. Its targets follow the archive rule unless the target
+    turns auto-approve on or off (`archive_rule_applies`): only a read
+    skips review, and only for an admin, the owning team's lead or a
+    waiver holder (`auto_approve.decision`); the fingerprint cache never
+    applies, and nobody but a super-admin is shown holding more than RO
+    (`shown_tier`).
 
 `WIRED_ENGINES` gates execution: an engine can carry a spec (so its
 safety profile is enforced the moment a target is tagged with it) before
@@ -52,7 +54,9 @@ its own dialect and dangerous-function blocklist.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import overload
 
 
 @dataclass(frozen=True)
@@ -146,14 +150,22 @@ class EngineSpec:
     requires_credentials: bool = True
 
     # --- approval -----------------------------------------------------
-    # Whether an auto-approve waiver or the fingerprint approval cache may
-    # skip review on this engine's targets when the target itself says
-    # nothing. A target overrides it with `engine_config.auto_approve`; read
-    # it through `auto_approve_allowed`, never from here directly. False does
-    # not shut every waiver out: `auto_approve.waiver_applies` still lets one
-    # that names the target, or the owning team's lead's, decide. A
-    # super-admin's own submission is a separate rule and does not ask.
+    # Whether everything that skips review elsewhere (every waiver, and the
+    # fingerprint approval cache) may skip it on this engine's targets when
+    # the target itself says nothing. A target overrides it with
+    # `engine_config.auto_approve`; read it through `auto_approve_allowed`,
+    # never from here directly. False puts the target under the archive rule
+    # (`archive_rule_applies`, `auto_approve.decision`) rather than shutting
+    # every door. A super-admin's own submission is a separate rule and does
+    # not ask.
     auto_approve_default: bool = True
+
+    # --- what a screen says ---------------------------------------------
+    # The highest tier anybody but a super-admin is SHOWN holding on this
+    # engine's targets, or None for no ceiling. Display only: `read_only` is
+    # what refuses a write, for everyone, and no grant row changes. Read it
+    # through `shown_tier`.
+    tier_ceiling: str | None = None
 
 
 # Routines a Postgres RO login may call. pg_proc rather than
@@ -393,16 +405,20 @@ CLICKHOUSE = EngineSpec(
 # connector (`"lambda:fn".db.tbl`) is addressed. One approved target means one
 # catalog, so a reference that names its own is refused with the rest.
 #
-# `auto_approve_default` is False: an archive query is reviewed unless the
-# target turns auto-approve on (operator decision, 2026-09-20). What a query
-# costs here depends on the partitions it reads, so the same statement with a
-# wider date range scans more data and costs more. A fleet-wide waiver was not
-# granted with that in mind, and the fingerprint cache ignores literal values by
-# design, so either one would let through the expensive variant of a query
-# whose cheap variant was approved once. Two waivers still apply (operator
-# rule, 2026-10-01): one that names the archive, and the fleet-wide one of the
-# lead of the team that owns it, who reviews everyone else's queries there
-# (`auto_approve.waiver_applies`).
+# `auto_approve_default` is False, which puts an Athena target under the
+# archive rule unless the target says otherwise (operator decisions,
+# 2026-09-20 and 2026-10-01). What a query costs here depends on the partitions
+# it reads, so the same statement with a wider date range scans more data and
+# costs more. The fingerprint cache ignores literal values by design, so it
+# would let through the expensive variant of a query whose cheap variant was
+# approved once; it never applies. A read skips review only for somebody
+# trusted to weigh that: an admin, the lead of the team that owns the archive,
+# or the holder of a waiver that covers it. Everyone else's goes to that lead
+# and the admins (`auto_approve.decision`).
+#
+# `tier_ceiling` is RO for the same rule's first half: except super-admins,
+# nobody holds more than RO on an archive. A fleet-wide grant resolves to DDL
+# on every target, and the screens said so for the archive too.
 
 ATHENA = EngineSpec(
     name="athena",
@@ -420,7 +436,8 @@ ATHENA = EngineSpec(
     driver="athena",
     default_port=443,            # HTTPS to the regional Athena endpoint
     requires_credentials=False,  # the gateway assumes a role; nothing is stored
-    auto_approve_default=False,  # reviewed, bar two waivers (see above)
+    auto_approve_default=False,  # the archive rule (see above)
+    tier_ceiling="ro",           # nobody but a super-admin is shown more
 )
 
 
@@ -452,14 +469,15 @@ def auto_approve_override(target) -> bool | None:
 
 
 def auto_approve_allowed(target) -> bool:
-    """May ANYTHING skip review here: every waiver, and the fingerprint cache?
+    """May EVERYTHING that skips review elsewhere skip it here: every waiver,
+    and the fingerprint cache?
 
     The fingerprint cache asks this and nothing else, and so does anything that
-    offers or announces auto-approval with no waiver in hand (the read-burst
-    nudge, a window request). A waiver asks `auto_approve.waiver_applies`,
-    which starts here: where this says no only because the engine keeps
-    auto-approve off, a waiver that names the target, or the owning team's
-    lead's, still applies.
+    offers auto-approval with no request in hand (the read-burst nudge, a
+    window request). Whether one request skips review is
+    `auto_approve.decision`, which starts here: where this says no only because
+    the engine keeps auto-approve off (`archive_rule_applies`), the archive rule
+    still lets some reads through.
 
     `engine_config.auto_approve` on the target wins when it is a JSON boolean
     (`auto_approve_override`); otherwise the engine's default decides.
@@ -473,6 +491,62 @@ def auto_approve_allowed(target) -> bool:
     if override is not None:
         return override
     return spec(getattr(target, "engine", None)).auto_approve_default
+
+
+def archive_rule_applies(target) -> bool:
+    """Is this target under the archive rule?
+
+    It is where the ENGINE keeps auto-approve off (`auto_approve_default`, an
+    Athena archive) and the target says nothing (`auto_approve_override`). The
+    rule (operator, 2026-10-01) is `auto_approve.decision`'s: only a read skips
+    review, and only for an admin, the owning team's lead or the holder of a
+    waiver that covers it; the fingerprint cache never applies.
+
+    A target that answers for itself is not under it. `true` behaves like any
+    other target, waivers and the fingerprint cache included; `false` lets
+    nothing skip review but a super-admin's own submission.
+    """
+    if target is None or auto_approve_override(target) is not None:
+        return False
+    return not spec(getattr(target, "engine", None)).auto_approve_default
+
+
+_TIER_RANK = {"ro": 0, "rw": 1, "ddl": 2}
+
+
+@overload
+def shown_tier(engine: str | None, tier: str,
+               super_admin: bool | Callable[[], bool] = ...) -> str: ...
+@overload
+def shown_tier(engine: str | None, tier: str | None,
+               super_admin: bool | Callable[[], bool] = ...) -> str | None: ...
+def shown_tier(engine: str | None, tier: str | None,
+               super_admin: bool | Callable[[], bool] = False) -> str | None:
+    """The tier a screen shows for `tier` on a target of this engine.
+
+    Capped at the engine's `tier_ceiling`, except for a super-admin. An Athena
+    archive caps at RO (operator rule, 2026-10-01: except super-admins,
+    everyone is at most RO there): a fleet-wide grant resolves to DDL on every
+    target, and every screen said DDL for the archive as well, where no write
+    can run for anybody.
+
+    Display only. The grant row is not changed and the decision is not made
+    here: a write on a read-only engine is refused by `query_safety` for
+    everyone, before any tier is compared.
+
+    `super_admin` is a bool, or a callable answering it, which is asked only
+    when the cap would change the answer -- so a screen listing a hundred
+    targets reads the super-admin standing at most once, and only when an
+    archive is among them. The case of `tier` is kept.
+    """
+    ceiling = spec(engine).tier_ceiling
+    if not tier or ceiling is None:
+        return tier
+    if _TIER_RANK.get(tier.lower(), -1) <= _TIER_RANK[ceiling]:
+        return tier
+    if super_admin() if callable(super_admin) else super_admin:
+        return tier
+    return ceiling.upper() if tier.isupper() else ceiling
 
 
 # Engines with a WIRED execution path (driver + dispatch + engine-aware

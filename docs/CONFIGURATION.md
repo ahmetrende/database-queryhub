@@ -228,29 +228,42 @@ described by `target_servers.engine_config`, a JSON object per target:
 | `role_arn` | yes | Read-only role the gateway assumes for every call: Glue, Athena and S3. |
 | `catalog` | no | Data catalog. Default `AwsDataCatalog`. |
 | `freshness_marker` | no | `s3://bucket/key` of the archive's freshness marker. When set, the approver's hint says how far the archive reaches. |
-| `auto_approve` | no | Unset by default: only a waiver that names this target, or the fleet-wide waiver of the owning team's lead, applies, and the fingerprint approval cache never does. `true` lets every waiver and the cache apply; `false` lets none apply. |
+| `auto_approve` | no | Unset by default: the archive rule below decides, and the fingerprint approval cache never applies. `true` makes the target behave like any other: every waiver and the cache apply, and the role rule does not. `false` lets nothing skip review but a super-admin's own query. |
 
 Auto-approve is limited on Athena because a query's cost depends on the
-partitions it reads, and neither a fleet-wide waiver nor a fingerprint match
-sees which ones. With the key unset:
+partitions it reads, and a fingerprint match ignores the values that choose
+them. With the key unset, the archive rule applies:
 
-- A waiver that names the target applies as usual.
-- A fleet-wide waiver applies only for the lead of the team that owns the
-  target: someone with a live `approver` role scoped to it, which
+- Only a read can skip review. Except super-admins, nobody holds more than RO
+  on the target: the engine refuses a write for everyone, and every screen that
+  names a tier per target (the web connection list and editor, the
+  effective-access views, the MCP connection list, `/sql whoami`, `/sql roles`
+  and `/sql teams`) shows RO there. No grant row changes.
+- The lead of the team that owns the target auto-approves reads, with or
+  without a waiver: someone with a live `approver` role scoped to it, which
   `scripts/sync_team_approvers.py --source pod-sync` writes from
-  `target_team`. Anyone else's query goes to an approver (that lead or an
-  admin), even when they can reach every target and hold a fleet-wide waiver.
-- The fingerprint approval cache never applies.
-- A request for an auto-approve window on the target is refused. The lead
-  needs none, and a window would take a member's reads out of the lead's
-  review.
+  `target_team`.
+- So does anyone holding an `admin` role, any admin and not only a
+  super-admin, and anyone whose waiver covers the read: a fleet-wide one, or
+  one that names the target.
+- Everyone else's query goes to an approver: that lead, or an admin.
+- The fingerprint approval cache never applies, so a member's repeat query is
+  reviewed again.
+- A request for an auto-approve window on the target is refused. The lead and
+  the admins need none, and a window would take a member's reads out of the
+  lead's review.
 
-Only a JSON `true` or `false` counts; any other value means the default.
-`false` turns off the two waivers above as well. A super-admin's own query is
-auto-approved either way. The Slack badge, the web editor and the connection
-list say a query will skip review only where one of these rules lets it. The
-key works the same on a PostgreSQL, SQL Server or ClickHouse target, where the
-default is `true`.
+A waiver's decision is recorded with its `grant_id`, as on any target. A
+decision the role rule made has no waiver to name, so the request's
+`decision_reason` reads `auto-approved (archive: owner lead, max_tier=ro)` or
+`auto-approved (archive: admin, max_tier=ro)`, and the `auto_approved` audit row
+carries the same `basis`.
+
+Only a JSON `true` or `false` counts; any other value means the default. A
+super-admin's own query is auto-approved either way. The Slack badge, the web
+editor and the connection list say a query will skip review only where one of
+these rules lets it. The key works the same on a PostgreSQL, SQL Server or
+ClickHouse target, where the default is `true`.
 
 ```sql
 UPDATE target_servers

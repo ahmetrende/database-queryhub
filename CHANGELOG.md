@@ -161,13 +161,20 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Fixed
 
-- **Athena archive queries are reviewed, except the owning team lead's.** A
-  fleet-wide waiver or a fingerprint match would have run anyone's with no
-  review. Now a fleet-wide waiver applies there only for the lead of the team
-  that owns the archive, and a waiver that names the archive applies as usual.
-  The fingerprint cache never applies, and no auto-approve window is offered.
-  `engine_config.auto_approve` set to `true` or `false` on the target overrides
-  all of it (docs/CONFIGURATION.md). A super-admin's own query is unchanged.
+- **On an Athena archive, only admins, the owning team's lead and waiver
+  holders skip review, and only for reads.** A fingerprint match would have run
+  anyone's repeat query there with no review. With `engine_config.auto_approve`
+  unset (docs/CONFIGURATION.md):
+  - The lead of the team that owns the archive, and anyone with an admin role,
+    auto-approve reads, waiver or not. The request records `archive: owner lead`
+    or `archive: admin` as the reason.
+  - A waiver that covers the read applies, fleet-wide or naming the archive.
+  - Everyone else's query goes to that lead and the admins. The fingerprint
+    cache never applies, and no auto-approve window is offered.
+  - Except super-admins, nobody is shown more than RO there, on any screen. A
+    write is refused for everyone, as before.
+  - `true` makes the target behave like any other; `false` lets nothing through
+    but a super-admin's own query, which is unchanged.
 - **"All databases" in the web grant forms wrote a grant on a database named
   `*`.** It matched nothing. Any spelling of every database (`*`, empty, `all`,
   `any`) now means every database, for person and team grants alike.

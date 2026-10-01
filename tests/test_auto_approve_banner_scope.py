@@ -38,7 +38,7 @@ def env(monkeypatch):
                         lambda pid, tid, dbn: state["reach"])
     monkeypatch.setattr(modal, "_recent_ro_burst", lambda pid: state["burst"])
     monkeypatch.setattr(modal.targets, "get",
-                        lambda tid: SimpleNamespace(alias=ALIASES.get(tid, "x")))
+                        lambda tid: SimpleNamespace(id=tid, alias=ALIASES.get(tid, "x")))
     # An every-connection badge names the connections it does not reach, which
     # it reads from the fleet. None here; test_auto_approve_engine_gate.py has
     # the ones that do.

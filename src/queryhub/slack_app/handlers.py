@@ -1290,10 +1290,8 @@ def _maybe_dm_ro_burst(client: WebClient, principal_id: str, required_mode: str)
         # waiver somewhere else says nothing about this one: asking "any
         # waiver at all" silenced the nudge for everyone covered on one server
         # while they queued reads on another.
-        if auto_approve.effective_grant(
-                principal_id, "ro", target_server_id=burst["target_server_id"],
-                database_name=burst["database_name"],
-                applies=lambda g: auto_approve.waiver_applies(t, g, principal_id)) is not None:
+        if auto_approve.decision(principal_id, "ro", t,
+                                 burst["database_name"]) is not None:
             return
         blocks = ro_window.nudge_blocks(
             count=burst["count"],
@@ -1620,10 +1618,10 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
 
     ack()
 
-    # Per-item auto-approve decision — same logic as single-shot:
-    # cover at submit time AND at scheduled run time (if scheduled), counting
-    # only a waiver that may decide on the item's target (on an Athena
-    # archive: one that names it, or the owning team's lead's).
+    # Per-item auto-approve decision — same logic as single-shot
+    # (auto_approve.decision): cover at submit time AND at scheduled run time
+    # (if scheduled). On an Athena archive that is a read by an admin, the
+    # owning team's lead or a waiver holder.
     aa_grants: list[dict | None] = []
     aa_expired_warning_items: list[int] = []   # 1-based positions
     aa_targets: dict[int, targets.TargetServer | None] = {}   # read once each
@@ -1632,20 +1630,11 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
         if tid not in aa_targets:
             aa_targets[tid] = targets.get(tid)
         t = aa_targets[tid]
-        g = auto_approve.effective_grant(
-            user["id"], vi["required_mode"],
-            target_server_id=vi["target_server_id"],
-            database_name=vi["database_name"],
-            applies=lambda r: auto_approve.waiver_applies(t, r, user["id"]),
-        )
+        g = auto_approve.decision(user["id"], vi["required_mode"], t,
+                                  vi["database_name"])
         if g is not None and sched_for is not None:
-            g_at_sched = auto_approve.effective_grant(
-                user["id"], vi["required_mode"],
-                target_server_id=vi["target_server_id"],
-                database_name=vi["database_name"],
-                at_time=sched_for,
-                applies=lambda r: auto_approve.waiver_applies(t, r, user["id"]),
-            )
+            g_at_sched = auto_approve.decision(user["id"], vi["required_mode"], t,
+                                               vi["database_name"], at_time=sched_for)
             if g_at_sched is None:
                 aa_expired_warning_items.append(i)
                 g = None
@@ -1698,8 +1687,7 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
                         row[k] = v
                 audit.log_in(cur, row["id"], auto_approve.AUTO_DECIDED_BY,
                              None, "auto_approved", {
-                                 "grant_id": grant["id"],
-                                 "max_tier": grant["max_tier"],
+                                 **auto_approve.audit_details(grant),
                                  "scheduled_for": str(sched_for) if sched_for else None,
                              })
 
@@ -1823,7 +1811,7 @@ def _dm_admins_bundle_auto_approved(
         meta = (
             f"• item #{row['position']}: `{item['target_alias']}/"
             f"{item['database_name']}` "
-            f"({grant['max_tier'].upper()} via grant #{grant['id']}) "
+            f"({grant['max_tier'].upper()} via {auto_approve.basis_label(grant)}) "
             f"→ request #{row['id']}"
         )
         fallback_lines.append(meta)

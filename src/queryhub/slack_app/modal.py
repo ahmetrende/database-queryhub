@@ -184,8 +184,13 @@ def _waiver_scopes(principal_id: str, rows: list[dict]) -> list[dict]:
 
     Each row is also asked `auto_approve.waiver_applies`, as the submit path
     asks it. A waiver naming a connection where it may not decide is left off,
-    and an every-connection one names the connections it does not reach: on an
-    Athena archive it reaches only the lead of the team that owns it.
+    and an every-connection one names the connections it does not reach: those
+    whose engine_config turns auto-approve off.
+
+    An Athena archive where this person auto-approves reads by role -- an
+    admin, or the lead of the team that owns it -- is listed too, from the
+    answer the submit path acts on (`_archive_role_scopes`), unless a waiver
+    already listed covers it.
     """
     out, seen, closed = [], set(), None
     for r in rows:
@@ -201,16 +206,17 @@ def _waiver_scopes(principal_id: str, rows: list[dict]) -> list[dict]:
              "team": r.get("team_name") if r.get("team_id") is not None else None}
         if tid is None:
             # Where an every-connection waiver does not apply depends on the
-            # target and on the holder, never on the row, so it is read once.
+            # target, never on the row, so it is read once.
             if closed is None:
                 closed = _closed_to_waivers(principal_id, r)
             x["alias"], x["except"] = None, closed
         else:
             t = targets.get(tid)
-            if t is not None and not auto_approve.waiver_applies(t, r, principal_id):
+            if t is not None and not auto_approve.waiver_applies(t, r):
                 continue
             x["alias"] = t.alias if t else f"target #{tid}"
         out.append(x)
+    out += _archive_role_scopes(principal_id, rows)
 
     # A waiver that contains another at the same tier or above makes the
     # narrower one say nothing: listing three servers for someone covered on
@@ -230,12 +236,37 @@ def _waiver_scopes(principal_id: str, rows: list[dict]) -> list[dict]:
 def _closed_to_waivers(principal_id: str, waiver: dict) -> list[str]:
     """Aliases of the connections this person can query where this
     every-connection waiver does not apply (`auto_approve.waiver_applies`): a
-    target that keeps auto-approve off, unless they lead the team that owns
-    it. Read from the full target rows: whether a target turns it back on is
-    in its engine_config."""
+    target whose engine_config turns auto-approve off. Read from the full
+    target rows, because that setting is in their engine_config."""
     return sorted(t.alias for t in targets.list_enabled()
-                  if not auto_approve.waiver_applies(t, waiver, principal_id)
+                  if not auto_approve.waiver_applies(t, waiver)
                   and teams.can_use_target(principal_id, t.id))
+
+
+_ROLE_PHRASE = {auto_approve.ARCHIVE_BASIS["admin"]: "as an admin",
+                auto_approve.ARCHIVE_BASIS["owner lead"]: "as the owning team's lead"}
+
+
+def _archive_role_scopes(principal_id: str, rows: list[dict]) -> list[dict]:
+    """Badge entries for the Athena archives where this person's reads skip
+    review by role, with no waiver: an admin, or the lead of the team that
+    owns the archive.
+
+    Asked of `auto_approve.decision` with the person's own waivers, exactly as
+    the submit path asks it, so an entry appears only where a read there would
+    run unreviewed -- and only where no waiver decides, since a waiver that
+    does is already on the badge. Only archives they can query are named.
+    """
+    out = []
+    for t in targets.list_enabled():
+        if not engines.archive_rule_applies(t) or not teams.can_use_target(principal_id, t.id):
+            continue
+        d = auto_approve.decision(principal_id, "ro", t, None, rows=rows)
+        if d is not None and d.get("basis"):
+            out.append({"tid": t.id, "database": None, "tier": "ro",
+                        "until": _ROLE_PHRASE.get(d["basis"], d["basis"]),
+                        "team": None, "alias": t.alias})
+    return out
 
 
 def _auto_approve_banner(principal_id: str | None) -> list[dict]:
@@ -271,11 +302,8 @@ def _auto_approve_banner(principal_id: str | None) -> list[dict]:
     if burst:
         try:
             t = targets.get(burst["target_server_id"])
-            covered = t is not None and auto_approve.effective_grant(
-                principal_id, "ro", target_server_id=burst["target_server_id"],
-                database_name=burst["database_name"], rows=rows,
-                applies=lambda g: auto_approve.waiver_applies(t, g, principal_id),
-            ) is not None
+            covered = auto_approve.decision(principal_id, "ro", t, burst["database_name"],
+                                            rows=rows) is not None
         except Exception:
             covered = False
     # The nudge offers a window on the burst's own target, and no window is

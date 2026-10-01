@@ -117,7 +117,7 @@ def is_admin(principal_id: str) -> bool:
     return any(r["role"] == "admin" for r in roles(principal_id))
 
 
-def is_super_admin(principal_id: str) -> bool:
+def is_super_admin(principal_id: str, rows: list[dict] | None = None) -> bool:
     """Unscoped, uncapped and permanent.
 
     `valid_until IS NULL` is load-bearing. The old model kept temporary admins
@@ -125,10 +125,17 @@ def is_super_admin(principal_id: str) -> bool:
     live in `role_assignment`, so a query for "unscoped admin" would also match
     someone holding the role for an afternoon. That person could then write role
     rows and read the PII exemptions marked super-admin-only.
+
+    `rows` are this principal's `roles`, for a caller that has read them
+    already.
     """
     return any(r["role"] == "admin" and r["all_teams"] and r["all_targets"]
                and r["any_tier"] and r["valid_until"] is None
-               for r in roles(principal_id))
+               for r in (roles(principal_id) if rows is None else rows))
+
+
+def _approver_of(r: dict, target_id: int) -> bool:
+    return r["role"] == "approver" and r["scope_target_id"] == target_id
 
 
 def approves_target(principal_id: str, target_id: int) -> bool:
@@ -144,8 +151,32 @@ def approves_target(principal_id: str, target_id: int) -> bool:
     By name only. A row for every target (`all_targets`, whose
     `scope_target_id` is NULL) does not count, and neither does an admin role.
     """
-    return any(r["role"] == "approver" and r["scope_target_id"] == target_id
-               for r in roles(principal_id))
+    return any(_approver_of(r, target_id) for r in roles(principal_id))
+
+
+def archive_role(principal_id: str, target_id: int) -> str | None:
+    """The role that lets this principal's reads on an archive skip review.
+
+    The operator's archive rule (2026-10-01), its role half: the lead of the
+    team that owns the archive (`approves_target`) and anyone holding an admin
+    role -- any admin, scoped, capped or temporary, not only a super-admin --
+    auto-approve a read there, waiver or not. Returns 'owner lead', 'admin', or
+    None. The lead is named first when someone is both: it is the reason that
+    belongs to this archive.
+
+    None for a super-admin. Their own submission is the super-admin rule,
+    decided and recorded by the caller as "super-admin full access", and it
+    must stay that way rather than read as an archive role. One read of
+    `roles`, so live, unrevoked and enabled are inherited here too.
+    """
+    rows = roles(principal_id)
+    if is_super_admin(principal_id, rows):
+        return None
+    if any(_approver_of(r, target_id) for r in rows):
+        return "owner lead"
+    if any(r["role"] == "admin" for r in rows):
+        return "admin"
+    return None
 
 
 # ---------------------------------------------------------------------------

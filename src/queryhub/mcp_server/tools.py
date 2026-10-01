@@ -13,11 +13,12 @@ is the shape rather than a preference.
 from __future__ import annotations
 
 import csv
+import functools
 import logging
 import time
 from pathlib import Path
 
-from .. import core_submit, db, origins, query_safety, targets, teams
+from .. import admins, core_submit, db, engines, origins, query_safety, targets, teams
 from . import caller, policy
 
 log = logging.getLogger(__name__)
@@ -110,6 +111,9 @@ def _classify(sql: str, engine: str) -> tuple[str, list[str]]:
 def list_connections() -> dict:
     """Every database this caller may query, and at what tier."""
     uid = _me()
+    # Except a super-admin, nobody is shown more than RO on an Athena archive
+    # (engines.shown_tier); asked only if an archive row would change.
+    is_super = functools.cache(lambda: admins.is_super_admin(uid))
     out = []
     for t in targets.list_enabled():
         grant = teams.effective_grant_for_user(uid, t.id)
@@ -119,7 +123,7 @@ def list_connections() -> dict:
         out.append({
             "connection": t.alias,
             "engine": t.engine,
-            "tier": (grant["mode"] or "ro").upper(),
+            "tier": engines.shown_tier(t.engine, grant["mode"] or "ro", is_super).upper(),
             "databases": sorted(allowed) if allowed is not None else None,
             "allDatabases": allowed is None,
         })

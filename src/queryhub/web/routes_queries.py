@@ -33,7 +33,8 @@ from pydantic import BaseModel, Field
 
 from .. import people
 from .. import admins, audit as audit_mod
-from .. import cancellation, core_submit, db, origins, pii, pre_flight, profile_sync, query_safety, requesters
+from .. import (cancellation, core_submit, db, engines, origins, pii, pre_flight, profile_sync,
+               query_safety, requesters)
 from .. import config as cfg
 from . import deps, mapping, sessions
 from .routes_data import _alias_of, _target_by_alias
@@ -596,19 +597,14 @@ def submit_batch(body: BatchIn, request: Request,
     sched_for = preps[0].sched_for
     # Phase-23 policy: a super-admin's own submissions auto-approve (all tiers).
     super_auto = admins.is_super_admin(uid)
-    # Per-item grant-based auto-approve — cover NOW and (if scheduled) at run
-    # time, counting only a waiver that may decide on the item's target (on an
-    # Athena archive: one that names it, or the owning team's lead's).
+    # Per-item auto-approve — cover NOW and (if scheduled) at run time, asked
+    # as create_request asks it (auto_approve.decision): on an Athena archive,
+    # a read by an admin, the owning team's lead or a waiver holder.
     aa_grants: list[dict | None] = []
     for p in preps:
-        g = auto_approve.effective_grant(
-            uid, p.required_mode, target_server_id=p.target.id,
-            database_name=p.database,
-            applies=lambda r: auto_approve.waiver_applies(p.target, r, uid))
-        if g is not None and sched_for is not None and auto_approve.effective_grant(
-                uid, p.required_mode, target_server_id=p.target.id,
-                database_name=p.database, at_time=sched_for,
-                applies=lambda r: auto_approve.waiver_applies(p.target, r, uid)) is None:
+        g = auto_approve.decision(uid, p.required_mode, p.target, p.database)
+        if g is not None and sched_for is not None and auto_approve.decision(
+                uid, p.required_mode, p.target, p.database, at_time=sched_for) is None:
             g = None
         aa_grants.append(g)
 
@@ -646,7 +642,7 @@ def submit_batch(body: BatchIn, request: Request,
                 decided_by = auto_approve.AUTO_DECIDED_BY
                 decided_name = auto_approve.decided_by_name_for(grant)
                 approve_action, approve_actor = "auto_approved", None
-                approve_details = {"grant_id": grant["id"], "max_tier": grant["max_tier"]}
+                approve_details = auto_approve.audit_details(grant)
             else:   # super-admin full access (self-authorized)
                 decided_by, decided_name = uid, f"{name} (super-admin)"
                 approve_action, approve_actor = "auto_approved_super", decided_name
@@ -771,13 +767,11 @@ def classify_query(body: ClassifyIn, claims: dict = Depends(deps.current_user)):
         if unrestricted:
             will_auto = True
         else:
-            # Only a waiver that may decide, as create_request asks it: on an
-            # Athena archive, one that names it, or the owning team's lead's.
+            # The question create_request decides with (auto_approve.decision):
+            # on an Athena archive, a read by an admin, the owning team's lead
+            # or a waiver holder.
             from .. import auto_approve
-            will_auto = auto_approve.effective_grant(
-                uid, required, target_server_id=t.id, database_name=database,
-                applies=lambda g: auto_approve.waiver_applies(t, g, uid),
-            ) is not None
+            will_auto = auto_approve.decision(uid, required, t, database) is not None
 
     return {
         "tier": required.upper(),
@@ -786,7 +780,11 @@ def classify_query(body: ClassifyIn, claims: dict = Depends(deps.current_user)):
         "blockers": list(safety.blockers or []),
         "warnings": list(safety.warnings or []),
         "destructive": bool(safety.is_destructive),
-        "grantedTier": (current_mode or "").upper() or None,
+        # Except super-admins, nobody is shown more than RO on an Athena
+        # archive (engines.shown_tier); `tierExceedsGrant` above is decided on
+        # the real tier, and a write there is blocked for everyone anyway.
+        "grantedTier": (engines.shown_tier(t.engine, current_mode, unrestricted)
+                        or "").upper() or None,
         "tierExceedsGrant": exceeds,
         "willAutoApprove": will_auto,
         # Whether the submit path will demand a justification, answered exactly

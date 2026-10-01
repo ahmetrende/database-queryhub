@@ -13,7 +13,7 @@ except ModuleNotFoundError:  # vanilla profile: the [slack] extra isn't installe
 if TYPE_CHECKING:  # only a type hint — no runtime dependency on slack_sdk
     from slack_sdk.web import WebClient
 
-from .. import admins, db, origins, query_safety, targets
+from .. import admins, auto_approve, db, origins, query_safety, targets
 from .. import config as cfg
 
 log = logging.getLogger(__name__)
@@ -2002,12 +2002,14 @@ def dm_admins_auto_approved(
     grant: dict,
 ) -> None:
     """FYI when an auto-approve grant short-circuits the approval flow.
-    RO grants route to the quiet feed channel; RW/DDL always DM admins."""
+    RO grants route to the quiet feed channel; RW/DDL always DM admins.
+    `grant` is what `auto_approve.decision` returned: a waiver, or the archive
+    rule's basis, which names the role instead of a grant."""
     requester = request["requester_slack_id"]
     header = (
         f":zap: *Auto-approved* — query `#{request['id']}` "
         f"from <@{requester}> on `{target.alias}/{request['database_name']}` "
-        f"({grant['max_tier'].upper()} via grant #{grant['id']})."
+        f"({grant['max_tier'].upper()} via {auto_approve.basis_label(grant)})."
     )
     deliver_auto_approve_fyi(
         client, request, header, quiet=(grant.get("max_tier") == "ro"))

@@ -8,13 +8,15 @@ A grant matches a request when:
 If multiple grants for the same user match, the most permissive
 (highest max_tier, then latest expires_at) wins. For "is this grant
 still valid at the scheduled run time?" — the submit handler calls
-effective_grant(at_time=scheduled_for) and falls back to manual
-approval if it returns None.
+decision(at_time=scheduled_for) and falls back to manual approval if it
+returns None.
 
-Whether a matching grant may DECIDE on a given target is a second question,
-`waiver_applies`, which every caller passes to `effective_grant` as
-`applies`. On most targets the answer is always yes; on an Athena archive
-only a waiver that names it, or the owning team's lead's, applies.
+Whether a request may skip review is asked of ONE function, `decision`, by
+everything that decides it and everything that announces it. It asks
+`effective_grant` for the best waiver that may decide on the target
+(`waiver_applies`), and on a target under the archive rule it also lets an
+admin or the owning team's lead through, waiver or not. A test reads the
+package and fails any other caller of `effective_grant`.
 """
 from __future__ import annotations
 
@@ -203,45 +205,123 @@ def _team_waiver_applies(principal_id: str,
     return access.team_waivers_reach(principal_id, target_server_id, database_name)
 
 
-def waiver_applies(target, waiver: dict | None, holder: str | None) -> bool:
-    """May this waiver decide a request by `holder` on `target`?
+def waiver_applies(target, waiver: dict | None) -> bool:
+    """May this waiver decide on `target`?
 
-    The one place that answers it. Every caller of `effective_grant` in the
-    package passes it as `applies`, and a test reads the package to fail one
-    that does not (tests/test_auto_approve_engine_gate.py).
+    `decision` asks it of every covering waiver, and so does anything that
+    lists or plans waivers (the Slack badge, "already covered" when a new one
+    is written), so the two cannot disagree about one.
 
-    - Where the target lets anything skip review (`engines.auto_approve_allowed`:
-      the engine's default, or `engine_config.auto_approve: true`), every
-      waiver applies, as it always has.
+    - Where the target lets everything skip review
+      (`engines.auto_approve_allowed`: the engine's default, or
+      `engine_config.auto_approve: true`), every waiver applies, as it always
+      has.
     - Where the target says `engine_config.auto_approve: false`, none does.
-    - Where the ENGINE keeps auto-approve off and the target says nothing (an
-      Athena archive), two do. A waiver that names this target applies as
-      usual. A fleet-wide one applies only when its holder is the lead of the
-      team that owns the target, which the access model records as an approver
-      role scoped to it (`access.approves_target`). That is the operator's rule
-      (2026-10-01): the lead has auto-approve there, and everyone else's query
-      goes to the lead and an admin. Somebody who reaches every target holds a
-      fleet-wide waiver for reasons that never weighed what an archive query
-      costs.
+    - On a target under the archive rule (`engines.archive_rule_applies`) a
+      waiver that names it applies, and so does a fleet-wide one, whoever
+      holds it (operator rule, 2026-10-01: anyone with a fleet-wide auto RO
+      auto-approves RO there). A waiver naming another target never does.
+      That only reads can skip review there is `decision`'s to enforce; this
+      answers for the waiver, not for the request.
 
-    The role is read as it is now, also for a run scheduled later, as a team
-    waiver's reach is. No target or no waiver means no. A super-admin's own
-    submission is a separate rule, decided by the caller.
+    No target or no waiver means no. A super-admin's own submission is a
+    separate rule, decided by the caller.
     """
     if target is None or not waiver:
         return False
     if engines.auto_approve_allowed(target):
         return True
-    if engines.auto_approve_override(target) is not None:
+    if not engines.archive_rule_applies(target):
         return False                    # the target itself turned it off
-    target_id = getattr(target, "id", None)
     named = waiver.get("target_server_id")
-    if named is not None:
-        return named == target_id
-    if not holder or target_id is None:
-        return False
+    return named is None or named == getattr(target, "id", None)
+
+
+# How the request row and the audit trail name a decision the archive rule's
+# role half made: there is no waiver to cite, so the basis is the reason.
+ARCHIVE_BASIS = {"owner lead": "archive: owner lead", "admin": "archive: admin"}
+
+
+def _archive_role_basis(target, holder: str | None, required_mode: str) -> dict | None:
+    """The archive rule's role half, as a decision: an admin or the owning
+    team's lead auto-approves a read, with no waiver (`access.archive_role`).
+
+    Shaped like a waiver row so every consumer that writes one -- the request
+    row, the audit trail, the admin FYI -- writes this too, with `basis` in
+    place of a grant id (`audit_details`, `basis_label`, `decided_by_name_for`).
+    The role is read as it is now, also for a run scheduled later, as a team
+    waiver's reach is.
+    """
+    if required_mode != "ro" or not holder or not engines.archive_rule_applies(target):
+        return None
+    target_id = getattr(target, "id", None)
+    if target_id is None:
+        return None
     from . import access                # lazy, as in _team_waiver_applies
-    return access.approves_target(holder, target_id)
+    role = access.archive_role(holder, target_id)
+    if role is None:
+        return None
+    return {"id": None, "basis": ARCHIVE_BASIS[role], "slack_user_id": holder,
+            "max_tier": "ro", "target_server_id": target_id, "database_name": None,
+            "starts_at": None, "expires_at": None, "reason": ARCHIVE_BASIS[role]}
+
+
+def decision(
+    principal_id: str,
+    required_mode: str,
+    target,
+    database_name: str | None = None,
+    *,
+    at_time: datetime | None = None,
+    rows: list[dict] | None = None,
+    refused: list[dict] | None = None,
+) -> dict | None:
+    """May this request skip review, and on what basis? None means a human
+    approves it.
+
+    THE question. `create_request` decides with it, and everything that tells
+    somebody beforehand -- `validate_submission`'s justification exemption,
+    `/classify`'s `willAutoApprove`, `/connections`' `autoApproveRO`, the Slack
+    badge and burst checks, both batch paths -- asks it too, so none of them
+    can promise what the submit path would not do. A test reads the package
+    and fails a caller of `effective_grant` anywhere but here.
+
+    The answer is the best waiver that may decide on this target
+    (`effective_grant` filtered by `waiver_applies`), or, on a target under the
+    archive rule with no such waiver, the rule's role basis
+    (`_archive_role_basis`). On such a target only a read is ever let through:
+    except super-admins, nobody holds more than RO there.
+
+    The fingerprint cache is not part of it: `create_request` consults it after
+    this, and only where `engines.auto_approve_allowed` says everything may
+    skip review. A super-admin's own submission is the caller's rule too, asked
+    first; the role half stands aside for one (`access.archive_role`).
+
+    `at_time` asks about a scheduled run, `rows` supplies the principal's live
+    waivers for a caller asking about many scopes (`active_grants`), and
+    `refused` collects the covering waivers that may not decide here, so their
+    holder can be told why the request waits.
+    """
+    if target is None:
+        return None
+    archive = engines.archive_rule_applies(target)
+    if archive and required_mode != "ro":
+        return None
+
+    def applies(g: dict) -> bool:
+        if waiver_applies(target, g):
+            return True
+        if refused is not None:
+            refused.append(g)
+        return False
+
+    g = effective_grant(principal_id, required_mode,
+                        target_server_id=getattr(target, "id", None),
+                        database_name=database_name, at_time=at_time, rows=rows,
+                        applies=applies)
+    if g is not None or not archive:
+        return g
+    return _archive_role_basis(target, principal_id, required_mode)
 
 
 def effective_grant(
@@ -265,9 +345,12 @@ def effective_grant(
 
     `applies` is asked of each covering row in that order, and a row it refuses
     is passed over, so the answer is the best waiver that may decide HERE.
-    Callers pass `waiver_applies` for the target. Filtering the answer instead
-    would lose a waiver: on an Athena archive a fleet-wide row that does not
-    apply sorts ahead of one that names the archive and does."""
+    Filtering the answer instead would lose a waiver: a fleet-wide row that
+    does not apply sorts ahead of a narrower one that does.
+
+    Called by `decision` and nothing else, which passes `waiver_applies` for
+    the target and adds the archive rule's role half. A caller asking this
+    directly would decide without either."""
     if required_mode not in _TIER_RANK:
         return None
     at = at_time or datetime.now(timezone.utc)
@@ -324,13 +407,31 @@ AUTO_DECIDED_BY = "AUTO"
 
 
 def decided_by_name_for(grant: dict) -> str:
-    """Human-readable label written to requests.decided_by_name when an
-    auto-approve grant short-circuits the admin gate."""
+    """Human-readable label written to requests.decided_by_name (and
+    decision_reason) when `decision` short-circuits the admin gate: the waiver
+    it cites, or the archive rule's basis when no waiver decided."""
+    if grant.get("basis"):
+        return f"auto-approved ({grant['basis']}, max_tier={grant['max_tier']})"
     until = fmt_until(grant.get("expires_at"))
     if grant.get("team_id") is not None:
         return (f"auto-approved (team {grant.get('team_name') or grant['team_id']} "
                 f"waiver {grant['id']}, max_tier={grant['max_tier']}, {until})")
     return f"auto-approved (grant #{grant['id']}, max_tier={grant['max_tier']}, {until})"
+
+
+def audit_details(grant: dict) -> dict:
+    """What an `auto_approved` audit row (and its `submitted` row) records
+    about the decision: the waiver's `grant_id`, or the archive rule's `basis`,
+    which has no waiver to cite. Never both, so a reader of the trail can tell
+    a waiver's decision from a role's."""
+    if grant.get("basis"):
+        return {"basis": grant["basis"], "max_tier": grant["max_tier"]}
+    return {"grant_id": grant["id"], "max_tier": grant["max_tier"]}
+
+
+def basis_label(grant: dict) -> str:
+    """The short form, for a DM: `grant #12`, or `archive: admin`."""
+    return grant.get("basis") or f"grant #{grant['id']}"
 
 
 # ---------------------------------------------------------------------------

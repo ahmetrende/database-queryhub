@@ -574,6 +574,9 @@ def list_team_summaries() -> list[dict]:
 def team_detail(team_name: str) -> dict | None:
     """One team's members and grants, or None if there is no such team.
 
+    Each grant carries its target's `engine`, so the view can show an Athena
+    archive's tier as RO (`engines.shown_tier`); NULL for an every-target row.
+
     `grants` are the live ones only — neither revoked nor expired. The legacy
     query listed every row in `team_target_grants`, so a grant that had been
     revoked, or had simply run out, read as access the team still had. See
@@ -591,7 +594,7 @@ def team_detail(team_name: str) -> dict | None:
             "SELECT COALESCE(ts.alias, 'every target') AS alias, g.tier AS mode, "
             "       CASE WHEN g.all_databases THEN NULL "
             "            ELSE ARRAY[g.database_name] END AS allowed_databases, "
-            "       g.db_role AS target_role "
+            "       g.db_role AS target_role, ts.engine "
             "  FROM access_grant g "
             "  LEFT JOIN target_servers ts ON ts.id = g.target_id "
             " WHERE g.team_id = %s AND NOT g.is_deleted "
@@ -615,7 +618,7 @@ def team_detail(team_name: str) -> dict | None:
     if team is None:
         return None
     grants = db.fetch_all(
-        "SELECT ts.alias, g.mode, g.allowed_databases, g.target_role "
+        "SELECT ts.alias, g.mode, g.allowed_databases, g.target_role, ts.engine "
         "  FROM team_target_grants g "
         "  JOIN target_servers ts ON ts.id = g.target_server_id "
         " WHERE g.team_id = %s AND g.revoked_at IS NULL "
