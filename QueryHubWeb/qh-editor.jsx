@@ -31,6 +31,132 @@ function qhRedactedAt(sql) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Undo / redo
+//
+// Every change to the text lands in one history, whoever made it: typing, a
+// paste, a completion, the * expansion, Tab, a dropped tree object, a line cut
+// or paste, or the app replacing the text from outside the editor. The
+// browser's own undo cannot do this. It only knows the edits it made itself,
+// and the first time React writes the value — every edit the editor makes on
+// its own — that stack is gone. That is why ⌘Z after expanding * did nothing.
+// So the editor keeps its own history and owns ⌘Z / Ctrl+Z (back), ⌘⇧Z /
+// Ctrl+Shift+Z (forward), and Ctrl+Y (forward) off the Mac.
+//
+// One history per tab, held outside React, so it survives a tab switch and the
+// editor unmounting behind the Welcome tab. A step stores what changed (where,
+// what was removed, what was inserted), never a copy of the whole script.
+// Typing and deleting merge into one step the way VS Code groups them: a new
+// step at the first blank after a word, or whenever the caret moved in
+// between. Every other edit is a step of its own.
+// ---------------------------------------------------------------------------
+const QH_UNDO_MAX = 500;      // steps kept per tab
+const QH_UNDO_TABS = 64;      // tabs whose history is kept at once
+const QH_UNDO_MERGE = new Set(['type', 'back', 'fwd', 'compose']);
+const QH_EDITOR_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const qhUndoDocs = new Map();
+
+// The one contiguous change that turns `a` into `b`.
+function qhTextDiff(a, b) {
+  const n = Math.min(a.length, b.length);
+  let s = 0;
+  while (s < n && a.charCodeAt(s) === b.charCodeAt(s)) s++;
+  let ea = a.length, eb = b.length;
+  while (ea > s && eb > s && a.charCodeAt(ea - 1) === b.charCodeAt(eb - 1)) { ea--; eb--; }
+  return { at: s, del: a.slice(s, ea), ins: b.slice(s, eb) };
+}
+
+// How an input event groups, from its InputEvent.inputType. Only plain typing,
+// plain deleting and an IME composition can merge; a paste, a cut, Enter or a
+// word delete is always a step of its own.
+function qhEditKind(inputType) {
+  if (inputType === 'insertText') return 'type';
+  if (inputType === 'deleteContentBackward') return 'back';
+  if (inputType === 'deleteContentForward') return 'fwd';
+  if (/Composition/.test(inputType || '')) return 'compose';
+  return inputType || 'edit';
+}
+
+// The history of one document, started at its current text the first time it
+// is asked for. Past the cap the least recently used history is dropped.
+function qhUndoDoc(key, text) {
+  let h = qhUndoDocs.get(key);
+  if (h) { qhUndoDocs.delete(key); qhUndoDocs.set(key, h); return h; }
+  h = { text, undo: [], redo: [] };
+  qhUndoDocs.set(key, h);
+  if (qhUndoDocs.size > QH_UNDO_TABS) qhUndoDocs.delete(qhUndoDocs.keys().next().value);
+  return h;
+}
+
+// Sign-out drops every history: what is in it is the previous user's SQL.
+function qhUndoForget() { qhUndoDocs.clear(); }
+
+// Whether change `c` continues the open step `top` rather than starting one.
+function qhUndoJoins(top, c, kind, before) {
+  if (top.kind !== kind) return false;
+  // A composition is one step from compositionstart (which closes the step
+  // before it) to the next edit of another kind.
+  if (kind === 'compose') return true;
+  const caret = top.after[0];
+  if (top.after[1] !== caret || before[0] !== caret || before[1] !== caret) return false;
+  if (kind === 'type') {
+    const last = top.changes[top.changes.length - 1].ins;
+    if (/^\s/.test(c.ins) && /\S$/.test(last)) return false;
+  }
+  return true;
+}
+
+// Record the change from the history's text to `next`. `meta.before` and
+// `meta.after` are the selections around it — undo puts back the first, redo
+// the second. Without them the changed range stands in.
+function qhUndoRecord(h, next, meta) {
+  if (next === h.text) return false;
+  const m = meta || {};
+  const c = qhTextDiff(h.text, next);
+  const kind = m.kind || 'edit';
+  const before = m.before || [c.at, c.at + c.del.length];
+  const after = m.after || [c.at + c.ins.length, c.at + c.ins.length];
+  h.text = next;
+  h.redo.length = 0;
+  const top = h.undo[h.undo.length - 1];
+  if (top && top.open && qhUndoJoins(top, c, kind, before)) {
+    top.changes.push(c);
+    top.after = after;
+    return true;
+  }
+  if (top) top.open = false;
+  h.undo.push({ kind, changes: [c], before, after, open: QH_UNDO_MERGE.has(kind) });
+  if (h.undo.length > QH_UNDO_MAX) h.undo.shift();
+  return true;
+}
+
+// Close the open step, so the next edit starts a new one.
+function qhUndoSeal(h) {
+  const top = h.undo[h.undo.length - 1];
+  if (top) top.open = false;
+}
+
+// One step back (dir < 0) or forward (dir > 0). Returns the new text and the
+// selection to restore, or null when there is nothing to take.
+function qhUndoStep(h, dir) {
+  const e = (dir < 0 ? h.undo : h.redo).pop();
+  if (!e) return null;
+  e.open = false;
+  let t = h.text;
+  if (dir < 0) {
+    for (let i = e.changes.length - 1; i >= 0; i--) {
+      const c = e.changes[i];
+      t = t.slice(0, c.at) + c.del + t.slice(c.at + c.ins.length);
+    }
+    h.redo.push(e);
+  } else {
+    for (const c of e.changes) t = t.slice(0, c.at) + c.ins + t.slice(c.at + c.del.length);
+    h.undo.push(e);
+  }
+  h.text = t;
+  return { text: t, sel: dir < 0 ? e.before : e.after };
+}
+
 // Tokenize + return highlighted HTML
 function qhHighlight(code) {
   // master regex: comments | strings | numbers | words | other
@@ -179,7 +305,7 @@ function qhBuildSuggest(value, caret, schema, engineId) {
 }
 const QH_AC_TYPE_LABEL = { keyword: 'kw', table: 'table', column: 'col', database: 'db', system: 'system', function: 'fn', expand: 'all cols' };
 
-function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, schema, engineId, focusSignal, revealRange }) {
+function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, schema, engineId, focusSignal, revealRange, docId }) {
   const taRef = React.useRef(null);
   const preRef = React.useRef(null);
   const gutRef = React.useRef(null);
@@ -199,6 +325,73 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
   const lines = value.split('\n');
   const lh = Math.round(fontSize * 1.55);
   const sch = schema || { tables: [], columns: [], dbs: [] };
+
+  // Undo history (see qhUndoRecord). Keyed by the tab when the app passes
+  // `docId`, so it follows the tab; otherwise this mount keeps its own.
+  const ownKey = React.useRef({});
+  const histKey = docId != null ? docId : ownKey.current;
+  const pendSel = React.useRef(null);     // selection when the edit in flight began
+  const histInput = React.useRef(false);  // a browser undo already answered in beforeinput
+  const restoreSel = React.useRef(null);  // { text, sel } to put back after a step
+  const live = React.useRef(null);        // this render's step + key, for native listeners
+
+  // Every edit the editor makes itself goes through here, so it is in the
+  // history before the parent hears of it.
+  const commit = (next, kind, before, after) => {
+    qhUndoRecord(qhUndoDoc(histKey, value), next, { kind, before, after });
+    onChange(next);
+  };
+  const step = (dir) => {
+    const r = qhUndoStep(qhUndoDoc(histKey, value), dir);
+    if (!r) return;
+    setAc(null);
+    restoreSel.current = r;
+    onChange(r.text);
+  };
+  live.current = { step, histKey };
+
+  // Text the history has not seen came from outside the editor — the app
+  // replacing it. It is recorded as a step of its own, so it undoes too.
+  React.useLayoutEffect(() => {
+    const h = qhUndoDoc(histKey, value);
+    if (h.text !== value) qhUndoRecord(h, value, { kind: 'external' });
+  }, [value, histKey]);
+
+  // After a step, put the selection back once React has written the text —
+  // before paint, so the caret never flashes at the end of the script.
+  React.useLayoutEffect(() => {
+    const r = restoreSel.current, ta = taRef.current;
+    if (!r || !ta || ta.value !== r.text) return;
+    restoreSel.current = null;
+    const n = r.text.length;
+    ta.setSelectionRange(Math.min(r.sel[0], n), Math.min(r.sel[1], n));
+  });
+
+  // `beforeinput` is the last moment the selection BEFORE an edit can be read;
+  // React's onChange runs after the text has changed. It is also how the
+  // browser's own Undo arrives from its menus, which is answered with ours.
+  // A composition (IME, dead keys) starts a step of its own.
+  React.useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return undefined;
+    const onBefore = (e) => {
+      if (e.inputType === 'historyUndo' || e.inputType === 'historyRedo') {
+        e.preventDefault();
+        histInput.current = true;
+        live.current.step(e.inputType === 'historyUndo' ? -1 : 1);
+        return;
+      }
+      histInput.current = false;
+      pendSel.current = [ta.selectionStart, ta.selectionEnd];
+    };
+    const onCompose = () => qhUndoSeal(qhUndoDoc(live.current.histKey, ta.value));
+    ta.addEventListener('beforeinput', onBefore);
+    ta.addEventListener('compositionstart', onCompose);
+    return () => {
+      ta.removeEventListener('beforeinput', onBefore);
+      ta.removeEventListener('compositionstart', onCompose);
+    };
+  }, []);
 
   // Caret geometry inside the hidden mirror. Its box sits exactly on the text
   // origin, so rects come back relative to the first character and the caller
@@ -273,7 +466,7 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     const ta = taRef.current;
     const idx = indexFromPoint(ta, e.clientX, e.clientY);
     const nv = value.slice(0, idx) + text + value.slice(idx);
-    onChange(nv);
+    commit(nv, 'drop', [ta.selectionStart, ta.selectionEnd], [idx + text.length, idx + text.length]);
     requestAnimationFrame(() => { if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = idx + text.length; } });
   };
   const onDragOver = (e) => {
@@ -396,7 +589,7 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     const nv = value.slice(0, from) + item.text + value.slice(ac.end);
     const caret = from + item.text.length;
     setAc(null);
-    onChange(nv);
+    commit(nv, 'complete', ta ? [ta.selectionStart, ta.selectionEnd] : null, [caret, caret]);
     requestAnimationFrame(() => { if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = caret; } });
   };
 
@@ -430,7 +623,7 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     if (lineEnd < 0) lineEnd = rest.length;
     const next = Math.min(base + col, lineEnd);
     setAc(null);
-    onChange(rest);
+    commit(rest, 'cut-line', [caret, caret], [next, next]);
     requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = next; });
   };
 
@@ -444,13 +637,23 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     e.preventDefault();
     const v = ta.value, caret = ta.selectionStart;
     const st = v.lastIndexOf('\n', caret - 1) + 1;
-    setAc(null);
-    onChange(v.slice(0, st) + txt + v.slice(st));
     const next = caret + txt.length;
+    setAc(null);
+    commit(v.slice(0, st) + txt + v.slice(st), 'paste-line', [caret, caret], [next, next]);
     requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = next; });
   };
 
   const onKey = (e) => {
+    // Undo / redo. The letter is read from e.key, the one printed on the
+    // user's layout; e.code only when e.key is not a Latin letter, so a
+    // Cyrillic or Greek layout still undoes. Ctrl+Y is left alone on a Mac,
+    // where ⌘Y is the browser's History and Ctrl+Y a text-field yank.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+      const k = /^[a-z]$/i.test(e.key) ? e.key.toLowerCase()
+        : e.code === 'KeyZ' ? 'z' : e.code === 'KeyY' ? 'y' : '';
+      if (k === 'z') { e.preventDefault(); step(e.shiftKey ? 1 : -1); return; }
+      if (k === 'y' && e.ctrlKey && !e.metaKey && !e.shiftKey && !QH_EDITOR_MAC) { e.preventDefault(); step(1); return; }
+    }
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey
         && (e.key === 'c' || e.key === 'C' || e.key === 'x' || e.key === 'X')
         && e.target.selectionStart === e.target.selectionEnd) {
@@ -484,7 +687,7 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     if (e.key === 'Tab') {
       e.preventDefault();
       const ta = e.target, s = ta.selectionStart, en = ta.selectionEnd;
-      onChange(value.slice(0, s) + '  ' + value.slice(en));
+      commit(value.slice(0, s) + '  ' + value.slice(en), 'indent', [s, en], [s + 2, s + 2]);
       requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = s + 2; });
     } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault(); setAc(null); onRun && onRun();
@@ -551,7 +754,21 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
           spellCheck={false}
           autoCapitalize="off"
           autoCorrect="off"
-          onChange={(e) => { onChange(e.target.value); refreshAC(e.target); }}
+          onChange={(e) => {
+            const ta = e.target, type = e.nativeEvent && e.nativeEvent.inputType;
+            // Undo and redo are ours. A browser that ran its own anyway (its
+            // beforeinput could not be cancelled) is overruled: React puts the
+            // controlled value back, and the step comes from our history.
+            if (type === 'historyUndo' || type === 'historyRedo') {
+              if (!histInput.current) step(type === 'historyUndo' ? -1 : 1);
+              histInput.current = false;
+              return;
+            }
+            const before = pendSel.current;
+            pendSel.current = null;
+            commit(ta.value, qhEditKind(type), before, [ta.selectionStart, ta.selectionEnd]);
+            refreshAC(ta);
+          }}
           onScroll={sync}
           onKeyDown={onKey}
           onPaste={onPaste}
@@ -779,4 +996,7 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
 // qhBuildSuggest is exported so the suggestion rules can be tested directly.
 // It is the one piece of editor behaviour with no visible surface of its own —
 // a wrong pool looks like "autocomplete is being unhelpful", never like a bug.
-Object.assign(window, { SqlEditor, EditorTabs, qhHighlight, qhBuildSuggest, QH_REDACTED_LIT, qhRedactedAt });
+// The undo history's pieces are exported for the same reason; qhUndoForget is
+// also what sign-out calls.
+Object.assign(window, { SqlEditor, EditorTabs, qhHighlight, qhBuildSuggest, QH_REDACTED_LIT, qhRedactedAt,
+  qhTextDiff, qhEditKind, qhUndoDoc, qhUndoRecord, qhUndoSeal, qhUndoStep, qhUndoForget });

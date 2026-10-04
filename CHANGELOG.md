@@ -161,6 +161,15 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Fixed
 
+- **Every edit in the web editor can be undone.** ⌘Z / Ctrl+Z did nothing
+  after the editor changed the text itself: expanding `*` with Tab, accepting
+  a completion, Tab indent, a dropped tree object, a whole-line cut or paste.
+  - Cause: those edits set the controlled textarea's value, and that empties
+    the browser's own undo stack.
+  - Fix: the editor keeps its own history, one per tab, and owns ⌘Z / Ctrl+Z,
+    ⌘⇧Z / Ctrl+Shift+Z and Ctrl+Y (not on a Mac). Typing groups by word; every
+    other edit is one step, including text the app puts in from outside.
+  - The history survives a tab switch and is cleared on sign-out.
 - **On an Athena archive, only admins, the owning team's lead and waiver
   holders skip review, and only for reads.** A fingerprint match would have run
   anyone's repeat query there with no review. With `engine_config.auto_approve`

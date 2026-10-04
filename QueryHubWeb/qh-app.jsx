@@ -186,6 +186,9 @@ function App() {
        QH_CLOSED_KEY, QH_SESSION_KEY, QH_NEWS_KEY, QH_CONNORG_KEY, QH_REASON_KEY].forEach(
         (k) => localStorage.removeItem(k));
     } catch (e) { /* private mode / storage disabled — nothing to clear */ }
+    // The editor's undo history is the same kind of data — the previous
+    // user's SQL — and sign-out does not reload the page.
+    qhUndoForget();
     setUser(null);
   };
 
@@ -1501,7 +1504,7 @@ function App() {
                 onRequest={() => setReqOpen(true)} onDismiss={() => patch(activeId, { expired: null })} />
 
               <div className="qh-ed-host">
-                <SqlEditor value={tab.sql} onChange={onCode} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} />
+                <SqlEditor value={tab.sql} onChange={onCode} docId={tab.id} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} />
               </div>
 
               <div className="qh-res-grip" onMouseDown={onDragStart}><span /></div>
