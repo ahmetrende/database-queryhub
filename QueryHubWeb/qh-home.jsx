@@ -78,7 +78,7 @@ function HomeScreen({ user, openTabs, slackEnabled, onFocusTab, onNewQuery, onSa
           </HomeCard>
 
           <HomeCard title="Recent history" count={history.length}>
-            {history.length === 0 ? <HomeEmpty text="Your recent queries will show up here." /> : (
+            {history.length === 0 ? <HomeEmpty text="Your recent queries show here." /> : (
               <div className="qh-home-list">
                 {history.map(h => (
                   <button key={h.id} className="qh-home-row is-hist" onClick={() => onLoadHistory(h)}>
@@ -106,7 +106,7 @@ function HomeScreen({ user, openTabs, slackEnabled, onFocusTab, onNewQuery, onSa
           </HomeCard>
 
           <HomeCard title="Scheduled" count={(scheduled || []).length}>
-            {(scheduled || []).length === 0 ? <HomeEmpty text="Queries you schedule (a preset or a custom date & time) show up here until they run." /> : (
+            {(scheduled || []).length === 0 ? <HomeEmpty text="Queries that you schedule show here until they run." /> : (
               <div className="qh-home-list">
                 {scheduled.map(s => (
                   <div key={s.id} className="qh-home-row is-linky" onClick={() => onOpenScheduled(s)} title="Open this query in a new tab">

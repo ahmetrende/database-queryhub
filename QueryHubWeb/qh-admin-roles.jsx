@@ -234,7 +234,7 @@ function RoleForm({ st, onDone, init }) {
             covers the request, so a second role never narrows the first (CODE
             brief 2026-09-07 §4). Said here because "which role wins" is the
             question every reader of this form brings to it. */}
-        <span className="qh-accedit-hint">Roles add up — a person may do the union of what their rows allow; a narrower role never limits a wider one.</span></div>
+        <span className="qh-accedit-hint">Roles add up. A person can do all that their rows allow together. A narrower role never limits a wider one.</span></div>
       <div className="qh-rolepick">
         {QH_ROLE_ORDER.map(k => (
           <button key={k} type="button" className={'qh-roleopt' + (f.role === k ? ' is-on' : '')} onClick={() => set({ role: k, maxTier: rolTierApplies(k) ? f.maxTier : '' })}>
@@ -339,7 +339,7 @@ function RolesEmpty({ canWrite, onStart, teams, enforced }) {
     maxTier: 'RW', validUntil: null, reason: 'team lead', source: 'direct' };
   return (
     <div className="qh-roleempty">
-      <div className="qh-roleempty-h">No roles have been created here yet</div>
+      <div className="qh-roleempty-h">No roles here yet</div>
       <p className="qh-roleempty-p">Letting somebody approve has meant making them an admin — fleet-wide, every server, every tier. A role is narrower than that: <b>one person</b>, <b>one thing they may do</b>, and <b>where it stops</b>.
         {/* While the fleet is on the old code path, the staging fact belongs in
             THIS block rather than in a banner above it: with no direct rows yet
@@ -357,7 +357,7 @@ function RolesEmpty({ canWrite, onStart, teams, enforced }) {
         {/* The one place roles are not a plain union, and the reason is worth
             stating: an admin could grant themselves the access anyway, a scoped
             approver waving through their own query removes the review. */}
-        <div><dt>Self-approval</dt><dd>An admin may approve their own request; a scoped approver may not. Holding both takes the admin exemption.</dd></div>
+        <div><dt>Self-approval</dt><dd>An admin can approve their own request. A scoped approver cannot. A person with both roles gets the admin exemption.</dd></div>
       </dl>
       {canWrite
         ? <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={onStart}><RolIcon.plus />Create the first role</button>
@@ -420,7 +420,7 @@ function RolesView({ st, user, canWrite }) {
           question (a) — one message, not two). It names the exception, because
           "not in force" is false of the mirrored rows and they are on screen. */}
       {!enforced && direct.length > 0 && <div className="qh-rolenote is-warn">
-        <RolIcon.lock />Roles are recorded but not yet in force — the fleet still reads the admins table. Rows marked <b>mirrored</b> are live; rows marked <b>staged</b> decide nothing yet.</div>}
+        <RolIcon.lock />Roles are recorded but not yet in force — the fleet still reads the admins table. Rows marked <b>mirrored</b> are live. Rows marked <b>staged</b> decide nothing yet.</div>}
 
       {/* A non-super admin reads this screen (GET needs any admin) but cannot
           write it. Controls that would 403 are absent, and the strip says why —

@@ -247,7 +247,7 @@ function EffPerson({ st, subject, onOpenTeam }) {
             {ap && <> · approver</>}
           </div>
 
-          <EffSection title="Can query" sub="Their own grant on a server beats every team grant on that server — and still does once it has ended, as no access. An admin needs neither.">
+          <EffSection title="Can query" sub="Their own grant on a server wins over every team grant on that server. When it ends, it still wins, as no access. An admin needs neither.">
             {access.length === 0 && autos.length === 0 && !ap && !blocked.length && <EffNone />}
             {access.length === 0 && (autos.length > 0 || ap || blocked.length > 0) && <div className="qh-eff-empty">No grant on any connection.</div>}
             {bypassAll
@@ -321,7 +321,7 @@ function EffTeam({ st, subject, onOpenPerson }) {
             {autos.length > 0 && <> · <b className="qh-eff-sum-warn">{autos.length} auto-approved</b></>}
           </div>
 
-          <EffSection title="Members can query" sub="What this team gives every member — except a member who holds their own grant on the same server. Theirs decides for them there, and still does once it has ended.">
+          <EffSection title="Members can query" sub="What this team gives every member. A member with their own grant on the same server is the exception: that grant decides for them, also after it ends.">
             {access.length === 0
               ? <EffNone team />
               : <div className="qh-eff-list">{access.map(t => (
@@ -418,7 +418,7 @@ function EffectiveAccessView({ st }) {
         {person ? <EffPerson key={'p' + person.handle} st={st} subject={person} onOpenTeam={openTeam} />
           : team ? <EffTeam key={'t' + team.id} st={st} subject={team} onOpenPerson={openPerson} />
           : <div className="qh-eff-intro"><div className="qh-eff-intro-t">Pick someone on the left</div>
-              <div className="qh-eff-intro-p">Every connection and database they can query, where each one comes from, when it ends, what is auto-approved, and whether they approve anything — resolved the way a submission resolves it.</div></div>}
+              <div className="qh-eff-intro-p">Shows every connection and database they can query, its source and its end date. Also shows what is auto-approved and what they approve. A submission resolves access the same way.</div></div>}
       </div>
     </div>
   );

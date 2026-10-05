@@ -50,7 +50,7 @@ function expBad(f) { return f.ttl === 'date' && (!f.expDate || f.expDate < expTo
 // and falling through would widen access on the day it was meant to end.
 function ExpiryNote({ f, subjectType }) {
   if (!f.ttl || f.ttl === 'none') return null;
-  return <div className="qh-exp-note">Access stops on this date{subjectType === 'user' ? ' — it does not fall back to a team grant' : ''}. Re-granting later replaces the date, or clears it.</div>;
+  return <div className="qh-exp-note">Access stops on this date{subjectType === 'user' ? ' — it does not use a team grant instead' : ''}. Re-granting later replaces the date, or clears it.</div>;
 }
 function ExpiryPick({ f, onChange }) {
   return (
@@ -610,7 +610,7 @@ function AutoView({ st, user }) {
   return (
     <div className="qh-apad">
       <div className="qh-aview-head">
-        <div><div className="qh-aview-title">Auto-approve</div><div className="qh-aview-sub">Standing exemptions from review — a person's or a team's queries up to a tier, on a database, run without a DBA until the window ends.</div></div>
+        <div><div className="qh-aview-title">Auto-approve</div><div className="qh-aview-sub">A person's or a team's queries run without a DBA until the window ends. Each exemption covers one database, up to one tier.</div></div>
         <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => { setAdding(a => a === '' ? null : ''); setEditId(null); }}><AIcon.plus />New exemption</button>
       </div>
 
@@ -1095,7 +1095,7 @@ function TeamsView({ st, user }) {
   return (
     <div className="qh-apad">
       <div className="qh-aview-head">
-        <div><div className="qh-aview-title">Teams</div><div className="qh-aview-sub">Group developers into teams. A person can be in several teams; a team holds access to many targets at different tiers, shared by every member.</div></div>
+        <div><div className="qh-aview-title">Teams</div><div className="qh-aview-sub">Group developers into teams. A person can be in several teams. A team holds access to many targets at different tiers, and every member shares it.</div></div>
         {tab === 'teams' && <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => { setAdding(a => !a); setEditId(null); setAccessId(null); }}><AIcon.plus />New team</button>}
       </div>
 
@@ -1146,7 +1146,7 @@ function TeamsView({ st, user }) {
                   <div className="qh-teamcard-acts">
                     <button className="qh-rowbtn" onClick={() => { setAccessId(t.id); setEditId(null); setAdding(false); }}><AIcon.edit />Edit access</button>
                     <button className="qh-rowbtn" onClick={() => { setEditId(t.id); setAccessId(null); setAdding(false); }}><AIcon.edit />Edit team</button>
-                    <button className="qh-revoke" onClick={() => { if (window.confirm('Delete team “' + t.name + '”? Members are kept; only the team is removed.')) st.removeTeam(t.id, actor); }}>Delete</button>
+                    <button className="qh-revoke" onClick={() => { if (window.confirm('Delete team “' + t.name + '”? The members stay. Only the team is deleted.')) st.removeTeam(t.id, actor); }}>Delete</button>
                   </div>
                 </div>
               );
@@ -1623,7 +1623,7 @@ function ConnectionsView({ st, user }) {
     st.setConnectionEnabled(c.id, !c.enabled);
   };
   const removeConnection = (c) => {
-    if (!window.confirm('Delete “' + c.name + '”? If any query history or live grants still point at it, it will be disabled instead of deleted.')) return;
+    if (!window.confirm('Delete “' + c.name + '”? If any query history or live grants still refer to it, QueryHub disables it and does not delete it.')) return;
     st.removeConnection(c.id);
   };
   return (
@@ -1813,7 +1813,7 @@ function ConnectionsView({ st, user }) {
                 </tr>
                 );
               })}
-              {gone.length > 0 && <tr><td colSpan={6} className="qh-conn-empty">Deleted — the instance no longer exists. Kept for the record; it cannot be enabled.</td></tr>}
+              {gone.length > 0 && <tr><td colSpan={6} className="qh-conn-empty">Deleted. The instance does not exist now. QueryHub keeps the row for the record. You cannot enable it.</td></tr>}
               {gone.map(c => (
                 <tr key={c.id} className="is-deleted">
                   <td className="qh-conn-selcol" />

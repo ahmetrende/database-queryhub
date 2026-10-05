@@ -118,9 +118,9 @@ function MxFlags({ e, norms }) {
       ? <span className="qh-mxchip is-join" title="Stays exempt when the query joins a masked table">in joins</span>
       : <span className="qh-mxchip" title="Re-masked when the query joins a masked table">not in joins</span>)}
     {e.audience !== n.audience && (e.audience === 'super'
-      ? <span className="qh-mxchip is-aud" title="Only super-admins see it unmasked; everyone else still gets the mask">super only</span>
+      ? <span className="qh-mxchip is-aud" title="Only super-admins see it unmasked. Everyone else sees the mask.">super only</span>
       : <span className="qh-mxchip" title="Everyone who can read the table sees it unmasked">everyone</span>)}
-    {!e.enabled && <span className="qh-mxchip is-off" title="Turned off — this column is masked again, and the record is kept">off</span>}
+    {!e.enabled && <span className="qh-mxchip is-off" title="Disabled. This column is masked again. QueryHub keeps the record.">off</span>}
     {e.missing && <span className="qh-mxchip is-gone" title="Still enforced, but that table or column is not in the catalog any more">matches nothing</span>}
   </>;
 }
@@ -227,7 +227,7 @@ function MxEdit({ e, st, norms, onDone, onReplace }) {
   const set = (patch) => { setF(x => ({ ...x, ...patch })); setErr(null); };
   const dirty = f.strength !== (e.strength || 'soft') || f.survivesJoin !== !!e.survivesJoin
     || f.audience !== (e.audience || 'everyone') || f.reason.trim() !== (e.reason || '');
-  const why = !f.reason.trim() ? 'A reason is required.' : !dirty ? 'Nothing has changed yet.' : null;
+  const why = !f.reason.trim() ? 'A reason is required.' : !dirty ? 'Change a field first.' : null;
   const save = () => {
     if (busy || why) return;
     setBusy(true);
@@ -281,7 +281,7 @@ function MxItem({ e, canWrite, moot, norms, open, onToggleOpen, st, onReplace, o
               <MxReach e={e} />
               <div className="qh-mxlines">{mxSummary(e)}</div>
               {e.maskedBy && <div className="qh-mxwhy">Caught by the name rule <code>{e.maskedBy.key}</code> — {e.maskedBy.label}, {e.maskedBy.mask === 'full' ? 'fully' : 'partially'} masked.</div>}
-              {e.missing && <div className="qh-mxwhy is-gone">That table or column is not in the catalog any more. Still enforced; it matches nothing today.</div>}
+              {e.missing && <div className="qh-mxwhy is-gone">That table or column is not in the catalog now. The exemption still applies, but it matches nothing today.</div>}
               {e.reason && <div className="qh-mxreason">“{e.reason}”</div>}
               <div className="qh-mxmeta">{qhPersonName(e.createdBy)}{e.createdAt ? ' · ' + qhAgo(e.createdAt) : ''}{e.updatedBy ? ' · edited by ' + qhPersonName(e.updatedBy) + (e.updatedAt ? ' ' + qhAgo(e.updatedAt) : '') : ''}</div>
               {/* The same database usually lives on more than one server. A
@@ -297,7 +297,7 @@ function MxItem({ e, canWrite, moot, norms, open, onToggleOpen, st, onReplace, o
                 {canWrite ? <>
                   {/* Turning one off is the fastest way to close an accidental
                       exposure, so it stays a button and never behind a menu. */}
-                  <button className="qh-btn qh-btn-sm" onClick={() => st.setMaskExemptionEnabled(e.id, !e.enabled)}>{e.enabled ? 'Turn off' : 'Turn back on'}</button>
+                  <button className="qh-btn qh-btn-sm" onClick={() => st.setMaskExemptionEnabled(e.id, !e.enabled)}>{e.enabled ? 'Disable' : 'Enable'}</button>
                   <button className="qh-btn qh-btn-sm" onClick={() => setEditing(true)}>Edit</button>
                   <MxRowMenu items={[
                     e.table && { label: 'Another column in ' + e.table, on: () => onAddHere(e) },
@@ -602,7 +602,7 @@ function MxForm({ st, seed, norms, onDone }) {
       {prev && (
         <div className="qh-mxprev">
           {prev.error && <div className="qh-mxprev-idle">Could not build a preview. The exemption is still what the sentence above says.</div>}
-          {!prev.error && !prev.seen && !prev.wide && <div className="qh-mxprev-idle">Nothing has queried <code>{f.table}</code> in the last {prev.days} days, so there is no real row to show.</div>}
+          {!prev.error && !prev.seen && !prev.wide && <div className="qh-mxprev-idle">No query read <code>{f.table}</code> in the last {prev.days} days, so there is no real row to show.</div>}
           {prev.wide && <div className="qh-mxprev-idle">This reaches <b>{prev.tables}</b> tables and <b>{prev.maskedColumns}</b> columns that are masked today. Too wide for one sample row — that count is the preview.</div>}
           {prev.seen && (
             <div className="qh-mxdiffwrap">
@@ -780,7 +780,7 @@ function MaskingView({ st, user }) {
             <MxCombo small ariaLabel="Database filter" key={'db-' + fServer} disabled={!fServer} value={fDb} placeholder="All databases" options={dbOpts}
               onPick={setFDb} onClear={() => setFDb('')} />
             <div className="qh-seg qh-seg-sm">
-              {[['all', 'All'], ['wide', 'Wider than a column'], ['off', 'Turned off'], ['gone', 'Matching nothing']].map(([v, l]) => (
+              {[['all', 'All'], ['wide', 'Wider than a column'], ['off', 'Disabled'], ['gone', 'Matching nothing']].map(([v, l]) => (
                 <button key={v} className={'qh-seg-opt' + (filter === v ? ' is-active' : '')} onClick={() => setFilter(v)}>{l}<span className="qh-mxseg-n">{count(v)}</span></button>
               ))}
             </div>

@@ -24,6 +24,14 @@
 const API_BASE = '/api';
 window.QH_MOCK = true;            // read by qh-app to skip the result WebSocket
 
+// MOCK: one Athena target (an S3 archive, read-only), so the engine's logo,
+// its quoting and its read-only credential form are on screen somewhere.
+if (window.QH_CONNECTIONS && !window.QH_CONNECTIONS.some(c => c.id === 'archive-athena')) {
+  window.QH_CONNECTIONS.push({ id: 'archive-athena', name: 'archive-athena', engine: 'Amazon Athena (engine v3)', env: 'production',
+    tags: { provider: 'aws', service: 'Athena', account: '4417-0219-0871' },
+    databases: [{ id: 'events_archive', name: 'events_archive', tier: 'RO', tables: ['trades_2024', 'logins_2024', 'ledger_snapshots'] }] });
+}
+
 // Build stamp: in production `qh-version.js` injects window.QH_BUILD from git
 // HEAD (see the FastAPI `/` route). Here we set a plausible one so the profile
 // menu / What's-new header / commit links render.
@@ -115,12 +123,12 @@ const MOCK_NOTIFICATIONS = [
 // MOCK: curated changelog. Prod = GET /changelog (the hand-written entries file).
 const MOCK_CHANGELOG = [
   { version: 'v0.1.0', date: '2026-09-07', sha: '4d66e9b', area: 'Admin', headline: 'Someone can approve for one team without becoming an admin',
-    summary: 'Access → Roles: give a person the right to approve, grant or import, bounded to a team, a server and a tier ceiling — instead of making them an admin everywhere.',
+    summary: 'Access → Roles: let a person approve, grant or import within one team, one server and a tier limit. They do not become an admin everywhere.',
     changes: [
       { type: 'new', text: 'Roles tab under Access — approver, granter, importer or admin, each row written as a sentence saying exactly how far it reaches.' },
       { type: 'new', text: 'A role can end on a date; the row says so in the sentence rather than hiding it in a column.' },
       { type: 'new', text: 'Any admin can read the list — “who can approve my team’s requests?” no longer needs a super-admin to answer.' },
-      { type: 'changed', text: 'Roles are recorded now but not yet in force: the fleet still reads the admins table, so those rows are marked mirrored and live, and new ones are marked staged.' },
+      { type: 'changed', text: 'QueryHub records roles now, but does not apply them yet. The fleet still reads the admins table. Those rows show as mirrored and live. New rows show as staged.' },
       { type: 'fixed', text: 'Disabling somebody’s account revokes nothing — their roles and grants stand. The list now says so on the row instead of leaving it to be discovered.' },
     ],
     commits: [{ sha: '4d66e9b', msg: 'roles: roleId on 409, distinct refusal codes, enabled honoured in roles()' }, { sha: '0aae199', msg: 'add scoped roles screen + GET/POST/DELETE /admin/roles' }] },
@@ -137,7 +145,7 @@ const MOCK_CHANGELOG = [
     changes: [
       { type: 'new', text: 'Username / password sign-in when local accounts are enabled.' },
       { type: 'new', text: 'Change password from the profile menu; handed-off accounts are asked to set one on first sign-in.' },
-      { type: 'changed', text: 'The sign-in screen shows only the methods your deployment has enabled.' },
+      { type: 'changed', text: 'The sign-in screen shows only the methods that your deployment enables.' },
     ],
     commits: [{ sha: '4af0c1e', msg: 'add local account login + change password' }] },
   { version: 'v0.1.0', date: '2026-07-24', sha: '2b55ecc', area: 'Admin', headline: 'Connections are managed in the web panel',
@@ -151,7 +159,7 @@ const MOCK_CHANGELOG = [
   { version: 'v0.1.0', date: '2026-07-22', sha: '9d3f118', area: 'Accessibility', headline: 'Every dialog works from the keyboard',
     summary: 'Modals announce themselves, take focus, close on Escape and keep Tab inside the panel.',
     changes: [
-      { type: 'fixed', text: 'Escape closes a dialog; focus returns to whatever opened it.' },
+      { type: 'fixed', text: 'Escape closes a dialog. Focus goes to the control that opened it.' },
       { type: 'fixed', text: 'Tab no longer walks out of a dialog into the page behind it.' },
       { type: 'improved', text: 'Fonts ship with the app — no third-party request on load, and the UI is intact offline.' },
     ],
@@ -622,7 +630,7 @@ const mockAudit = (event, target, kind, extra) => {
 
 // The registry rows the admin Connections screen edits. Passwords are never
 // returned by the real API — only {username, configured, placeholder} per tier.
-const DEFAULT_PORT = { postgres: 5432, mssql: 1433, oracle: 1521, mysql: 3306, clickhouse: 9440 };
+const DEFAULT_PORT = { postgres: 5432, mssql: 1433, oracle: 1521, mysql: 3306, clickhouse: 9440, athena: 443 };
 const mockEngineName = (e) => e === 'mssql' ? 'SQL Server 2022' : e === 'clickhouse' ? 'ClickHouse 24.8' : 'PostgreSQL 15';
 const mockEngineVer = (e) => e === 'mssql' ? '16.0.4125' : e === 'clickhouse' ? '24.8.4.13' : '15.6';
 function connRegistry() {
@@ -839,7 +847,7 @@ const QH_AUD_REQUESTERS = [
 // Payload sizes, measured (§1.6): average 60 characters, 25 rows over 400, the
 // longest visible 1,086 — and 9,882 in the hidden slice. All four are seeded,
 // because the rail has to be judged against the extremes, not the average.
-const AUD_LONG = 'Raised after the weekly reconciliation job timed out four times in a row. p95 of successful runs on that connection is 41s and p99 is 96s, so 120s clears both with headroom; the previous 30s was set in 2024 when nothing on this fleet ran longer than a lookup. Reverting is safe — nothing depends on the higher ceiling except that job, and the job is idempotent. Checked with the payments team before applying: they confirmed no downstream consumer reads the intermediate table while the job holds it. Rolled out to prod-main first and watched for an hour before the rest of the fleet. No change to the statement timeout on any replica, which stays at 30s deliberately so a runaway analytical query cannot sit on a replica for two minutes. The reconciliation job is the only consumer that has ever needed more than thirty seconds, and it runs once a week at 03:00 against a connection nothing else reads at that hour, so the wider ceiling is not exposed to interactive traffic at all. Reviewed with the DBA on call and recorded here rather than in the ticket, because the ticket will be closed long before anybody asks why this number is what it is.';
+const AUD_LONG = 'Raised after the weekly reconciliation job timed out four times in a row. On that connection, p95 of successful runs is 41s and p99 is 96s. So 120s clears both with headroom. The previous 30s dates from 2024, when nothing on this fleet ran longer than a lookup. A revert is safe. Only that job depends on the higher limit, and the job is idempotent. The payments team checked it before the change. No downstream consumer reads the intermediate table while the job holds it. The change went to prod-main first. We watched it for an hour before the rest of the fleet got it. The statement timeout on every replica stays at 30s on purpose. A runaway analytical query must not hold a replica for two minutes. The reconciliation job is the only consumer that ever needed more than thirty seconds. It runs once a week at 03:00, on a connection that nothing else reads at that hour. So interactive traffic never meets the wider limit. The DBA on call reviewed this. The record is here and not in the ticket, because the ticket closes long before anybody asks about this number.';
 function audDetail(ty, rnd, ctx) {
   const a = ty.action;
   if (/^(security_)?config|^row_limit/.test(a)) {
@@ -1130,7 +1138,7 @@ function maskSeed() {
       reason: 'Case handlers cannot work the queue without the name. Restricted to super-admins until the CRM migration lands.' },
     { connectionId: 'prod-main', databaseId: 'users', schema: 'public', table: 'users', column: 'address',
       scope: 'column', strength: 'soft', survivesJoin: false, audience: 'everyone', enabled: true, createdBy: 'dba.marco', createdAt: D(52),
-      reason: 'Delivery city only; the street line moved to a separate table in 2024.' },
+      reason: 'Delivery city only. The street line moved to a separate table in 2024.' },
     { connectionId: 'svc-prod-reporting', databaseId: 'reporting_service', schema: 'public', table: null, column: null,
       scope: 'schema', strength: 'soft', survivesJoin: false, audience: 'everyone', enabled: true, createdBy: 'dba.marco', createdAt: D(61),
       reason: 'Every column in this schema is a lookup code. Kept soft so a stray email in a free-text field is still caught.' },
@@ -1142,7 +1150,7 @@ function maskSeed() {
       reason: 'Staging is seeded by the fixtures job — synthetic data only, no production copy has ever been loaded into it.' },
     { connectionId: 'svc-prod-registry', databaseId: null, schema: null, table: null, column: null,
       scope: 'server', strength: 'full', survivesJoin: true, audience: 'everyone', enabled: true, createdBy: 'dba.amara', createdAt: D(180),
-      reason: 'Public reference registry, mirrored from the open dataset. Reviewed by Legal on 2026-03-11; nothing in it is personal.' },
+      reason: 'Public reference registry, mirrored from the open dataset. Legal reviewed it on 2026-03-11. Nothing in it is personal.' },
     // The widest row on the fleet, and the reason the ladder grew a rung it did
     // not have (CODE round (c) item 2): target NULL means every server.
     { connectionId: null, databaseId: null, schema: 'dba', table: null, column: null,
@@ -1156,7 +1164,7 @@ function maskSeed() {
       reason: 'Renamed to `consignee` in the 2026-05 migration.' },
     { connectionId: 'prod-main', databaseId: 'analytics', schema: 'public', table: 'cohorts', column: 'email',
       scope: 'column', strength: 'full', survivesJoin: false, audience: 'everyone', enabled: false, createdBy: 'dba.amara', createdAt: D(88),
-      reason: 'Opened for the churn model. The model reads a hash now — turned off rather than deleted so the decision stays on the record.' },
+      reason: 'Opened for the churn model. The model reads a hash now. Disabled, not deleted, so the decision stays on the record.' },
   ];
   // Filler: real targets on the service fleet, so the list is 30 rows long and
   // the grouping has something to group.
@@ -1169,7 +1177,7 @@ function maskSeed() {
       rows.push({ connectionId: c.id, databaseId: db.id, schema: 'public', table: db.tables[(i + k) % db.tables.length], column: cols[(i + k * 3) % cols.length],
         scope: 'column', strength: (i + k) % 4 === 0 ? 'full' : 'soft', survivesJoin: (i + k) % 3 === 0, audience: 'everyone',
         enabled: true, createdBy: (i + k) % 2 ? 'dba.amara' : 'dba.marco', createdAt: D(20 + i * 7 + k),
-        reason: 'Service-owned lookup column; the name rule catches it but the values are internal identifiers.' });
+        reason: 'Service-owned lookup column. The name rule catches it, but the values are internal identifiers.' });
     }
   });
   return rows.map((r, i) => ({ id: 'mx_' + (i + 1), ...r })).slice(0, 30);
@@ -1313,6 +1321,38 @@ function effRows(cid, dec) {
     return { key: r.key, connectionId: cid, tier: r.tier, databases: all ? null : r.dbs, allDatabases: all,
       source: r.source, sourceTeam: r.sourceTeam, expiresAt: r.expiresAt || null }; });
 }
+// Reach (CODE 2026-09-30 §3): an auto-approve row skips review. It gives no
+// access. So the server refuses one where the subject cannot query, and the
+// mock does the same. A person's reach is what effectiveFor resolves (an admin
+// included). A team's reach is its own live grants. `db` null = some database
+// on that connection. `cid` null = fleet-wide, which needs reach somewhere.
+function mockReachOf(subjectType, subject) {
+  let rows;
+  if (subjectType === 'team') {
+    rows = ADMIN.grants.filter(g => g.subjectType === 'team' && g.subject === subject && effLive(g))
+      .map(g => ({ connectionId: g.connectionId, databases: effDbs(g)[0] === '*' ? null : effDbs(g) }));
+  } else {
+    const p = ADMIN.people.find(x => x.handle === subject || x.id === subject) || { id: subject, handle: subject, name: subject };
+    rows = effectiveFor(p).access.map(a => ({ connectionId: a.connectionId, databases: a.allDatabases ? null : (a.databases || []) }));
+  }
+  return (cid, db) => {
+    if (!cid) return rows.length > 0;
+    const on = rows.filter(r => r.connectionId === cid);
+    if (!db) return on.length > 0;
+    return on.some(r => !r.databases || r.databases.indexOf(db) >= 0);
+  };
+}
+// One refusal, in the server's shape: a label plus the ids it came from.
+function mockAutoRefusal(cid, db, reason) {
+  return { target: cid ? cid + (db ? '/' + db : ' · all databases') : 'every server', connectionId: cid || null, databaseId: db || null, reason };
+}
+// The subject's name for a refusal sentence.
+function mockSubjectName(subjectType, subject) {
+  if (subjectType === 'team') return 'Team ' + subject;
+  const p = ADMIN.people.find(x => x.handle === subject || x.id === subject);
+  return (p && p.name) || subject;
+}
+const mockNoReach = (who, cid, db) => who + ' cannot query ' + (cid ? cid + (db ? '/' + db : '') : 'any server') + '. Grant access first.';
 function effectiveFor(p) {
   const teamRows = ADMIN.teams.filter(t => (t.members || []).indexOf(p.handle) >= 0);
   const teams = teamRows.map(t => t.name);
@@ -2225,6 +2265,13 @@ const qhApi = {
       if (bad) return mockFail(bad + ' is not a principal id (expected a Slack user id or local:<username>). Nothing was written.', 400, 'bad_request');
     }
     const dbs = (b.databases && b.databases.length) ? b.databases : (b.databaseId ? [b.databaseId] : ['*']);
+    // Auto-approve with the grant (CODE 2026-09-30 §3). Checked before any
+    // write, so a refusal writes nothing. Never DDL, and never above the grant.
+    const wantAuto = !!b.autoApprove;
+    const autoTier = String(b.autoApproveTier || 'RO').toUpperCase();
+    if (wantAuto && autoTier === 'DDL') return mockFail('QueryHub always reviews schema changes. You cannot auto-approve DDL.', 400, 'ddl_never_auto');
+    if (wantAuto && ['RO', 'RW'].indexOf(autoTier) < 0) return mockFail('autoApproveTier must be RO or RW.', 400, 'bad_tier');
+    if (wantAuto && EFF_RANK[autoTier] > EFF_RANK[b.tier]) return mockFail('Auto-approve cannot go above the grant. This grant is ' + b.tier + '.', 400, 'bad_tier');
     // A date already past is refused rather than stored inert: the row would
     // read to the admin as access given and grant nothing (server: 400).
     if (b.expiresAt && new Date(b.expiresAt) <= new Date()) return mockFail('That expiry is already in the past — the grant would be dead on arrival.', 400, 'invalid_expiry');
@@ -2260,16 +2307,44 @@ const qhApi = {
       ADMIN.grants = [row, ...ADMIN.grants];
       return { id: row.id, updated: false };
     };
+    // One waiver per (subject, database), with the grant's end date. Skipped
+    // where the subject already holds one that covers it: same connection, that
+    // database or all of them, at least this tier, and lasting at least as long.
+    const writeAuto = (subjects) => {
+      if (!wantAuto) return null;
+      const out = { tier: autoTier, written: 0, ids: [], skipped: [] };
+      subjects.forEach(subject => {
+        const user = b.subjectType === 'team' ? subject + ' (team)' : subject;
+        const person = b.subjectType === 'team' ? null : ADMIN.people.find(p => p.handle === subject);
+        dbs.forEach(d => {
+          const db = d === '*' ? null : d;
+          const cover = ADMIN.auto.find(a => a.user === user && a.connectionId === b.connectionId
+            && (!a.databaseId || a.databaseId === db) && EFF_RANK[a.tier] >= EFF_RANK[autoTier]
+            && (!a.expiresAt || (exp && a.expiresAt >= exp)));
+          if (cover) {
+            out.skipped.push({ subject, database: db, coveredBy: cover.id,
+              reason: 'already auto-approved up to ' + cover.tier + ' on ' + (cover.databaseId || 'all databases') });
+            return;
+          }
+          const row = { id: mockId('a'), user, userName: person ? person.name : null, tier: autoTier, connectionId: b.connectionId,
+            databaseId: db, expiresAt: exp, reason: b.reason || null, createdBy: 'dba.amara', createdByName: 'Amara Osei' };
+          ADMIN.auto = [row, ...ADMIN.auto];
+          out.written++; out.ids.push(row.id);
+        });
+      });
+      if (out.written) mockAudit('Created auto-approve grants with the grant', subjects.join(', ') + ' → ' + b.connectionId + ' · ' + autoTier + ' · ' + out.written, 'auto');
+      return out;
+    };
     if (many.length) {
       // Duplicates are collapsed in the order they were sent.
       const subs = many.filter((s, i) => many.indexOf(s) === i);
       const res = subs.map(writeOne);
       mockAudit('Granted ' + b.tier + expNote + ' · ' + subs.length + ' people', subs.join(', ') + ' → ' + b.connectionId, 'grant');
-      return { id: res[0].id, subjects: subs };
+      return { id: res[0].id, subjects: subs, autoApprove: writeAuto(subs) };
     }
     const one = writeOne(b.subject);
     mockAudit((one.updated ? 'Updated grant · ' : 'Granted ') + b.tier + expNote, b.subject + ' → ' + b.connectionId, 'grant');
-    return { id: one.id };
+    return { id: one.id, autoApprove: writeAuto([b.subject]) };
   }, 240),
   adminDelGrant: (id) => mockDelay(() => {
     const g = ADMIN.grants.find(x => x.id === id);
@@ -2291,6 +2366,13 @@ const qhApi = {
     // name on it would block onboarding in order to catch a typo (CODE 2026-08-21).
     if (dbId && conn && (conn.databases || []).length && !(conn.databases || []).some(d => d.id === dbId || d.name === dbId)) {
       return mockFail('There is no database "' + dbId + '" on ' + b.connectionId + '.', 400, 'unknown_database');
+    }
+    // Reach (CODE 2026-09-30 §3): 409, in the bulk endpoint's refusal shape.
+    const isTeam = / \(team\)$/.test(b.user || '');
+    const subj = isTeam ? b.user.replace(/ \(team\)$/, '') : b.user;
+    if (!mockReachOf(isTeam ? 'team' : 'user', subj)(b.connectionId || null, dbId)) {
+      const why = mockNoReach(mockSubjectName(isTeam ? 'team' : 'user', subj), b.connectionId, dbId);
+      return mockFail(why, 409, 'refused', { refused: [mockAutoRefusal(b.connectionId, dbId, why)] });
     }
     const person = ADMIN.people.find(p => p.handle === b.user);
     const row = { ...b, databaseId: dbId, id: mockId('a'), userName: person ? person.name : null, createdBy: 'dba.amara', createdByName: 'Amara Osei' };
@@ -2315,17 +2397,21 @@ const qhApi = {
       databaseId: t.databaseId == null || ['', '*', 'all', 'any'].indexOf(String(t.databaseId).toLowerCase()) >= 0 ? null : String(t.databaseId) }));
     if (!targets.length) return mockFail('Add at least one target.', 400, 'no_targets');
     const refused = [], seen = {};
+    const reach = mockReachOf(type, type === 'team' ? team.name : user);
+    const whoSay = mockSubjectName(type, type === 'team' ? team.name : user);
+    const no = (t, reason) => refused.push(mockAutoRefusal(t.connectionId, t.databaseId, reason));
     targets.forEach(t => {
       const k = t.connectionId + '/' + (t.databaseId || '*');
-      const c = connRegistry().find(x => x.id === t.connectionId);
-      if (seen[k]) refused.push({ target: t, reason: 'Listed twice.' });
-      else if (!c) refused.push({ target: t, reason: 'No such connection.' });
-      else if (c.enabled === false) refused.push({ target: t, reason: c.name + ' is disabled.' });
-      else if (t.databaseId && (c.databases || []).length && !c.databases.some(d => d.id === t.databaseId || d.name === t.databaseId)) refused.push({ target: t, reason: 'There is no database “' + t.databaseId + '” on ' + c.name + '.' });
-      else if (ADMIN.auto.some(a => a.user === user && a.connectionId === t.connectionId && (a.databaseId || null) === t.databaseId)) refused.push({ target: t, reason: 'Already exempt here.' });
+      const c = t.connectionId ? connRegistry().find(x => x.id === t.connectionId) : null;
+      if (seen[k]) no(t, 'Listed twice.');
+      else if (t.connectionId && !c) no(t, 'No such connection.');
+      else if (c && c.enabled === false) no(t, c.name + ' is disabled.');
+      else if (c && t.databaseId && (c.databases || []).length && !c.databases.some(d => d.id === t.databaseId || d.name === t.databaseId)) no(t, 'There is no database “' + t.databaseId + '” on ' + c.name + '.');
+      else if (!reach(t.connectionId || null, t.databaseId)) no(t, mockNoReach(whoSay, t.connectionId, t.databaseId));
+      else if (ADMIN.auto.some(a => a.user === user && (a.connectionId || null) === (t.connectionId || null) && (a.databaseId || null) === t.databaseId)) no(t, 'Already exempt here.');
       seen[k] = 1;
     });
-    if (refused.length) return mockFail(refused.length + ' of ' + targets.length + ' refused — nothing was written.', 409, 'refused', { refused });
+    if (refused.length) return mockFail(refused.length + ' of ' + targets.length + ' refused. Nothing was written.', 409, 'refused', { refused });
     if (b.dryRun) return { dryRun: true, applied: 0, ids: [], targets };
     const exp = b.expiresAt || (b.expiresInMinutes ? isoIn(60000 * b.expiresInMinutes) : null);
     const person = type === 'user' ? ADMIN.people.find(p => p.handle === user || p.id === user) : null;
@@ -2939,7 +3025,7 @@ const qhApi = {
     const same = (x) => x.connectionId === b.connectionId && (x.databaseId || null) === (b.databaseId || null)
       && (x.schema || null) === (b.schema || null) && (x.table || null) === (b.table || null) && (x.column || null) === (b.column || null);
     const dupe = ADMIN.mask.find(same);
-    if (dupe) return mockFail('That target is already exempt (' + dupe.id + ')' + (dupe.enabled ? '' : ', currently turned off') + '.', 409, 'duplicate', { exemptionId: dupe.id });
+    if (dupe) return mockFail('That target is already exempt (' + dupe.id + ')' + (dupe.enabled ? '' : ', currently disabled') + '.', 409, 'duplicate', { exemptionId: dupe.id });
     const row = { id: mockId('mx'), connectionId: b.scope === 'fleet' ? null : b.connectionId, databaseId: b.databaseId || null,
       schema: b.schema || null, table: b.table || null, column: b.column || null,
       scope: b.scope, strength: b.strength === 'full' ? 'full' : 'soft', survivesJoin: !!b.survivesJoin,
@@ -2954,7 +3040,7 @@ const qhApi = {
     const r = ADMIN.mask.find(x => x.id === id);
     if (!r) return mockFail('No such exemption.', 404, 'not_found');
     r.enabled = !!enabled;
-    mockAudit(enabled ? 'Enabled masking exemption' : 'Turned off masking exemption', maskAuditTarget(r), enabled ? 'scope' : 'reject');
+    mockAudit(enabled ? 'Enabled masking exemption' : 'Disabled masking exemption', maskAuditTarget(r), enabled ? 'scope' : 'reject');
     return r;
   }, 200),
   // PATCH /admin/mask-exemptions/{id} — the CONSEQUENCES and the reason, never

@@ -133,7 +133,7 @@ function LoginScreen({ onSignedIn, brand }) {
         </div>
 
         <h1 className="qh-login-title">Sign in to QueryHub</h1>
-        <p className="qh-login-sub">A developer SQL workspace — write and submit queries, track approvals, and pull results. Read-only with a matching grant runs instantly; everything else goes to DBA review.</p>
+        <p className="qh-login-sub">Write SQL, submit it, track approvals and get the results. A read-only query with a matching grant runs at once. Every other query goes to a DBA.</p>
 
         {providers === null && (
           <div className="qh-login-loading"><span className="qh-spin" /></div>
@@ -155,8 +155,8 @@ function LoginScreen({ onSignedIn, brand }) {
 
         {providers !== null && !oauthList.length && !localOn && (
           <div className="qh-login-none" role="alert">
-            No sign-in method is enabled on this deployment. An administrator has
-            to turn on Slack login (<code>web_auth_slack_enabled</code>), an
+            No sign-in method is enabled on this deployment. An administrator must
+            enable Slack login (<code>web_auth_slack_enabled</code>), an
             external SSO provider (<code>web_auth_&lt;id&gt;_enabled</code>) or
             local accounts (<code>web_auth_local_enabled</code>).
           </div>

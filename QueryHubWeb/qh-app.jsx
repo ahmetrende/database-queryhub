@@ -1959,7 +1959,7 @@ function MaskToggle({ unmasked, pii, onUnmask }) {
       {ask && (
         <div className="qh-mask-pop">
           <div className="qh-mask-pop-t">Return real values?</div>
-          <div className="qh-mask-pop-b">This tab's results come back unmasked{cols ? ' — ' + cols : ''} until you switch masking back on. Nothing is remembered: every other tab, and this one after a reload, starts masked.</div>
+          <div className="qh-mask-pop-b">This tab returns unmasked results{cols ? ' — ' + cols : ''} until you enable masking again. QueryHub does not remember this. Every other tab, and this tab after a reload, starts masked.</div>
           <div className="qh-mask-pop-a">
             <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={close}>Keep masked</button>
             <button className="qh-btn qh-btn-sm qh-mask-go" onClick={() => { close(); onUnmask(true); }}>Show real values</button>
@@ -2043,7 +2043,7 @@ function RunOnToggle({ conn, runOn, tier, onRunOn, tight }) {
               on={runOn && runOn.mode === 'replica' && runOn.replicaId === r.id}
               onClick={() => pick({ mode: 'replica', replicaId: r.id, conn: conn.id })} />;
           })}
-          <div className="qh-runon-foot">This tab only — every new tab, and this one after a reload, starts on Auto. A chosen replica skips the automatic checks and never falls back to the primary.</div>
+          <div className="qh-runon-foot">This tab only — every new tab, and this one after a reload, starts on Auto. A chosen replica skips the automatic checks. QueryHub never uses the primary instead.</div>
         </div>
       )}
     </span>

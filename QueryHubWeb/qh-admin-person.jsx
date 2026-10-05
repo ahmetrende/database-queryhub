@@ -198,7 +198,7 @@ function PersonPage({ st, actor, person, onBack }) {
       <div className="qh-persec">
         <div className="qh-persec-h">
           <div className="qh-aview-title">Where they stand today</div>
-          <div className="qh-aview-sub">Resolved the way a submission resolves it — their own grants, every grant of every team they are in, and anything they reach as an admin. Their own row wins over a team's, because it is usually the narrower, deliberate one.</div>
+          <div className="qh-aview-sub">A submission resolves access the same way. It reads their own grants, the grants of each of their teams, and what they reach as an admin. Their own row wins over a team's row, because it is usually the narrower one.</div>
         </div>
         {failed && <div className="qh-conn-empty">Could not load resolved access.</div>}
         {!eff && !failed && <div className="qh-perload">Resolving…</div>}
@@ -327,7 +327,7 @@ function PersonPage({ st, actor, person, onBack }) {
               : <>{person.name} will get every connection {srcPerson.name} can reach, including through a team, as grants written against {person.handle}{tierOver ? ', all at ' + tierOver : ', at the tier they have there'}, without joining any team. Where {srcPerson.name} holds both a team grant and their own, their own wins — it is usually the narrower, deliberate one.</>}
             {' '}{mode === 'replace'
               ? <b>Anything {srcPerson.name} does not have is revoked from {person.name}.</b>
-              : <>Existing grants on the same connection are replaced; everything else they hold stays.</>}
+              : <>This replaces their grants on the same connection. Everything else they hold stays.</>}
             {' '}Preview it to see the exact rows before anything is written.
           </div>
         )}

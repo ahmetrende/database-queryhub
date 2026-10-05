@@ -373,7 +373,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const addMaskExemption = (b) => qhApi.adminAddMaskExemption(b)
     .then(res => { loadMask(); loadAudit(); pushToast && pushToast('Exemption added.'); return res; });
   const setMaskExemptionEnabled = (id, enabled) => qhApi.adminSetMaskExemption(id, enabled)
-    .then(() => { loadMask(); loadAudit(); pushToast && pushToast(enabled ? 'Exemption turned back on.' : 'Exemption turned off — that column is masked again.'); })
+    .then(() => { loadMask(); loadAudit(); pushToast && pushToast(enabled ? 'Exemption enabled again.' : 'Exemption disabled. That column is masked again.'); })
     .catch(e => fail(e, 'Could not change the exemption.'));
   const removeMaskExemption = (id) => qhApi.adminDelMaskExemption(id)
     .then(() => { loadMask(); loadAudit(); pushToast && pushToast('Exemption removed.'); })

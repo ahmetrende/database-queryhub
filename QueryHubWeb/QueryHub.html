@@ -483,6 +483,11 @@
   .qh-why-auto b { font-weight: 600; }
   .qh-why-auto span { color: var(--fg-tertiary); }
   .qh-why.is-auto .qh-why-ic { color: var(--fg-success, var(--brand-green)); }
+  /* "Add a reason" on a query that asks for none (qh-app.jsx WhyBar). Alone on a
+     read-only super-admin query it takes a slim row, so it does not crowd the
+     editor. Beside the "Runs without approval" line it sits at the end. */
+  .qh-why.is-min { height: 30px; }
+  .qh-why.is-auto .qh-why-add { margin-left: auto; flex-shrink: 0; }
   .qh-sched-why { padding: 4px 6px 8px; display: flex; flex-direction: column; gap: 6px; }
   .qh-sched-why.is-err .qh-sched-cinput { border-color: var(--stroke-danger); box-shadow: 0 0 0 2px var(--danger-adaptive-light); }
   .qh-sched-note { font-size: 11px; line-height: 1.4; color: var(--fg-tertiary); }

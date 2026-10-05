@@ -935,7 +935,7 @@ function Sidebar({ modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode
           <div className="qh-side-empty">
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4M12 13v3l2 1"/></svg>
             <div className="qh-side-empty-title">No scheduled queries</div>
-            <div className="qh-side-empty-sub">Use <b>Schedule</b> on a query — a preset or a custom date &amp; time — and it appears here until it runs.</div>
+            <div className="qh-side-empty-sub">Click <b>Schedule</b> on a query and pick a time. The query shows here until it runs.</div>
           </div>
         )}
         {mode === 'scheduled' && (scheduled || []).map(s => (
@@ -1219,7 +1219,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
       <div className="qh-modal-head">
         <div>
           <div className="qh-modal-title">Request auto-approve</div>
-          <div className="qh-modal-sub">For a set time, your matching queries would run without a DBA looking at them first. A DBA decides; you get a DM either way.</div>
+          <div className="qh-modal-sub">For a set time, your matching queries run without a DBA review. A DBA decides on this request. You get a DM with the answer.</div>
         </div>
         <button className="qh-icon-btn" onClick={onClose} aria-label="Close">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
