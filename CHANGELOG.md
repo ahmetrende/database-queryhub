@@ -9,6 +9,34 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.34] — 2026-10-05
+
+The web editor undoes every edit and expands `*` to exactly the columns a
+statement reads, quoting reserved words. A table the catalog does not list,
+such as a partition, is read live from the target. A super-admin can choose
+where one query runs, a grant can carry auto-approve, and a deleted instance
+shows as deleted. The trusted-portal seam is ready, and a sync that would
+disable many people waits for a super-admin. Patch bump.
+
+### Upgrading
+
+- **Run `scripts/apply_migrations.py`.** It applies 132–140.
+- **`WEB_SESSION_SECRET` must be at least 32 bytes when set,** or the web
+  process does not start. Unset, the key is derived from the master key, as
+  before.
+- **An unreadable `secrets.enc` stops the process.** It used to fall back to
+  the plaintext environment; `QH_SECRETS_PLAINTEXT_FALLBACK=1` allows that on
+  purpose.
+- **New `bot_config` keys:** `web_slack_team_id`, `target_ssl_verify_hosts`,
+  `target_ssl_verify_exempt_hosts`, `web_employment_grace_hours`,
+  `idp_clock_skew_seconds`, `idp_outbox_enabled`, `idp_outbox_retention_days`,
+  `idp_sync_max_disable` and `athena_freshness_stale_hours`. See
+  docs/CONFIGURATION.md.
+- **The `*` expansion reads a relation's columns live** through
+  `GET /connections/{conn}/databases/{db}/columns`, with the RO login
+  (PostgreSQL only). It needs no new privilege: every login can read
+  `pg_attribute`.
+
 ### Added
 
 - **A grant can carry auto-approve, in the same transaction.** The web grant
@@ -160,6 +188,15 @@ frontend and the endpoints it calls are explicitly outside it.
   summaries say "auto-approved".
 
 ### Fixed
+
+- **A column or table named like a reserved word is quoted when the editor
+  writes it.** `*` expansion, autocomplete and tree drags wrote `user`, `order`
+  or `group` bare, so the query failed or, for `user`, returned the login's
+  name on every row (PostgreSQL and SQL Server both read it as the current
+  user). `qhQuoteIdentFor` now quotes each engine's reserved words: PostgreSQL's
+  key-word table, Trino's for Athena, and Transact-SQL's reserved keywords.
+  ClickHouse and MySQL use the PostgreSQL list plus their clause words. Oracle
+  is left alone, since it folds names to upper case.
 
 - **`*` in the web editor expands to the columns of what the statement reads,
   and nothing else.** On a partition, Tab on the star filled the select list

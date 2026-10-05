@@ -274,12 +274,69 @@ function qhDetectPII(sql) {
 }
 
 // ---------- Postgres identifier quoting ----------
+// Words an engine will not take as a bare identifier. A column or table that
+// happens to be called `user`, `order` or `group` has to be quoted like any odd
+// name. Unquoted, `order` is a syntax error, and `user` is worse: PostgreSQL and
+// SQL Server both read it as the current login, so `SELECT user FROM t` returns
+// the login's name on every row instead of the column.
+// Sources: PostgreSQL's key-word table (both "reserved" kinds), Trino's reserved
+// words (Athena's SQL engine), and Transact-SQL's reserved keywords. ClickHouse
+// and MySQL reserve less, but quoting there is exact and harmless, so they take
+// the PostgreSQL list plus their own clause words. Oracle has no list on purpose:
+// it folds to UPPER case, so quoting a lower-case word would change which column
+// it names.
+const QH_RESERVED_PG = ('ALL ANALYSE ANALYZE AND ANY ARRAY AS ASC ASYMMETRIC AUTHORIZATION BINARY BOTH CASE CAST ' +
+  'CHECK COLLATE COLLATION COLUMN CONCURRENTLY CONSTRAINT CREATE CROSS CURRENT_CATALOG CURRENT_DATE ' +
+  'CURRENT_ROLE CURRENT_SCHEMA CURRENT_TIME CURRENT_TIMESTAMP CURRENT_USER DEFAULT DEFERRABLE DESC DISTINCT ' +
+  'DO ELSE END EXCEPT FALSE FETCH FOR FOREIGN FREEZE FROM FULL GRANT GROUP HAVING ILIKE IN INITIALLY INNER ' +
+  'INTERSECT INTO IS ISNULL JOIN LATERAL LEADING LEFT LIKE LIMIT LOCALTIME LOCALTIMESTAMP NATURAL NOT ' +
+  'NOTNULL NULL OFFSET ON ONLY OR ORDER OUTER OVERLAPS PLACING PRIMARY REFERENCES RETURNING RIGHT SELECT ' +
+  'SESSION_USER SIMILAR SOME SYMMETRIC SYSTEM_USER TABLE TABLESAMPLE THEN TO TRAILING TRUE UNION UNIQUE ' +
+  'USER USING VARIADIC VERBOSE WHEN WHERE WINDOW WITH').split(' ');
+const QH_RESERVED_TRINO = ('ALTER AND AS BETWEEN BY CASE CAST CONSTRAINT CREATE CROSS CUBE CURRENT_CATALOG ' +
+  'CURRENT_DATE CURRENT_PATH CURRENT_ROLE CURRENT_SCHEMA CURRENT_TIME CURRENT_TIMESTAMP CURRENT_USER ' +
+  'DEALLOCATE DELETE DESCRIBE DISTINCT DROP ELSE END ESCAPE EXCEPT EXECUTE EXISTS EXTRACT FALSE FOR FROM FULL ' +
+  'GROUP GROUPING HAVING IN INNER INSERT INTERSECT INTO IS JOIN JSON_ARRAY JSON_EXISTS JSON_OBJECT JSON_QUERY ' +
+  'JSON_TABLE JSON_VALUE LEFT LIKE LISTAGG LOCALTIME LOCALTIMESTAMP NATURAL NORMALIZE NOT NULL ON OR ORDER ' +
+  'OUTER PREPARE RECURSIVE RIGHT ROLLUP SELECT SKIP TABLE THEN TRIM TRUE UESCAPE UNION UNNEST USING VALUES ' +
+  'WHEN WHERE WITH').split(' ');
+const QH_RESERVED_TSQL = ('ADD ALL ALTER AND ANY AS ASC AUTHORIZATION BACKUP BEGIN BETWEEN BREAK BROWSE BULK BY ' +
+  'CASCADE CASE CHECK CHECKPOINT CLOSE CLUSTERED COALESCE COLLATE COLUMN COMMIT COMPUTE CONSTRAINT CONTAINS ' +
+  'CONTAINSTABLE CONTINUE CONVERT CREATE CROSS CURRENT CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP CURRENT_USER ' +
+  'CURSOR DATABASE DBCC DEALLOCATE DECLARE DEFAULT DELETE DENY DESC DISK DISTINCT DISTRIBUTED DOUBLE DROP DUMP ' +
+  'ELSE END ERRLVL ESCAPE EXCEPT EXEC EXECUTE EXISTS EXIT EXTERNAL FETCH FILE FILLFACTOR FOR FOREIGN FREETEXT ' +
+  'FREETEXTTABLE FROM FULL FUNCTION GOTO GRANT GROUP HAVING HOLDLOCK IDENTITY IDENTITY_INSERT IDENTITYCOL IF IN ' +
+  'INDEX INNER INSERT INTERSECT INTO IS JOIN KEY KILL LEFT LIKE LINENO LOAD MERGE NATIONAL NOCHECK NONCLUSTERED ' +
+  'NOT NULL NULLIF OF OFF OFFSETS ON OPEN OPENDATASOURCE OPENQUERY OPENROWSET OPENXML OPTION OR ORDER OUTER ' +
+  'OVER PERCENT PIVOT PLAN PRECISION PRIMARY PRINT PROC PROCEDURE PUBLIC RAISERROR READ READTEXT RECONFIGURE ' +
+  'REFERENCES REPLICATION RESTORE RESTRICT RETURN REVERT REVOKE RIGHT ROLLBACK ROWCOUNT ROWGUIDCOL RULE SAVE ' +
+  'SCHEMA SECURITYAUDIT SELECT SEMANTICKEYPHRASETABLE SEMANTICSIMILARITYDETAILSTABLE SEMANTICSIMILARITYTABLE ' +
+  'SESSION_USER SET SETUSER SHUTDOWN SOME STATISTICS SYSTEM_USER TABLE TABLESAMPLE TEXTSIZE THEN TO TOP TRAN ' +
+  'TRANSACTION TRIGGER TRUNCATE TRY_CONVERT TSEQUAL UNION UNIQUE UNPIVOT UPDATE UPDATETEXT USE USER VALUES ' +
+  'VARYING VIEW WAITFOR WHEN WHERE WHILE WITH WITHIN WRITETEXT').split(' ');
+const QH_RESERVED_CLAUSES = ('ARRAY ASOF BETWEEN BY DATABASE DELETE DESCRIBE DROP EXISTS FINAL FORMAT GLOBAL ' +
+  'INDEX INSERT INTERVAL KEY PREWHERE SAMPLE SET SETTINGS SHOW TOP UPDATE VALUES').split(' ');
+const QH_RESERVED = {
+  postgres: new Set(QH_RESERVED_PG),
+  athena: new Set(QH_RESERVED_TRINO),
+  mssql: new Set(QH_RESERVED_TSQL),
+  clickhouse: new Set([...QH_RESERVED_PG, ...QH_RESERVED_CLAUSES]),
+  mysql: new Set([...QH_RESERVED_PG, ...QH_RESERVED_CLAUSES]),
+};
+// An engine this file does not know is treated as PostgreSQL, as
+// qhQuoteIdentFor already does.
+function qhIsReservedWord(name, engineId) {
+  const set = QH_RESERVED[engineId] || (QH_ENGINES[engineId] ? null : QH_RESERVED.postgres);
+  return !!set && set.has(String(name).toUpperCase());
+}
+
 // Unquoted identifiers fold to lower-case in PG; anything with an uppercase
 // letter, special char, leading digit, or that isn't a plain [a-z_][a-z0-9_]*
-// must be double-quoted to round-trip. Applied on autocomplete + drag insert.
+// must be double-quoted to round-trip, and so must a reserved word.
+// Applied on autocomplete + drag insert.
 function qhQuoteIdent(name) {
   const s = String(name);
-  if (/^[a-z_][a-z0-9_]*$/.test(s)) return s;
+  if (/^[a-z_][a-z0-9_]*$/.test(s) && !qhIsReservedWord(s, 'postgres')) return s;
   return '"' + s.replace(/"/g, '""') + '"';
 }
 function qhQuoteList(arr) { return (arr || []).map(qhQuoteIdent).join(', '); }
@@ -524,7 +581,7 @@ function qhQuoteIdentFor(name, engineId) {
   const e = QH_ENGINES[engineId] || QH_ENGINES.postgres;
   const s = String(name);
   const plain = e.foldsLower ? /^[a-z_][a-z0-9_]*$/ : /^[A-Za-z_][A-Za-z0-9_]*$/;
-  if (plain.test(s)) return s;
+  if (plain.test(s) && !qhIsReservedWord(s, engineId)) return s;
   const [o, c] = e.q;
   return o + s.split(c).join(c + c) + c;
 }
