@@ -1543,6 +1543,100 @@ function ConnectionForm({ st, init, mode, onDone }) {
   );
 }
 
+// Which teams own a connection (CODE 2026-10-05 (g)). The lead of each owner
+// team approves the requests sent to it, from any requester, up to the fleet's
+// ceiling. The server runs that reconcile for this one connection on each
+// change, so the result line can say who gained or lost approval.
+// A synced owner names its sync and has no Remove: the sync adds it again on
+// its next run.
+function ConnOwnersForm({ st, conn, onDone }) {
+  const [data, setData] = React.useState(null);     // { owners, approvers, teams, maxTier }
+  const [pick, setPick] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);       // { ok, text }
+  React.useEffect(() => {
+    let live = true;
+    qhApi.adminConnectionOwners(conn.id)
+      .then(r => { if (live) setData(r); })
+      .catch(e => { if (live) setMsg({ ok: false, text: (e && e.message) || 'Could not load the owners.' }); });
+    return () => { live = false; };
+  }, [conn.id]);
+  const said = (r) => {
+    const c = r.changed || {};
+    const out = [];
+    if ((c.approversAdded || []).length) out.push(c.approversAdded.join(', ') + ' can approve ' + (c.maxTier || 'RO') + ' requests to ' + conn.name + ' now.');
+    if ((c.approversRevoked || []).length) out.push(c.approversRevoked.join(', ') + ' cannot approve requests to ' + conn.name + ' now.');
+    if (!out.length) out.push('The approvers did not change.');
+    return out.concat(c.notes || []).join(' ');
+  };
+  const run = (p) => {
+    setBusy(true); setMsg(null);
+    p.then(r => {
+      setData(d => ({ ...d, owners: r.owners, approvers: r.approvers }));
+      setMsg({ ok: true, text: said(r) }); setPick('');
+      st.reloadConnections && st.reloadConnections();
+    })
+      .catch(e => setMsg({ ok: false, text: (e && e.message) || 'Nothing changed.' }))
+      .finally(() => setBusy(false));
+  };
+  const owners = (data && data.owners) || [];
+  const owned = owners.map(o => String(o.id));
+  const choices = ((data && data.teams) || []).filter(t => owned.indexOf(String(t.id)) < 0);
+  const add = () => {
+    const team = choices.find(t => String(t.id) === pick);
+    if (team) run(qhApi.adminAddConnectionOwner(conn.id, team.id));
+  };
+  const remove = (o) => {
+    if (!window.confirm('Remove ' + o.displayName + ' as an owner of ' + conn.name + '? QueryHub then updates the approvers of this connection.')) return;
+    run(qhApi.adminRemoveConnectionOwner(conn.id, o.id));
+  };
+  return (
+    <QhModal onClose={busy ? (() => {}) : onDone}>
+      <div className="qh-modal-head">
+        <div>
+          <div className="qh-modal-title">Owners of {conn.name}</div>
+          <div className="qh-modal-sub">The lead of each owner team approves requests to this connection, from any requester, up to {(data && data.maxTier) || 'RO'}.</div>
+        </div>
+        <button className="qh-icon-btn" onClick={onDone} aria-label="Close"><AIcon.x /></button>
+      </div>
+      <div className="qh-modal-body">
+        {!data ? (msg ? <div className="qh-expiry is-exp">{msg.text}</div> : <span className="qh-spin" />) : (<>
+          <div className="qh-field-lbl">Owner teams</div>
+          <div className="qh-owner-list">
+            {owners.length === 0 && <div className="qh-muted">No team owns this connection. No team lead approves its requests.</div>}
+            {owners.map(o => (
+              <div key={o.id} className="qh-owner-row">
+                <b>{o.displayName}</b>{' '}
+                {o.syncedFrom
+                  ? <span className="qh-muted" title={'The ' + o.syncedFrom + ' sync maintains this owner. Change it in that sync.'}>synced from {o.syncedFrom}</span>
+                  : <button className="qh-btn qh-btn-sm" disabled={busy} onClick={() => remove(o)}>Remove</button>}
+              </div>
+            ))}
+          </div>
+          <div className="qh-field-lbl">Approvers through ownership</div>
+          <div className="qh-owner-list">
+            {(data.approvers || []).length === 0
+              ? <div className="qh-muted">None.</div>
+              : data.approvers.map(a => <div key={a.name} className="qh-owner-row">{a.name}{' '}<TierBadge tier={a.maxTier} sm /></div>)}
+          </div>
+          <label className="qh-field">
+            <span className="qh-field-lbl">Add an owner team</span>
+            <select className="qh-input" value={pick} disabled={busy} onChange={e => setPick(e.target.value)}>
+              <option value="">Select a team</option>
+              {choices.map(t => <option key={t.id} value={String(t.id)}>{t.displayName}</option>)}
+            </select>
+          </label>
+          {msg && <div className={'qh-expiry' + (msg.ok ? '' : ' is-exp')}>{msg.text}</div>}
+        </>)}
+      </div>
+      <div className="qh-modal-foot">
+        <button className="qh-btn qh-btn-ghost" onClick={onDone} disabled={busy}>Close</button>
+        <button className="qh-btn qh-btn-primary" onClick={add} disabled={busy || !pick}>{busy ? <span className="qh-spin" /> : 'Add owner'}</button>
+      </div>
+    </QhModal>
+  );
+}
+
 function ConnectionsView({ st, user }) {
   const act = 'dba.' + user.name.split(' ')[0].toLowerCase();
   const pending = st.endpointReqs.filter(e => e.status === 'submitted');
@@ -1632,7 +1726,8 @@ function ConnectionsView({ st, user }) {
         <div><div className="qh-aview-title">Connections & endpoint requests</div><div className="qh-aview-sub">Registered databases and pending access requests from developers.</div></div>
         <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => setForm({ mode: 'create', conn: null })}><AIcon.plus />Add connection</button>
       </div>
-      {form && <ConnectionForm st={st} init={form.conn} mode={form.mode} onDone={() => setForm(null)} />}
+      {form && form.mode === 'owners' && <ConnOwnersForm st={st} conn={form.conn} onDone={() => setForm(null)} />}
+      {form && form.mode !== 'owners' && <ConnectionForm st={st} init={form.conn} mode={form.mode} onDone={() => setForm(null)} />}
 
       {pending.length > 0 && <div className="qh-section-label">Pending requests · {pending.length}</div>}
       <div className="qh-erlist">
@@ -1679,7 +1774,7 @@ function ConnectionsView({ st, user }) {
         const rows0 = allConns
           .filter(c => envF === 'all' || c.env === envF)
           .filter(c => provF === 'all' || (provF === 'none' ? !qhProvider(c) : qhTags(c).provider === provF))
-          .filter(c => { const t = q.trim().toLowerCase(); if (!t) return true; return (c.name + ' ' + c.engine + ' ' + (c.host || '') + ' ' + qhHostingFull(c) + ' ' + (c.databases || []).map(d => d.name).join(' ')).toLowerCase().includes(t); })
+          .filter(c => { const t = q.trim().toLowerCase(); if (!t) return true; return (c.name + ' ' + c.engine + ' ' + (c.host || '') + ' ' + qhHostingFull(c) + ' ' + (c.databases || []).map(d => d.name).join(' ') + ' ' + (c.owners || []).map(o => o.displayName + ' ' + o.name).join(' ')).toLowerCase().includes(t); })
           .slice();
         if (sort.key) rows0.sort((a, b) => {
           let av, bv;
@@ -1766,7 +1861,7 @@ function ConnectionsView({ st, user }) {
                 return (
                 <tr key={c.id} className={(sel.indexOf(c.id) >= 0 ? 'is-sel' : '') + (refusedNames.indexOf(c.name) >= 0 ? ' is-refused' : '') + (c.replicaOf ? ' is-replica' : '')}>
                   <td className="qh-conn-selcol"><ConnCheck on={sel.indexOf(c.id) >= 0} onChange={() => toggleSel(c.id)} label={'Select ' + c.name} /></td>
-                  <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b><span className={'qh-envtag env-' + c.env}>{c.env}</span></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}</td>
+                  <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b><span className={'qh-envtag env-' + c.env}>{c.env}</span></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}{!c.replicaOf && <div className="qh-muted qh-conn-owners" title="The lead of each owner team approves requests to this connection.">{(c.owners || []).length ? 'Owners: ' + c.owners.map(o => o.displayName).join(', ') : 'No owner'}</div>}</td>
                   {/* Engine over hosting in ONE column, and the environment beside
                       the name: seven columns plus pinned actions were ~400px wider
                       than the panel, so Databases sat under the actions. The
@@ -1805,6 +1900,7 @@ function ConnectionsView({ st, user }) {
                         out; the rest are one click further, in the row's menu. */}
                     <ConnRowMenu busy={refreshing === c.id} items={[
                       !c.replicaOf && { label: 'Rotate credentials', on: () => setForm({ mode: 'rotate', conn: c }) },
+                      !c.replicaOf && { label: 'Owners', on: () => setForm({ mode: 'owners', conn: c }) },
                       { label: c.replicaOf ? (c.enabled ? 'Take out of rotation' : 'Put back in rotation') : (c.enabled ? 'Disable' : 'Enable'), on: () => toggleEnabled(c) },
                       { label: 'Refresh schema', hint: 'otherwise hourly', on: () => refreshSchema(c) },
                       { label: 'Delete', danger: true, on: () => removeConnection(c) },

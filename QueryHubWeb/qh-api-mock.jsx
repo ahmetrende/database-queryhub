@@ -633,6 +633,27 @@ const mockAudit = (event, target, kind, extra) => {
 const DEFAULT_PORT = { postgres: 5432, mssql: 1433, oracle: 1521, mysql: 3306, clickhouse: 9440, athena: 443 };
 const mockEngineName = (e) => e === 'mssql' ? 'SQL Server 2022' : e === 'clickhouse' ? 'ClickHouse 24.8' : 'PostgreSQL 15';
 const mockEngineVer = (e) => e === 'mssql' ? '16.0.4125' : e === 'clickhouse' ? '24.8.4.13' : '15.6';
+// Owner teams of one mock connection, and the leads they make approvers.
+function mockOwnerState(row) {
+  const owners = row.owners || [];
+  const seen = {};
+  const approvers = [];
+  if (row.enabled) owners.forEach(o => {
+    const team = ADMIN.teams.find(t => t.id === o.id);
+    const lead = team && team.members && team.members[0];
+    const person = lead && ADMIN.people.find(p => p.handle === lead);
+    if (person && !seen[person.name]) { seen[person.name] = 1; approvers.push({ name: person.name, maxTier: 'RO' }); }
+  });
+  return { owners, approvers };
+}
+function mockOwnerResult(row, before) {
+  const st = mockOwnerState(row);
+  const now = st.approvers.map(a => a.name);
+  const notes = st.owners.filter(o => { const t = ADMIN.teams.find(x => x.id === o.id); return !(t && t.members && t.members.length); })
+    .map(o => "'" + o.name + "' owns targets but has no lead in QueryHub — skipped");
+  return { ...st, changed: { approversAdded: now.filter(n => before.indexOf(n) < 0),
+    approversRevoked: before.filter(n => now.indexOf(n) < 0), maxTier: 'RO', notes } };
+}
 function connRegistry() {
   if (ADMIN.connections) return ADMIN.connections;
   const engineOf = (c) => (window.qhEngineId ? window.qhEngineId(c.engine) : 'postgres');
@@ -649,6 +670,8 @@ function connRegistry() {
       defaultDatabase: (c.databases[0] || {}).name || 'postgres', notes: '',
       databases: c.databases.map(d => ({ id: d.id, name: d.name, tier: d.tier })),
       autoApproveRO: !!c.autoApproveRO,
+      // Owner teams (CODE 2026-10-05 (g)): one synced, so the screen shows both kinds.
+      owners: c.id === 'prod-main' ? [{ id: 't_payments', name: 'payments', displayName: 'payments', syncedFrom: 'pod-sync' }] : [],
       credentials: {
         ro: { username: 'qh_ro', configured: true, placeholder: false },
         rw: { username: 'qh_rw', configured: c.env !== 'production' || c.id === 'prod-main', placeholder: false },
@@ -2636,6 +2659,39 @@ const qhApi = {
     mockAudit('Deleted connection', row.name, 'reject');
     return { deleted: true, disabled: false, reason: null };
   }, 360),
+  // Owner teams (CODE 2026-10-05 (g)). The owning team's lead approves the
+  // requests sent to the connection, from anyone, up to the fleet's ceiling.
+  // MOCK: a team's first member stands in for its lead, because the mock teams
+  // carry no lead. The ceiling is RO, as on the live fleet.
+  adminConnectionOwners: (conn) => mockDelay(() => {
+    const row = connRegistry().find(c => c.id === conn);
+    if (!row) return mockFail('Unknown connection.', 404, 'not_found');
+    return { ...mockOwnerState(row), maxTier: 'RO',
+      teams: ADMIN.teams.map(t => ({ id: t.id, name: t.name, displayName: t.name })) };
+  }, 200),
+  adminAddConnectionOwner: (conn, teamId) => mockDelay(() => {
+    const row = connRegistry().find(c => c.id === conn);
+    if (!row) return mockFail('Unknown connection.', 404, 'not_found');
+    const team = ADMIN.teams.find(t => t.id === teamId);
+    if (!team) return mockFail('That team does not exist.', 404, 'not_found');
+    row.owners = row.owners || [];
+    if (row.owners.some(o => o.id === teamId)) return mockFail(team.name + ' already owns ' + row.name + '.', 409, 'conflict');
+    const before = mockOwnerState(row).approvers.map(a => a.name);
+    row.owners = row.owners.concat([{ id: team.id, name: team.name, displayName: team.name, syncedFrom: null }]);
+    mockAudit('Added owner', team.name + ' · ' + row.name, 'grant');
+    return mockOwnerResult(row, before);
+  }, 260),
+  adminRemoveConnectionOwner: (conn, teamId) => mockDelay(() => {
+    const row = connRegistry().find(c => c.id === conn);
+    if (!row) return mockFail('Unknown connection.', 404, 'not_found');
+    const own = (row.owners || []).find(o => o.id === teamId);
+    if (!own) return mockFail('That team does not own ' + row.name + '.', 404, 'not_found');
+    if (own.syncedFrom) return mockFail("The '" + own.syncedFrom + "' sync maintains this owner. Its next run would add the owner again. Change the list of that sync.", 409, 'conflict');
+    const before = mockOwnerState(row).approvers.map(a => a.name);
+    row.owners = row.owners.filter(o => o.id !== teamId);
+    mockAudit('Removed owner', own.name + ' · ' + row.name, 'reject');
+    return mockOwnerResult(row, before);
+  }, 260),
   // MOCK reachability probes: a host with "bad"/"unknown" in it fails, the rest
   // answer ok. Real ones open a connection with the tier's stored credential.
   adminTestNewConnection: (b) => mockDelay(() => {

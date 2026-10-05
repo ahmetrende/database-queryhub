@@ -250,7 +250,9 @@ What can skip review:
 - The lead of the team that owns the target auto-approves reads, with or
   without a waiver. The lead is someone with a live `approver` role scoped
   to the target. `scripts/sync_team_approvers.py --source pod-sync` writes
-  that role from `target_team`.
+  that role from `target_team`. When an admin changes the owners of one
+  connection (Admin → Connections → row menu → Owners), QueryHub writes the
+  role for that connection at once.
 - So does anyone with an `admin` role (any admin, not only a super-admin).
   So does anyone whose waiver covers the read: a fleet-wide waiver, or one
   that names the target.

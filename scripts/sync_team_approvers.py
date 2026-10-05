@@ -14,10 +14,12 @@ own pod does not own, and 28 of the 268 requests decided by a person in the
 previous 30 days were exactly that case. So a row now says "any requester" (all
 teams) for one owned target, and the requester's team no longer matters.
 
-Reads ownership from `target_team` and reconciles `role_assignment`. It used
-to take that ownership as a CSV; migration 115 made it a relation, so the
-answer now lives in the model where a screen can show it and a person can
-correct it — and this script needs no input at all beyond which source to own.
+Reads ownership from `target_team` and reconciles `role_assignment`. The
+logic is in `queryhub.owner_approvers`, which the Connections screen
+shares. It used to take that ownership as a CSV; migration 115 made it a
+relation, so the answer now lives in the model where a screen can show it
+and a person can correct it — and this script needs no input at all beyond
+which source to own.
 Fill `target_team` first with `scripts/sync_target_owners.py`, or by hand.
 
 WHY ONE ROW PER TARGET. `scope_target_id` holds one target, so a team owning
@@ -55,97 +57,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from queryhub import audit, db  # noqa: E402
+from queryhub import audit, db, owner_approvers  # noqa: E402
 
-_TIERS = ("ro", "rw", "ddl")
-
-
-def resolve(cur):
-    """(wanted, label, notes) from the model.
-
-    A wanted row is (lead principal, team, target) — every team that owns a
-    target, paired with that team's lead. Both halves come from tables a
-    person can see and edit: `target_team` for ownership, `team_member.is_lead`
-    for who speaks for the team.
-    """
-    notes: list[str] = []
-    wanted: set[tuple[int, int, int]] = set()
-    label: dict[tuple[int, int, int], str] = {}
-
-    cur.execute(
-        "SELECT tt.target_id, tt.team_id, ts.alias, t.display_name AS team_name "
-        "  FROM target_team tt "
-        "  JOIN team t ON t.id = tt.team_id AND NOT t.is_deleted "
-        "  JOIN target_servers ts ON ts.id = tt.target_id AND ts.enabled "
-        " ORDER BY t.display_name, ts.alias")
-    owned = cur.fetchall()
-    if not owned:
-        notes.append("no team owns any enabled target — fill target_team first")
-
-    leads: dict[int, list[dict]] = {}
-    for row in owned:
-        if row["team_id"] not in leads:
-            cur.execute(
-                "SELECT m.principal_id, p.display_name, p.enabled "
-                "  FROM team_member m JOIN principal p ON p.id = m.principal_id "
-                " WHERE m.team_id = %s AND m.is_lead "
-                "   AND NOT m.is_deleted AND NOT p.is_deleted", (row["team_id"],))
-            leads[row["team_id"]] = cur.fetchall()
-            if not leads[row["team_id"]]:
-                notes.append(f"'{row['team_name']}' owns targets but has no "
-                             f"lead in QueryHub — skipped")
-        for lead in leads[row["team_id"]]:
-            if not lead["enabled"]:
-                note = (f"'{row['team_name']}' lead {lead['display_name']} is "
-                        f"disabled — skipped")
-                if note not in notes:
-                    notes.append(note)
-                continue
-            # No team in the key: the row admits any requester. Two teams
-            # owning one target under the same lead are therefore one row.
-            key = (lead["principal_id"], None, row["target_id"])
-            wanted.add(key)
-            label.setdefault(key, f"{lead['display_name']} ({row['team_name']})"
-                                  f" @ {row['alias']}, any requester")
-    return wanted, label, notes
-
-
-def plan(cur, source: str, max_tier: str):
-    wanted, label, notes = resolve(cur)
-    cur.execute(
-        "SELECT id, principal_id, scope_team_id, scope_target_id, max_tier "
-        "  FROM role_assignment "
-        " WHERE source = %s AND role = 'approver' "
-        "   AND revoked_at IS NULL AND NOT is_deleted", (source,))
-    live = {(r["principal_id"], r["scope_team_id"], r["scope_target_id"]): r
-            for r in cur.fetchall()}
-
-    add = sorted(wanted - set(live), key=lambda k: label.get(k, ""))
-    drop = sorted(set(live) - wanted)
-    # A ceiling that no longer matches is a revoke-and-recreate, because a role
-    # is immutable and `role_assignment_live_uq` would refuse the pair anyway.
-    retier = [k for k in wanted & set(live) if live[k]["max_tier"] != max_tier]
-    return {"add": add, "drop": drop, "retier": retier,
-            "live": live, "label": label, "notes": notes}
-
-
-def apply(cur, source: str, p, max_tier: str, actor: str) -> None:
-    for key in p["drop"] + p["retier"]:
-        cur.execute("UPDATE role_assignment SET revoked_at = NOW() "
-                    " WHERE id = %s", (p["live"][key]["id"],))
-    for key in p["add"] + p["retier"]:
-        pid, team_id, target_id = key
-        cur.execute(
-            "INSERT INTO role_assignment "
-            "  (principal_id, role, scope_team_id, all_teams, scope_target_id, "
-            "   all_targets, max_tier, any_tier, reason, source, created_by) "
-            "VALUES (%s,'approver',%s,%s,%s,FALSE,%s,FALSE,%s,%s,"
-            "        (SELECT p.id FROM principal p "
-            "           JOIN principal_identity i ON i.principal_id = p.id "
-            "          WHERE i.provider='slack' AND i.external_id = %s "
-            "            AND NOT i.is_deleted LIMIT 1))",
-            (pid, team_id, team_id is None, target_id, max_tier,
-             f"team lead, synced from {source}", source, actor))
+# The logic lives in the package, because the Connections screen runs the same
+# reconcile for one target right after an owner change. This file is the CLI.
+_TIERS = owner_approvers.TIERS
+plan = owner_approvers.plan
+apply = owner_approvers.apply
 
 
 def main() -> int:

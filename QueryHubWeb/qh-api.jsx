@@ -303,6 +303,11 @@ const qhApi = {
   // Answers {deleted, disabled, reason} — a connection with history or live
   // grants is disabled instead of removed, and that counts as success.
   adminDeleteConnection:(conn)  => qhConnectionsChanged(qhFetch('/admin/connections/' + encodeURIComponent(conn), { method: 'DELETE' })),
+  // Owner teams (CODE 2026-10-05 (g)). The owning team's lead approves the
+  // requests sent to the connection, so a change here also changes who approves.
+  adminConnectionOwners:(conn)  => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/owners'),
+  adminAddConnectionOwner:(conn, teamId) => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/owners', { method: 'POST', body: JSON.stringify({ teamId }) }),
+  adminRemoveConnectionOwner:(conn, teamId) => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/owners/' + encodeURIComponent(teamId), { method: 'DELETE' }),
   // Several connections, all or nothing (design 2026-09-23). A dry run writes
   // nothing, so only a real one announces a change to the connection list.
   adminBulkConnections:(b) => {

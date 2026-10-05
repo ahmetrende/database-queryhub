@@ -166,7 +166,7 @@ The resolver decides who may run what from the tables that migrations
 | `principal_setting` | Per-person settings as key/value (`max_rows`, `exclude_from_metrics`), each with an optional `valid_until`. |
 | `team` | A group. `name` is the stable code, and `display_name` is what people read. `source` names the sync that owns the membership. When `source` is anything but `manual`, the membership is read-only in the UI. |
 | `team_member` | Membership. `is_lead` marks a lead and grants nothing by itself. |
-| `target_team` | Which team owns a target, many-to-many. It grants nothing: it is what lets a team lead approve their own team's requests (see `scripts/sync_team_approvers.py`). |
+| `target_team` | Which team owns a target, many-to-many. It grants nothing: it is what lets a team lead approve the requests to their team's targets (see `scripts/sync_team_approvers.py`). An admin can add or remove a hand-made owner on the Connections screen. A synced owner changes only in its sync. |
 | `access_grant` | The one access matrix. Each row says who (a principal or a team) and where (a target or every target, a database or every database). It also says which tier, for how long, and whether the row is a waiver. |
 | `role_assignment` | Who approves, grants, imports or administers, with an optional team, target and tier scope and a validity window. |
 

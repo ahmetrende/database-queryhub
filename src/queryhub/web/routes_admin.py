@@ -32,6 +32,7 @@ from .. import (
     grants,
     idp_sync_guard,
     manual_runs,
+    owner_approvers,
     people,
     pii,
     requesters,
@@ -1009,6 +1010,150 @@ def admin_connections(claims: dict = Depends(deps.current_user)):
         payload["owners"] = owners.get(r["id"], [])
         out.append(payload)
     return {"connections": out}
+
+
+# ---- connection owners ------------------------------------------------------
+# Which team owns a connection (migration 115), and so whose lead approves the
+# requests sent to it (owner_approvers). The pod sync fills most rows from a
+# CSV. These endpoints add and remove the hand-made ones, for a target that the
+# CSV does not know. Each change runs the lead-approver reconcile for that one
+# target in the same transaction: the new lead can approve the next request,
+# and nothing else in the fleet changes.
+
+
+class OwnerIn(BaseModel):
+    teamId: int
+
+
+def _owners_of(cur, target_id: int) -> list[dict]:
+    cur.execute(
+        "SELECT t.id, t.name, t.display_name, tt.source "
+        "  FROM target_team tt "
+        "  JOIN team t ON t.id = tt.team_id AND NOT t.is_deleted "
+        " WHERE tt.target_id = %s ORDER BY t.display_name", (target_id,))
+    return [{"id": r["id"], "name": r["name"], "displayName": r["display_name"],
+             "syncedFrom": r["source"]} for r in cur.fetchall()]
+
+
+def _owner_approvers_of(cur, target_id: int) -> list[dict]:
+    """The live approver rows that ownership gives on this target."""
+    cur.execute(
+        "SELECT p.display_name, ra.max_tier "
+        "  FROM role_assignment ra JOIN principal p ON p.id = ra.principal_id "
+        " WHERE ra.role = 'approver' AND ra.source = %s "
+        "   AND ra.scope_target_id = %s "
+        "   AND ra.revoked_at IS NULL AND NOT ra.is_deleted "
+        " ORDER BY p.display_name", (owner_approvers.SOURCE, target_id))
+    return [{"name": r["display_name"], "maxTier": (r["max_tier"] or "").upper()}
+            for r in cur.fetchall()]
+
+
+def _reconcile_owner_approvers(cur, target_id: int, uid: str) -> dict:
+    """The lead-approver reconcile for one target, and what it changed."""
+    source = owner_approvers.SOURCE
+    tier = owner_approvers.ceiling(cur, source)
+    p = owner_approvers.plan(cur, source, tier, target_id=target_id)
+    owner_approvers.apply(cur, source, p, tier, uid)
+    return {"approversAdded": owner_approvers.names(cur, p["add"]),
+            "approversRevoked": owner_approvers.names(cur, p["drop"]),
+            "maxTier": tier.upper(), "notes": p["notes"]}
+
+
+@router.get("/connections/{conn}/owners")
+def admin_connection_owners(conn: str,
+                            claims: dict = Depends(deps.current_user)):
+    """The teams that own this connection, the leads that approve for it, and
+    the teams an admin can add.
+
+    The team list reads `team` directly, because that is the table
+    `target_team` points at, whatever `access_model_v2` says. The Teams
+    screen's list follows the flag, and its ids would not match here."""
+    admin.require_admin(claims, "access")
+    row = _require_target_row(conn)
+    with db.transaction() as cur:
+        out = {"owners": _owners_of(cur, row["id"]),
+               "approvers": _owner_approvers_of(cur, row["id"]),
+               "maxTier": owner_approvers.ceiling(cur).upper()}
+        cur.execute("SELECT id, name, display_name FROM team "
+                    " WHERE NOT is_deleted ORDER BY lower(display_name)")
+        out["teams"] = [{"id": r["id"], "name": r["name"],
+                         "displayName": r["display_name"]}
+                        for r in cur.fetchall()]
+    return out
+
+
+@router.post("/connections/{conn}/owners", status_code=201)
+def admin_connection_owner_add(conn: str, body: OwnerIn,
+                               claims: dict = Depends(deps.current_user)):
+    """Make a team an owner of this connection, by hand.
+
+    The row is hand-made (`source` NULL), so no sync removes it. The team's
+    lead then approves the requests sent to this connection, from anyone, up
+    to the fleet's ceiling. The auth-event DM tells the lead."""
+    uid = admin.require_admin(claims, "access")
+    row = _require_target_row(conn)
+    with db.transaction() as cur:
+        cur.execute("SELECT id, display_name FROM team "
+                    " WHERE id = %s AND NOT is_deleted", (body.teamId,))
+        team = cur.fetchone()
+        if team is None:
+            raise deps._error(404, "not_found", "That team does not exist.")
+        cur.execute(
+            "INSERT INTO target_team (target_id, team_id, source, created_by) "
+            "VALUES (%s, %s, NULL, (SELECT p.id FROM principal p "
+            "          JOIN principal_identity i ON i.principal_id = p.id "
+            "         WHERE i.provider = 'slack' AND i.external_id = %s "
+            "           AND NOT i.is_deleted LIMIT 1)) "
+            "ON CONFLICT DO NOTHING RETURNING target_id",
+            (row["id"], team["id"], uid))
+        if cur.fetchone() is None:
+            raise deps._error(409, "conflict",
+                              f"{team['display_name']} already owns {row['alias']}.")
+        changed = _reconcile_owner_approvers(cur, row["id"], uid)
+        audit.log_in(cur, None, uid, claims.get("name"), "target_owner_added",
+                     {"target": row["alias"], "targetId": row["id"],
+                      "team": team["display_name"], "teamId": team["id"],
+                      **changed})
+        out = {"owners": _owners_of(cur, row["id"]),
+               "approvers": _owner_approvers_of(cur, row["id"]),
+               "changed": changed}
+    return out
+
+
+@router.delete("/connections/{conn}/owners/{team_id}")
+def admin_connection_owner_remove(conn: str, team_id: int,
+                                  claims: dict = Depends(deps.current_user)):
+    """Remove a hand-made owner from this connection.
+
+    A synced owner is refused. The sync adds its rows again on each run, so
+    that change belongs in the sync's own list."""
+    uid = admin.require_admin(claims, "access")
+    row = _require_target_row(conn)
+    with db.transaction() as cur:
+        cur.execute(
+            "SELECT tt.source, t.display_name FROM target_team tt "
+            "  JOIN team t ON t.id = tt.team_id "
+            " WHERE tt.target_id = %s AND tt.team_id = %s FOR UPDATE OF tt",
+            (row["id"], team_id))
+        own = cur.fetchone()
+        if own is None:
+            raise deps._error(404, "not_found",
+                              f"That team does not own {row['alias']}.")
+        if own["source"]:
+            raise deps._error(
+                409, "conflict",
+                f"The '{own['source']}' sync maintains this owner. Its next "
+                "run would add the owner again. Change the list of that sync.")
+        cur.execute("DELETE FROM target_team WHERE target_id = %s "
+                    "   AND team_id = %s AND source IS NULL", (row["id"], team_id))
+        changed = _reconcile_owner_approvers(cur, row["id"], uid)
+        audit.log_in(cur, None, uid, claims.get("name"), "target_owner_removed",
+                     {"target": row["alias"], "targetId": row["id"],
+                      "team": own["display_name"], "teamId": team_id, **changed})
+        out = {"owners": _owners_of(cur, row["id"]),
+               "approvers": _owner_approvers_of(cur, row["id"]),
+               "changed": changed}
+    return out
 
 
 @router.get("/tag-keys")

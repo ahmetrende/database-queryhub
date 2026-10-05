@@ -15,7 +15,11 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = (ROOT / "scripts" / "sync_team_approvers.py").read_text(encoding="utf-8")
+# The script is the CLI. The rules moved into the package when the Connections
+# screen started to run the same reconcile for one target, so both are read.
+SRC = ((ROOT / "scripts" / "sync_team_approvers.py").read_text(encoding="utf-8")
+       + (ROOT / "src" / "queryhub"
+          / "owner_approvers.py").read_text(encoding="utf-8"))
 MIG = (ROOT / "migrations"
        / "114_role_assignment_source.sql").read_text(encoding="utf-8")
 ADMIN_API = (ROOT / "src" / "queryhub" / "web"
@@ -263,3 +267,42 @@ def test_another_server_stays_out_of_scope(owner_lead):
 def test_a_lead_never_approves_their_own_request(owner_lead):
     assert not owner_lead.can_approve("U0EXAMPLE01",
                                       _request(requester="U0EXAMPLE01"))
+
+
+# --- owners from the Connections screen ----------------------------------------
+
+
+def test_the_screen_and_the_script_own_the_same_rows():
+    """A screen that wrote under another source could not revoke the script's
+    row when an owner goes, and the unique index would refuse its own."""
+    from queryhub import owner_approvers
+    assert owner_approvers.SOURCE == "pod-sync"
+    assert "owner_approvers.SOURCE" in ADMIN_API
+    assert "owner_approvers.plan" in ADMIN_API and "owner_approvers.apply" in ADMIN_API
+
+
+def test_an_owner_change_reconciles_only_its_target():
+    assert "target_id=target_id" in ADMIN_API
+    assert " AND scope_target_id = %s" in SRC
+    assert " WHERE tt.target_id = %s " in SRC
+
+
+def test_a_key_another_source_holds_is_skipped_not_inserted():
+    # role_assignment_live_uq ignores the source: a second insert would fail.
+    assert "def _held_elsewhere" in SRC and "source IS DISTINCT FROM %s" in SRC
+
+
+def test_a_synced_owner_cannot_be_removed_from_the_screen():
+    assert 'if own["source"]:' in ADMIN_API
+    assert "run would add the owner again" in ADMIN_API
+    assert "AND team_id = %s AND source IS NULL" in ADMIN_API
+
+
+def test_every_owner_change_is_audited():
+    assert '"target_owner_added"' in ADMIN_API
+    assert '"target_owner_removed"' in ADMIN_API
+
+
+def test_the_screen_ceiling_follows_the_fleet_run():
+    assert "owner_approvers.ceiling(cur, source)" in ADMIN_API
+    assert "def ceiling" in SRC
