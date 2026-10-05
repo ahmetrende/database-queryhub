@@ -9,17 +9,6 @@
 <link rel="stylesheet" href="qh-theme.css" />
 <link rel="icon" type="image/svg+xml" href="brand/svg/queryhub-avatar-green.svg" />
 <link rel="apple-touch-icon" href="brand/svg/queryhub-avatar-green.svg" />
-<!-- DESIGN-ONLY (standalone/offline export): engine logos are referenced as
-     string values in JS (qhEngineLogo), so the bundler can't discover them from
-     markup — lift them here and qhEngineLogo reads window.__resources when it
-     exists. Harmless in the served app: no __resources, so the paths are used. -->
-<meta name="ext-resource-dependency" content="brand/engines/postgres.svg" data-resource-id="engine_postgres" />
-<meta name="ext-resource-dependency" content="brand/engines/mssql.svg" data-resource-id="engine_mssql" />
-<meta name="ext-resource-dependency" content="brand/engines/clickhouse.svg" data-resource-id="engine_clickhouse" />
-<meta name="ext-resource-dependency" content="brand/providers/aws.svg" data-resource-id="prov_aws" />
-<meta name="ext-resource-dependency" content="brand/providers/aws-dark.svg" data-resource-id="prov_aws_dark" />
-<meta name="ext-resource-dependency" content="brand/providers/huawei.svg" data-resource-id="prov_huawei" />
-<meta name="ext-resource-dependency" content="brand/providers/onprem.svg" data-resource-id="prov_onprem" />
 <style>
   html, body { height: 100%; margin: 0; overflow: hidden; }
   #root { height: 100vh; }
@@ -2118,6 +2107,13 @@
      line (CODE 2026-09-24 (c), 43px at a 1024px window); under that the table
      holds its width and the wrapper scrolls instead. Wide screens are unchanged. */
   .qh-conntable { table-layout: fixed; width: 100%; min-width: 980px; }
+  /* Connection owners (qh-admin-access.jsx ConnOwnersForm, CODE 2026-10-05 (g)):
+     the line under each connection name, and the rows in the owners dialog. */
+  .qh-conn-owners { font-size: 11.5px; }
+  .qh-owner-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 12px; }
+  .qh-owner-row { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+  .qh-owner-row b { font-weight: 600; }
+  .qh-owner-row .qh-btn { margin-left: auto; }
   .qh-conntable th.qh-conn-selcol, .qh-conntable td.qh-conn-selcol { width: 36px; }
   .qh-conntable th:nth-child(2) { width: 27%; }
   .qh-conntable th:nth-child(3) { width: 15%; }

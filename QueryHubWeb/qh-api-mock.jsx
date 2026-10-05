@@ -126,7 +126,7 @@ const MOCK_CHANGELOG = [
     summary: 'Access → Roles: let a person approve, grant or import within one team, one server and a tier limit. They do not become an admin everywhere.',
     changes: [
       { type: 'new', text: 'Roles tab under Access — approver, granter, importer or admin, each row written as a sentence saying exactly how far it reaches.' },
-      { type: 'new', text: 'A role can end on a date; the row says so in the sentence rather than hiding it in a column.' },
+      { type: 'new', text: 'A role can end on a date. The sentence on the row gives that date. It is not in a separate column.' },
       { type: 'new', text: 'Any admin can read the list — “who can approve my team’s requests?” no longer needs a super-admin to answer.' },
       { type: 'changed', text: 'QueryHub records roles now, but does not apply them yet. The fleet still reads the admins table. Those rows show as mirrored and live. New rows show as staged.' },
       { type: 'fixed', text: 'Disabling somebody’s account revokes nothing — their roles and grants stand. The list now says so on the row instead of leaving it to be discovered.' },
@@ -144,7 +144,7 @@ const MOCK_CHANGELOG = [
     summary: 'Deployments that do not use Slack can now use built-in local accounts, with a self-service password change.',
     changes: [
       { type: 'new', text: 'Username / password sign-in when local accounts are enabled.' },
-      { type: 'new', text: 'Change password from the profile menu; handed-off accounts are asked to set one on first sign-in.' },
+      { type: 'new', text: 'Change password from the profile menu. A handed-off account must set a password at its first sign-in.' },
       { type: 'changed', text: 'The sign-in screen shows only the methods that your deployment enables.' },
     ],
     commits: [{ sha: '4af0c1e', msg: 'add local account login + change password' }] },

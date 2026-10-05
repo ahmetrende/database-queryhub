@@ -2098,6 +2098,13 @@
      line (CODE 2026-09-24 (c), 43px at a 1024px window); under that the table
      holds its width and the wrapper scrolls instead. Wide screens are unchanged. */
   .qh-conntable { table-layout: fixed; width: 100%; min-width: 980px; }
+  /* Connection owners (qh-admin-access.jsx ConnOwnersForm, CODE 2026-10-05 (g)):
+     the line under each connection name, and the rows in the owners dialog. */
+  .qh-conn-owners { font-size: 11.5px; }
+  .qh-owner-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 12px; }
+  .qh-owner-row { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+  .qh-owner-row b { font-weight: 600; }
+  .qh-owner-row .qh-btn { margin-left: auto; }
   .qh-conntable th.qh-conn-selcol, .qh-conntable td.qh-conn-selcol { width: 36px; }
   .qh-conntable th:nth-child(2) { width: 27%; }
   .qh-conntable th:nth-child(3) { width: 15%; }
@@ -2515,11 +2522,3 @@
   user-select: none;
 }
 .qh-wn-audtoggle input { cursor: pointer; margin: 0; }
-
-/* Connection owners (qh-admin-access.jsx ConnOwnersForm, CODE 2026-10-05 (g)):
-   the line under each connection name, and the rows in the owners dialog. */
-.qh-conn-owners { font-size: 11.5px; }
-.qh-owner-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 12px; }
-.qh-owner-row { display: flex; align-items: center; gap: 8px; min-height: 28px; }
-.qh-owner-row b { font-weight: 600; }
-.qh-owner-row .qh-btn { margin-left: auto; }
