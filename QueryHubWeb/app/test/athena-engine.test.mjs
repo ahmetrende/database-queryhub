@@ -7,6 +7,7 @@
 // says what engine a connection is.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 
 import { bareWindow, loadInto } from './_load.mjs';
 
@@ -45,9 +46,20 @@ test('no system catalog node: information_schema is refused on this engine', () 
   assert.deepEqual(win.qhEngine(conn).system, {});
 });
 
+test('athena has a logo of its own', () => {
+  assert.equal(win.qhEngineLogo(conn), '/brand/engines/athena.svg');
+});
+
 test('an engine with no logo file gets a neutral glyph, not another engine\'s logo', () => {
-  const src = win.qhEngineLogo(conn);
+  const src = win.qhEngineLogo({ engine: 'MySQL 8' });
   assert.ok(src.startsWith('data:image/svg+xml,'), src);
   assert.equal(win.qhEngineLogo({ engine: 'PostgreSQL' }), '/brand/engines/postgres.svg');
   assert.equal(win.qhEngineLogo({ engine: 'ClickHouse' }), '/brand/engines/clickhouse.svg');
+});
+
+test('every logo path names a file that exists', () => {
+  for (const engine of ['PostgreSQL', 'SQL Server', 'ClickHouse', 'athena']) {
+    const p = win.qhEngineLogo({ engine });
+    assert.ok(existsSync(new URL('../..' + p, import.meta.url)), engine + ' -> ' + p);
+  }
 });

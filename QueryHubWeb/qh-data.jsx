@@ -382,9 +382,8 @@ const QH_SHOW_ENV_TAGS = false;
 // connection could ever render one — they were vendor trademarks shipped to
 // advertise capability the product does not have (CODE_TO_DESIGN_BRIEF
 // 2026-07-30). `clickhouse` stays: it executes, read-only (2026-09-23 (d)).
-const QH_ENGINE_LOGO = { postgres: '/brand/engines/postgres.svg', mssql: '/brand/engines/mssql.svg', clickhouse: '/brand/engines/clickhouse.svg' };
-// An engine with no logo file (`athena`, until design supplies one) gets a plain
-// grey cylinder, inline so it needs no asset. Not the Postgres logo: in the tree
+const QH_ENGINE_LOGO = { postgres: '/brand/engines/postgres.svg', mssql: '/brand/engines/mssql.svg', clickhouse: '/brand/engines/clickhouse.svg', athena: '/brand/engines/athena.svg' };
+// An engine with no logo file gets a plain grey cylinder, inline so it needs no asset. Not the Postgres logo: in the tree
 // the logo is the only thing that says what engine a connection is, and an
 // archive drawn as Postgres invites Postgres SQL.
 const QH_ENGINE_LOGO_GENERIC = 'data:image/svg+xml,' + encodeURIComponent(

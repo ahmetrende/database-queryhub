@@ -275,6 +275,7 @@ _ENGINE_TRADEMARK_OWNER = {
     "postgres": "PostgreSQL",
     "mssql": "Microsoft",
     "clickhouse": "ClickHouse",
+    "athena": "Amazon",
     "oracle": "Oracle",
     "mysql": "MySQL",
     "couchbase": "Couchbase",

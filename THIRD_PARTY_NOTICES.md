@@ -84,17 +84,19 @@ Not shipped in the image, listed for completeness: `pytest`, `pytest-cov`,
 ## Engine logos
 
 `QueryHubWeb/brand/engines/*.svg` are vendor logos in the shape of the
-[Devicon](https://github.com/devicons/devicon) set (MIT). The **marks
-themselves are trademarks of their owners** — PostgreSQL (PostgreSQL Community
-Association), Microsoft SQL Server (Microsoft), ClickHouse (ClickHouse, Inc.).
+[Devicon](https://github.com/devicons/devicon) set (MIT). The exception is
+`athena.svg`: it is the Amazon Athena icon from the AWS Architecture Icons set.
+The **marks themselves are trademarks of their owners** — PostgreSQL (PostgreSQL
+Community Association), Microsoft SQL Server (Microsoft), ClickHouse
+(ClickHouse, Inc.), Amazon Athena (Amazon.com, Inc. or its affiliates).
 They are used to identify which engine a connection speaks, which is nominative
 use, and imply no endorsement or affiliation.
 
 The `oracle`, `mysql` and `couchbase` marks were **removed on 2026-08-15**.
 QueryHub has no engine spec for those three, so no connection could ever have
 displayed them: they were vendor trademarks shipped to advertise capability the
-product does not have. ClickHouse stays — that spec is real, even though
-execution against it is refused today.
+product does not have. ClickHouse stays: QueryHub runs read-only queries
+against it.
 
 QueryHub's own logo and wordmark in `assets/` are **not** covered by the Apache
 licence on the code — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
