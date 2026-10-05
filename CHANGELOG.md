@@ -161,6 +161,19 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Fixed
 
+- **`*` in the web editor expands to the columns of what the statement reads,
+  and nothing else.** On a partition, Tab on the star filled the select list
+  with every column in the database.
+  - Cause: the catalog folds partitions into their parent, and a table it did
+    not list fell back to the whole database's columns. The table was also read
+    from the first `from` in the editor, not the statement under the caret.
+  - Fix: the star is read from its own statement. A table the catalog does not
+    list is looked up live: `GET /connections/{conn}/databases/{db}/columns?table=`,
+    a fixed read-only metadata query (`to_regclass` + `pg_attribute`) with the
+    RO login and a 3 s timeout, PostgreSQL only. If that does not know it
+    either, nothing is offered.
+  - A join expands every table qualified by its alias; `t.*` expands t.
+
 - **Every edit in the web editor can be undone.** ⌘Z / Ctrl+Z did nothing
   after the editor changed the text itself: expanding `*` with Tab, accepting
   a completion, Tab indent, a dropped tree object, a whole-line cut or paste.

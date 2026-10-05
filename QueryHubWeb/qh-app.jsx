@@ -163,6 +163,35 @@ function useServerClassify(sql, connId, dbId) {
   return verdict;
 }
 
+// The live half of the `SELECT *` expansion: the columns PostgreSQL reports
+// for one relation name (GET /connections/{c}/databases/{d}/columns). `peek`
+// answers from the cache without waiting — columns, null for "no such
+// relation" (asked again after a minute, in case it was just created), or
+// undefined for "not asked yet"; `fetch` asks once and shares the answer.
+const QH_LIVE_COLS_RETRY_MS = 60 * 1000;
+function qhLiveColumnLookup(cache, connId, dbId) {
+  const keyOf = (name) => connId + '/' + dbId + '|' + name;
+  const fresh = (e) => e && !e.p && (e.cols || Date.now() - e.at < QH_LIVE_COLS_RETRY_MS);
+  return {
+    peek: (name) => { const e = cache.get(keyOf(name)); return fresh(e) ? e.cols : undefined; },
+    fetch: (name) => {
+      const k = keyOf(name), e = cache.get(k);
+      if (e && e.p) return e.p;
+      if (fresh(e)) return Promise.resolve(e.cols);
+      const p = qhApi.tableColumns(connId, dbId, name)
+        .then(r => ((r && r.columns) || []).map(c => c.name))
+        .catch(() => null)
+        .then(cols => {
+          const got = cols && cols.length ? cols : null;
+          cache.set(k, { cols: got, at: Date.now() });
+          return got;
+        });
+      cache.set(k, { p });
+      return p;
+    },
+  };
+}
+
 function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
@@ -189,6 +218,7 @@ function App() {
     // The editor's undo history is the same kind of data — the previous
     // user's SQL — and sign-out does not reload the page.
     qhUndoForget();
+    liveCols.current.clear();
     setUser(null);
   };
 
@@ -280,6 +310,9 @@ function App() {
   const [history, setHistory] = useState([]);
   const [schemaCache, setSchemaCache] = useState({});
   const schemaReq = useRef({});
+  // Columns read live for relations the catalog does not list (see
+  // qhLiveColumnLookup). Per session; sign-out clears it with the rest.
+  const liveCols = useRef(new Map());
   // A successful fetch used to be permanent: the cache had no TTL and was
   // only ever reset by a failure, so a tab left open all day kept serving the
   // schema as it looked at load — new tables never appeared, and an admin's
@@ -591,6 +624,7 @@ function App() {
     const sch = schemaCache[tab.conn + '/' + tab.db];
     const cols = new Set();
     const tableCols = {};
+    const tableColsQ = {};      // "schema.table" -> columns, for qualified names
     // `qualify[name]` is what actually gets inserted when a table is picked:
     // the real schema from the catalog, not the old public/dbo guess. When a
     // bare name exists in two schemas we leave it unqualified rather than
@@ -601,6 +635,7 @@ function App() {
       const entry = (sch && (sch.tables[(s ? s + '.' : '') + n] || sch.tables[n])) || null;
       const cs = entry ? entry.columns.map(c => c.name) : [];
       if (!tableCols[n]) tableCols[n] = cs;
+      if (s) tableColsQ[s + '.' + n] = cs;
       cs.forEach(c => cols.add(c));
       seen[n] = (seen[n] || 0) + 1;
       if (s) qualify[n] = seen[n] > 1 ? null : s + '.' + n;
@@ -621,8 +656,13 @@ function App() {
     const functions = (db && db.functions) || [];
     const functionKind = {};
     ((db && db.functionRefs) || []).forEach(f => { functionKind[f.n] = f.k; });
-    return { tables: refs.map(r => r.n), columns: [...cols], dbs, tableCols,
-             qualify, systemTables, functions, functionKind };
+    // The `SELECT *` expansion asks the target about a relation the catalog
+    // does not list (a partition, a table newer than the snapshot). The
+    // server reads PostgreSQL's own catalog for it; other engines are not asked.
+    const columnLookup = (tab.conn && tab.db && qhEngineId(conn && conn.engine) === 'postgres')
+      ? qhLiveColumnLookup(liveCols.current, tab.conn, tab.db) : null;
+    return { tables: refs.map(r => r.n), columns: [...cols], dbs, tableCols, tableColsQ,
+             qualify, systemTables, functions, functionKind, columnLookup };
   }, [tab.conn, tab.db, schemaCache, conns]);
   const dbTier = db ? db.tier : 'RO';
   // Prefer the server's answer on both of these. The local fallback is only in

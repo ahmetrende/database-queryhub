@@ -99,6 +99,12 @@ const qhApi = {
   connections: ()      => qhFetch('/connections'),
   schema:      (conn, dbn) => qhFetch('/connections/' + encodeURIComponent(conn) +
                                       '/databases/' + encodeURIComponent(dbn) + '/schema'),
+  // Columns of ONE relation, read live from the target (PostgreSQL only) —
+  // for the `SELECT *` expansion when the catalog does not list it. 404 when
+  // there is no such relation. {table, columns:[{name,type}]}.
+  tableColumns: (conn, dbn, table) => qhFetch('/connections/' + encodeURIComponent(conn) +
+                                      '/databases/' + encodeURIComponent(dbn) +
+                                      '/columns?table=' + encodeURIComponent(table)),
   // Server DB roles (super-only, enforced server-side). {roles:[{name,kind,login,sup,note}]}.
   roles:       (conn)  => qhFetch('/connections/' + encodeURIComponent(conn) + '/roles'),
   // The read replicas a super-admin can send one query to, with the health the

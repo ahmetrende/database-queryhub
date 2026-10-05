@@ -303,7 +303,226 @@ function qhBuildSuggest(value, caret, schema, engineId) {
   for (const it of items) { const k = it.type + ':' + it.text; if (!seen.has(k)) { seen.add(k); out.push(it); } if (out.length >= 12) break; }
   return out.length ? { items: out, start, end: start + token.length } : null;
 }
-const QH_AC_TYPE_LABEL = { keyword: 'kw', table: 'table', column: 'col', database: 'db', system: 'system', function: 'fn', expand: 'all cols' };
+
+// ---------------------------------------------------------------------------
+// SELECT * expansion
+//
+// Which columns a select-list `*` stands for, read from the statement the caret
+// is in. Two things were wrong before this existed:
+//   * a FROM table the catalog did not list — a partition (the catalog folds
+//     them into their parent), or a table newer than the hourly snapshot — fell
+//     back to EVERY column in the database, so Tab filled the select list with
+//     hundreds of unrelated names;
+//   * the table came from the FIRST `from` anywhere in the editor, so in a
+//     script the star expanded another statement's table.
+// Now the answer is exact or there is none. Each relation in FROM is looked up
+// in the catalog — qualified when written qualified, a bare name only when one
+// schema has it — and then through `live(name)`, the columns the target itself
+// reports for that name (GET .../columns): an array, null (no such relation, or
+// it cannot be asked), or undefined (not asked yet). A join expands to every
+// table's columns, each qualified by its alias or name; `t.*` expands to t's.
+// What cannot be read exactly — a subquery or a function in FROM, NATURAL and
+// USING joins (they merge columns), column aliases — offers nothing.
+//
+// Returns { kind: 'ready', start, end, text, count }, { kind: 'lookup', names }
+// when a relation is not known yet but can be asked about, or null.
+// ---------------------------------------------------------------------------
+
+// Tokens for the reader below: words, quoted identifiers, strings, numbers and
+// single punctuation characters, with comments and blanks dropped. `s`/`e` are
+// offsets into the text; `u` is a word in upper case.
+function qhSqlTokens(sql) {
+  const out = [];
+  const re = /(--[^\n]*|\/\*[\s\S]*?(?:\*\/|$))|('(?:[^']|'')*'?)|("(?:[^"]|"")*"?|\[[^\]]*\]?)|(\$[A-Za-z_]*\$)|([A-Za-z_][A-Za-z0-9_$]*)|(\d+(?:\.\d+)?)|(\s+)|([\s\S])/g;
+  let m;
+  while ((m = re.exec(sql)) !== null) {
+    const s = m.index;
+    if (m[1] != null || m[7] != null) continue;
+    if (m[4] != null) {                       // a $tag$ … $tag$ string
+      const close = sql.indexOf(m[4], re.lastIndex);
+      const e = close < 0 ? sql.length : close + m[4].length;
+      re.lastIndex = e;
+      out.push({ k: 'str', v: sql.slice(s, e), s, e, u: null });
+      continue;
+    }
+    const k = m[2] != null ? 'str' : m[3] != null ? 'qid' : m[5] != null ? 'word' : m[6] != null ? 'num' : 'p';
+    out.push({ k, v: m[0], s, e: s + m[0].length, u: k === 'word' ? m[0].toUpperCase() : null });
+  }
+  return out;
+}
+
+// Words that end a FROM list, and words that cannot be a table or an alias.
+const QH_FROM_END = new Set(['WHERE', 'GROUP', 'HAVING', 'ORDER', 'LIMIT', 'OFFSET', 'FETCH', 'FOR',
+  'WINDOW', 'UNION', 'INTERSECT', 'EXCEPT', 'RETURNING', 'OPTION', 'QUALIFY', 'SETTINGS', 'FORMAT',
+  'PREWHERE', 'SAMPLE', 'FINAL']);
+const QH_NOT_NAME = new Set([...QH_FROM_END, 'ON', 'USING', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL',
+  'CROSS', 'NATURAL', 'OUTER', 'LATERAL', 'TABLESAMPLE', 'WITH', 'AS', 'SELECT', 'FROM', 'APPLY', 'ONLY']);
+// Clause words a select-list star cannot be behind, walking back to its SELECT.
+const QH_STAR_STOP = new Set(['FROM', 'WHERE', 'GROUP', 'HAVING', 'ORDER', 'LIMIT', 'OFFSET', 'UNION',
+  'INTERSECT', 'EXCEPT', 'INTO', 'VALUES', 'SET', 'ON', 'USING', 'JOIN', 'RETURNING', 'WINDOW']);
+
+// A case-insensitive lookup that only answers when exactly one key matches.
+function qhLookupCi(map, key, exact) {
+  if (!map) return undefined;
+  if (Object.prototype.hasOwnProperty.call(map, key)) return map[key];
+  if (exact) return undefined;
+  const want = key.toLowerCase();
+  let hit, n = 0;
+  for (const k of Object.keys(map)) if (k.toLowerCase() === want) { hit = map[k]; n++; }
+  return n === 1 ? hit : undefined;
+}
+
+function qhStarExpansion(sql, caret, schema, engineId, live) {
+  const text = String(sql || '');
+  if (text[caret - 1] !== '*') return null;
+  const toks = qhSqlTokens(text);
+  const k = toks.findIndex(t => t.v === '*' && t.e === caret);
+  if (k < 0) return null;                                   // inside a string or a comment
+  let a = k, b = k;
+  while (a > 0 && toks[a - 1].v !== ';') a--;
+  while (b < toks.length && toks[b].v !== ';') b++;
+  const S = toks.slice(a, b), at = k - a;
+  const depth = [];
+  let d = 0;
+  for (const t of S) { if (t.v === ')') d--; depth.push(d); if (t.v === '(') d++; }
+  const D = depth[at];
+
+  // `x.*` expands x only.
+  const isName = (t) => t && (t.k === 'qid' || (t.k === 'word' && !QH_NOT_NAME.has(t.u)));
+  let qual = null, first = at;
+  if (at >= 2 && S[at - 1].v === '.' && isName(S[at - 2])) { qual = S[at - 2]; first = at - 2; }
+
+  // Only a select-list star: right after SELECT / DISTINCT / ALL / a comma,
+  // TOP n, or the ) of TOP (n) / DISTINCT ON (…). `count(*)` and `a * b` are not.
+  const prev = S[first - 1];
+  if (!prev) return null;
+  let ok = prev.v === ',' || (prev.k === 'word' && ['SELECT', 'DISTINCT', 'ALL', 'PERCENT', 'TIES'].includes(prev.u))
+    || (prev.k === 'num' && S[first - 2] && S[first - 2].u === 'TOP');
+  if (!ok && prev.v === ')') {
+    let j = first - 2;
+    while (j >= 0 && !(S[j].v === '(' && depth[j] === depth[first - 1])) j--;
+    ok = j > 0 && (S[j - 1].u === 'TOP' || S[j - 1].u === 'ON');
+  }
+  if (!ok) return null;
+  let sel = false;
+  for (let i = first - 1; i >= 0; i--) {
+    if (depth[i] < D) break;                                // left the parenthesised group
+    if (depth[i] > D || S[i].k !== 'word') continue;
+    if (S[i].u === 'SELECT') { sel = true; break; }
+    if (S[i].u === 'ON' && S[i - 1] && S[i - 1].u === 'DISTINCT') continue;   // DISTINCT ON (…)
+    if (QH_STAR_STOP.has(S[i].u)) break;
+  }
+  if (!sel) return null;
+
+  // This SELECT's FROM list.
+  let f = -1;
+  for (let i = at + 1; i < S.length; i++) {
+    if (depth[i] < D) break;
+    if (depth[i] > D || S[i].k !== 'word') continue;
+    if (S[i].u === 'FROM') { f = i; break; }
+    if (QH_FROM_END.has(S[i].u)) break;
+  }
+  if (f < 0) return null;
+  const F = [];
+  for (let i = f + 1; i < S.length; i++) {
+    if (depth[i] < D) break;
+    if (depth[i] === D && S[i].k === 'word' && QH_FROM_END.has(S[i].u)) break;
+    F.push({ t: S[i], d: depth[i] - D });
+  }
+
+  const top = (j) => F[j] && F[j].d === 0;
+  const word = (j, ...us) => top(j) && F[j].t.k === 'word' && us.includes(F[j].t.u);
+  const name = (j) => top(j) && isName(F[j].t);
+  // The length of a join keyword run at j: 0 when there is none, -1 for a join
+  // whose columns cannot be listed exactly (NATURAL, APPLY).
+  const joinLen = (j) => {
+    if (word(j, 'NATURAL') || (word(j, 'CROSS', 'OUTER') && word(j + 1, 'APPLY'))) return -1;
+    if (word(j, 'JOIN')) return 1;
+    if (word(j, 'INNER', 'CROSS') && word(j + 1, 'JOIN')) return 2;
+    if (word(j, 'LEFT', 'RIGHT', 'FULL')) {
+      if (word(j + 1, 'JOIN')) return 2;
+      if (word(j + 1, 'OUTER') && word(j + 2, 'JOIN')) return 3;
+    }
+    return 0;
+  };
+  let i = 0;
+  const readRef = () => {
+    if (word(i, 'ONLY')) i++;
+    if (!name(i)) return null;                              // a subquery, LATERAL, nothing
+    const parts = [F[i].t];
+    i++;
+    while (top(i) && F[i].t.v === '.' && name(i + 1)) { parts.push(F[i + 1].t); i += 2; }
+    if (top(i) && F[i].t.v === '(') return null;            // a table function
+    if (top(i) && F[i].t.v === '*') i++;                    // `t *`: t and its children
+    let alias = null;
+    if (word(i, 'AS')) { if (!name(i + 1)) return null; alias = F[i + 1].t; i += 2; }
+    else if (name(i)) { alias = F[i].t; i++; }
+    if (top(i) && F[i].t.v === '(') return null;            // column aliases rename the columns
+    if (word(i, 'WITH') && top(i + 1) && F[i + 1].t.v === '(') {  // T-SQL table hints
+      i += 2;
+      while (F[i] && !(top(i) && F[i].t.v === ')')) i++;
+      i++;
+    }
+    if (word(i, 'TABLESAMPLE')) return null;
+    return { parts, alias };
+  };
+  const refs = [];
+  for (;;) {
+    let joined = false;
+    if (refs.length) {
+      if (top(i) && F[i].t.v === ',') i++;
+      else {
+        const n = joinLen(i);
+        if (n <= 0) return null;
+        i += n;
+        joined = true;
+      }
+    }
+    const r = readRef();
+    if (!r) return null;
+    refs.push(r);
+    if (joined) {
+      if (word(i, 'USING')) return null;
+      if (word(i, 'ON')) {
+        i++;
+        while (i < F.length && !(top(i) && (F[i].t.v === ',' || joinLen(i) !== 0))) i++;
+      }
+    }
+    if (i >= F.length) break;
+  }
+
+  const unq = (t) => (t.k !== 'qid' ? t.v
+    : t.v[0] === '"' ? t.v.slice(1, -1).replace(/""/g, '"') : t.v.slice(1, -1).replace(/\]\]/g, ']'));
+  const sch = schema || {};
+  const colsOf = (r) => {
+    const parts = r.parts.map(unq), exact = r.parts.some(p => p.k === 'qid');
+    let cols;
+    if (parts.length >= 2) cols = qhLookupCi(sch.tableColsQ, parts[parts.length - 2] + '.' + parts[parts.length - 1], exact);
+    // A bare name two schemas share is left to the server, which resolves it
+    // with the search_path the query itself will run under.
+    else if (qhLookupCi(sch.qualify, parts[0], exact) !== null) cols = qhLookupCi(sch.tableCols, parts[0], exact);
+    if (cols && cols.length) return cols;
+    return live ? live(r.parts.map(p => p.v).join('.')) : null;
+  };
+  const label = (r) => (r.alias || r.parts[r.parts.length - 1]);
+  let want = refs;
+  if (qual) {
+    const q = unq(qual).toLowerCase();
+    want = refs.filter(r => unq(label(r)).toLowerCase() === q);
+    if (want.length !== 1) return null;
+  }
+  const cols = want.map(colsOf);
+  if (cols.some(c => c === null)) return null;
+  const names = want.filter((r, j) => cols[j] === undefined).map(r => r.parts.map(p => p.v).join('.'));
+  if (names.length) return { kind: 'lookup', names };
+
+  const quote = (n) => (typeof qhQuoteIdentFor === 'function' ? qhQuoteIdentFor(n, engineId) : qhQuoteIdent(n));
+  const list = [];
+  want.forEach((r, j) => cols[j].forEach(c => list.push(
+    qual ? qual.v + '.' + quote(c) : want.length > 1 ? label(r).v + '.' + quote(c) : quote(c))));
+  return { kind: 'ready', start: S[first].s, end: caret, text: list.join(', '), count: list.length };
+}
+const QH_AC_TYPE_LABEL ={ keyword: 'kw', table: 'table', column: 'col', database: 'db', system: 'system', function: 'fn', expand: 'all cols' };
 
 function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, schema, engineId, focusSignal, revealRange, docId }) {
   const taRef = React.useRef(null);
@@ -559,21 +778,26 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     const top = r.top + 14 + (row + 1) * lh - ta.scrollTop + 2;
     return { top, lineTop: top - lh - 2, left: r.left + 16 + col * charW - ta.scrollLeft };
   };
-  const refreshAC = (ta) => {
+  const refreshAC = (ta, afterLookup) => {
     const caret = ta.selectionStart;
     if (caret !== ta.selectionEnd) { setAc(null); return; }
-    const before = ta.value.slice(0, caret);
-    // SELECT * expansion: caret right after a select-list star
-    if (before.endsWith('*') && /\bselect\b/i.test(before) && !/\bfrom\b[^*]*$/i.test(before)) {
-      const fm = ta.value.match(/\bfrom\s+([a-z0-9_.]+)/i);
-      const tbl = fm ? fm[1].split('.').pop() : null;
-      const cols = (tbl && sch.tableCols && sch.tableCols[tbl]) ? sch.tableCols[tbl] : sch.columns;
-      if (cols && cols.length) {
-        const p = posAt(ta, caret - 1);
-        const quote = (n) => (typeof qhQuoteIdentFor === 'function' ? qhQuoteIdentFor(n, engineId) : qhQuoteIdent(n));
-        setAc({ items: [{ text: cols.map(quote).join(', '), label: 'Expand * → ' + cols.length + ' columns', type: 'expand' }], idx: 0, top: p.top, lineTop: p.lineTop, left: p.left, start: caret - 1, end: caret });
-        return;
-      }
+    // SELECT * expansion (see qhStarExpansion). A relation the catalog does not
+    // list is asked about once; if the answer arrives while the caret is still
+    // on the same star, the expansion is offered then.
+    const look = sch.columnLookup || null;
+    const se = qhStarExpansion(ta.value, caret, sch, engineId, look ? look.peek : null);
+    if (se && se.kind === 'ready') {
+      const p = posAt(ta, se.start);
+      setAc({ items: [{ text: se.text, label: 'Expand * → ' + se.count + ' columns', type: 'expand' }], idx: 0, top: p.top, lineTop: p.lineTop, left: p.left, start: se.start, end: se.end });
+      return;
+    }
+    if (se && se.kind === 'lookup' && look && !afterLookup) {
+      const v = ta.value;
+      Promise.all(se.names.map(n => look.fetch(n))).then(() => {
+        const t = taRef.current;
+        if (t && t.value === v && t.selectionStart === caret && t.selectionEnd === caret
+            && document.activeElement === t) refreshAC(t, true);
+      });
     }
     const s = qhBuildSuggest(ta.value, caret, sch, engineId);
     if (!s) { setAc(null); return; }
@@ -996,7 +1220,8 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
 // qhBuildSuggest is exported so the suggestion rules can be tested directly.
 // It is the one piece of editor behaviour with no visible surface of its own —
 // a wrong pool looks like "autocomplete is being unhelpful", never like a bug.
-// The undo history's pieces are exported for the same reason; qhUndoForget is
-// also what sign-out calls.
+// The undo history's pieces and the * expansion reader are exported for the
+// same reason; qhUndoForget is also what sign-out calls.
 Object.assign(window, { SqlEditor, EditorTabs, qhHighlight, qhBuildSuggest, QH_REDACTED_LIT, qhRedactedAt,
-  qhTextDiff, qhEditKind, qhUndoDoc, qhUndoRecord, qhUndoSeal, qhUndoStep, qhUndoForget });
+  qhTextDiff, qhEditKind, qhUndoDoc, qhUndoRecord, qhUndoSeal, qhUndoStep, qhUndoForget,
+  qhSqlTokens, qhStarExpansion });

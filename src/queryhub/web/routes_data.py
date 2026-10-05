@@ -680,6 +680,68 @@ def db_schema(conn: str, dbname: str, claims: dict = Depends(deps.current_user))
     return {"tables": tables, "views": views}
 
 
+# ---- columns of one relation, read live -------------------------------------
+#
+# The editor expands `SELECT *` into the columns of the relation in FROM. The
+# schema catalog answers first, but it cannot know every relation: partitions
+# are folded into their parent on purpose, and a table created since the hourly
+# snapshot is not in it yet. With nothing better the editor used to insert
+# EVERY column in the database. Now it asks here.
+#
+# This reads the target's own catalog for that one relation: a fixed,
+# parameterised metadata query (no user SQL reaches the server), over a
+# short-lived READ ONLY connection with the RO login, the way the roles list
+# does. Only column names and types come back, which is what the snapshot
+# already shows for every other relation in a database the caller is granted.
+# `to_regclass` resolves the name like the query itself will (quoting,
+# schema, search_path) and returns NULL rather than raising when there is no
+# such relation.
+
+_LIVE_COLUMNS_SQL = (
+    "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod) "
+    "FROM pg_catalog.pg_attribute a "
+    "WHERE a.attrelid = pg_catalog.to_regclass(%s) "
+    "  AND a.attnum > 0 AND NOT a.attisdropped "
+    "ORDER BY a.attnum")
+_LIVE_COLUMNS_NAME_MAX = 300
+
+
+@router.get("/connections/{conn}/databases/{dbname}/columns")
+def table_columns(conn: str, dbname: str, table: str = "",
+                  claims: dict = Depends(deps.current_user)):
+    deps.require_whitelisted(claims)
+    name = (table or "").strip()
+    if not name or len(name) > _LIVE_COLUMNS_NAME_MAX:
+        raise deps._error(422, "invalid", "A table name is required.")
+    t, _grant = _granted_db(claims["sub"], conn, dbname)
+    if t is None:
+        raise deps._error(404, "not_found", "Unknown or ungranted database.")
+    if not _is_postgres(t):
+        raise deps._error(422, "unsupported",
+                          "Reading columns live is supported on PostgreSQL only.")
+    user, password, why = _ro_login(t)
+    if why:
+        raise deps._error(503, "server_error",
+                          "No read credential configured for this connection.")
+    try:
+        with psycopg.connect(
+            host=t.host, port=t.port, dbname=dbname,
+            user=user, password=password, connect_timeout=3,
+            **cfg.target_ssl_kwargs(t.host), application_name="dba-slack-bot:web-columns",
+            options="-c statement_timeout=3000",
+        ) as cn, cn.cursor() as cur:
+            cur.execute("SET TRANSACTION READ ONLY")
+            cur.execute(_LIVE_COLUMNS_SQL, (name,))
+            rows = cur.fetchall()
+    except psycopg.Error as e:
+        log.info("columns: live lookup of %r in %s/%s failed: %s",
+                 name, conn, dbname, type(e).__name__)
+        raise deps._error(503, "server_error", errors.scrub(e))
+    if not rows:
+        raise deps._error(404, "not_found", "No such table.")
+    return {"table": name, "columns": [{"name": n, "type": ty} for n, ty in rows]}
+
+
 # ---- server roles (SUPER-ONLY, live) ----------------------------------------
 #
 # Exposes a target's DB role names + attributes — sensitive, so it is
@@ -688,6 +750,7 @@ def db_schema(conn: str, dbname: str, claims: dict = Depends(deps.current_user))
 # pg_roles live over a short-lived RO, READ ONLY, TLS connection (passwords
 # are never exposed — pg_roles redacts rolpassword). Lazy + client-cached,
 # so it costs one tiny query only when a super opens the Roles branch.
+# The live column lookup above uses the same connection recipe.
 
 @router.get("/connections/{conn}/roles")
 def connection_roles(conn: str, claims: dict = Depends(deps.current_user)):

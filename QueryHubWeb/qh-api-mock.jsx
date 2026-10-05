@@ -1881,6 +1881,16 @@ const qhApi = {
     return { replicas: mockReplicasOf(connId).map(r => ({ id: r.id, name: r.name, ...mockReplicaHealth(r.id) })) };
   }, 420),
   schema: (conn, dbn) => mockDelay(() => schemaPayload(conn, dbn), 260),
+  // GET .../columns?table= — MOCK: answers from the same seed as schema(), by
+  // bare or schema-qualified name; 404 for anything else, as the server does.
+  tableColumns: (conn, dbn, table) => mockDelay(() => {
+    const want = String(table || '').toLowerCase();
+    const p = schemaPayload(conn, dbn);
+    const hit = [...(p.tables || []), ...(p.views || [])]
+      .find(t => t.name.toLowerCase() === want || (t.schema + '.' + t.name).toLowerCase() === want);
+    if (!hit) return mockFail('No such table.', 404, 'not_found');
+    return { table, columns: (hit.columns || []).map(c => ({ name: c.name, type: c.type })) };
+  }, 180),
   roles: (conn) => mockDelay(() => {
     if (!mockUser() || mockUser().role !== 'super') return mockFail('Super-admin only.', 403, 'forbidden');
     return { roles: window.qhServerRoles ? window.qhServerRoles(conn) : [] };
