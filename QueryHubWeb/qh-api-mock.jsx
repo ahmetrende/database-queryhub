@@ -2667,7 +2667,10 @@ const qhApi = {
     const row = connRegistry().find(c => c.id === conn);
     if (!row) return mockFail('Unknown connection.', 404, 'not_found');
     return { ...mockOwnerState(row), maxTier: 'RO',
-      teams: ADMIN.teams.map(t => ({ id: t.id, name: t.name, displayName: t.name })) };
+      teams: ADMIN.teams.map(t => {
+        const lead = t.members && t.members[0] && ADMIN.people.find(p => p.handle === t.members[0]);
+        return { id: t.id, name: t.name, displayName: t.name, leads: lead ? [lead.name] : [] };
+      }) };
   }, 200),
   adminAddConnectionOwner: (conn, teamId) => mockDelay(() => {
     const row = connRegistry().find(c => c.id === conn);

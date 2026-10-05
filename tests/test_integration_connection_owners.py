@@ -113,6 +113,15 @@ def test_adding_an_owner_makes_its_lead_an_approver_at_once(world):
     assert db.fetch_one("SELECT count(*) AS n FROM auth_event_outbox")["n"] > before
 
 
+def test_the_picker_names_each_team_lead(world):
+    teams = {t["name"]: t for t in ra.admin_connection_owners("it-owner-one", CLAIMS)["teams"]}
+    assert teams["it-owner-alpha"]["leads"] == ["IT Owner Lead A"]
+    assert teams["it-owner-gamma"]["leads"] == []                 # no lead: said, not hidden
+    db.execute("UPDATE principal SET enabled = FALSE WHERE id = %s", (world["p"]["IT Owner Lead B"],))
+    teams = {t["name"]: t for t in ra.admin_connection_owners("it-owner-one", CLAIMS)["teams"]}
+    assert teams["it-owner-beta"]["leads"] == []                  # a disabled lead approves nothing
+
+
 def test_a_second_add_and_unknown_names_are_refused(world):
     tm = world["tm"]
     ra.admin_connection_owner_add("it-owner-one", ra.OwnerIn(teamId=tm["it-owner-alpha"]), CLAIMS)

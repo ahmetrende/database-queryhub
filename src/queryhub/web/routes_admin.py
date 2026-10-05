@@ -1074,10 +1074,23 @@ def admin_connection_owners(conn: str,
         out = {"owners": _owners_of(cur, row["id"]),
                "approvers": _owner_approvers_of(cur, row["id"]),
                "maxTier": owner_approvers.ceiling(cur).upper()}
-        cur.execute("SELECT id, name, display_name FROM team "
-                    " WHERE NOT is_deleted ORDER BY lower(display_name)")
+        # Each team with its leads, so the picker can say whose approval an
+        # owner brings. Only enabled leads count: the reconcile skips the rest.
+        cur.execute(
+            "SELECT t.id, t.name, t.display_name, "
+            "       COALESCE(array_agg(p.display_name ORDER BY p.display_name) "
+            "                FILTER (WHERE p.id IS NOT NULL), '{}') AS leads "
+            "  FROM team t "
+            "  LEFT JOIN team_member m ON m.team_id = t.id AND m.is_lead "
+            "        AND NOT m.is_deleted "
+            "  LEFT JOIN principal p ON p.id = m.principal_id "
+            "        AND p.enabled AND NOT p.is_deleted "
+            " WHERE NOT t.is_deleted "
+            " GROUP BY t.id, t.name, t.display_name "
+            " ORDER BY lower(t.display_name)")
         out["teams"] = [{"id": r["id"], "name": r["name"],
-                         "displayName": r["display_name"]}
+                         "displayName": r["display_name"],
+                         "leads": list(r["leads"] or [])}
                         for r in cur.fetchall()]
     return out
 

@@ -1623,7 +1623,9 @@ function ConnOwnersForm({ st, conn, onDone }) {
             <span className="qh-field-lbl">Add an owner team</span>
             <select className="qh-input" value={pick} disabled={busy} onChange={e => setPick(e.target.value)}>
               <option value="">Select a team</option>
-              {choices.map(t => <option key={t.id} value={String(t.id)}>{t.displayName}</option>)}
+              {/* The lead in brackets: adding an owner makes that person an
+                  approver, so the picker says who (operator, 2026-10-05). */}
+              {choices.map(t => <option key={t.id} value={String(t.id)}>{t.displayName + ' (' + ((t.leads || []).length ? t.leads.join(', ') : 'no lead') + ')'}</option>)}
             </select>
           </label>
           {msg && <div className={'qh-expiry' + (msg.ok ? '' : ' is-exp')}>{msg.text}</div>}
