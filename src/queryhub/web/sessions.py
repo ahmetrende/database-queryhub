@@ -75,9 +75,9 @@ def _signing_secret() -> bytes:
             # Refused, not warned: a short key signs tokens anyone who guesses
             # it can mint, and the derived default below needs no setting.
             raise RuntimeError(
-                f"WEB_SESSION_SECRET is {len(key)} bytes; at least "
-                f"{MIN_SECRET_BYTES} are required. Unset it to derive the key "
-                f"from the master key.")
+                f"WEB_SESSION_SECRET is {len(key)} bytes. It must have at least "
+                f"{MIN_SECRET_BYTES} bytes. To derive the key from the master "
+                "key, unset WEB_SESSION_SECRET.")
         return key
     master = cfg.ENV.master_key_path.read_bytes().strip()
     return hmac.new(master, b"queryhub-web-session-v1", hashlib.sha256).digest()

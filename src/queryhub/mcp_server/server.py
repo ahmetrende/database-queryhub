@@ -19,27 +19,32 @@ from . import tools
 log = logging.getLogger(__name__)
 
 INSTRUCTIONS = """\
-QueryHub runs SQL against production databases under review.
+QueryHub runs SQL on production databases. Every statement is under review.
+Nothing on this MCP server bypasses the review.
 
-Nothing here bypasses that. A statement you submit is classified, checked
-against the caller's own grants, and either auto-approved or sent to a human
-DBA; results come back with personal data masked, and every step is audited.
+QueryHub processes each statement that you submit in these steps:
+1. It classifies the statement.
+2. It checks the statement against your own grants.
+3. It auto-approves the statement, or it sends the statement to a human DBA.
+4. It returns the results with personal data masked.
+QueryHub audits every step.
 
-Read-only unless an operator has widened it -- `list_connections` reports the
-current ceiling. Call `classify_sql` first if you want to know whether a
-statement will be accepted before you submit it, rather than learning it from
-a refusal.
+This MCP server accepts RO (read-only) statements only, unless an operator
+sets a higher maximum tier. `list_connections` shows the current maximum tier
+in `maxTier`. If you want to know before you submit whether QueryHub accepts a
+statement, call `classify_sql`. Otherwise, you learn it from a refusal.
 
-`submit_query` waits for an auto-approved result and returns the first rows
-with it, so one call is usually the whole exchange. It returns early with an id
-when a human has to approve; poll `query_status` then, and expect minutes.
+For an auto-approved statement, `submit_query` waits for the result and
+returns its first rows. Usually, one call is the whole exchange. If a human
+must approve the statement, `submit_query` returns early with a request id.
+Then poll `query_status`. Expect the approval to take minutes.
 
-`describe_database` lists table names. Pass `table` with part of a name to get
-columns -- asking for everything on a large database returns megabytes and
-tells you almost nothing.
+`describe_database` lists the table names. To get columns, pass `table` with
+part of a table name. If you ask for everything on a large database, the
+answer is megabytes of data and tells you almost nothing.
 
-Do not paste credentials, personal data or secrets into a query. Do not retry
-a refused statement unchanged; the refusal names what to change.
+Do not paste credentials, personal data or secrets into a statement. Do not
+retry a refused statement unchanged. The refusal tells you what to change.
 """
 
 
@@ -54,7 +59,7 @@ def build():
     server = MCPServer(
         name="queryhub",
         title="QueryHub",
-        description="Run reviewed SQL against production databases.",
+        description="Runs reviewed SQL on production databases.",
         instructions=INSTRUCTIONS,
     )
 
@@ -74,33 +79,39 @@ def build():
         inner.__doc__ = fn.__doc__
         return inner
 
-    @server.tool(description="List the databases you may query, and at what tier.")
+    @server.tool(description="Lists the connections and databases that you may "
+                             "query, with your tier on each connection. It also "
+                             "returns the maximum tier that this MCP server "
+                             "accepts (`maxTier`).")
     def list_connections() -> dict:
         return _wrap(tools.list_connections)()
 
-    @server.tool(description="What is in a database: table names, or the columns "
-                             "of tables matching `table`.")
+    @server.tool(description="Returns the table names in a database. If you pass "
+                             "`table`, it returns the columns of the tables whose "
+                             "names contain that text.")
     def describe_database(connection: str, database: str,
                           table: str | None = None) -> dict:
         return _wrap(tools.describe_database)(connection, database, table)
 
-    @server.tool(description="What tier a statement needs, and whether this door accepts it.")
+    @server.tool(description="Returns the tier that a statement needs, and whether "
+                             "this MCP server accepts the statement.")
     def classify_sql(connection: str, sql: str) -> dict:
         return _wrap(tools.classify_sql)(connection, sql)
 
-    @server.tool(description="Submit a statement, and wait for the result if it "
-                             "is auto-approved.")
+    @server.tool(description="Submits a statement. If QueryHub auto-approves the "
+                             "statement, the tool waits for the result.")
     def submit_query(connection: str, sql: str, database: str | None = None,
                      justification: str | None = None,
                      wait_seconds: int = tools.DEFAULT_WAIT_SECONDS) -> dict:
         return _wrap(tools.submit_query)(connection, database, sql,
                                          justification, wait_seconds)
 
-    @server.tool(description="Where a submitted query has got to.")
+    @server.tool(description="Returns the status of a request that you submitted.")
     def query_status(request_id: int) -> dict:
         return _wrap(tools.query_status)(request_id)
 
-    @server.tool(description="A page of rows from a completed query.")
+    @server.tool(description="Returns a page of rows from the result of a "
+                             "completed request.")
     def fetch_result(request_id: int, offset: int = 0, limit: int = 50) -> dict:
         return _wrap(tools.fetch_result)(request_id, offset, limit)
 

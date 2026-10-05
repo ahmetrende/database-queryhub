@@ -219,7 +219,7 @@ def test_a_ceiling_is_refused_on_a_role_that_never_reads_it():
     it renders on the screen as a limit and enforces nothing — the shape of a
     permission bug that reviews clean."""
     assert "_ROLES_WITH_CEILING" in CREATE
-    assert "nothing reads it on a" in CREATE
+    assert "Nothing reads it on a" in CREATE
 
 
 def test_the_ceiling_roles_are_the_ones_can_approve_actually_reads():

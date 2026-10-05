@@ -203,10 +203,10 @@ def check(sql: str, engine: str = "postgres", unrestricted: bool = False) -> lis
         log.info("ast_safety: %s (engine=%s), blocking. %s",
                  type(e).__name__, engine, e)
         return [
-            f"Query could not be parsed as standard {dialect} SQL. Check for "
-            "stray quotes, unbalanced parentheses, or non-standard syntax. "
-            "If the query is intentionally exotic, ask the DBA team to "
-            "disable bot_config.ast_safety_enabled for the run."
+            f"QueryHub could not parse this query as standard {dialect} SQL. "
+            "Check for stray quotes, unbalanced parentheses or non-standard "
+            "syntax. If the syntax is intentional, ask the DBA team to disable "
+            "bot_config.ast_safety_enabled for this run."
         ]
     except Exception:
         # Backstop for the same failure in a shape this sqlglot does not have
@@ -216,8 +216,9 @@ def check(sql: str, engine: str = "postgres", unrestricted: bool = False) -> lis
         log.exception("ast_safety: unexpected parser failure (engine=%s), "
                       "blocking", engine)
         return [
-            f"Query could not be parsed as standard {dialect} SQL. Check for "
-            "stray quotes, unbalanced parentheses, or non-standard syntax."
+            f"QueryHub could not parse this query as standard {dialect} SQL. "
+            "Check for stray quotes, unbalanced parentheses or non-standard "
+            "syntax."
         ]
 
     # PostgreSQL only: query_safety routes the call to the elevated role there,
@@ -262,12 +263,12 @@ def _read_only_lexical_block(sql: str) -> list[str]:
     text = code_text(sql)
     if _SETTINGS_RE.search(text):
         return ["An inline SETTINGS clause is not allowed on a read-only "
-                "target: a query-level setting could relax its limits."]
+                "target. A query-level setting could relax the target's limits."]
     m = _HIGH_SEVERITY_RE.search(text)
     if m:
-        return [f"`{m.group(1)}` is blocked on a read-only target: it reads "
-                f"outside the database (remote, file, cluster or dictionary "
-                f"access) or runs code."]
+        return [f"`{m.group(1)}` is blocked on a read-only target. It reads "
+                f"data from outside the database (remote, file, cluster or "
+                f"dictionary access), or it runs code."]
     return []
 
 
@@ -300,7 +301,8 @@ def _check_read_only_engine(stmt: exp.Expression, spec) -> list[str]:
     if any(node.args.get("settings") for node in stmt.walk()
            if isinstance(node, exp.Expression)):
         out.append("An inline SETTINGS clause is not allowed on a read-only "
-                   "target: a query-level setting could relax its limits.")
+                   "target. A query-level setting could relax the target's "
+                   "limits.")
     return list(dict.fromkeys(out))
 
 
@@ -327,7 +329,7 @@ def _check_stmt(stmt: exp.Expression, blocked_funcs: frozenset = _DANGEROUS_FUNC
         if not sel.expressions:
             out.append(
                 "This SELECT lists no columns. PostgreSQL allows that and would "
-                "return rows with nothing in them — name the columns you want, "
+                "return rows with nothing in them. Name the columns you want, "
                 "or use `*`."
             )
             break
@@ -342,8 +344,8 @@ def _check_stmt(stmt: exp.Expression, blocked_funcs: frozenset = _DANGEROUS_FUNC
             parts = [p.name for p in tbl.parts]
             if len(parts) >= 2 and parts[-2].lower() in lowered:
                 out.append(
-                    f"Schema `{parts[-2]}` is not queryable on this engine — "
-                    f"it holds server internals, not your data."
+                    f"Schema `{parts[-2]}` is not queryable on this engine. "
+                    f"It holds server internals, not your data."
                 )
                 break
 
@@ -353,10 +355,10 @@ def _check_stmt(stmt: exp.Expression, blocked_funcs: frozenset = _DANGEROUS_FUNC
     for func_name in _function_names(stmt):
         if func_name in blocked_funcs:
             out.append(
-                f"Function `{func_name}` is blocked by the bot's safety "
-                f"policy (filesystem / remote / cluster-control / cross-DB "
-                f"or code-execution side channel). If you genuinely need it, "
-                f"ask the DBA team to run the query out-of-band."
+                f"Function `{func_name}` is blocked by the QueryHub safety "
+                f"policy. It gives access to the file system, a remote server, "
+                f"cluster control, another database or code execution. If you "
+                f"need it, ask the DBA team to run the query outside QueryHub."
             )
 
     # 2. `COPY ... TO PROGRAM` / `COPY ... FROM PROGRAM`.
@@ -367,9 +369,9 @@ def _check_stmt(stmt: exp.Expression, blocked_funcs: frozenset = _DANGEROUS_FUNC
         sql_text = stmt.sql(dialect=dialect).upper()
         if "PROGRAM" in sql_text:
             out.append(
-                "COPY ... PROGRAM is blocked — it runs shell on the database "
-                "server. Use COPY ... FROM/TO 'filename' or pipe through the "
-                "client instead."
+                "COPY ... PROGRAM is blocked. It runs a shell command on the "
+                "database server. Use COPY ... FROM or TO 'filename', or send "
+                "the data through the client."
             )
 
     # 3. Cross-database / cross-server table references (engine opt-in).
@@ -391,10 +393,10 @@ def _check_stmt(stmt: exp.Expression, blocked_funcs: frozenset = _DANGEROUS_FUNC
             seen.add(ref)
             if nparts >= 4:
                 out.append(
-                    f"Cross-server reference `{ref}` is blocked — a 4-part "
+                    f"Cross-server reference `{ref}` is blocked. A 4-part "
                     f"name (server.database.schema.object) reaches a linked "
-                    f"server outside the approved target. Reference only "
-                    f"objects in the target database as schema.object."
+                    f"server outside the approved target. Use only objects in "
+                    f"the target database, written as schema.object."
                 )
             elif dialect == "athena":
                 # Same rule, different thing named. Athena's first part is a
@@ -403,17 +405,17 @@ def _check_stmt(stmt: exp.Expression, blocked_funcs: frozenset = _DANGEROUS_FUNC
                 # copies one in deserves to be told what to drop rather than
                 # to read about a "server" that does not exist here.
                 out.append(
-                    f"Catalog reference `{ref}` is blocked — a 3-part name "
+                    f"Catalog reference `{ref}` is blocked. A 3-part name "
                     f"(catalog.database.table) can reach a federated catalog "
-                    f"outside the approved target. Drop the catalog prefix "
+                    f"outside the approved target. Remove the catalog prefix "
                     f"and use database.table."
                 )
             else:
                 out.append(
-                    f"Cross-database reference `{ref}` is blocked — a 3-part "
+                    f"Cross-database reference `{ref}` is blocked. A 3-part "
                     f"name (database.schema.object) reaches another database "
-                    f"on the server. Query only the approved target database; "
-                    f"drop the database prefix and use schema.object."
+                    f"on the server. Query only the approved target database. "
+                    f"Remove the database prefix and use schema.object."
                 )
 
     # 4. `pg_sleep(N)` with large N.
@@ -424,10 +426,10 @@ def _check_stmt(stmt: exp.Expression, blocked_funcs: frozenset = _DANGEROUS_FUNC
             seconds = _literal_number(arg)
             if seconds is None or seconds > _PG_SLEEP_MAX_SECONDS:
                 out.append(
-                    f"`{name}` is blocked at this argument — capped at "
-                    f"{_PG_SLEEP_MAX_SECONDS}s. Long sleeps hold a "
-                    f"connection slot for the whole duration and are a "
-                    f"DoS lever even on RO."
+                    f"`{name}` is blocked with this argument. The limit is "
+                    f"{_PG_SLEEP_MAX_SECONDS}s. A long sleep holds a connection "
+                    f"slot for its full duration, so it can cause a denial of "
+                    f"service, even on an RO connection."
                 )
 
     return out

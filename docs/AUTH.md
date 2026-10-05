@@ -1,52 +1,58 @@
 # QueryHub Web — Authentication & Session Security
 
-This answers the recurring question: **"the backend needs to keep checking
-that the person is still legitimate — how, without a security hole?"**
+This document answers a recurring question: **"the backend needs to keep
+checking that the person is still legitimate — how, without a security
+hole?"**
 
 Short version: **login is one-time, authorization is continuous, and
-continuous ≠ calling an identity provider on every request.** It's: a
-short-lived session token + re-verification at refresh + a live check at
-the moment of the dangerous action (running RW/DDL against production).
-All of it funnels through one dependency (`web/deps.py::current_user`) so
-no endpoint can be left unprotected by accident.
+continuous ≠ calling an identity provider on every request.** Continuous
+authorization has three parts:
+
+- a short-lived session token
+- re-verification at refresh
+- a live check at the moment of the dangerous action (running RW/DDL
+  against production)
+
+All of it uses one dependency (`web/deps.py::current_user`), so no
+endpoint can stay unprotected by accident.
 
 The code cross-references the section numbers below (`AUTH.md §3`, `§4`,
-`§5`) — keep them stable when editing.
+`§5`). Keep them stable when you edit this file.
 
 ---
 
 ## 1. Login providers
 
-The canonical identity everywhere in QueryHub is one **principal id** —
-grants, admins, teams and audit all key on it. A login provider's only job
+The canonical identity everywhere in QueryHub is one **principal id**.
+Grants, admins, teams and audit all key on it. A login provider's only job
 is to produce that id safely (`web/auth_providers.py`):
 
-- **Slack SSO** (OpenID Connect) — hands back the Slack user id directly
-  (zero email-to-user mapping) and pins access to *your* workspace via
+- **Slack SSO** (OpenID Connect): returns the Slack user id directly
+  (zero email-to-user mapping). It pins access to *your* workspace through
   `team_id`. Principal id: the Slack member id (`U…`). Toggle:
   `web_auth_slack_enabled`.
-- **Local accounts** — built-in username/password for the vanilla
-  (no-Slack) profile. Passwords are stored only as salted PBKDF2 hashes
-  (`passwords.py`), never cleartext. Principal id: `local:<username>`.
-  Toggle: `web_auth_local_enabled`.
+- **Local accounts**: built-in username/password for the vanilla
+  (no-Slack) profile. QueryHub stores passwords only as salted PBKDF2
+  hashes (`passwords.py`), never as cleartext. Principal id:
+  `local:<username>`. Toggle: `web_auth_local_enabled`.
 - **External OIDC providers — any number of them.** A deployment with a
   company identity provider (authentik, Keycloak, Okta, Auth0, Google…)
-  configures it in the environment and gets a sign-in button; configuring
-  a second one is three more variables. These do **not** mint a principal:
-  the provider's *verified* email is looked up in `requesters` / `admins`
-  and the login proceeds as the principal already on that row. Toggle:
-  `web_auth_<id>_enabled`.
+  configures it in the environment. The deployment then gets a sign-in
+  button. A second provider is three more variables. These providers do
+  **not** mint a principal. QueryHub searches `requesters` / `admins` for
+  the provider's *verified* email, and the login proceeds as the principal
+  already on that row. Toggle: `web_auth_<id>_enabled`.
 
 Slack and local accounts are distinct principals (no cross-provider identity
-merge). An OIDC provider is the opposite by design — it is a new way to prove
-an existing identity, so a person's grants, history and audit trail are the
-same whichever button they used.
+merge). An OIDC provider is the opposite by design. It is a new way to prove
+an existing identity. So a person's grants, history and audit trail are the
+same, whichever button they used.
 
 ### 1.1 Configuring an OIDC provider
 
 Secrets live in the environment (`/etc/queryhub/web.env`), never in
-`bot_config` — that table is shared by every instance on the same bot DB and
-is readable through the admin config screen.
+`bot_config`. Every instance on the same bot DB shares that table, and
+people can read it through the admin config screen.
 
 ```
 OIDC_CORP_ISSUER=https://sso.example.com/application/o/queryhub/
@@ -56,108 +62,132 @@ OIDC_CORP_SCOPES=openid email profile     # optional
 OIDC_CORP_LABEL=Sign in with Corp SSO     # optional
 ```
 
-`CORP` becomes the provider id `corp`, which fixes the URL you register with
-the identity provider:
+`CORP` becomes the provider id `corp`. The id fixes the URL that you
+register with the identity provider:
 
 ```
 https://<queryhub-base-url>/api/auth/corp/callback
 ```
 
-The id is one lowercase alphanumeric token, must not be `slack` or `local`,
-and should be treated as permanent once registered. Endpoints are read from
-the issuer's `/.well-known/openid-configuration` (cached an hour), so a
-rotation on the provider's side needs no change here.
+The id is one lowercase alphanumeric token. It must not be `slack` or
+`local`. You should treat it as permanent once you register it. QueryHub
+reads the endpoints from the issuer's `/.well-known/openid-configuration`
+(cached an hour), so a rotation on the provider's side needs no change
+here.
 
 **What the flow enforces**, beyond a plain authorization-code exchange:
 
 | Check | Why |
 | --- | --- |
-| PKCE (S256) + `nonce` | Both derived from the signed `state` via HMAC, so no server-side attempt table is needed and neither is guessable. Binds the callback to the attempt that started it. |
-| `id_token` signature, `iss`, `aud` | Standard OIDC verification, keys from the published JWKS. |
-| Algorithm allow-list | RSA/EC only. `none` and the HMAC family are refused — with `HS256` the client secret doubles as the verification key. |
-| `email_verified` | The email is the join to someone's grants. An unverified address would let a user type a colleague's. |
-| `web_allowed_email_domain` | Same domain gate the Slack provider uses. |
-| Unambiguous lookup | Two rows sharing an address resolve to **nothing**. Picking either would hand one person another person's grants. |
-| No auto-onboarding | An address with no row is refused, never created — otherwise everyone the company IdP knows becomes a QueryHub user. |
+| PKCE (S256) + `nonce` | QueryHub derives both from the signed `state` with HMAC. So the flow needs no server-side attempt table, and neither value is guessable. They bind the callback to the attempt that started it. |
+| `id_token` signature, `iss`, `aud` | Standard OIDC verification, with keys from the published JWKS. |
+| Algorithm allow-list | RSA/EC only. The flow refuses `none` and the HMAC family: with `HS256`, the client secret is also the verification key. |
+| `email_verified` | The email is the join to someone's grants. An unverified address would let a user type a colleague's address. |
+| `web_allowed_email_domain` | The same domain gate that the Slack provider uses. |
+| Unambiguous lookup | Two rows that share an address resolve to **nothing**. If the flow picked either row, one person would get another person's grants. |
+| No auto-onboarding | The flow refuses an address with no row and never creates one. Otherwise everyone the company IdP knows would become a QueryHub user. |
 
-A person who signs in this way still needs a Slack id on their row, because
-approvals and result delivery are Slack DMs, and `users.info` remains the
-"still employed?" oracle at every refresh (§4).
+A person who signs in this way still needs a Slack id on their row, for
+two reasons:
+
+- Approvals and result delivery are Slack DMs.
+- `users.info` stays the "still an employee?" oracle at every refresh
+  (§4).
 
 ---
 
 ### 1.2 Identity assertions from a trusted portal (service to service)
 
-A third way in, for a portal that proxies QueryHub on behalf of its own
-signed-in users. There is no browser session: every request carries an
-`X-IDP-Assertion` header holding a 60-second JWT signed with Ed25519 (`EdDSA`)
-by the portal. `verify()` in `web/idp_assertion.py`:
+This is a third way in, for a portal that proxies QueryHub for its own
+signed-in users. There is no browser session. Every request carries an
+`X-IDP-Assertion` header with a 60-second JWT, which the portal signs with
+Ed25519 (`EdDSA`).
 
-- looks the key up by `kid` in `bot_config.idp_public_keys` (a JSON object,
-  kid → PEM);
-- requires `exp`, `iat`, `sub`, `jti`, `aud` and `iss`, and checks `aud` /
-  `iss` against `idp_audience` / `idp_issuer` (defaults `queryhub` / `idp`);
-- tolerates `idp_clock_skew_seconds` (default 10, at most 60) of clock
-  disagreement on `iat` and `exp`, and refuses an assertion whose `exp - iat`
-  is over 120 seconds;
-- checks the assertion is bound to THIS request — method, path with its query
-  string, and body — so one minted for a call cannot be replayed against another;
-- refuses a reused `jti` through the `idp_assertion_jti` ledger, which keeps
-  each one until its token's expiry plus the skew;
-- applies the `web_allowed_email_domain` gate — and, unlike the OIDC providers,
-  refuses every assertion while that setting is empty;
-- resolves the asserted address to an existing `requesters` or `admins` row and
-  proceeds as that principal. An unknown address is refused, never created.
+`verify()` in `web/idp_assertion.py` checks the token:
 
-A request that carries the header is judged by the assertion ONLY —
-`current_user` never falls through to the cookie after refusing one. Such
-requests record `origin = idp` next to `slack` and `web`. A websocket handshake
-carrying the header is refused before verification, so it cannot spend a `jti`;
-the portal polls for live status instead.
+- It finds the key by `kid` in `bot_config.idp_public_keys` (a JSON
+  object, kid → PEM).
+- It requires `exp`, `iat`, `sub`, `jti`, `aud` and `iss`. It checks `aud`
+  / `iss` against `idp_audience` / `idp_issuer` (defaults `queryhub` /
+  `idp`).
+- It tolerates `idp_clock_skew_seconds` (default 10, at most 60) of clock
+  disagreement on `iat` and `exp`. It refuses an assertion whose
+  `exp - iat` is over 120 seconds.
 
-Everything here is inert until `bot_config.idp_assertion_enabled = on`. Beyond
-the proxied `/api` surface the portal gets two machine-only things, both behind
-`require_sync_principal`: the caller must be the principal named in
-`bot_config.idp_sync_principal` and must arrive through an assertion. Admin
-rights are neither needed nor enough.
+It also checks the request and the address:
 
-- `POST /api/admin/principals/sync` — the reconcile. It enables and disables
-  `requesters` rows to match the list of addresses the portal sends, never
-  writes `admins`, refuses a list that would disable every requester, returns
-  the addresses it cannot resolve for a human to onboard, and writes an
-  `idp_principal_sync` audit row. **A requester missing from the list is
-  disabled** — except live admins, holders of any access-model role and the
-  sync principal itself, which come back in `kept`: disabling their row would
-  also switch off the roles it carries. Send `"dry_run": true` first; it
-  returns what would change and writes nothing.
-  - **A run that would disable more than `idp_sync_max_disable` requesters
-    (default 5) is held.** It changes nothing, enables included, and answers
-    `409 approval_required`. Every super-admin gets one Slack card ("Do you
-    approve?") naming the people; the panel's list is far likelier to be wrong
-    than that many people to have left the same quarter-hour.
-  - **Approve** covers exactly those people, once, for 24 hours: the next run
-    whose disable list lies inside the approved set applies. **Reject** keeps
-    the same list blocked for as long as it keeps arriving. A different list is
-    a new question, and an undecided one is asked again after a day.
-  - The response carries a `guard` object (`state`, `limit`, `would_disable`);
-    a dry run adds `would_hold` for a list that would be held. Without Slack
-    there is no card: raise `idp_sync_max_disable` for one run instead.
+- It checks that the assertion is bound to THIS request: the method, the
+  path with its query string, and the body. So nobody can replay an
+  assertion minted for one call against another call.
+- It refuses a reused `jti` through the `idp_assertion_jti` ledger. The
+  ledger keeps each `jti` until its token's expiry plus the skew.
+- It applies the `web_allowed_email_domain` gate. Unlike the OIDC
+  providers, it refuses every assertion while that setting is empty.
+- It resolves the asserted address to an existing `requesters` or `admins`
+  row and proceeds as that principal. It refuses an unknown address and
+  never creates a row for it.
+
+For a request that carries the header, the assertion is the ONLY judge.
+After `current_user` refuses an assertion, it never uses the cookie
+instead. Such requests record `origin = idp`, next to `slack` and `web`.
+Before verification, QueryHub refuses a websocket handshake that carries
+the header, so the handshake cannot spend a `jti`. The portal polls for
+live status instead.
+
+Everything here is inert until `bot_config.idp_assertion_enabled = on`.
+Beyond the proxied `/api` surface, the portal gets two machine-only things.
+Both are behind `require_sync_principal`: the caller must be the principal
+named in `bot_config.idp_sync_principal`, and the caller must arrive
+through an assertion. Admin rights are neither needed nor enough.
+
+- `POST /api/admin/principals/sync` — the reconcile. It enables and
+  disables `requesters` rows to match the list of addresses that the
+  portal sends. It never writes `admins`, and it refuses a list that would
+  disable every requester. It returns the addresses that it cannot
+  resolve, for a human to onboard. It writes an `idp_principal_sync` audit
+  row.
+
+  **The sync disables every requester who is missing from the list.** The
+  exceptions are live admins, holders of any access-model role and the
+  sync principal itself. The response lists them in `kept`, because a
+  disable of their row would also disable the roles that it carries. Send
+  `"dry_run": true` first. A dry run returns what would change and writes
+  nothing.
+  - **QueryHub holds a run that would disable more than
+    `idp_sync_max_disable` requesters (default 5).** The run changes
+    nothing, enables included, and answers `409 approval_required`. Every
+    super-admin gets one Slack card ("Do you approve?") that names the
+    people. A wrong list from the panel is far likelier than that many
+    people leaving in the same quarter-hour.
+  - **Approve** covers exactly those people, once, for 24 hours. The next
+    run whose disable list lies inside the approved set applies.
+    **Reject** keeps the same list blocked for as long as it keeps
+    arriving. A different list is a new question. QueryHub asks again
+    about an undecided list after a day.
+  - The response carries a `guard` object (`state`, `limit`,
+    `would_disable`). A dry run adds `would_hold` for a list that would be
+    held. Without Slack there is no card. Raise `idp_sync_max_disable` for
+    one run instead.
 - `GET /api/admin/notifications/outbox` and
   `POST /api/admin/notifications/outbox/{id}/processed` — the pending-request
-  feed and its acknowledgement. Rows are written only while
-  `idp_outbox_enabled = on`, and deleted after `idp_outbox_retention_days` by
-  the daily cleanup.
+  feed and its acknowledgement. QueryHub writes rows only while
+  `idp_outbox_enabled = on`. The daily cleanup deletes them after
+  `idp_outbox_retention_days`.
 
-Create the sync account as a **disabled** `requesters` row with no grants and
-the portal's sync address as its email. The assertion still resolves it (the
-resolver matches disabled rows), the machine gate lets it through, and every
-other route refuses it. It needs no admin row — under the access model an
-admin role is fleet-wide, so one would hand the portal's cron key approval
-authority it has no use for.
+Create the sync account as a **disabled** `requesters` row with no
+grants. Give it the portal's sync address as its email. Then:
+
+- The assertion still resolves it (the resolver matches disabled rows).
+- The machine gate accepts it.
+- Every other route refuses it.
+
+It needs no admin row. Under the access model, an admin role is
+fleet-wide. So an admin row would give the portal's cron key approval
+authority that it has no use for.
 
 ## 2. Login flow (one-time identity)
 
-**Slack OIDC** — a standard authorization-code round-trip:
+**Slack OIDC** is a standard authorization-code round-trip:
 
 ```
 Browser                 Backend                          Slack
@@ -178,30 +208,37 @@ Browser                 Backend                          Slack
   │◀── redirect to app ───│  (httpOnly cookies)            │
 ```
 
-The workspace gate compares against the bot's **own** workspace
-(discovered once via `auth.test` — no extra config key). Optionally also
-require an email domain via `web_allowed_email_domain`.
+The workspace gate compares against the bot's **own** workspace. QueryHub
+finds that workspace once through `auth.test`, so there is no extra config
+key. You can also require an email domain through
+`web_allowed_email_domain`.
 
-**Local login** — `POST /api/auth/local/login` with username/password;
-the server verifies against the stored hash (constant-time, with a dummy
-hash for unknown users so timing doesn't leak account existence) and mints
-the exact same session. One opaque `bad_credentials` error covers both
-wrong password and unknown user.
+**Local login**: `POST /api/auth/local/login` with username/password. The
+server checks the password against the stored hash and mints the exact
+same session. The check is constant-time, with a dummy hash for unknown
+users, so timing does not leak account existence. One opaque
+`bad_credentials` error covers both a wrong password and an unknown user.
 
-**Both providers** then pass the same entry gate `/sql` applies: an
-enabled `requesters` row or an admin row. **Mint a session:** a short
-access JWT (`sub` = principal id, `sid`, `provider`; TTL
-`web_access_token_minutes`, default 20) plus an opaque rotating refresh
-token (hashed at rest in `web_sessions`; TTL `web_refresh_token_hours`,
-default 12). Both ride **httpOnly + SameSite=Lax cookies** (`Secure` via
-`web_cookie_secure`) — never `localStorage`, so JS can't exfiltrate them.
+**Both providers** then pass the same entry gate that `/sql` applies: an
+enabled `requesters` row or an admin row.
+
+**Mint a session:**
+
+- a short access JWT (`sub` = principal id, `sid`, `provider`). TTL:
+  `web_access_token_minutes`, default 20.
+- an opaque rotating refresh token, hashed at rest in `web_sessions`. TTL:
+  `web_refresh_token_hours`, default 12.
+
+Both travel in **httpOnly + SameSite=Lax cookies** (`Secure` through
+`web_cookie_secure`), never in `localStorage`, so JS cannot exfiltrate
+them.
 
 ---
 
 ## 3. The verify-session dependency (continuous authorization)
 
-Every protected endpoint goes through ONE function
-(`deps.current_user`). Order matters:
+Every protected endpoint uses ONE function (`deps.current_user`). The
+order matters:
 
 ```
 current_user(request):
@@ -212,17 +249,17 @@ current_user(request):
   → hand off to the endpoint, which does its own per-query grant checks.
 ```
 
-This runs on **every** request, cheaply (signature + one indexed DB
-lookup — no identity-provider call). That alone closes most holes because
-the token is short-lived: a deactivated user's session dies within the
-token window even if nothing else fires.
+This runs on **every** request, cheaply: a signature check and one indexed
+DB lookup, with no identity-provider call. That alone closes most holes,
+because the token is short-lived. A deactivated user's session dies within
+the token window, even if nothing else fires.
 
 ---
 
 ## 4. Refresh = the re-verification checkpoint
 
-When the short access token expires and the client presents its refresh
-token, **that is where the human is re-confirmed** — at most every
+When the short access token expires, the client presents its refresh
+token. **That is where QueryHub re-checks the human**: at most every
 15–30 minutes, not on every request:
 
 ```
@@ -239,15 +276,15 @@ POST /api/auth/refresh:
   4. Mint a fresh short access token.
 ```
 
-So: someone removed from Slack (or disabled in `requesters`) loses web
-access within one refresh cycle, automatically.
+Result: someone who is no longer in Slack (or is disabled in `requesters`)
+loses web access within one refresh cycle, automatically.
 
 ---
 
 ## 5. Live check at the dangerous moment
 
-The truly sensitive action is **executing against production** — not
-loading a page. So in addition to the refresh check, a **live check runs
+The truly sensitive action is **executing against production**, not
+loading a page. So, in addition to the refresh check, a **live check runs
 right before an RW/DDL submit** (`routes_queries`):
 
 ```
@@ -259,20 +296,24 @@ POST /api/queries (and /queries/batch):
   ... proceed to classify / submit ...
 ```
 
-Not on every read — that would be slow and rate-limited. Where the blast
-radius is real. A write needs a live "active": an earlier answer does not
-count, and a Slack outage refuses writes until it ends. It used to fail open
-on transport errors, which let an offboarded person keep writing for as long
-as Slack was unreachable. Sign-in and refresh take a recent answer instead
-(§4). Every "active" answer is recorded in `slack_liveness`. `gone` means
-`deleted`, or users.info's `user_not_found` / `user_not_visible`. Local logins
-skip the Slack lookup — their gate is the whitelist row itself.
+The check does not run on every read: that would be slow and rate-limited.
+It runs where the possible damage is real.
+
+A write needs a live "active". An earlier answer does not count, and a
+Slack outage refuses writes until it ends. The check used to fail open on
+transport errors. That let an offboarded person keep writing for as long as
+Slack was unreachable. Sign-in and refresh take a recent answer instead
+(§4).
+
+QueryHub records every "active" answer in `slack_liveness`. `gone` means
+`deleted`, or users.info's `user_not_found` / `user_not_visible`. Local
+logins skip the Slack lookup. Their gate is the whitelist row itself.
 
 ---
 
 ## 6. Instant kill switch (revocation)
 
-For incidents ("revoke X right now"): revoke the session row —
+For incidents ("revoke X right now"), revoke the session row:
 
 ```sql
 UPDATE web_sessions SET revoked_at = NOW(), revoked_reason = '…'
@@ -280,8 +321,8 @@ WHERE slack_user_id = '<principal>' AND revoked_at IS NULL;
 ```
 
 `current_user` checks liveness on every request (§3 step 3), so this cuts
-access instantly without waiting for token expiry. Disabling the
-`requesters` row (or the `local_users` row) additionally blocks re-login.
+access instantly, with no wait for token expiry. To block re-login as
+well, disable the `requesters` row (or the `local_users` row).
 
 ---
 
@@ -289,25 +330,25 @@ access instantly without waiting for token expiry. Disabling the
 
 | Mechanism | Frequency | Catches |
 |---|---|---|
-| Access-JWT signature + exp | every request (cheap) | expired/forged tokens; short TTL closes most of the window |
+| Access-JWT signature + exp | every request (cheap) | expired/forged tokens. The short TTL closes most of the window |
 | Session-row liveness | every request (cheap) | manual revocation, sign-out everywhere |
-| Refresh: rotate + re-verify | every 15–30 min | user removed from Slack / whitelist, refresh-token theft (reuse detection) |
-| Live check before RW/DDL | per dangerous action | someone removed *between* refreshes trying to write to prod |
+| Refresh: rotate + re-verify | every 15–30 min | user no longer in Slack or on the whitelist, refresh-token theft (reuse detection) |
+| Live check before RW/DDL | per dangerous action | someone who loses access *between* refreshes and tries to write to prod |
 
-**Never trust the frontend** — every real decision is made server-side in
-`current_user` + the per-query grant check.
+**Never trust the frontend.** The server makes every real decision, in
+`current_user` and the per-query grant check.
 
 ---
 
 ## 8. Frontend touch-points
 
 - On load, the app calls `GET /api/me`. `401` → render the login screen.
-- The login screen reads `GET /api/auth/providers` and renders a Slack
+- The login screen reads `GET /api/auth/providers`. It renders a Slack
   button (`/api/auth/slack/start`, full redirect) and/or the local
-  username/password form, per what's enabled.
+  username/password form, for the providers that are enabled.
 - On `401` from any call mid-session, the client tries one silent
-  `POST /api/auth/refresh`, then falls back to the login screen. (Login
-  endpoints are exempt — a 401 there means bad credentials, not an
+  `POST /api/auth/refresh`. If that fails, it shows the login screen.
+  (Login endpoints are exempt: a 401 there means bad credentials, not an
   expired session.)
-- Sign out → `POST /api/auth/signout` (revokes the server-side session,
-  not just the cookies).
+- Sign out → `POST /api/auth/signout`. It revokes the server-side session,
+  not only the cookies.

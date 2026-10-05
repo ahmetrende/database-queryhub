@@ -193,7 +193,7 @@ def test_a_copied_back_statement_is_refused_with_a_reason(monkeypatch):
                                         database_name="main", query=MASKED,
                                         justification="new role")
     assert isinstance(r, core_submit.Rejection) and r.field == "query"
-    assert "Type the password in again" in r.message
+    assert "Type the password again" in r.message
 
 
 def test_the_mask_is_recognised_in_each_form_it_takes():

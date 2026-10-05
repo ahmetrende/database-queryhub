@@ -500,7 +500,7 @@ def sessions_upsert(body: SessionIn, claims: dict = Depends(deps.current_user)):
     deps.require_whitelisted(claims)
     name = body.name.strip()
     if not name:
-        raise deps._error(422, "validation", "Session name is required.")
+        raise deps._error(422, "validation", "Enter a session name.")
     # Normalize each tab to the stored shape; accept either client (conn/db)
     # or contract (connectionId/databaseId) keys.
     tabs = [{
@@ -618,7 +618,8 @@ def db_schema(conn: str, dbname: str, claims: dict = Depends(deps.current_user))
     from .. import pii
     t, _grant = _granted_db(claims["sub"], conn, dbname)
     if t is None:
-        raise deps._error(404, "not_found", "Unknown or ungranted database.")
+        raise deps._error(404, "not_found",
+                          "Refused: the database is unknown, or you have no grant for it.")
 
     trows = db.fetch_all(
         "SELECT id, schema_name, table_name, relkind, row_estimate, indexes, "
@@ -712,17 +713,19 @@ def table_columns(conn: str, dbname: str, table: str = "",
     deps.require_whitelisted(claims)
     name = (table or "").strip()
     if not name or len(name) > _LIVE_COLUMNS_NAME_MAX:
-        raise deps._error(422, "invalid", "A table name is required.")
+        raise deps._error(422, "invalid", "Enter a table name.")
     t, _grant = _granted_db(claims["sub"], conn, dbname)
     if t is None:
-        raise deps._error(404, "not_found", "Unknown or ungranted database.")
+        raise deps._error(404, "not_found",
+                          "Refused: the database is unknown, or you have no grant for it.")
     if not _is_postgres(t):
         raise deps._error(422, "unsupported",
-                          "Reading columns live is supported on PostgreSQL only.")
+                          "QueryHub reads columns live on PostgreSQL only.")
     user, password, why = _ro_login(t)
     if why:
         raise deps._error(503, "server_error",
-                          "No read credential configured for this connection.")
+                          "This connection has no read credential. "
+                          "Ask an admin to configure one.")
     try:
         with psycopg.connect(
             host=t.host, port=t.port, dbname=dbname,
@@ -756,7 +759,7 @@ def table_columns(conn: str, dbname: str, table: str = "",
 def connection_roles(conn: str, claims: dict = Depends(deps.current_user)):
     deps.require_whitelisted(claims)
     if not admins.is_super_admin(claims["sub"]):
-        raise deps._error(403, "forbidden", "Super-admin access required.")
+        raise deps._error(403, "forbidden", "Refused: you need super-admin access.")
     t = _target_by_alias(conn)
     if t is None:
         raise deps._error(404, "not_found", f"Unknown connection '{conn}'.")
@@ -764,7 +767,8 @@ def connection_roles(conn: str, claims: dict = Depends(deps.current_user)):
         db_user, password = targets.get_credentials(t.id, "ro")
     except LookupError:
         raise deps._error(503, "server_error",
-                          "No read credential configured for this connection.")
+                          "This connection has no read credential. "
+                          "Ask an admin to configure one.")
     try:
         with psycopg.connect(
             host=t.host, port=t.port, dbname=t.default_database,
@@ -802,7 +806,7 @@ def connection_roles(conn: str, claims: dict = Depends(deps.current_user)):
 def connection_replicas(conn: str, claims: dict = Depends(deps.current_user)):
     deps.require_whitelisted(claims)
     if not admins.is_super_admin(claims["sub"]):
-        raise deps._error(403, "forbidden", "Super-admin access required.")
+        raise deps._error(403, "forbidden", "Refused: you need super-admin access.")
     t = _target_by_alias(conn)
     # A replica is not a connection of its own, so its alias is not one here.
     if t is None or getattr(t, "replica_of", None) is not None:

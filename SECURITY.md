@@ -1,25 +1,25 @@
 # Security Policy
 
-QueryHub is a security boundary — an admin-approved, audited gateway between
-developers and production databases. We take reports seriously and appreciate
+QueryHub is a security boundary: an admin-approved, audited gateway between
+developers and production databases. We take reports seriously. We appreciate
 responsible disclosure.
 
 ## Supported versions
 
-QueryHub is pre-1.0 and evolving quickly. Security fixes land on the latest
-`main` and the most recent tagged release. Please reproduce on an up-to-date
-checkout before reporting.
+Security fixes land on the latest `main` and on the most recent tagged release.
+QueryHub changes quickly. Please reproduce the problem on an
+up-to-date checkout before you report it.
 
 | Version | Supported |
 |---------|-----------|
 | latest `main` | ✅ |
 | most recent tagged release | ✅ |
-| older releases | ❌ — no backports; upgrade forward |
+| older releases | ❌ — no backports. Upgrade forward. |
 
-This is deliberately narrow and it matches
-[README.md](README.md#versioning-and-support): one maintainer cannot honestly
-offer an LTS, so none is offered. If you pin a release, plan to move forward for
-security fixes.
+This policy is deliberately narrow, and it matches
+[README.md](README.md#versioning-and-support). One maintainer cannot honestly
+offer an LTS, so the project offers none. If you pin a release, plan to upgrade
+for security fixes.
 
 ## Reporting a vulnerability
 
@@ -28,58 +28,65 @@ vulnerability reporting on this repository:
 
 > **Security** tab → **Report a vulnerability**
 
-Please include: affected component, a reproduction (SQL / request / config),
-the impact you observed, and the commit or version you tested. We aim to
-acknowledge within a few business days and to agree a coordinated disclosure
-timeline with you.
+Please include these items:
+
+- the affected component
+- a reproduction (SQL / request / config)
+- the impact that you observed
+- the commit or version that you tested
+
+We aim to acknowledge your report within a few business days. We also aim to
+agree on a coordinated disclosure timeline with you.
 
 ## In scope
 
-- SQL safety bypass — running a statement at a tier it shouldn't (RO/RW/DDL
-  classification bypass, multi-statement smuggling, `SET`-based limit evasion).
+- SQL safety bypass — running a statement at a tier where it should not run
+  (RO/RW/DDL classification bypass, multi-statement smuggling, `SET`-based limit
+  evasion).
 - Authorization bypass — acting outside a grant (wrong target/database/tier),
   approval bypass, or privilege escalation.
 - Cross-database / cross-catalog access beyond the granted scope.
 - Credential / secret exposure (target credentials, master key, session
   secrets, tokens).
-- Result-path attacks — spreadsheet formula injection, PII leaking past the
-  masking layer in an exported result.
+- Result-path attacks — spreadsheet formula injection, or PII that leaks past
+  the masking layer in an exported result.
 - Audit tampering — mutating or forging the audit trail from the runtime role.
 - Web auth issues — session handling, CSRF, workspace/tenant confusion.
 
 ## Out of scope
 
 - A **target database's own** misconfigured privileges (e.g. a role that has
-  more rights than intended). QueryHub enforces its policy on top of the
-  database's; it can't grant less than the credentials it's given already deny.
-  Harden the target roles per the deploy guide.
-- Denial of service from a single expensive-but-authorized query (bounded by
-  `statement_timeout`, row/byte caps) — tune those limits for your fleet.
+  more rights than you intended). QueryHub enforces its policy on top of the
+  policy of the database. It cannot grant less than the credentials that it gets
+  already deny. Harden the target roles as the deploy guide describes.
+- Denial of service from a single expensive-but-authorized query.
+  `statement_timeout` and the row/byte caps bound such a query. Tune those
+  limits for your fleet.
 - Findings that require an already-compromised host or an already-privileged
   admin account.
-- Missing hardening that is tracked openly in `ROADMAP.md`.
+- Missing hardening that `ROADMAP.md` tracks openly.
 
 ## Repository hardening (maintainers)
 
-The application ships hardened, but the repository's protections are a
-maintainer setting, not code — enable them on the hosting side:
+Enable these protections on the hosting side. The application ships hardened,
+but the protections of the repository are a maintainer setting, not code:
 
 - **Branch protection** on the default branch: require pull-request review,
-  passing CI, and up-to-date branches before merge; disallow force-push and
+  passing CI, and up-to-date branches before merge. Disallow force-push and
   deletion.
-- **Require signed commits** (this project signs its commits; enforce
-  "Verified" on protected branches).
+- **Require signed commits.** This project signs its commits. Enforce
+  "Verified" on protected branches.
 - **Secret scanning + push protection** (GitHub Advanced Security or the free
-  equivalent) so a credential can't be pushed.
+  equivalent), so that nobody can push a credential.
 - **Dependabot / dependency alerts** for the pinned Python and npm deps.
 
-These are one-time settings in the repository's Settings → Branches / Security
-pages and are not enforceable from within the codebase.
+These are one-time settings on the Settings → Branches / Security pages of the
+repository. The codebase cannot enforce them.
 
 ## Design note
 
-QueryHub's defenses are open source by design — security comes from
-correctness and defense-in-depth (two-pass SQL analysis, tier-matched
-credentials, per-value PII masking, an attributed audit trail), not from secrecy. Specific
-*unfixed* weaknesses are handled privately with the reporter until a fix ships;
-they are never published as a how-to.
+QueryHub's defenses are open source by design. Security comes from correctness
+and defense-in-depth, not from secrecy: two-pass SQL analysis, tier-matched
+credentials, per-value PII masking, and an attributed audit trail. We handle
+specific *unfixed* weaknesses privately with the reporter until a fix ships. We
+never publish them as a how-to.

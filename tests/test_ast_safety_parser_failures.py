@@ -78,7 +78,7 @@ def test_an_unknown_parser_exception_still_blocks(monkeypatch):
 
     monkeypatch.setattr(ast_safety.sqlglot, "parse", boom)
     blockers = ast_safety.check("SELECT 1;", engine="postgres")
-    assert blockers and "could not be parsed" in blockers[0]
+    assert blockers and "could not parse" in blockers[0]
 
 
 def test_valid_sql_is_untouched():

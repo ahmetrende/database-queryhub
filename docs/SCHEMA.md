@@ -1,9 +1,9 @@
 # Bot metadata DB — schema reference
 
-This file describes every persistent object the bot reads/writes in its
-metadata database (the `queryhub` DB on the configured Postgres host). Schema is
-applied automatically via `scripts/apply_migrations.py`; descriptions here
-are also stored as `COMMENT ON ...` in the DB itself, so DataGrip / psql
+This file describes every persistent object that the bot reads/writes in its
+metadata database (the `queryhub` DB on the configured Postgres host).
+`scripts/apply_migrations.py` applies the schema automatically. The DB also
+stores these descriptions as `COMMENT ON ...`, so DataGrip / psql
 `\d+ <object>` shows the same prose.
 
 Connection: `queryhub` DB on the configured Postgres host
@@ -22,7 +22,7 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
 | `004_slack_file_id.sql` | requests.slack_file_id (for CSV cleanup) |
 | `005_access_requests.sql` | access_requests, access_request_notifications |
 | `006_bot_display_config.sql` | seed bot_display_name + bot_display_icon in bot_config |
-| `007_requesters_and_email.sql` | requesters table; admins.email; bot_config.{log_level, results_ttl_hours} |
+| `007_requesters_and_email.sql` | requesters table + admins.email + bot_config.{log_level, results_ttl_hours} |
 | `008_descriptions.sql` | COMMENT ON for every object (this file's prose, in the DB) |
 | `009_team_target_role.sql` | team_target_grants.target_role for SET LOCAL ROLE |
 | `010_scheduled_status.sql` | request_status enum gains `scheduled` |
@@ -35,62 +35,62 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
 | `017_rate_limit.sql` | bot_config.max_open_requests_per_user |
 | `018_set_allowlist.sql` | bot_config.set_allowed_params (SET LOCAL prelude allowlist) |
 | `019_request_ratings.sql` | request_ratings table + bot_config.rating_enabled + v_rating_* views (later renamed to p_metrics_*) |
-| `020_product_metrics.sql` | p_metrics_* namespace, p_metrics_cost_savings + p_metrics_volume_{daily,weekly,monthly} + p_metrics_team_usage + p_metrics_top_users + p_metrics_scheduled_usage + p_metrics_tier_distribution + p_metrics_failure_breakdown + p_metrics_admin_workload; bot_config.cost_* knobs; p_metrics_cfg_num helper |
-| `021_more_metrics.sql` | p_metrics_target_heatmap + p_metrics_peak_hours + p_metrics_business_vs_offhours + p_metrics_approval_sla; bot_config.report_timezone; p_metrics_cfg_text helper |
+| `020_product_metrics.sql` | p_metrics_* namespace, p_metrics_cost_savings + p_metrics_volume_{daily,weekly,monthly} + p_metrics_team_usage + p_metrics_top_users + p_metrics_scheduled_usage + p_metrics_tier_distribution + p_metrics_failure_breakdown + p_metrics_admin_workload. Also bot_config.cost_* knobs and the p_metrics_cfg_num helper. |
+| `021_more_metrics.sql` | p_metrics_target_heatmap + p_metrics_peak_hours + p_metrics_business_vs_offhours + p_metrics_approval_sla. Also bot_config.report_timezone and the p_metrics_cfg_text helper. |
 | `022_dba_manual_escalation.sql` | request_status enum gains `awaiting_dba_manual` (DDL escalation path) |
 | `023_admin_scopes.sql` | admins.{max_tier, scope_team_ids, scope_target_ids} — per-admin approval scoping (NULL = no restriction) |
-| `024_who_can_what_view.sql` | `p_metrics_who_can_what` — one row per active user (admin / bypass / team grants / user grants), powers `/sql roles` |
+| `024_who_can_what_view.sql` | `p_metrics_who_can_what` — one row per active user (admin / bypass / team grants / user grants). It serves `/sql roles`. |
 | `025_usage_view.sql` | `metric_annotations` table (timeline markers) + `p_metrics_usage_daily` overview view with annotations joined per day |
-| `026_request_bundles.sql` | `request_bundles` table + `bundle_status` enum + `requests.{bundle_id, position}` + `request_notifications.bundle_id`; `bot_config.{batch_enabled, batch_max_items}` feature flag |
+| `026_request_bundles.sql` | `request_bundles` table + `bundle_status` enum + `requests.{bundle_id, position}` + `request_notifications.bundle_id` + `bot_config.{batch_enabled, batch_max_items}` feature flag |
 | `027_bundle_status_trigger.sql` | AFTER UPDATE trigger on `requests.status` keeps `request_bundles.status` in sync automatically (pending / partial / decided / cancelled rollup) |
 | `028_bundle_summary_dm.sql` | `request_bundles.requester_summary_{channel_id, message_ts}` — idempotency anchors for the bundle-summary DM sent to the requester |
-| `029_fix_bundle_trigger_and_nullable.sql` | `request_notifications.request_id` → NULL'able (paired with the bundle_id CHECK); trigger gains `pg_advisory_xact_lock(bundle_id)` to serialise concurrent recomputes |
+| `029_fix_bundle_trigger_and_nullable.sql` | `request_notifications.request_id` → NULL'able (paired with the bundle_id CHECK). The trigger gains `pg_advisory_xact_lock(bundle_id)` to serialise concurrent recomputes. |
 | `030_auto_approve.sql` | `auto_approve_grants` table (per-user, time-bounded, tier-scoped exemption from admin approval) + `v_active_auto_approve` view |
-| `031_temp_admin_grants.sql` | `temp_admin_grants` table (time-bounded admin role for vacation / on-call coverage) + `v_active_temp_admins` view. Only super-admins (permanent admin with all scope columns NULL) can issue. `admins.is_admin` / `can_approve` / `list_active` consult both tables. |
-| `032_report_excluded_users.sql` | `report_excluded_users` table + three wrapper views (`requests_reportable`, `audit_log_reportable`, `request_ratings_reportable`) that the `p_metrics_*` views read from. Lets operators hide their own self-test traffic from reports without touching authz / audit paths. |
+| `031_temp_admin_grants.sql` | `temp_admin_grants` table (time-bounded admin role for vacation / on-call coverage) + `v_active_temp_admins` view. Only super-admins (permanent admin with all scope columns NULL) can issue these grants. `admins.is_admin` / `can_approve` / `list_active` consult both tables. |
+| `032_report_excluded_users.sql` | `report_excluded_users` table + three wrapper views (`requests_reportable`, `audit_log_reportable`, `request_ratings_reportable`) that the `p_metrics_*` views read from. With it, operators can hide their own self-test traffic from reports. It does not touch the authz / audit paths. |
 | `033_audit_reportable_fix.sql` | Fix `audit_log_reportable` (and `request_ratings_reportable`) to filter by the linked request instead of the action's actor. An excluded user's approvals of OTHER people's real requests now stay in admin reports. |
-| `034_daily_views_gap_fill.sql` | Gap-fill the daily-bucket reporting views (`p_metrics_volume_daily`, `p_metrics_usage_daily`) via `generate_series`. Days with zero traffic now appear as 0 rows instead of being absent — keeps the x-axis dense so weekend bands and other date-driven overlays line up. |
-| `035_report_start_date.sql` | `bot_config.report_start_date` knob (default `2026-05-01`) + every time-axis `p_metrics_*` view now filters `created_at >= report_start_date`. Replaces the rolling 90-day window on the daily / peak-hours / scheduled-usage views. |
-| `036_ast_safety_flag.sql` | `bot_config.ast_safety_enabled` — toggles the sqlglot AST second-pass safety check (`ast_safety.py`). |
-| `037_result_format.sql` | `requests.result_format` (`'csv'` default) — per-request CSV vs XLSX output choice. |
+| `034_daily_views_gap_fill.sql` | Gap-fill the daily-bucket reporting views (`p_metrics_volume_daily`, `p_metrics_usage_daily`) with `generate_series`. Days with zero traffic now appear as 0 rows instead of being absent. This keeps the x-axis dense, so weekend bands and other date-driven overlays align. |
+| `035_report_start_date.sql` | `bot_config.report_start_date` knob (default `2026-05-01`) + every time-axis `p_metrics_*` view now filters `created_at >= report_start_date`. It replaces the rolling 90-day window on the daily / peak-hours / scheduled-usage views. |
+| `036_ast_safety_flag.sql` | `bot_config.ast_safety_enabled` — toggles the second-pass safety check on the sqlglot AST (`ast_safety.py`). |
+| `037_result_format.sql` | `requests.result_format` (`'csv'` default) — the choice of CSV or XLSX output for each request. |
 | `038_query_templates.sql` | `query_templates` table (saved/shared `/sql` queries) + owner / shared indexes. |
-| `039_request_facts.sql` | `p_metrics_request_facts` view — one denormalized row per reportable request; the dashboard's single data source (inlined as JSON, client-side aggregated). |
+| `039_request_facts.sql` | `p_metrics_request_facts` view — one denormalized row per reportable request. It is the dashboard's single data source (inlined as JSON, client-side aggregated). |
 | `040_risk_hints.sql` | `requests.risk_summary` (admin-DM risk line) + `bot_config.{risk_seq_scan_rows, risk_high_cost}` thresholds for the pre-flight plan analysis. |
 | `041_pii_masking.sql` | `bot_config.pii_masking_enabled` — toggles content-based PII masking (`pii.py`) in result output. |
 | `042_submission_failures.sql` | `submission_failures` table — forensic log of rejected modal submissions (validation errors), admin-only. |
-| `043_pii_column_patterns.sql` | `pii_column_patterns` table — column-NAME catalog (token/substring/regex → pii_type) for masking free-text PII (name/address) the content scan can't detect. |
-| `044_query_fingerprint_cache.sql` | `requests.query_fingerprint` + partial index + `bot_config.{fingerprint_cache_enabled, fingerprint_cache_ttl_days}` — RO-only repeat-query auto-approve cache. |
+| `043_pii_column_patterns.sql` | `pii_column_patterns` table — column-NAME catalog (token/substring/regex → pii_type) for masking free-text PII (name/address) that the content scan can't detect. |
+| `044_query_fingerprint_cache.sql` | `requests.query_fingerprint` + partial index + `bot_config.{fingerprint_cache_enabled, fingerprint_cache_ttl_days}` — an auto-approve cache for repeated queries, RO only. |
 | `045_pii_patterns_mobile.sql` | Seed `pii_column_patterns` with phone tokens (`mobile`, `tel`, `phone`). Idempotent (`ON CONFLICT DO NOTHING`). |
 | `046_csv_import.sql` | CSV bulk-import: `import_grants` (per-user allowlist), `csv_imports` (one row per import), `import_notifications` (admin DM anchors) + `bot_config.{csv_import_enabled, import_max_rows, import_max_mb, import_csv_ttl_hours, import_timeout_sec}`. |
-| `047_csv_import_column_defs.sql` | `csv_imports.column_defs` JSONB — user-supplied typed schema (`[{name,type}]`, allow-list validated) for new-table imports; NULL = all-TEXT. |
-| `048_metrics_csv_imports.sql` | `p_metrics_csv_imports` view — one denormalized row per CSV import joined to the target alias, minus rows whose requester is in `report_excluded_users`. Feeds the dashboard's CSV-import section. |
-| `049_query_favorites.sql` | `query_favorites` table — per-user starred queries (personal, no sharing). Populated from the result-DM ⭐ button or the /sql modal's "favorite this" checkbox; surfaced in a modal favorites picker. Deduped per (user, query, target, db). |
-| `050_pii_masking_exemptions.sql` | `pii_masking_exemptions` table — scoped opt-outs from PII masking for public-data scopes (e.g. OpenSanctions). NULL columns are wildcards: target-wide / db-wide / table / column. Table-level rows apply only when the query references ONLY exempt tables (sqlglot; fail-closed on joins / unparseable SQL). Runtime-effective. |
-| `051_auto_approve_target_scope.sql` | `auto_approve_grants.{target_server_id, database_name}` (nullable; NULL = legacy broad). Lets a grant be narrowed to one target/db; `effective_grant` matches via the pure `auto_approve.grant_covers()` predicate. `v_active_auto_approve` widened (DROP+CREATE so it stays re-runnable). |
-| `052_auto_approve_requests.sql` | `auto_approve_requests` table — user-requested short RO auto-approve windows (RO-burst nudge): mandatory justification, admin-decided; on approval inserts a target-scoped `auto_approve_grants` row. `bot_config` keys `ro_burst_threshold` / `ro_burst_window_min` / `ro_window_minutes` seeded. |
-| `053_pii_exemption_apply_in_joins.sql` | `pii_masking_exemptions.apply_in_joins` (bool, default FALSE). When TRUE, a table+column-scoped exemption also fires in JOINs (its table just has to be among the query's tables) instead of only on single-table queries — opt-in, accepts a same-named co-joined column being unmasked too. For columns non-sensitive db-wide (e.g. event titles). |
-| `054_user_grant_revoked_at.sql` | `user_target_grants.revoked_at` (TIMESTAMPTZ, NULL = active). Soft-disable for the stale-grant reaper (`scripts/reap_stale_grants.py`): revokes a per-user grant when the user hasn't queried the target in `grant_idle_revoke_days`. Every read of `user_target_grants` (teams.py + `v_effective_user_grants`) filters `revoked_at IS NULL`. New `bot_config`: `grant_reaper_enabled` (off), `grant_idle_revoke_days` (30). |
+| `047_csv_import_column_defs.sql` | `csv_imports.column_defs` JSONB — user-supplied typed schema (`[{name,type}]`, checked against an allow-list) for new-table imports. NULL = all-TEXT. |
+| `048_metrics_csv_imports.sql` | `p_metrics_csv_imports` view — one denormalized row per CSV import joined to the target alias, minus rows whose requester is in `report_excluded_users`. It feeds the dashboard's CSV-import section. |
+| `049_query_favorites.sql` | `query_favorites` table — per-user starred queries (personal, no sharing). Rows come from the result-DM ⭐ button or the /sql modal's "favorite this" checkbox. A favorites picker in the modal shows them. Rows are deduped per (user, query, target, db). |
+| `050_pii_masking_exemptions.sql` | `pii_masking_exemptions` table — scoped opt-outs from PII masking for public-data scopes (e.g. OpenSanctions). NULL columns are wildcards: target-wide / db-wide / table / column. Table-level rows apply only when the query references ONLY exempt tables (checked with sqlglot, fail-closed on joins / unparseable SQL). Runtime-effective. |
+| `051_auto_approve_target_scope.sql` | `auto_approve_grants.{target_server_id, database_name}` (nullable, NULL = legacy broad). With these columns, a grant can be narrowed to one target/db. `effective_grant` matches through the pure `auto_approve.grant_covers()` predicate. It widens `v_active_auto_approve` (DROP+CREATE, so it stays re-runnable). |
+| `052_auto_approve_requests.sql` | `auto_approve_requests` table — short RO auto-approve windows that users request (RO-burst nudge). A justification is mandatory, and an admin decides each request. On approval, the bot inserts a target-scoped `auto_approve_grants` row. It seeds the `bot_config` keys `ro_burst_threshold` / `ro_burst_window_min` / `ro_window_minutes`. |
+| `053_pii_exemption_apply_in_joins.sql` | `pii_masking_exemptions.apply_in_joins` (bool, default FALSE). When TRUE, a table+column-scoped exemption also fires in JOINs, not only on single-table queries. Its table only has to be among the query's tables. This is opt-in, and it accepts that a same-named co-joined column is unmasked too. It is for columns that are non-sensitive db-wide (e.g. event titles). |
+| `054_user_grant_revoked_at.sql` | `user_target_grants.revoked_at` (TIMESTAMPTZ, NULL = active). Soft-disable for the stale-grant reaper (`scripts/reap_stale_grants.py`). The reaper revokes a per-user grant when the user did not query the target in `grant_idle_revoke_days`. Every read of `user_target_grants` (teams.py + `v_effective_user_grants`) filters `revoked_at IS NULL`. New `bot_config`: `grant_reaper_enabled` (off), `grant_idle_revoke_days` (30). |
 | `055_pending_expiry.sql` | Pending-request auto-expiry config. |
 | `056_security_config_audit.sql` | Audit + TTL for security-relevant `bot_config` toggles. |
-| `057_schema_catalog.sql` | Schema catalog: an hourly snapshot of every target's tables + columns, backing `/sql tables`, `/sql schema`, `/sql findcol` and the web browser. |
+| `057_schema_catalog.sql` | Schema catalog: an hourly snapshot of every target's tables + columns. It serves `/sql tables`, `/sql schema`, `/sql findcol` and the web browser. |
 | `058_admin_can_grant.sql` | `admins.can_grant` — capability flag for the Slack-native grant/revoke tool (`/sql grant`). |
-| `059_user_row_limit_overrides.sql` | Per-user result row-limit overrides, time-bounded. |
-| `060_auth_event_outbox.sql` | Universal authorization-change notifications: triggers on 8 auth tables feed `auth_event_outbox`, and a poller DMs affected users on ANY grant/revoke — including changes made straight from psql. Suppress with `SET LOCAL app.auth_dm_suppress = 'on'` on paths that DM on their own. |
+| `059_user_row_limit_overrides.sql` | Time-bounded per-user overrides of the result row limit. |
+| `060_auth_event_outbox.sql` | Universal authorization-change notifications. Triggers on 8 auth tables feed `auth_event_outbox`. A poller DMs affected users on ANY grant/revoke, including changes made directly from psql. Paths that DM on their own suppress this with `SET LOCAL app.auth_dm_suppress = 'on'`. |
 | `061_web_sessions.sql` | QueryHub Web: server-side session state (short JWT + refresh tokens). |
 | `062_web_session_reuse_detection.sql` | Refresh-token reuse detection for web sessions. |
-| `063_web_session_avatar.sql` | Carry the signed-in user's Slack avatar on the session row so `GET /api/me` returns it without a per-request Slack API call, and so it survives refresh-token rotation. |
-| `064_web_saved_sessions.sql` | Server-synced named workspaces (the web Sessions panel). Only `dest="server"` sessions live here; `dest="local"` ones stay in the browser and are never sent. |
-| `065_request_origin.sql` | Record which channel a request came from so the executor delivers the result back to it. Web-origin requests read their result in the web UI, so by default they are not also DMed the CSV. |
+| `063_web_session_avatar.sql` | Carry the signed-in user's Slack avatar on the session row. Then `GET /api/me` returns it without a Slack API call per request, and the avatar survives refresh-token rotation. |
+| `064_web_saved_sessions.sql` | Server-synced named workspaces (the web Sessions panel). Only `dest="server"` sessions live here. `dest="local"` sessions stay in the browser and are never sent. |
+| `065_request_origin.sql` | Record which channel a request came from, so the executor delivers the result to that channel. Web-origin requests read their result in the web UI, so by default they do not also get the CSV as a DM. |
 | `066_config_delete_audit.sql` | Audit DELETEs of security-relevant `bot_config` keys (SEC-18). |
 | `067_execution_lease.sql` | Execution lease for orphaned-request reconciliation (STAB-01 / BUG-03). |
 | `068_target_engine.sql` | `target_servers.engine` — dispatch for multi-engine targets. |
-| `069_mssql_host_map.sql` | Bot-DB IP map for SQL Server Availability Group nodes. |
+| `069_mssql_host_map.sql` | Bot-DB IP map for the nodes of a SQL Server Availability Group. |
 | `070_target_pod_owner.sql` | `target_pod_owner`: each target → the engineering pod that owns it, by name inference. Dropped in 104. |
 | `071_pii_exemption_keep_value_scan.sql` | Soft PII exemption: lift the column-NAME mask but keep the value scan. |
 | `072_web_notification_reads.sql` | Read-state for the web notification bell. |
 | `073_target_secrets_provider.sql` | Pluggable secrets provider per target. |
 | `074_request_engine_tier.sql` | SEC-ENG: persist the engine and the engine-aware required tier on each request. |
-| `075_local_accounts.sql` | Local (built-in) accounts for the vanilla profile — login without Slack. Widens the principal-id CHECK on 10 tables to accept `local:<username>`. |
+| `075_local_accounts.sql` | Local (built-in) accounts for the vanilla profile — login without Slack. It widens the principal-id CHECK on 10 tables to accept `local:<username>`. |
 | `076_access_request_tier_autogrant.sql` | Access requests: persist the requested tier as a real column. |
 | `077_audit_indexes_and_session_sweep.sql` | Indexes for the audit trail's real access patterns, plus a session-sweep index. |
 | `078_report_start_date_install_default.sql` | Stop shipping the author's pilot date as every install's reporting start date. |
@@ -99,72 +99,75 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
 | `081_ops_metrics_config.sql` | `GET /metrics` in Prometheus text format. |
 | `082_web_max_tables_per_db.sql` | How many tables one database contributes to the web `/connections` payload. |
 | `083_result_column_types.sql` | Per-column SQL types for a delivered result, captured from the driver. |
-| `084_cancellable_executions.sql` | Make a running query cancellable, and a runaway self-healing. |
+| `084_cancellable_executions.sql` | Make a running query cancellable, and make a runaway query self-healing. |
 | `085_request_draft_status.sql` | A `draft` request status: the row that exists from the moment someone opens the composer. |
-| `086_request_draft_columns.sql` | Make a draft row storable while keeping every non-draft row exactly as strict. |
-| `087_draft_request_max_open.sql` | Seed the cap `reserve_request_id()` reads. |
-| `088_pii_pattern_region_and_excludes.sql` | Region-gate the PII column catalog, and stop the bare `name` token matching everything. |
+| `086_request_draft_columns.sql` | Make a draft row storable. Every non-draft row stays exactly as strict. |
+| `087_draft_request_max_open.sql` | Seed the cap that `reserve_request_id()` reads. |
+| `088_pii_pattern_region_and_excludes.sql` | Region-gate the PII column catalog. Stop the bare `name` token from matching everything. |
 | `089_pii_pattern_broad_tokens.sql` | Two false positives that survived 088, both measured rather than guessed. |
 | `090_pii_exemption_schema_and_super_admin.sql` | Two new dimensions on `pii_masking_exemptions`: a schema, and a super-admin gate. |
 | `091_schema_functions.sql` | Functions and procedures in the schema catalog. |
 | `092_super_admin_max_rows.sql` | Seed `super_admin_max_rows`: the row-cap FLOOR for super-admins. |
-| `093_requests_unmasked.sql` | `requests.unmasked` — the requester asked to see this result without masking. Intent only; the authority is re-derived at execution. |
-| `094_target_super_ddl_role.sql` | `target_servers.super_ddl_role`: the role a super-admin's session assumes on this target via `SET LOCAL ROLE`. NULL = no elevation here (run as the login, exactly as before). |
+| `093_requests_unmasked.sql` | `requests.unmasked` — the requester asked to see this result without masking. Intent only: the authority is re-derived at execution. |
+| `094_target_super_ddl_role.sql` | `target_servers.super_ddl_role`: the role that a super-admin's session assumes on this target through `SET LOCAL ROLE`. NULL = no elevation here (run as the login, exactly as before). |
 | `095_target_tags.sql` | `target_servers.tags` (JSONB, object-shaped CHECK) — where a target actually runs. |
-| `096_grant_expiry.sql` | Standing grants can expire: `expires_at` on `user_target_grants` AND `team_target_grants`, plus the `revoked_at` the team table never had. Partial indexes for the active-grant reads. |
-| `097_super_admin_max_mb.sql` | Seed `super_admin_max_mb`: the CSV size-cap FLOOR for super-admins. Its sibling 092 could not deliver this alone — the size cap is DERIVED from the row cap, so bytes were not expressible on their own. |
-| `098_grant_expiry_warnings.sql` | `grant_expiry_notices` — one row per (grant, threshold, deadline) already warned about, so a warning fires once and a grant whose expiry MOVES warns again. Adds a surrogate `id` to both grant tables (their PKs are composite, so there was nothing to reference). New `bot_config`: `grant_expiry_warn_enabled` (on), `grant_expiry_warn_hours` (24,4). Auto-approve windows are deliberately excluded — they are short by design, so a four-hour warning about a one-hour window is noise. |
+| `096_grant_expiry.sql` | Standing grants can expire: `expires_at` on `user_target_grants` AND `team_target_grants`, plus the `revoked_at` that the team table never had. Partial indexes serve the active-grant reads. |
+| `097_super_admin_max_mb.sql` | Seed `super_admin_max_mb`: the CSV size-cap FLOOR for super-admins. Its sibling 092 could not deliver this alone. The size cap is DERIVED from the row cap, so bytes were not expressible on their own. |
+| `098_grant_expiry_warnings.sql` | `grant_expiry_notices` — one row per (grant, threshold, deadline) that the bot already warned about. So a warning fires once, and a grant whose expiry MOVES warns again. It adds a surrogate `id` to both grant tables (their PKs are composite, so there was nothing to reference). New `bot_config`: `grant_expiry_warn_enabled` (on), `grant_expiry_warn_hours` (24,4). The warnings exclude auto-approve windows on purpose. These windows are short by design, so a four-hour warning about a one-hour window is noise. |
 - **099_run_notes** — `requests.run_notes` (jsonb): the statement
-  summary and the server's own NOTICE/WARNING output for a run, rendered in
-  the Messages tab. A script that returns no rows used to finish with nothing
-  on screen but a row count of zero.
+  summary and the server's own NOTICE/WARNING output for a run. The Messages
+  tab shows this output. Before this migration, a script that returned no rows
+  finished with nothing on screen but a row count of zero.
 - **100_scrub_query_secrets** — `scrub_query_secrets(text)` and a `BEFORE
   UPDATE` trigger on `requests` that masks `PASSWORD '…'` literals once a
-  request reaches a terminal status, so a role-management statement does not
+  request reaches a terminal status. So a role-management statement does not
   keep a cleartext secret in the request history or in the DMs that quote it.
 - **101_idp_assertion** — `idp_assertion_jti`: the replay ledger for 60-second
-  identity assertions signed by a trusted portal (see AUTH.md §1.2); the insert
+  identity assertions signed by a trusted portal (see AUTH.md §1.2). The insert
   prunes expired rows. New `bot_config`: `idp_assertion_enabled` (off),
   `idp_public_keys` (`{}`), `idp_sync_principal` (empty).
 - **102_notification_outbox** — `notification_outbox`: one row per pending
-  request and the admins told about it, for a portal to poll and acknowledge.
-  Slack DMs are unchanged.
+  request and the admins that the bot told about it. A portal can poll and
+  acknowledge these rows. Slack DMs are unchanged.
 - **103_pod_inventory** — first shape of the pod inventory (`pod_roster`,
-  `pod_service_database`), superseded by 104 the next day.
+  `pod_service_database`). Migration 104 superseded it the next day.
 - **104_pod_tables_rename** — `pod`, `pod_detail`, `pod_mapping`: who is in
-  which pod and which database each service talks to, loaded by an external
-  collector as full-refresh snapshots. Drops `target_pod_owner`, whose guessed
-  ownership map they replace.
+  which pod, and which database each service connects to. An external
+  collector loads them as full-refresh snapshots. Drops `target_pod_owner`.
+  These tables replace its guessed ownership map.
 - **139_target_deleted** — `target_servers.deleted_at` / `deleted_reason`: the
-  instance behind the target no longer exists. A CHECK forbids such a row being
-  enabled; the inventory sync sets and clears it.
+  instance behind the target no longer exists. Such a row cannot be enabled: a
+  CHECK forbids it. The inventory sync sets and clears these columns.
 - **140_archive_freshness** — `target_servers.archive_freshness` (jsonb): the
-  verdict the hourly catalog refresh read from an Athena archive's freshness
-  marker (`engine_config.freshness_marker`), which the approver's hint reports.
-  New `bot_config`: `athena_freshness_stale_hours` (36).
+  verdict that the hourly catalog refresh read from an Athena archive's
+  freshness marker (`engine_config.freshness_marker`). The approver's hint
+  reports this verdict. New `bot_config`: `athena_freshness_stale_hours` (36).
 
 ---
 
 ## Access model
 
-Who may run what is resolved from the tables migrations 105–115 added. The
-resolver reads them while `bot_config.access_model_v2 = 'on'`; with the key
-off, the older tables under [Tables](#tables) answer instead. The key is read
-per call, so turning it back is the rollback.
+The resolver decides who may run what from the tables that migrations
+105–115 added:
+
+- While `bot_config.access_model_v2 = 'on'`, the resolver reads these tables.
+- With the key off, the older tables under [Tables](#tables) answer instead.
+- The resolver reads the key per call. So the rollback is to set the key to
+  off again.
 
 ### The tables
 
 | Table | What it holds |
 |-------|---------------|
 | `tier` | The tier vocabulary as data: `ro` (rank 10), `rw` (20), `ddl` (30). "The most permissive wins" compares `rank`. |
-| `principal` | Who exists: a person or a service account (`kind`). `enabled` defaults to false, so a sync may create a principal but never enable one; for people it is mirrored from the requester and admin lists. Soft-deleted with `is_deleted`. |
-| `principal_identity` | How a principal signs in: `provider` (`slack`, `local`, `oidc:<id>`, `idp`) and `external_id` (the Slack user id, the username or the OIDC `sub`). One person can have several. |
+| `principal` | Who exists: a person or a service account (`kind`). `enabled` defaults to false, so a sync may create a principal but never enable one. For people, the mirror copies the value from the requester and admin lists. Soft-deleted with `is_deleted`. |
+| `principal_identity` | How a principal authenticates: `provider` (`slack`, `local`, `oidc:<id>`, `idp`) and `external_id` (the Slack user id, the username or the OIDC `sub`). One person can have several. |
 | `principal_credential` | A local password hash, an API key or a portal's public key (`kind`). |
-| `principal_setting` | Per-person dials as key/value (`max_rows`, `exclude_from_metrics`), each with an optional `valid_until`. |
-| `team` | A group. `name` is the stable code and `display_name` what people read. `source` names the sync that owns the membership; anything but `manual` is read-only in the UI. |
+| `principal_setting` | Per-person settings as key/value (`max_rows`, `exclude_from_metrics`), each with an optional `valid_until`. |
+| `team` | A group. `name` is the stable code, and `display_name` is what people read. `source` names the sync that owns the membership. When `source` is anything but `manual`, the membership is read-only in the UI. |
 | `team_member` | Membership. `is_lead` marks a lead and grants nothing by itself. |
 | `target_team` | Which team owns a target, many-to-many. It grants nothing: it is what lets a team lead approve their own team's requests (see `scripts/sync_team_approvers.py`). |
-| `access_grant` | The one access matrix: who (a principal or a team), where (a target or every target, a database or every database), which tier, for how long, and whether the row is a waiver. |
+| `access_grant` | The one access matrix. Each row says who (a principal or a team) and where (a target or every target, a database or every database). It also says which tier, for how long, and whether the row is a waiver. |
 | `role_assignment` | Who approves, grants, imports or administers, with an optional team, target and tier scope and a validity window. |
 
 ### `access_grant`
@@ -177,9 +180,9 @@ per call, so turning it back is the rollback.
 | `tier` | `ro` / `rw` / `ddl`, from `tier`. |
 | `auto_approve` | True makes the row a waiver. It skips the review for queries up to its tier and makes nothing reachable on its own. |
 | `merge_with_team` | Principal rows only. False, the default, means the person's own grants replace their teams' grants on that server. True keeps the team's grants beside them (rule 4 below). |
-| `db_role` | A database role the session assumes after connecting. No row sets it today. |
+| `db_role` | A database role that the session assumes after it connects. No row sets it today. |
 | `valid_from`, `valid_until` | The planned window. |
-| `revoked_at`, `revoked_by` | The unplanned end. Scope and tier are never edited in place: a change is a revoke plus a new row, so each request keeps pointing at the rule it ran under (`requests.access_grant_id`). |
+| `revoked_at`, `revoked_by` | The unplanned end. Scope and tier are never edited in place. A change is a revoke plus a new row, so each request still points to the rule that it ran under (`requests.access_grant_id`). |
 | `mirrored_from` | The older table this row is a projection of (see [Who writes where](#who-writes-where)), or NULL when the row was written here directly. |
 | `reason`, `created_by`, `is_deleted`, `deleted_at` | Audit and soft delete. |
 
@@ -195,21 +198,30 @@ tier, `auto_approve`), with the wildcard NULLs compared as equal.
 - **A team lead** is an `approver` row with `scope_team_id` set and `max_tier = 'rw'`: they approve their own team's requests, up to RW.
 - **A temporary admin** is an `admin` row with a `valid_until`.
 
-`source` names the sync that owns a row, or is NULL when a person wrote it. A sync touches only its own rows.
+`source` names the sync that owns a row, or is NULL when a person wrote it. A sync changes only its own rows.
 
 ### How a request is resolved
 
-`src/queryhub/access.py` implements these rules once, and every surface
-asks it: the database pickers in Slack and on the web, submit, the executor's
-re-check, auto-approve and the effective-access screen.
+`src/queryhub/access.py` implements these rules once. Every surface asks
+it:
+
+- the database pickers in Slack and on the web
+- submit
+- the executor's re-check
+- auto-approve
+- the effective-access screen
+
+The rules:
 
 1. **Admins reach everything.** A live `admin` role answers every question
    with `ddl`.
-2. **A row covers a question** when `all_targets` is set or its target
-   matches, `all_databases` is set or its database matches, and it is live:
-   not revoked, not deleted, inside its `valid_from` / `valid_until` window.
+2. **A row covers a question** when all three conditions are true:
+   - `all_targets` is set, or its target matches.
+   - `all_databases` is set, or its database matches.
+   - It is live: not revoked, not deleted, inside its `valid_from` /
+     `valid_until` window.
 3. **Waivers are not grants.** An `auto_approve` row never makes anything
-   reachable. It only skips the review, capped at the tier the access
+   reachable. It only skips the review, capped at the tier that the access
    allows.
 4. **A person's own grant displaces the team on the whole server.** Suppose a
    person holds a live grant of their own anywhere on a server and it does not
@@ -219,13 +231,13 @@ re-check, auto-approve and the effective-access screen.
    person's own grant. This is the older model's rule, where a user row
    replaced the team's on the whole target.
 5. **An ended own grant leaves nothing.** Suppose none of a person's own
-   grants on a server is live and one has expired (`valid_until` passed).
-   Then they have no access there, and the team's grant does not come back:
-   such a row is usually written to narrow what a team allows. A revoked own
-   grant is simply gone, and the team's grants apply again.
+   grants on a server is live, and one is expired (`valid_until` passed).
+   Then they have no access there, and the team's grant does not apply again.
+   Such a row is usually written to narrow what a team allows. A revoked own
+   grant is gone, and the team's grants apply again.
 6. **The tier is decided per database.** Among the rows that decide, the most
-   permissive row covering that database wins. A read grant on one database
-   and a write grant on another never add up to write on both.
+   permissive row that covers that database wins. A read grant on one database
+   and a write grant on another never combine into write on both.
 
 Visibility follows the same rows. A person who is not an admin sees an enabled
 target when a covering grant (not a waiver) exists. A read replica is never
@@ -233,31 +245,31 @@ listed: it serves its primary's read-only queries under the primary's name.
 
 ### Who writes where
 
-The older tables are still written by some paths. A mirror keeps the two
-models in step: migration 109, switched by `bot_config.access_model_mirror`
-(on by default).
+Some paths still write the older tables. A mirror keeps the two models in
+sync: migration 109, controlled by `bot_config.access_model_mirror` (on by
+default).
 
 - **Written to these tables directly:** team grants and team waivers, team
   membership, and roles set on the Roles screen.
 - **Written to the older tables, then mirrored:**
-  - a person's own grants (`user_target_grants`);
-  - a person's waivers (`auto_approve_grants`);
-  - the requester and admin lists (`requesters`, `admins`);
-  - the per-person settings (`user_row_limit_overrides`, `report_excluded_users`).
+  - a person's own grants (`user_target_grants`)
+  - a person's waivers (`auto_approve_grants`)
+  - the requester and admin lists (`requesters`, `admins`)
+  - the per-person settings (`user_row_limit_overrides`, `report_excluded_users`)
 
-The mirror is a set of AFTER triggers. On each write it recomputes that
+The mirror is a set of AFTER triggers. On each write, it recomputes that
 person's mirrored rows from the older tables:
 
-- it revokes rows that no longer have a source;
-- it inserts missing ones;
-- on the rest, it updates only `valid_until` and `db_role`.
+- It revokes rows that no longer have a source.
+- It inserts missing rows.
+- On the rest, it updates only `valid_until` and `db_role`.
 
 So a flag set directly on a mirrored row, such as `merge_with_team`, stays
-until that person's older-table row changes scope or tier. Then the row is
-replaced without the flag.
+until that person's older-table row changes scope or tier. Then the mirror
+replaces the row without the flag.
 
 Auth-event triggers on both sets of tables (migrations 060 and 108) notify the
-people a change affects, including a change made in psql.
+people that a change affects, including a change made in psql.
 
 ---
 
@@ -265,10 +277,10 @@ people a change affects, including a change made in psql.
 
 ### `bot_config`
 
-Runtime knobs as a key/value table. The bot reads on every relevant request,
-so changing a value via `UPDATE bot_config SET value = ... WHERE key = ...`
-takes effect immediately — no restart needed (with the exception of
-`log_level`, which is read once at process start).
+Runtime knobs as a key/value table. The bot reads them on every relevant
+request. So a change made with `UPDATE bot_config SET value = ... WHERE key = ...`
+takes effect immediately, with no restart. The exception is `log_level`: the
+bot reads it once at process start.
 
 Current keys:
 
@@ -277,59 +289,59 @@ Current keys:
 | `max_rows` | `1000` | Max rows returned in CSV result. |
 | `csv_size_mb` | `10` | Hard cap on CSV file size before the bot refuses to upload. |
 | `query_timeout_sec` | `300` | Per-query Postgres `statement_timeout`. |
-| `require_justification` | `false` | If true, modal forces the requester to fill in a Justification. |
+| `require_justification` | `false` | If true, the modal requires the requester to enter a Justification. |
 | `min_query_length` | `6` | Reject queries shorter than this many chars (sanity check). |
 | `bot_display_name` | `QueryHub` | Username override for chat.postMessage (requires `chat:write.customize`). |
-| `bot_display_icon` | `:query_hub:` | Icon emoji override for chat.postMessage. Workspace needs a custom emoji uploaded with this shortcode. |
+| `bot_display_icon` | `:query_hub:` | Icon emoji override for chat.postMessage. The workspace needs a custom emoji uploaded with this shortcode. |
 | `log_level` | `INFO` | Python logging level. **Read at startup** — restart to apply. |
 | `results_ttl_hours` | `72` | How long Slack file uploads + local CSV results persist before cleanup deletes them. |
-| `max_schedule_days` | `7` | Max days into the future a /sql query can be scheduled. 0 = scheduling disabled. |
+| `max_schedule_days` | `7` | Max days into the future that a /sql query can be scheduled. 0 = scheduling disabled. |
 | `kill_switch` | `off` | When `on`, the bot rejects new `/sql` invocations and shows `kill_switch_message`. In-flight requests are unaffected. |
 | `kill_switch_message` | (text) | Message shown to users when the kill switch is on. |
-| `pre_flight_explain` | `on` | When `on`, the bot runs `EXPLAIN` with RO credentials before approval to surface plan-time errors and (when `query_plan_logging=on`) capture the plan. RO queries only. |
-| `query_plan_logging` | `off` | When `on`, the EXPLAIN (FORMAT JSON) output is stored in `requests.explain_plan` (jsonb). |
-| `max_open_requests_per_user` | `5` | Per-user concurrency cap. Counts non-terminal requests; new submissions over the cap are rejected. |
-| `set_allowed_params` | (csv list) | Comma-separated allowlist of GUC names the user is allowed to set via a `SET LOCAL` prelude (e.g. `work_mem,statement_timeout`). Everything else is rejected. |
+| `pre_flight_explain` | `on` | When `on`, the bot runs `EXPLAIN` with RO credentials before approval. This shows plan-time errors and (when `query_plan_logging=on`) captures the plan. RO queries only. |
+| `query_plan_logging` | `off` | When `on`, the bot stores the EXPLAIN (FORMAT JSON) output in `requests.explain_plan` (jsonb). |
+| `max_open_requests_per_user` | `5` | Per-user concurrency cap. It counts non-terminal requests. The bot rejects new submissions over the cap. |
+| `set_allowed_params` | (csv list) | Comma-separated allowlist of GUC names that the user can set with a `SET LOCAL` prelude (e.g. `work_mem,statement_timeout`). The bot rejects all other names. |
 | `rating_enabled` | `on` | Send a 1-5 rating DM after terminal-state requests (suppressed for 30 days per user). |
 | `cost_dba_minutes_per_request` | `8` | Used by `p_metrics_cost_savings` — avg DBA time saved per self-service request. |
 | `cost_dba_hourly_usd` | `75` | Used by `p_metrics_cost_savings` — fully-loaded DBA hourly rate. |
 | `cost_avoided_replicas` | `5` | Used by `p_metrics_cost_savings` — read replicas avoided by routing queries through the bot. |
 | `cost_per_replica_monthly_usd` | `200` | Used by `p_metrics_cost_savings` — monthly cost per replica. |
-| `cost_other_monthly_usd` | `0` | Used by `p_metrics_cost_savings` — catch-all monthly savings line. |
+| `cost_other_monthly_usd` | `0` | Used by `p_metrics_cost_savings` — monthly savings line for everything else. |
 | `report_timezone` | `UTC` | IANA tz used by time-bucketed `p_metrics_*` views (peak hours, business-vs-offhours). |
-| `batch_enabled` | `off` | When `on`, users can run `/sql batch` and see a Single ↔ Batch radio toggle at the top of the `/sql` modal. When `off`, the sub-command is hidden and the toggle isn't rendered. |
-| `batch_max_items` | `5` | Maximum items per `/sql batch` submission. Slack modal view caps blocks at 100; ~5 items keeps the modal readable. |
+| `batch_enabled` | `off` | When `on`, users can run `/sql batch`. They also see a radio toggle (Single ↔ Batch) at the top of the `/sql` modal. When `off`, the sub-command is hidden and the toggle is not rendered. |
+| `batch_max_items` | `5` | Maximum items per `/sql batch` submission. A Slack modal view caps blocks at 100. About 5 items keep the modal readable. |
 | `report_start_date` | `2026-05-01` | Lower bound (inclusive) for every time-axis `p_metrics_*` view. Days / weeks before this date are excluded. |
 
 ### `target_servers`
 
-The Postgres servers the bot can query. One row per (host, default DB,
-user) tuple. The bot connects with the per-row credentials; passwords are
+The Postgres servers that the bot can query. One row per (host, default DB,
+user) tuple. The bot connects with the per-row credentials. The passwords are
 Fernet-encrypted with the master key on disk and stored as ciphertext in
 `password_encrypted`.
 
 | Column | Notes |
 |--------|-------|
 | `id` | SERIAL, referenced by `team_target_grants.target_server_id`. |
-| `alias` | Unique, shown in the `/sql` modal dropdown, and the connection's id in the web API, MCP and the admin screens. When a new or renamed connection wants a name a **disabled** connection holds, that one takes its engine's suffix (`orders` -> `orders-pg`) and the newcomer gets the plain name. An **enabled** holder keeps it: the importers then add the newcomer's own suffix (`-ch`), and the admin form refuses the name (`targets.claim_alias`). |
+| `alias` | Unique, shown in the `/sql` modal dropdown, and the connection's id in the web API, MCP and the admin screens. When a new or renamed connection asks for a name that a **disabled** connection holds, the holder takes its engine's suffix (`orders` -> `orders-pg`). The newcomer gets the plain name. An **enabled** holder keeps the name. The importers then add the newcomer's own suffix (`-ch`), and the admin form refuses the name (`targets.claim_alias`). |
 | `host`, `port`, `default_database`, `username` | Connection coords. `username` is the RO login (typically `queryhub_ro`). |
-| `password_encrypted` | Fernet ciphertext of the RO user's password. Generate via `scripts/encrypt_secret.py` then INSERT raw. |
-| `username_rw`, `password_rw_encrypted` | RW login (typically `queryhub_rw` with `pg_read_all_data` + `pg_write_all_data`). Used when the effective tier for (user, target) is `rw` or `ddl` and the query classifies as write. NULL = RW not configured; write queries on this target are rejected. |
-| `username_ddl`, `password_ddl_encrypted` | DDL login (typically `queryhub_ddl`). Used when the effective tier is `ddl` and the query classifies as DDL. NULL = DDL not configured; DDL on this target is rejected before execution. |
+| `password_encrypted` | Fernet ciphertext of the RO user's password. Generate it with `scripts/encrypt_secret.py`, then INSERT it as is. |
+| `username_rw`, `password_rw_encrypted` | RW login (typically `queryhub_rw` with `pg_read_all_data` + `pg_write_all_data`). Used when the effective tier for (user, target) is `rw` or `ddl` and the query classifies as write. NULL = RW not configured. The bot then rejects write queries on this target. |
+| `username_ddl`, `password_ddl_encrypted` | DDL login (typically `queryhub_ddl`). Used when the effective tier is `ddl` and the query classifies as DDL. NULL = DDL not configured. The bot then rejects DDL on this target before execution. |
 | `engine` | `postgres` (default) or `mssql`. Selects the driver and the engine spec (system schemas, tier classification, quoting). |
-| `super_ddl_role` | Name of a role a **super-admin's** session enters with `SET LOCAL ROLE` before the statement runs. NULL = no elevation on this target; the query runs as the login, exactly as for everyone else. See "Super-admin elevation" below. |
-| `tags` | JSONB object (CHECK enforces object shape) describing where the target actually runs. |
+| `super_ddl_role` | Name of a role that a **super-admin's** session enters with `SET LOCAL ROLE` before the statement runs. NULL = no elevation on this target. The query then runs as the login, exactly as for everyone else. See "Super-admin elevation" below. |
+| `tags` | JSONB object (CHECK enforces object shape) that describes where the target actually runs. |
 | `enabled` | Soft-delete flag. Disabled targets disappear from the modal (admins still see them). |
-| `replica_of` | The primary this row is a read replica of (migration 131; linked from the inventory's `replica_source` by `import_targets_from_inventory.py`). A replica never appears in a picker and cannot be submitted to. When it is `enabled` and healthy it runs its primary's read-only requests, with the primary's login — see OPERATIONS.md §26. |
-| `archive_freshness` | Athena only (migration 140). The last verdict the hourly catalog refresh read from the archive's freshness marker (`engine_config.freshness_marker`): `{state, covered_through, computed_at, known_gaps, reason, read_at}`, where `state` is `complete`, `complete_with_gaps` or `unknown` and timestamps are ISO-8601 UTC. The submit path turns it into one sentence of the approver's hint; staleness is worked out from `computed_at` at that point, never stored. NULL = no marker named, or not read yet. Written without touching `updated_at`. See CONFIGURATION.md, "Amazon Athena targets". |
+| `replica_of` | The primary that this row is a read replica of (migration 131). `import_targets_from_inventory.py` links it from the inventory's `replica_source`. A replica never appears in a picker, and nobody can submit to it. When it is `enabled` and healthy, it runs its primary's read-only requests with the primary's login. See OPERATIONS.md §26. |
+| `archive_freshness` | Athena only (migration 140): the last verdict that the hourly catalog refresh read from the archive's freshness marker (`engine_config.freshness_marker`). Shape: `{state, covered_through, computed_at, known_gaps, reason, read_at}`, where `state` is `complete`, `complete_with_gaps` or `unknown`, and timestamps are ISO-8601 UTC. The submit path converts it into one sentence of the approver's hint, and staleness is computed from `computed_at` at that point, never stored. NULL = no marker named, or not read yet. A write to this column does not change `updated_at`. See CONFIGURATION.md, "Amazon Athena targets". |
 | `notes` | Free text — describe purpose, owner, on-call team, etc. |
 | `created_at`, `updated_at` | Timestamps. |
 
 #### Super-admin elevation
 
-`super_ddl_role` exists because a super-admin needs authority the bot's
-own login must not carry. Giving `queryhub_ddl` standing privileges
-would put them in **every** session it opens, for every user. Instead:
+`super_ddl_role` exists because a super-admin needs authority that the bot's
+own login must not carry. If `queryhub_ddl` had standing privileges,
+**every** session it opens would carry them, for every user. Instead:
 
 ```sql
 CREATE ROLE queryhub_superadmin NOLOGIN CREATEROLE CREATEDB;
@@ -338,59 +350,62 @@ GRANT queryhub_superadmin TO queryhub_ddl
       WITH INHERIT FALSE, SET TRUE;                      -- PostgreSQL 16+
 ```
 
-`NOLOGIN` means there is no credential for the role to leak. `INHERIT
-FALSE, SET TRUE` means the membership is **inert** until an explicit
-`SET LOCAL ROLE`, so a leaked DDL password still buys only that login's
-own weak rights. `SET LOCAL` ties the elevation to the transaction: it
-is gone at COMMIT.
+`NOLOGIN` means there is no credential for the role to leak.
+`INHERIT FALSE, SET TRUE` means the membership is **inert** until an explicit
+`SET LOCAL ROLE`. So a leaked DDL password still gives only that login's own
+weak rights. `SET LOCAL` ties the elevation to the transaction: it is gone at
+COMMIT.
 
-Two properties worth stating because they are easy to get wrong:
+Two properties are worth stating, because they are easy to get wrong:
 
 - **The platform admin role beats table ownership.** `rds_superuser` on
-  RDS and `root` on Huawei can ALTER a table owned by an unrelated role,
-  which is what makes one role per cluster sufficient — no ownership
-  transfer is needed.
+  RDS and `root` on Huawei can `ALTER` a table owned by an unrelated role.
+  This is why one role per cluster is sufficient: no ownership transfer is
+  needed.
 - **Role attributes are NOT inherited through membership.** `CREATEROLE`
-  and `CREATEDB` must be granted directly with `ALTER ROLE`; being a
-  member of a role that holds them is not enough.
+  and `CREATEDB` must be granted directly with `ALTER ROLE`. Membership in a
+  role that holds them is not enough.
 
-The authority is re-derived at execution from `admins.is_super_admin`,
-never cached and never taken from the request row — `requests.unmasked`
-stores the *intent*, and standing can change between approval and run.
+The authority is re-derived at execution from `admins.is_super_admin`. It is
+never cached and never taken from the request row. `requests.unmasked` stores
+the *intent*, and standing can change between approval and run.
 
-The control-plane target is deliberately excluded: `audit_log` lives on
-that cluster, and an elevated session able to write it could erase its
-own trail.
+The control-plane target is excluded on purpose. `audit_log` lives on that
+cluster, and an elevated session that can write it could delete its own
+trail.
 
 ### `admins`
 
 > **Older model.** While `access_model_v2` is on, the resolver reads admins from
-> `role_assignment` (`role = 'admin'`); writes here are mirrored there. See
+> `role_assignment` (`role = 'admin'`). Writes here are mirrored there. See
 > [Access model](#access-model).
 
 Slack users authorized to approve/reject `/sql` requests. Admins also
 **bypass** the requester allowlist (`requesters`) and team grants
-(`team_target_grants`) — they can submit `/sql` against any target.
+(`team_target_grants`). They can submit `/sql` against any target.
 
-Approval scope is configurable per-admin. All three scope columns NULL
-= approve everything. Set any of them to restrict.
+Approval scope is configurable per admin. All three scope columns NULL =
+approve everything. To restrict the scope, set any of them.
 
 | Column | Notes |
 |--------|-------|
 | `slack_user_id` | PK, the `U…`/`W…` ID from Slack. |
-| `name` | Display name (free text). |
-| `email` | Lazily backfilled by the bot from Slack `users.info`. |
-| `tz` | IANA timezone, lazily filled from `users.info`. Used to render DM timestamps in the admin's local time. |
+| `name` | Human-readable name (free text). |
+| `email` | The bot backfills it lazily from Slack `users.info`. |
+| `tz` | IANA timezone, filled lazily from `users.info`. The bot uses it to render DM timestamps in the admin's local time. |
 | `enabled` | Soft-delete. |
-| `max_tier` | NULL / `ro` / `rw` / `ddl`. Highest tier this admin can approve. `rw` covers ro+rw but not ddl. NULL = any tier. |
-| `scope_team_ids` | `INTEGER[]` of `teams.id`. NULL = any team. Non-NULL = admin only sees / approves requests from a requester who belongs to at least one of these teams. A requester with no team membership is **not** matched by a non-NULL scope. |
-| `scope_target_ids` | `INTEGER[]` of `target_servers.id`. NULL = any target. Non-NULL = admin only sees / approves requests whose target is in this list. |
+| `max_tier` | NULL / `ro` / `rw` / `ddl`. Highest tier that this admin can approve. `rw` covers ro+rw but not ddl. NULL = any tier. |
+| `scope_team_ids` | `INTEGER[]` of `teams.id`. NULL = any team. Non-NULL = the admin only sees / approves requests from a requester who belongs to at least one of these teams. A non-NULL scope does **not** match a requester with no team membership. |
+| `scope_target_ids` | `INTEGER[]` of `target_servers.id`. NULL = any target. Non-NULL = the admin only sees / approves requests whose target is in this list. |
 | `added_at`, `added_by` | Audit. |
 
-The scope check lives in `admins.can_approve(slack_id, request)` and is
-consulted both at notification fan-out (to decide which admins see
-buttons on a given request) and at action handling (defense in depth —
-a button click is re-validated server-side).
+The scope check lives in `admins.can_approve(slack_id, request)`. The bot
+consults it at two points:
+
+- at notification fan-out, to decide which admins see buttons on a given
+  request
+- at action handling, as defense in depth: the server checks a button click
+  again
 
 ### `requesters`
 
@@ -408,21 +423,21 @@ layer (kill-switch). Behavior:
 
 | Column | Notes |
 |--------|-------|
-| `slack_user_id` | PK, validated by CHECK (`^[UW][A-Z0-9]{8,}$`). |
-| `email` | Lazily backfilled by the bot from Slack `users.info`. |
-| `name` | Display name (free text). |
-| `tz` | IANA timezone, lazily filled from `users.info`. Used to render scheduling / completion DMs in the user's local time. |
+| `slack_user_id` | PK. A CHECK constraint enforces the format (`^[UW][A-Z0-9]{8,}$`). |
+| `email` | The bot backfills it lazily from Slack `users.info`. |
+| `name` | Human-readable name (free text). |
+| `tz` | IANA timezone, filled lazily from `users.info`. The bot uses it to render scheduling / completion DMs in the user's local time. |
 | `enabled` | Disable to revoke without losing audit history. |
-| `bypass_team_grants` | When true, the user bypasses team/user grants entirely and reaches every enabled target (still subject to the requester allowlist). Use sparingly — typically for on-call DBAs who shouldn't sit inside a team. |
+| `bypass_team_grants` | When true, the user bypasses team/user grants entirely and reaches every enabled target (still subject to the requester allowlist). Use it sparingly, typically for on-call DBAs who should not sit inside a team. |
 | `added_at`, `added_by` | Audit. |
 
 ### `teams`
 
-> **Older model.** While `access_model_v2` is on, the resolver reads `team`;
-> writes here are mirrored there. See [Access model](#access-model).
+> **Older model.** While `access_model_v2` is on, the resolver reads `team`.
+> Writes here are mirrored there. See [Access model](#access-model).
 
-Logical grouping of users. A team is granted access to one or more targets
-(via `team_target_grants`); members of the team inherit those grants.
+Logical grouping of users. A team gets access to one or more targets
+(through `team_target_grants`). Members of the team inherit those grants.
 
 | Column | Notes |
 |--------|-------|
@@ -434,14 +449,14 @@ Logical grouping of users. A team is granted access to one or more targets
 ### `team_members`
 
 > **Older model.** While `access_model_v2` is on, the resolver reads
-> `team_member`; writes here are mirrored there. See [Access model](#access-model).
+> `team_member`. Writes here are mirrored there. See [Access model](#access-model).
 
 Many-to-many: which Slack users belong to which teams.
 
 | Column | Notes |
 |--------|-------|
 | `team_id` | FK to `teams(id)`, ON DELETE CASCADE. |
-| `slack_user_id` | Validated by CHECK pattern. |
+| `slack_user_id` | A CHECK pattern enforces the format. |
 | `added_at` | Audit. |
 
 PK is `(team_id, slack_user_id)`. A user can be in multiple teams.
@@ -449,7 +464,7 @@ PK is `(team_id, slack_user_id)`. A user can be in multiple teams.
 ### `team_target_grants`
 
 > **Older model.** While `access_model_v2` is on, the resolver reads
-> `access_grant`, and the admin panel writes team grants there directly; writes
+> `access_grant`, and the admin panel writes team grants there directly. Writes
 > here are still mirrored. See [Access model](#access-model).
 
 Which targets (and which databases on each target) a team can reach, and
@@ -459,27 +474,28 @@ optionally which Postgres role on the target to impersonate.
 |--------|-------|
 | `team_id` | FK to `teams`, ON DELETE CASCADE. |
 | `target_server_id` | FK to `target_servers`, ON DELETE CASCADE. |
-| `allowed_databases` | `text[]` — `NULL`/empty array = all DBs allowed; non-empty = only those DBs (bot-side check). |
-| `mode` | `ro` (default), `rw`, or `ddl`. The tier this grant authorises. The effective tier for (user, target) is the most permissive of the user's team grants (ro < rw < ddl), unless a `user_target_grants` row overrides it. |
-| `target_role` | Optional Postgres role name on the target. When set, the bot does `SET LOCAL ROLE <target_role>` inside the query transaction, so Postgres enforces the team's privileges natively. NULL = run as the bot's login user (`target_servers.username` / `username_rw` / `username_ddl`). Provision the role on the target with `deploy/grant_team_role.sql`. |
-| `expires_at` | NULL = no expiry, which stays the common case. When set, the grant stops authorising anything the moment `NOW()` passes it — see "Grant expiry" below. |
-| `revoked_at` | NULL = active. Soft revoke, so the record that the grant existed survives. Before migration 096 revoking a team grant meant DELETEing that record. |
+| `allowed_databases` | `text[]`. `NULL`/empty array = all DBs allowed. Non-empty = only those DBs (bot-side check). |
+| `mode` | `ro` (default), `rw`, or `ddl`. The tier that this grant authorises. The effective tier for (user, target) is the most permissive of the user's team grants (ro < rw < ddl). A `user_target_grants` row overrides it, if one exists. |
+| `target_role` | Optional Postgres role name on the target. When set, the bot runs `SET LOCAL ROLE <target_role>` inside the query transaction, so Postgres enforces the team's privileges natively. NULL = run as the bot's login user (`target_servers.username` / `username_rw` / `username_ddl`). Provision the role on the target with `deploy/grant_team_role.sql`. |
+| `expires_at` | NULL = no expiry, which stays the common case. When set, the grant stops authorising anything at the moment `NOW()` passes it. See "Grant expiry" below. |
+| `revoked_at` | NULL = active. Soft revoke, so the record that the grant existed survives. Before migration 096, revoking a team grant meant DELETEing that record. |
 | `granted_at` | Audit. |
 
 PK is `(team_id, target_server_id)`. A team can have grants on multiple
-targets; for a given target, the array narrows down which DBs and
-`target_role` narrows down which permissions on that target.
+targets. For a given target, the array limits which DBs the team can reach.
+`target_role` limits which permissions the team has on that target.
 
 #### `target_role` flow
 
-1. **Once per (team, target cluster):** DBA runs `deploy/grant_team_role.sql`
-   on the target with `role_name=queryhub_team_<X>` and `bot_login=<bot's
-   target user>`. Then GRANTs the schema/table privileges that role should
-   have.
-2. **Once per (team, target):** DBA UPDATEs `team_target_grants.target_role`
-   to that role name (template in `deploy/team_admin_templates.sql`).
-3. **Every query:** executor `SET LOCAL ROLE <target_role>` before
-   `cur.execute(user_query)`. Auto-resets at COMMIT.
+1. **Once per (team, target cluster):** the DBA runs
+   `deploy/grant_team_role.sql` on the target with
+   `role_name=queryhub_team_<X>` and `bot_login=<bot's target user>`. Then
+   the DBA GRANTs the schema/table privileges that the role should have.
+2. **Once per (team, target):** the DBA UPDATEs
+   `team_target_grants.target_role` to that role name (template in
+   `deploy/team_admin_templates.sql`).
+3. **Every query:** the executor runs `SET LOCAL ROLE <target_role>` before
+   `cur.execute(user_query)`. The role resets automatically at COMMIT.
 
 ### `user_target_grants`
 
@@ -490,17 +506,17 @@ targets; for a given target, the array narrows down which DBs and
 
 Per-user overrides on top of team grants. If a row exists here for
 `(slack_user_id, target_server_id)`, it **entirely supersedes** any team
-grants the user might have on that target — both `allowed_databases` and
-`mode`.
+grants that the user might have on that target. This covers both
+`allowed_databases` and `mode`.
 
 Use it to:
-- give a user access to a target their team doesn't have
+- give a user access to a target that their team does not have
 - restrict a user to `ro` on a target where the team has `rw`
 - elevate a single user to `ddl` without elevating the whole team
 
 | Column | Notes |
 |--------|-------|
-| `slack_user_id` | Validated by CHECK pattern. |
+| `slack_user_id` | A CHECK pattern enforces the format. |
 | `target_server_id` | FK to `target_servers`, ON DELETE CASCADE. |
 | `allowed_databases` | `text[]`. NULL / empty = all DBs on the target. |
 | `mode` | `ro` / `rw` / `ddl`. |
@@ -509,33 +525,34 @@ Use it to:
 | `granted_at`, `granted_by` | Audit. |
 
 PK is `(slack_user_id, target_server_id)`. The view
-`v_effective_user_grants` shows the resolved row the bot will use at
+`v_effective_user_grants` shows the resolved row that the bot will use at
 runtime (user override vs aggregated team grants).
 
 #### Grant expiry
 
-Before migration 096 a standing grant ended only when a human revoked
-it, so access accumulated invisibly. What prompted the change was an
-offboarding: someone deleted from Slack still held RW on four production
-databases through a team they had joined months earlier. Nothing was
-wrong with the grant — it simply had no way to end.
+Before migration 096, a standing grant ended only when a human revoked it.
+So access accumulated invisibly. An offboarding prompted the change: a person
+deleted from Slack still held RW on four production databases. The access came
+through a team that they joined months earlier. Nothing was wrong with the
+grant. It had no way to end.
 
-Three behaviours to rely on:
+You can rely on three behaviours:
 
 - **A past date is refused with 400**, not accepted and silently inert.
-- **Re-granting REPLACES the expiry**, including clearing it back to NULL.
-- **An expired USER grant does not fall back to the team grant.** A user
-  row is often written to *narrow* what a team allows, so falling through
-  would make expiry *increase* access. `teams.effective_grant_for_user()`
-  returns `None` instead.
+- **Re-granting REPLACES the expiry**, including clearing it to NULL.
+- **An expired USER grant does not revert to the team grant.** A user
+  row is often written to *narrow* what a team allows. So a fallback to the
+  team grant would make expiry *increase* access.
+  `teams.effective_grant_for_user()` returns `None` instead.
 
-Expiry is enforced in every grant reader, live — there is no cache
-anywhere on the authorization path, so a grant lapsing takes effect on
-the next submission with no restart.
+Every grant reader enforces expiry, live. There is no cache anywhere on the
+authorization path. So when a grant lapses, the change takes effect on the
+next submission, with no restart.
 
-**Known gap:** nothing warns before a grant lapses. The auth-event
-triggers (migration 060) fire on row changes, and time passing is not
-one, so access simply stops.
+**Expiry warnings:** the auth-event triggers (migration 060) fire on row
+changes, and time passing is not a row change. So `grant_expiry.py`
+(migration 098) sends the holder a DM before a grant lapses, at the hours in
+`grant_expiry_warn_hours` (24 and 4 by default).
 
 ### `requests`
 
@@ -551,28 +568,31 @@ Every `/sql` submission, regardless of outcome. The audit trail.
 | `decided_by_slack_id`, `decided_by_name`, `decision_reason`, `decided_at` | Approver / rejector details. |
 | `executed_at`, `completed_at` | Execution timing. |
 | `executed_target_id` | The read replica that ran this request, when it did not run on `target_server_id` (migration 131). NULL = ran on its own target. The cancel path signals `backend_pid` on this server. |
-| `run_on` | Where a super-admin asked this request to run (migration 137): NULL = auto (replicas.py decides), `'primary'`, or `'replica:<target_servers.id>'`; a CHECK admits only those shapes. Intent only, like `unmasked`: the executor re-checks super-admin standing at run time and runs as auto when it is gone. An honoured choice writes an `execution_run_on_forced` audit row; a chosen replica that cannot run the query fails the request instead of falling back to the primary. See OPERATIONS.md §26. |
+| `run_on` | Where a super-admin asked this request to run (migration 137): NULL = auto (replicas.py decides), `'primary'`, or `'replica:<target_servers.id>'`. A CHECK admits only those shapes. Intent only, like `unmasked`: the executor re-checks super-admin standing at run time, and runs as auto when the standing is gone. An honoured choice writes an `execution_run_on_forced` audit row. If a chosen replica cannot run the query, the request fails instead of running on the primary. See OPERATIONS.md §26. |
 | `row_count`, `truncated` | Result stats. |
 | `error_message` | Filled when status=`failed`. |
-| `csv_file_path` | Local CSV path (under `/var/lib/queryhub/results/`). NULL'd by cleanup. |
-| `slack_file_id` | Slack file ID from `files_upload_v2`. NULL'd by cleanup after `files.delete`. |
-| `scheduled_for` | When the user wants the query to run. NULL = run immediately on approval. If set, approval moves status to `scheduled` and the bot's scheduler thread picks it up at the right time. Capped by `bot_config.max_schedule_days`. |
-| `requester_dm_channel_id`, `requester_dm_message_ts` | Coordinates of the user's "approved + scheduled" DM that carries the [Cancel] button. Used by `chat.update` when the request is cancelled or starts executing. NULL for non-scheduled requests. |
-| `bundle_id`, `position` | Set when this row is one item of a `/sql batch` submission (FK to `request_bundles`, ON DELETE SET NULL; `position` is 1-based ordering inside the bundle). NULL for legacy single-shot submissions. |
+| `csv_file_path` | Local CSV path (under `/var/lib/queryhub/results/`). Cleanup sets it to NULL. |
+| `slack_file_id` | Slack file ID from `files_upload_v2`. Cleanup sets it to NULL after `files.delete`. |
+| `scheduled_for` | When the user wants the query to run. NULL = run immediately on approval. If set, approval moves the status to `scheduled`, and the bot's scheduler thread starts the query at the right time. `bot_config.max_schedule_days` caps it. |
+| `requester_dm_channel_id`, `requester_dm_message_ts` | Coordinates of the user's "approved + scheduled" DM that carries the [Cancel] button. `chat.update` uses them when the request is cancelled or starts executing. NULL for non-scheduled requests. |
+| `bundle_id`, `position` | Set when this row is one item of a `/sql batch` submission (FK to `request_bundles`, ON DELETE SET NULL). `position` is the 1-based order inside the bundle. NULL for legacy single-shot submissions. |
 | `result_format` | `'csv'` (default) or `'xlsx'` — output file format chosen in the modal (migration 037). |
-| `explain_plan` | `jsonb` — captured EXPLAIN (FORMAT JSON) plan when `query_plan_logging` is on; capped at 64 KB (migration 016). |
-| `risk_summary` | One-line admin-DM risk hint derived from the pre-flight plan (size band + seq-scan flag). NULL for non-explainable / fail-open (migration 040). |
-| `query_fingerprint` | Literal-normalized sqlglot fingerprint of the query, set for RO submissions. Powers the RO repeat-query auto-approve cache; a partial index serves the lookup (migration 044). |
+| `explain_plan` | `jsonb` — captured EXPLAIN (FORMAT JSON) plan when `query_plan_logging` is on. Capped at 64 KB (migration 016). |
+| `risk_summary` | A one-line risk hint for the admin DM, derived from the pre-flight plan (size band + seq-scan flag). NULL for non-explainable / fail-open (migration 040). |
+| `query_fingerprint` | Literal-normalized sqlglot fingerprint of the query, set for RO submissions. The auto-approve cache for repeated RO queries uses it. A partial index serves the lookup (migration 044). |
 | `created_at` | Submission time. |
 
-When `decided_by_slack_id = 'AUTO'`, the request was short-circuited by an `auto_approve_grants` row OR an RO fingerprint-cache hit instead of an admin button — `decided_by_name` carries the grant id + tier + expiry, or the matched prior request id, for audit.
+When `decided_by_slack_id = 'AUTO'`, the request skipped the admin button. An
+`auto_approve_grants` row OR an RO fingerprint-cache hit approved it. For
+audit, `decided_by_name` carries the grant id + tier + expiry, or the matched
+prior request id.
 
 ### `request_notifications`
 
-Tracks every admin DM the bot has posted for a given request OR bundle,
-so when one admin clicks Approve/Reject the bot can `chat.update` all
-of them in lockstep (so the buttons disappear from every admin's DM,
-not just the deciding one).
+Tracks every admin DM that the bot posted for a given request OR bundle.
+When one admin clicks Approve/Reject, the bot can `chat.update` all of them
+together. So the buttons disappear from every admin's DM, not only from the
+DM of the admin who decided.
 
 | Column | Notes |
 |--------|-------|
@@ -581,30 +601,30 @@ not just the deciding one).
 | `admin_slack_id` | Which admin received the DM. |
 | `channel_id`, `message_ts` | Coordinates for `chat.update`. |
 
-CHECK constraint enforces exactly one of `request_id` / `bundle_id` is
-set. Two partial UNIQUE indexes — one per `(request_id, admin)` for
-single-shot rows, one per `(bundle_id, admin)` for bundle rows.
+A CHECK constraint enforces that exactly one of `request_id` / `bundle_id` is
+set. There are two partial UNIQUE indexes: one per `(request_id, admin)` for
+single-shot rows, and one per `(bundle_id, admin)` for bundle rows.
 
 ### `audit_log`
 
-Append-only log of state transitions and notable events on requests.
-Holds free-form `details` (JSONB) for whichever transition wrote the
-row. Current action labels:
+Append-only log of state transitions and notable events on requests. It
+holds free-form `details` (JSONB) for the transition that wrote the row.
+Current action labels:
 
 | Action | Written when |
 |--------|--------------|
 | `submitted` | Requester submits the modal. |
 | `approved` | Admin clicks Approve (immediate or scheduled). |
 | `rejected` | Admin clicks Reject. |
-| `changes_requested` | Admin sends back for edits. |
+| `changes_requested` | Admin returns the request for edits. |
 | `cancelled` | Requester or admin cancels a scheduled request before it runs. |
 | `execution_started` | Executor opens the target connection and is about to run. |
 | `completed` | Executor finishes (with or without a result set). |
-| `failed` | Executor errors out. |
-| `escalated_to_dba` | DDL hit `InsufficientPrivilege`; status flipped to `awaiting_dba_manual`. |
+| `failed` | Executor fails with an error. |
+| `escalated_to_dba` | DDL hit `InsufficientPrivilege`. The status changed to `awaiting_dba_manual`. |
 | `completed_manually` | Admin clicks [Mark completed] on an `awaiting_dba_manual` request. |
 | `failed_manually` | Admin clicks [Mark failed] on an `awaiting_dba_manual` request. |
-| `auto_approved` | An `auto_approve_grants` row short-circuited the admin gate; `actor_slack_id` = `'AUTO'`; `details` carries `grant_id` + `max_tier`. Sibling `submitted` row carries `auto_approved: true` in its details for symmetry. |
+| `auto_approved` | An `auto_approve_grants` row skipped the admin gate. `actor_slack_id` = `'AUTO'`, and `details` carries `grant_id` + `max_tier`. For symmetry, the sibling `submitted` row carries `auto_approved: true` in its details. |
 
 | Column | Notes |
 |--------|-------|
@@ -616,14 +636,14 @@ row. Current action labels:
 
 ### `access_requests`
 
-A user without team grants can submit one of these to ask for access. Body
-includes the target/database/query they want plus a free-text reason.
-Admins approve or reject from a DM; the actual team-membership / grant
-INSERT is done by the admin in their IDE (the bot does not auto-grant).
+A user without team grants can submit one of these to ask for access. The
+body includes the target/database/query that they want, plus a free-text
+reason. Admins approve or reject from a DM. The admin does the actual
+team-membership / grant INSERT in their IDE (the bot does not auto-grant).
 
-Per `(user, target_server_id, attempted_query)` only one **pending** row
-allowed (unique partial index on `md5(query)`). Once decided, a fresh
-pending can be re-created for the same combo.
+Only one **pending** row is allowed per `(user, target_server_id, attempted_query)`
+(unique partial index on `md5(query)`). After the decision, a fresh pending
+row can be created again for the same combo.
 
 | Column | Notes |
 |--------|-------|
@@ -638,9 +658,9 @@ pending can be re-created for the same combo.
 
 ### `access_request_notifications`
 
-Same lockstep-update mechanism as `request_notifications`, but for
-`access_requests`. Tracks each admin DM so chat.update can replace the
-button block on every admin's copy when any admin decides.
+The same update-every-copy mechanism as `request_notifications`, but for
+`access_requests`. It tracks each admin DM. When any admin decides,
+chat.update can replace the button block on every admin's copy.
 
 | Column | Notes |
 |--------|-------|
@@ -652,12 +672,11 @@ UNIQUE(`access_request_id, admin_slack_id`).
 ### `request_ratings`
 
 User-supplied 1-5 rating + optional free-text feedback for a single
-request. Captured via a follow-up DM after the request reaches a
-terminal state (`completed` / `failed` / `rejected` / `cancelled`).
-One rating per request (UNIQUE on `request_id`). The bot suppresses
-the prompt for 30 days after a user's most recent rating so survey
-fatigue stays bounded; the whole thing toggles off via
-`bot_config.rating_enabled = 'off'`.
+request. A follow-up DM collects it after the request reaches a terminal
+state (`completed` / `failed` / `rejected` / `cancelled`). One rating per
+request (UNIQUE on `request_id`). The bot suppresses the prompt for 30 days
+after a user's most recent rating, to limit survey fatigue. To disable the
+whole feature, set `bot_config.rating_enabled = 'off'`.
 
 | Column | Notes |
 |--------|-------|
@@ -668,8 +687,8 @@ fatigue stays bounded; the whole thing toggles off via
 | `feedback_text` | Optional free text. |
 | `rated_at` | Timestamp. |
 
-Feeds the `p_metrics_rating_*` views (weekly avg, response rate, low
-rating drill-down).
+It feeds the `p_metrics_rating_*` views (weekly avg, response rate,
+low-rating drill-down).
 
 ### `metric_annotations`
 
@@ -686,12 +705,12 @@ label its bars.
 | `description` | Optional longer note — context, owner, runbook / postmortem link. |
 | `created_at` | When the annotation row was inserted. |
 
-UNIQUE(`occurred_at, label`) so re-running migration seeds is idempotent.
+UNIQUE(`occurred_at, label`), so a re-run of the migration seeds is idempotent.
 
 ### `request_bundles`
 
-Parent row of a `/sql batch` submission. Each item lives in `requests`
-with `bundle_id` pointing here. Single-shot `/sql` submissions don't
+Parent row of a `/sql batch` submission. Each item lives in `requests`, and
+its `bundle_id` points to this row. Single-shot `/sql` submissions do not
 create a row here (`requests.bundle_id IS NULL`).
 
 | Column | Notes |
@@ -699,9 +718,9 @@ create a row here (`requests.bundle_id IS NULL`).
 | `id` | BIGSERIAL, shown to users as `B#42`. |
 | `requester_slack_id`, `requester_name` | Who submitted. |
 | `justification` | Bundle-level (single field across all items). |
-| `scheduled_for` | NULL = run immediately on approval; otherwise the bundle's items move to `scheduled` and the bot's scheduler thread picks them up at that time. |
-| `status` | `bundle_status` enum. Driven by an AFTER UPDATE trigger on `requests.status` — see migration 027 / 029. |
-| `requester_summary_channel_id`, `requester_summary_message_ts` | Idempotency anchor for the bundle-summary DM the requester gets when every item is decided. First fire creates the message; subsequent state changes (e.g. a manual DBA closure hours later) `chat.update` the same DM. |
+| `scheduled_for` | NULL = run immediately on approval. Otherwise, the bundle's items move to `scheduled`, and the bot's scheduler thread starts them at that time. |
+| `status` | `bundle_status` enum. An AFTER UPDATE trigger on `requests.status` drives it. See migration 027 / 029. |
+| `requester_summary_channel_id`, `requester_summary_message_ts` | Idempotency anchor for the bundle-summary DM that the requester gets when every item is decided. The first fire creates the message. Later state changes (e.g. a manual DBA closure hours later) `chat.update` the same DM. |
 | `created_at` | Submission time. |
 
 Bundle status rules (computed by the trigger):
@@ -718,48 +737,53 @@ Bundle status rules (computed by the trigger):
 > are still written here and mirrored there. See [Access model](#access-model).
 
 Per-user, time-bounded, tier-scoped exemption from the admin approval
-gate. A query whose `required_mode` is ≤ `grant.max_tier`, submitted
-while `NOW()` falls inside `[starts_at, expires_at)`, skips the
-pending → approval step and dispatches directly. Higher-tier queries
-fall back to the normal admin flow with a user-facing warning.
+gate. Suppose a query's `required_mode` is ≤ `grant.max_tier`, and the user
+submits it while `NOW()` falls inside `[starts_at, expires_at)`. Then the
+query skips the pending → approval step and dispatches directly. Higher-tier
+queries go through the normal admin flow, with a user-facing warning.
 
 | Column | Notes |
 |--------|-------|
 | `id` | BIGSERIAL, referenced from `requests.decided_by_name` for audit. |
-| `slack_user_id` | Validated by CHECK pattern. Multiple grants per user are allowed (most-permissive wins). |
-| `max_tier` | `ro` / `rw` / `ddl`. Highest tier this grant covers (`rw` covers ro+rw, `ddl` covers everything). |
-| `target_server_id` | NULL = grant covers every target (legacy/broad). Non-NULL = only auto-approves requests against this target. Added in migration 051; powers the narrow per-target RO windows. |
+| `slack_user_id` | A CHECK pattern enforces the format. Multiple grants per user are allowed (most-permissive wins). |
+| `max_tier` | `ro` / `rw` / `ddl`. Highest tier that this grant covers (`rw` covers ro+rw, `ddl` covers everything). |
+| `target_server_id` | NULL = grant covers every target (legacy/broad). Non-NULL = only auto-approves requests against this target. Added in migration 051. The narrow per-target RO windows use it. |
 | `database_name` | NULL = any database on the (scoped) target. Non-NULL = only this database. Ignored when `target_server_id` IS NULL. Migration 051. |
 | `starts_at` | Defaults to NOW(). |
 | `expires_at` | NULL = no expiry. CHECK constraint: if both bounds are set, `expires_at > starts_at`. |
 | `reason` | Free text — why this grant was issued. |
 | `granted_by`, `granted_at` | Audit. |
 
-Scheduling interaction: when a request has `scheduled_for` in the
-future, the bot also evaluates the grant at that moment — a grant
-that's valid now but expires before the scheduled run time falls back
-to admin approval (so we don't auto-approve a query that nobody is
-allowed to run by the time it executes).
+Scheduling interaction: when a request has `scheduled_for` in the future,
+the bot also evaluates the grant at that moment. A grant can be valid now but
+expire before the scheduled run time. Then the request goes to admin approval
+instead. So the bot does not auto-approve a query that nobody is allowed to
+run by the time it executes.
 
 ### `auto_approve_requests`
 
-User-requested short RO auto-approve windows — the **RO-burst nudge**.
-When a user has run ≥ `ro_burst_threshold` RO queries in the last
-`ro_burst_window_min` minutes, the `/sql` modal banner offers a
-`ro_window_minutes` read-only auto-approve window scoped to the target
-they hit most. The request carries a mandatory justification and is
-fanned out to admins with Approve / Reject. On approval the bot inserts
-a target-scoped `auto_approve_grants` row (`max_tier='ro'`,
-`expires_at = NOW() + window`) and links it back via `granted_id`. If the
-user already holds an active grant, the banner only nudges toward Batch.
+Short RO auto-approve windows that users request: the **RO-burst nudge**.
+
+1. A user runs ≥ `ro_burst_threshold` RO queries in the last
+   `ro_burst_window_min` minutes.
+2. The `/sql` modal banner offers a `ro_window_minutes` read-only auto-approve
+   window, scoped to the target that the user hit most.
+3. The request carries a mandatory justification. The bot sends it to the
+   admins with Approve / Reject.
+4. On approval, the bot inserts a target-scoped `auto_approve_grants` row
+   (`max_tier='ro'`, `expires_at = NOW() + window`). It links the request to
+   that row through `granted_id`.
+
+If the user already holds an active grant, the banner only nudges toward
+Batch.
 
 | Column | Notes |
 |--------|-------|
 | `id` | BIGSERIAL. Carried in the admin DM button values + audit details. |
-| `requester_slack_id` | Validated by CHECK pattern. |
+| `requester_slack_id` | A CHECK pattern enforces the format. |
 | `target_server_id`, `database_name` | Scope of the requested window (db NULL = all dbs on the target). |
 | `max_tier` | `ro` today (the nudge only offers RO). |
-| `window_minutes` | Window length; the granted row expires `NOW() + this`. |
+| `window_minutes` | Window length. The granted row expires at `NOW() + this`. |
 | `reason` | NOT NULL — mandatory justification. |
 | `status` | `pending` / `approved` / `rejected`. Partial unique index allows one `pending` per (user, target). |
 | `decided_by_slack_id`, `decided_by_name`, `decided_at` | Admin decision audit. |
@@ -770,39 +794,36 @@ Audit actions: `auto_approve_window_approved` / `auto_approve_window_rejected`.
 ### `temp_admin_grants`
 
 Time-bounded admin role for vacation / on-call coverage. Only a
-**super-admin** (a permanent `admins` row with `max_tier`,
-`scope_team_ids`, and `scope_target_ids` ALL NULL and `enabled = TRUE`)
-can issue these — enforced in the Python helper
-`admins.grant_temp_admin()` and documented for the raw-SQL path in
-`docs/OPERATIONS.md` §21.
+**super-admin** can issue these grants. A super-admin is a permanent `admins`
+row with `max_tier`, `scope_team_ids`, and `scope_target_ids` ALL NULL and
+`enabled = TRUE`. The Python helper `admins.grant_temp_admin()` enforces this
+rule. `docs/OPERATIONS.md` §21 documents it for the raw-SQL path.
 
-The deputy is treated as an admin for the entire `[starts_at,
+The bot treats the deputy as an admin for the entire `[starts_at,
 expires_at)` window. `admins.is_admin` / `can_approve` /
 `list_active` consult `temp_admin_grants` alongside the permanent
-`admins` table — a user with any matching scope row in either table
-passes.
+`admins` table. A user with any matching scope row in either table passes.
 
 | Column | Notes |
 |--------|-------|
 | `id` | SERIAL. Referenced in `admins.NotASuperAdmin` exceptions and audit. |
-| `slack_user_id` | The deputy. Validated by CHECK pattern. Multiple grants per user are allowed (most-permissive wins). |
+| `slack_user_id` | The deputy. A CHECK pattern enforces the format. Multiple grants per user are allowed (most-permissive wins). |
 | `max_tier` | NULL = wildcard. `ro` / `rw` / `ddl` narrow as on `admins.max_tier`. |
 | `scope_team_ids` | INT[]. NULL = any team. Same semantics as `admins.scope_team_ids`. |
 | `scope_target_ids` | INT[]. NULL = any target. Same semantics as `admins.scope_target_ids`. |
 | `starts_at` | Defaults to NOW(). |
-| `expires_at` | NULL = no auto-expiry (revoke manually). CHECK: if both bounds set, `expires_at > starts_at`. |
+| `expires_at` | NULL = no auto-expiry (revoke manually). CHECK: if both bounds are set, `expires_at > starts_at`. |
 | `reason` | Free text — vacation, schema migration window, on-call shift, etc. |
 | `granted_by` | The super-admin who issued the grant. |
 | `granted_at` | When the row was inserted. |
-| `revoked_at` | Set to NOW() to expire a grant early. The row stays in place for audit; `v_active_temp_admins` filters revoked rows out. |
+| `revoked_at` | Set to NOW() to expire a grant early. The row stays in place for audit. `v_active_temp_admins` excludes revoked rows. |
 
-Permanent `admins` rows are never deleted by this feature — the
-table stays immutable so "who was admin on date Y" stays
-answerable forever.
+This feature never deletes permanent `admins` rows. The table stays
+immutable, so "who was admin on date Y" stays answerable forever.
 
 ### `query_templates`
 
-Saved `/sql` queries a user can reload into the modal (migration 038).
+Saved `/sql` queries that a user can reload into the modal (migration 038).
 
 | Column | Notes |
 |--------|-------|
@@ -810,49 +831,51 @@ Saved `/sql` queries a user can reload into the modal (migration 038).
 | `name`, `description` | Label + optional blurb. `name` 1–64 chars (CHECK). |
 | `query`, `target_server_id`, `database_name` | The saved payload. `target_server_id` FK ON DELETE SET NULL (template survives a target removal). |
 | `owner_slack_id` | Owner. CHECK pattern `^[UW][A-Z0-9]{8,}$`. |
-| `is_shared` | TRUE = visible to the whole workspace; FALSE = owner-only. Two partial indexes (owner / shared) back the listing. |
+| `is_shared` | TRUE = visible to the whole workspace. FALSE = owner-only. Two partial indexes (owner / shared) serve the listing. |
 | `created_at`, `updated_at`, `last_used_at`, `use_count` | Lifecycle + usage stats. |
 
 ### `query_favorites`
 
-Per-user starred queries (migration 049) — a lighter, personal-only sibling
-of `query_templates`: no name, no sharing. Populated from the result-DM ⭐
-button or the /sql modal's "favorite this" checkbox; surfaced in a modal
-favorites picker (same prefill mechanism as templates/history).
+Per-user starred queries (migration 049): a lighter, personal-only sibling
+of `query_templates`, with no name and no sharing. Rows come from the result-DM
+⭐ button or the /sql modal's "favorite this" checkbox. A favorites picker in
+the modal shows them (same prefill mechanism as templates/history).
 
 | Column | Notes |
 |--------|-------|
 | `id` | BIGSERIAL. |
 | `slack_user_id` | Owner. CHECK pattern `^[UW][A-Z0-9]{8,}$`. |
 | `query`, `target_server_id`, `database_name` | The starred payload. `target_server_id` FK ON DELETE SET NULL. |
-| `label` | Optional; the picker falls back to a query preview. |
+| `label` | Optional. Without a label, the picker shows a query preview. |
 | `created_at`, `last_used_at`, `use_count` | Lifecycle + usage stats. |
 
 A unique index on `(slack_user_id, md5(query), COALESCE(target_server_id,-1),
-COALESCE(database_name,''))` dedupes re-stars into a `last_used_at` touch;
-`favorites.add()` trims each user back to `MAX_PER_USER` (50), least-recently-used
-dropped.
+COALESCE(database_name,''))` dedupes re-stars into a `last_used_at` touch.
+`favorites.add()` keeps at most `MAX_PER_USER` (50) favorites per user. It
+drops the least-recently-used ones.
 
 ### `submission_failures`
 
-Forensic log of modal submissions the bot rejected at validation (migration
-042). Append-only, admin-only — **not** read by any `p_metrics_*` view or the
-dashboard. Indexed by `(slack_user_id, created_at DESC)`.
+Forensic log of modal submissions that the bot rejected at validation
+(migration 042). Append-only and admin-only. It is **not** read by any
+`p_metrics_*` view or the dashboard. Indexed by
+`(slack_user_id, created_at DESC)`.
 
 | Column | Notes |
 |--------|-------|
 | `id`, `created_at` | PK + when. |
-| `slack_user_id`, `slack_user_name` | Who hit the wall. |
+| `slack_user_id`, `slack_user_name` | Who submitted the rejected attempt. |
 | `mode` | `'single'` or `'batch'`. |
 | `target_server_id`, `database_name`, `query` | Best-effort snapshot of the rejected attempt (NULL when unparseable). |
-| `errors` | `jsonb` — `{block_id: message, ...}`, the field-level errors returned to the modal. |
+| `errors` | `jsonb` — `{block_id: message, ...}`, the field-level errors that the bot returned to the modal. |
 
 ### `pii_column_patterns`
 
-Column-NAME catalog for PII masking (migration 043) — the only way to mask
-free-text PII (name / address) the content scanner can't detect by value. A
-result column whose name matches a row here is masked by `pii_type` WITHOUT a
-content re-check. Read once per result set in `pii.column_pii_map()`.
+Column-NAME catalog for PII masking (migration 043). It is the only way to
+mask free-text PII (name / address) that the content scanner can't detect by
+value. If a result column's name matches a row here, the bot masks the column
+by `pii_type`, WITHOUT a content re-check. `pii.column_pii_map()` reads the
+catalog once per result set.
 
 | Column | Notes |
 |--------|-------|
@@ -864,57 +887,58 @@ content re-check. Read once per result set in `pii.column_pii_map()`.
 | `notes`, `created_at` | Audit. UNIQUE `(pattern, match_type)`. |
 
 > **Known limitation:** name/address masking is column-name-based only. A query
-> that aliases or wraps such a column (`SELECT full_name AS x`) bypasses it —
-> there is no content detector for names. Content-detectable PII
+> that aliases or wraps such a column (`SELECT full_name AS x`) bypasses it.
+> There is no content detector for names. Content-detectable PII
 > (email/phone/TCKN/VKN/IBAN/card) is **not** bypassable this way: the content
-> layer scans every non-catalog cell. Keep name/address columns out of reach via
-> the grant model, not masking.
+> layer scans every non-catalog cell. Use the grant model, not masking, to keep
+> name/address columns out of reach.
 
 ### `pii_masking_exemptions`
 
-Scoped opt-outs from PII masking (migration 050) — for data that is public
-record (e.g. an OpenSanctions mirror), where masking person names is
-technically correct but business-wise wrong. NULL scope columns are wildcards;
-the four usable shapes:
+Scoped opt-outs from PII masking (migration 050). They are for data that is
+public record (e.g. an OpenSanctions mirror). For such data, masking person
+names is technically right but wrong for the business. NULL scope columns are
+wildcards. The four usable shapes:
 
 | Scope | Row shape | Effect |
 |-------|-----------|--------|
 | target | `(target, NULL, NULL, NULL)` | all masking off for the whole target |
 | database | `(target, db, NULL, NULL)` | all masking off for that database |
-| table | `(target, db, table, NULL)` | masking off only when the query references **only** exempt tables — a join with any non-exempt table keeps masking ON (sqlglot table extraction, CTE aliases excluded; unparseable SQL = no exemption, fail-closed) |
-| column | `(target, db, table-or-NULL, column)` | the named result column passes through unmasked (catalog + content scan both skipped); a table-scoped column row additionally requires the only-that-table condition |
+| table | `(target, db, table, NULL)` | masking off only when the query references **only** exempt tables. A join with any non-exempt table keeps masking ON (sqlglot table extraction, CTE aliases excluded). Unparseable SQL = no exemption (fail-closed). |
+| column | `(target, db, table-or-NULL, column)` | the named result column stays unmasked (catalog + content scan both skipped). A table-scoped column row also requires the only-that-table condition. |
 
-Resolved per statement in `pii.exemption_decision()` — runtime-effective, no
-restart. Every exempted execution writes a `pii_masking_exempted` audit row and
-the requester DM carries an `:unlock:` note, so the forensic trail survives.
-`enabled` is a soft off-switch; UNIQUE on the COALESCEd scope quadruple keeps
-re-inserts idempotent.
+`pii.exemption_decision()` resolves the exemptions per statement. This is
+runtime-effective, with no restart. Every exempted execution writes a
+`pii_masking_exempted` audit row, and the requester DM carries an `:unlock:`
+note. So the forensic trail survives. `enabled` is a soft off-switch. UNIQUE
+on the COALESCEd scope quadruple keeps re-inserts idempotent.
 
 ### `import_grants`
 
 Per-user CSV-import allowlist (migration 046). Admins bypass this table
-entirely (same as the RW/DDL grant path) — a row is only needed for a
-non-admin importer. `slack_user_id` is the PK; `granted_by` / `granted_at` /
-`reason` are audit.
+entirely (same as the RW/DDL grant path). Only a non-admin importer needs a
+row. `slack_user_id` is the PK. `granted_by` / `granted_at` / `reason` are
+audit.
 
 ### `csv_imports`
 
-One row per `/sql import` submission — the import-side analogue of `requests`
-(migration 046; `column_defs` added in 047). The target schema is **always**
-`dba` (the `table_name` column is unqualified and the schema is pinned in code).
+One row per `/sql import` submission: the import-side analogue of `requests`
+(migration 046, with `column_defs` added in 047). The target schema is
+**always** `dba`. The `table_name` column is unqualified, and the code pins
+the schema.
 
 | Column | Notes |
 |--------|-------|
 | `id` | BIGSERIAL, shown as `#42`. |
 | `requester_slack_id`, `requester_name` | Who submitted. |
-| `target_server_id`, `database_name`, `table_name` | Destination. `table_name` is a normalized single identifier; schema is hard-pinned to `dba`. |
-| `is_new_table` | TRUE = CREATE then COPY; FALSE = COPY into an existing `dba.*` table. |
-| `unlogged` | New-table only: create UNLOGGED (default TRUE) for load speed; user can pick permanent. |
+| `target_server_id`, `database_name`, `table_name` | Destination. `table_name` is a normalized single identifier. The schema is fixed to `dba`. |
+| `is_new_table` | TRUE = CREATE then COPY. FALSE = COPY into an existing `dba.*` table. |
+| `unlogged` | New-table only: create UNLOGGED (default TRUE) for load speed. The user can pick permanent. |
 | `delimiter` | `,` / `;` / tab. |
 | `columns` | `jsonb` — normalized CSV header (the COPY column list when `column_defs` is NULL). |
-| `column_defs` | `jsonb` `[{name,type}]` — user-supplied typed schema for a new table; types are allow-list validated. NULL = all-TEXT (migration 047). |
+| `column_defs` | `jsonb` `[{name,type}]` — user-supplied typed schema for a new table. The types are checked against an allow-list. NULL = all-TEXT (migration 047). |
 | `row_count`, `byte_size` | Parsed CSV stats. `inserted_rows` = rows actually COPYed. |
-| `csv_file_path`, `slack_file_id` | Local copy + Slack file id; purged after `import_csv_ttl_hours`. |
+| `csv_file_path`, `slack_file_id` | Local copy + Slack file id. Both are purged after `import_csv_ttl_hours`. |
 | `status` | CHECK `pending｜approved｜executing｜completed｜failed｜rejected`. |
 | `decided_by_slack_id`, `decided_by_name`, `decided_at`, `decision_reason` | Approver details. |
 | `error_message` | Filled on failure. |
@@ -923,32 +947,38 @@ One row per `/sql import` submission — the import-side analogue of `requests`
 
 ### `import_notifications`
 
-Per-(import, admin) admin-DM anchors — the import-side analogue of
+Per-(import, admin) admin-DM anchors: the import-side analogue of
 `request_notifications`, so an approve/reject `chat.update`s every admin's copy
-in lockstep. `import_id` FK ON DELETE CASCADE; `(admin_slack_id, channel_id,
+at the same time. `import_id` FK ON DELETE CASCADE. `(admin_slack_id, channel_id,
 message_ts)` carry the `chat.update` coordinates.
 
 ---
 
 ## Web surface, identity and schema cache
 
-These arrived with the web UI, local accounts and the schema browser, and were
-missing from this document.
+These tables arrived with the web UI, local accounts and the schema browser.
+This document did not list them before.
 
 ### `web_sessions`
 
-One row per sign-in (migration 061). Holds the hashed refresh token, the
-previous hash (single-use rotation with reuse detection, migration 062), the
-principal, the auth provider and `expires_at` / `revoked_at`. Access tokens are
-short-lived and stateless; this table is what makes revocation immediate.
-Expired and revoked rows are purged by the retention job
+One row per sign-in (migration 061). Each row holds:
+
+- the hashed refresh token
+- the previous hash (single-use rotation with reuse detection, migration 062)
+- the principal
+- the auth provider
+- `expires_at` / `revoked_at`
+
+Access tokens are short-lived and stateless. This table makes revocation
+immediate. The retention job purges expired and revoked rows
 (`auth_session_retention_days`, default 7).
 
 ### `web_saved_sessions`
 
-Named workspaces a user chose to sync server-side (migration 064) — open tabs
-and their SQL. Distinct from `web_sessions`: user content, not auth. Purged
-after `web_session_retention_days` (default 30) without a touch.
+Named workspaces that a user chose to sync server-side (migration 064): open
+tabs and their SQL. Distinct from `web_sessions`: user content, not auth. A
+workspace is purged after `web_session_retention_days` (default 30) without a
+touch.
 
 ### `web_notification_reads`
 
@@ -958,72 +988,85 @@ unread state survives a reload and follows the user across devices.
 ### `local_users`
 
 Username/password accounts for the vanilla profile (migration 075). Passwords
-are PBKDF2-HMAC-SHA256, salted and versioned — never reversible.
-`must_change_pw` forces a reset before the account can run anything; `enabled`
-is checked on every request, so disabling locks the account out at once. These
-identities appear elsewhere as `local:<username>`, a namespace disjoint from
-Slack ids.
+are PBKDF2-HMAC-SHA256, salted and versioned, and never reversible.
+`must_change_pw` forces a reset before the account can run anything. `enabled`
+is checked on every request, so if you disable an account, it is blocked at
+once. These identities appear elsewhere as `local:<username>`, a namespace
+disjoint from Slack ids.
 
 ### `auth_event_outbox`
 
-Transactional outbox for authorization changes (migration 060). Triggers on the
-authorization tables append a row inside the same transaction as the
-grant/revoke, and a poller turns rows into DMs — so a change made by ANY path,
-including direct SQL, still notifies the affected user. `processed_at` marks
-completion; `attempts` / `last_error` bound retries. The Slack process runs the
-poller, and so does the web process in the vanilla profile; processed rows are
-trimmed after `auth_outbox_retention_days` (default 14).
+Transactional outbox for authorization changes (migration 060). Triggers on
+the authorization tables append a row inside the same transaction as the
+grant/revoke. A poller converts the rows into DMs. So a change made by ANY
+path, including direct SQL, still notifies the affected user.
+
+`processed_at` marks completion. `attempts` / `last_error` bound retries. The
+Slack process runs the poller, and so does the web process in the vanilla
+profile. Processed rows are trimmed after `auth_outbox_retention_days`
+(default 14).
 
 ### `idp_assertion_jti`
 
-Replay ledger for identity assertions from a trusted portal (migration 101, AUTH.md
-§1.2): one row per accepted `jti`, kept until its token's expiry plus
-`idp_clock_skew_seconds`. The primary key is what refuses a replay; each insert
-prunes the expired rows, so there is no sweep job.
+Replay ledger for identity assertions from a trusted portal (migration 101,
+AUTH.md §1.2). It holds one row per accepted `jti`, kept until its token's
+expiry plus `idp_clock_skew_seconds`. The primary key refuses a replay. Each
+insert prunes the expired rows, so there is no sweep job.
 
 ### `notification_outbox`
 
-One row per pending request and the admins notified about it (migration 102):
-`event_type`, `request_id`, `recipients`, `payload`, `processed_at`. Written next
-to the Slack DMs, never instead of them, and only while `idp_outbox_enabled` is
-on (migration 136); read and acknowledged through two routes gated to the sync
-principal, so a portal can render an approvals queue without owning an admins
-table of its own. The daily cleanup deletes rows older than
-`idp_outbox_retention_days`.
+One row per pending request and the admins notified about it (migration
+102): `event_type`, `request_id`, `recipients`, `payload`, `processed_at`. The
+bot writes these rows next to the Slack DMs, never instead of them. It writes
+them only while `idp_outbox_enabled` is on (migration 136).
+
+Two routes gated to the sync principal read and acknowledge the rows. So a
+portal can render an approvals queue without owning an admins table of its
+own. The daily cleanup deletes rows older than `idp_outbox_retention_days`.
 
 ### `idp_sync_hold`
 
-One row per distinct list of people a portal sync wanted to disable and was held
-for (migration 138, AUTH.md §1.2): `would_disable` (sorted Slack ids),
-`limit_at_hold`, `status` (`pending`, `approved`, `rejected`, `superseded`),
-`decided_by_slack_id`, `decided_at`, `applied_at` and `cards` (where each
-super-admin's card was posted, so one decision closes the others). An approval is
-usable once, for 24 hours, by a run whose disable list lies inside
-`would_disable`. Rows are written only when a run exceeds `idp_sync_max_disable`,
-so the table stays small.
+One row per distinct list of people that a portal sync wanted to disable and
+was held for (migration 138, AUTH.md §1.2). The columns:
+
+- `would_disable` (sorted Slack ids)
+- `limit_at_hold`
+- `status` (`pending`, `approved`, `rejected`, `superseded`)
+- `decided_by_slack_id`, `decided_at`, `applied_at`
+- `cards`: where each super-admin's card was posted, so one decision closes
+  the others
+
+An approval is usable once, for 24 hours, by a run whose disable list lies
+inside `would_disable`. Rows are written only when a run exceeds
+`idp_sync_max_disable`, so the table stays small.
 
 ### `schema_tables` / `schema_columns`
 
-Hourly snapshot of every reachable target schema, backing `/sql tables`,
-`/sql schema`, `/sql findcol` and the web schema browser. A cache, not a source
-of truth: it is rewritten wholesale by the sync, so it can lag a DDL change by
+Hourly snapshot of every reachable target schema. It serves `/sql tables`,
+`/sql schema`, `/sql findcol` and the web schema browser. It is a cache, not a
+source of truth. The sync rewrites it wholesale, so it can lag a DDL change by
 up to an hour.
 
 ### `user_row_limit_overrides`
 
-Time-bounded per-user raises of the row/size caps (migration 059), so a one-off
-large export does not require changing the fleet default. Expired rows simply
-stop applying.
+Time-bounded per-user raises of the row/size caps (migration 059). With them,
+a one-off large export does not require a change to the fleet default. Expired
+rows stop applying.
 
 ### `pod`
 
-One row per pod (migration 104): `slug` (stable code), `name` (display name and
-the key — it is the one identifier every upstream source shares, and a brand-new
-pod may have no slug yet), `org`, `product`, `kanban_board`, `plan_boards`,
-`open_work`, `member_count`, `lead_name`. Loaded as a full-refresh snapshot by an
-external collector, so `loaded_at` is uniform across a load and says how stale
-it is. Nothing in the bot reads these tables yet; they are the seed of the
-team-based access model.
+One row per pod (migration 104). The columns:
+
+- `slug` (stable code)
+- `name`: the human-readable name and the key. It is the one identifier that
+  every upstream source shares, and a brand-new pod may have no slug yet.
+- `org`, `product`
+- `kanban_board`, `plan_boards`, `open_work`
+- `member_count`, `lead_name`
+
+An external collector loads it as a full-refresh snapshot. So `loaded_at` is
+uniform across a load and says how stale the snapshot is. Nothing in the bot
+reads these tables yet. They are the seed of the team-based access model.
 
 ### `pod_detail`
 
@@ -1032,24 +1075,28 @@ One row per (pod, person): `pod_name` → `pod.name`, `person_name`, `email`,
 
 ### `pod_mapping`
 
-One row per (service, database dependency, environment): `pod_slug`,
-`service_name`, `rds_endpoint` when the dependency names a real host,
-`pod_source` (how the owner was attributed — the portal, a same-repo or
-same-system guess, the catalog, or `unknown`), `cloud`, `environment`,
-`endpoint_status`. No foreign key to `pod` on purpose: the portal owns pods that
-carry services but no people.
+One row per (service, database dependency, environment). The columns:
+
+- `pod_slug`, `service_name`
+- `rds_endpoint`, when the dependency names a real host
+- `pod_source`: how the owner was attributed (the portal, a same-repo or
+  same-system guess, the catalog, or `unknown`)
+- `cloud`, `environment`, `endpoint_status`
+
+There is no foreign key to `pod`, on purpose: the portal owns pods that carry
+services but no people.
 
 ### `mssql_host_map`
 
-Per-target SQL Server node map used for read routing: which host serves reads
-for an Availability Group, so RO queries can reach a readable secondary without
-depending on the listener's redirect.
+A SQL Server node map per target, used for read routing. It records which
+host serves reads for an Availability Group. So RO queries can reach a
+readable secondary and do not depend on the listener's redirect.
 
 ### `schema_migrations`
 
-The migration ledger: one row per applied file with its sha256 checksum, so a
-re-run is a no-op and a file edited after being applied is detected instead of
-silently diverging.
+The migration ledger: one row per applied file, with its sha256 checksum. So
+a re-run is a no-op. If someone edits a file after it was applied, the changed
+checksum shows the edit. So the file does not diverge silently.
 
 ---
 
@@ -1058,44 +1105,44 @@ silently diverging.
 Two namespaces:
 
 - `v_*` — operational / debugging views (team summaries, user grants).
-- `p_metrics_*` — product KPIs. Read-only aggregations; safe to expose
-  to anyone with read access on the bot DB. Numeric / text config
-  values are pulled from `bot_config` via the helpers
+- `p_metrics_*` — product KPIs. Read-only aggregations, safe to expose
+  to anyone with read access on the bot DB. The helpers
   `p_metrics_cfg_num(key, default)` and `p_metrics_cfg_text(key, default)`
-  so the views stay live without redeploys.
+  read numeric / text config values from `bot_config`. So the views stay
+  live without redeploys.
 
 ### Operational
 
 | View | What it shows |
 |------|---------------|
 | `v_team_summary` | Per-team: id, name, description, member count, grant count, created_at. |
-| `v_user_targets` | For every (Slack user, target) pair the user can reach via team membership + grant: alias, host, default database, per-team `allowed_databases`. |
-| `v_effective_user_grants` | Resolved (user, target, mode, allowed_databases) the bot uses at runtime. `source` column tells you whether the row came from a `user_target_grants` override or aggregated team grants. |
-| `v_active_auto_approve` | One row per currently-active auto-approve grant (`NOW()` inside `[starts_at, expires_at)`). Multiple rows per user possible; readers should pick the highest `max_tier` when summarising. |
-| `v_active_temp_admins` | One row per currently-active temp admin grant. Filters out rows where `revoked_at` is set. Backs `admins.is_admin` / `can_approve` / `list_active` extensions. |
-| `requests_reportable` / `audit_log_reportable` / `request_ratings_reportable` | Filtered wrappers around the base tables that drop rows touched by `report_excluded_users`. The `p_metrics_*` views read from these instead of the raw base tables, so excluding a user from reports is a single INSERT. |
+| `v_user_targets` | For every (Slack user, target) pair that the user can reach through team membership + grant: alias, host, default database, per-team `allowed_databases`. |
+| `v_effective_user_grants` | Resolved (user, target, mode, allowed_databases) that the bot uses at runtime. The `source` column tells you whether the row came from a `user_target_grants` override or from aggregated team grants. |
+| `v_active_auto_approve` | One row per currently-active auto-approve grant (`NOW()` inside `[starts_at, expires_at)`). Multiple rows per user are possible. Readers should pick the highest `max_tier` when summarising. |
+| `v_active_temp_admins` | One row per temp admin grant that is active now. It excludes rows where `revoked_at` is set. It serves the `admins.is_admin` / `can_approve` / `list_active` extensions. |
+| `requests_reportable` / `audit_log_reportable` / `request_ratings_reportable` | Filtered wrappers around the base tables. They drop rows touched by `report_excluded_users`. The `p_metrics_*` views read from these wrappers instead of the raw base tables. So a single INSERT excludes a user from reports. |
 
 ### Product metrics
 
 | View | What it shows |
 |------|---------------|
-| `p_metrics_cost_savings` | Rolling cost-savings estimate. Uses `cost_dba_minutes_per_request`, `cost_dba_hourly_usd`, `cost_avoided_replicas`, `cost_per_replica_monthly_usd`, `cost_other_monthly_usd`. |
-| `p_metrics_volume_daily` / `_weekly` / `_monthly` | Request counts bucketed by `created_at`, broken down by terminal status. |
-| `p_metrics_usage_daily` | Single daily-usage feed for dashboards: submitted + per-status counts (incl. `awaiting_dba_manual` + scheduled), active_users, distinct targets touched, total rows returned, mean/p95 execution latency, mean approval latency, and any `metric_annotations` from that day. |
+| `p_metrics_cost_savings` | Rolling cost-savings estimate. It uses `cost_dba_minutes_per_request`, `cost_dba_hourly_usd`, `cost_avoided_replicas`, `cost_per_replica_monthly_usd`, `cost_other_monthly_usd`. |
+| `p_metrics_volume_daily` / `_weekly` / `_monthly` | Request counts bucketed by `created_at` and split by terminal status. |
+| `p_metrics_usage_daily` | Single daily-usage feed for dashboards. It holds submitted + per-status counts (incl. `awaiting_dba_manual` + scheduled), active_users, distinct targets touched and total rows returned. It also holds mean/p95 execution latency, mean approval latency, and any `metric_annotations` from that day. |
 | `p_metrics_team_usage` | Per-team request volume + tier mix. |
 | `p_metrics_top_users` | Top requesters by volume (last 90 days). |
 | `p_metrics_scheduled_usage` | How often the scheduling feature is actually used (scheduled vs immediate, cancellation rate). |
 | `p_metrics_tier_distribution` | RO vs RW vs DDL submission mix. |
 | `p_metrics_failure_breakdown` | Failed requests grouped by error class. |
 | `p_metrics_admin_workload` | Decisions per admin, median time-to-decision. |
-| `p_metrics_target_heatmap` | (target, day) request volume — surfaces hot targets. |
+| `p_metrics_target_heatmap` | (target, day) request volume. It shows hot targets. |
 | `p_metrics_peak_hours` | Hour-of-day distribution in `report_timezone`. |
 | `p_metrics_business_vs_offhours` | Share of requests in / out of business hours. |
 | `p_metrics_approval_sla` | Time-to-approval percentiles. |
 | `p_metrics_rating_weekly` | Weekly rating rollup: n, avg, low (≤2), high (≥4), with_feedback. |
 | `p_metrics_rating_response_rate` | Of all terminal-state requests, what fraction got a rating. |
 | `p_metrics_rating_low_with_feedback` | Drill-down on 1-2 ratings with the original query preview. |
-| `p_metrics_who_can_what` | One row per enabled person with `is_admin` (an admin or approver role, + `admin_max_tier` / `admin_scope_*`), `is_bypass`, `teams[]` (pods), `user_grants[]` (direct `access_grant` rows). Read from the access model since migration 135. Powers `/sql whoami`, `/sql roles` and both dashboards. |
+| `p_metrics_who_can_what` | One row per enabled person with `is_admin` (an admin or approver role, + `admin_max_tier` / `admin_scope_*`), `is_bypass`, `teams[]` (pods), `user_grants[]` (direct `access_grant` rows). Read from the access model since migration 135. It serves `/sql whoami`, `/sql roles` and both dashboards. |
 
 ---
 
@@ -1116,22 +1163,22 @@ pending → approved   → executing → completed | failed
                                           (via admin [Mark completed] / [Mark failed])
 ```
 
-- `approved` (immediate): admin clicks Approve and `scheduled_for` is NULL or in the past → handler dispatches to executor right away.
-- `scheduled`: admin clicks Approve and `scheduled_for` is in the future. The bot's scheduler thread polls every 60s, picks up rows whose time is due, flips them to `executing`, and dispatches.
-- `cancelled`: requester or admin clicks [Cancel] on the scheduled DM before it runs. The scheduler will skip rows in this state (it only matches `status='scheduled'`).
+- `approved` (immediate): admin clicks Approve and `scheduled_for` is NULL or in the past → the handler dispatches to the executor right away.
+- `scheduled`: admin clicks Approve and `scheduled_for` is in the future. The bot's scheduler thread polls every 60s. It selects rows whose time is due, sets them to `executing`, and dispatches them.
+- `cancelled`: requester or admin clicks [Cancel] on the scheduled DM before it runs. The scheduler skips rows in this state (it only matches `status='scheduled'`).
 - `rejected` / `changes_requested`: admin chose those buttons.
-- `awaiting_dba_manual`: executor hit Postgres `InsufficientPrivilege` (SQLSTATE 42501) on a DDL statement — typically because the bot's DDL role doesn't own the object. The request parks here; a DBA runs the change out-of-band and closes the request from Slack using [Mark completed] or [Mark failed].
+- `awaiting_dba_manual`: the executor hit Postgres `InsufficientPrivilege` (SQLSTATE 42501) on a DDL statement. The typical cause: the bot's DDL role does not own the object. The request waits in this status. A DBA runs the change out-of-band and closes the request from Slack with [Mark completed] or [Mark failed].
 
-Auto-approved requests skip the `pending` step entirely — they
-INSERT with `status='approved'` (or `'scheduled'`) directly,
-`decided_by_slack_id='AUTO'`, and `audit_log` carries both a
-`submitted` row and an `auto_approved` row.
+Auto-approved requests skip the `pending` step entirely. They INSERT
+directly with `status='approved'` (or `'scheduled'`) and
+`decided_by_slack_id='AUTO'`. `audit_log` carries both a `submitted` row and
+an `auto_approved` row.
 
 ### `bundle_status`
 
-Rollup of the per-item statuses in a `/sql batch` submission.
-Maintained automatically by the AFTER UPDATE trigger on
-`requests.status` (`trg_recompute_bundle_status`):
+Rollup of the per-item statuses in a `/sql batch` submission. The AFTER
+UPDATE trigger on `requests.status` (`trg_recompute_bundle_status`) maintains
+it automatically:
 
 ```
 pending   → any item still pending / approved / scheduled /
@@ -1143,19 +1190,18 @@ decided   → every item terminal AND no negative outcomes
 cancelled → every item cancelled
 ```
 
-The trigger uses `pg_advisory_xact_lock(bundle_id)` to serialise
-concurrent recomputes so two items finishing at the same moment
-can't both see "sibling still executing" and leave the bundle
-stuck at `pending`.
+The trigger uses `pg_advisory_xact_lock(bundle_id)` to serialise concurrent
+recomputes. So two items that finish at the same moment cannot both see
+"sibling still executing" and leave the bundle stuck at `pending`.
 
 ---
 
 ## Indexes worth knowing about
 
-- `idx_requests_pending` — partial on `status IN (pending, approved, executing)`. Speeds up the "what's outstanding" admin views.
-- `idx_requests_pending_cleanup` — partial on `slack_file_id IS NOT NULL`. Speeds up the cleanup script's "find expired uploads" query.
-- `uq_access_requests_pending` — unique partial on `(requester, target, md5(query)) WHERE status = 'pending'`. Enforces the "one pending per (user, target, query)" rule without blocking re-requests after a decision.
-- `idx_team_target_grants_target` — looks up "which teams reach this target".
+- `idx_requests_pending` — partial on `status IN (pending, approved, executing)`. It makes the "what's outstanding" admin views faster.
+- `idx_requests_pending_cleanup` — partial on `slack_file_id IS NOT NULL`. It makes the cleanup script's "find expired uploads" query faster.
+- `uq_access_requests_pending` — unique partial on `(requester, target, md5(query)) WHERE status = 'pending'`. It enforces the "one pending per (user, target, query)" rule, but does not block re-requests after a decision.
+- `idx_team_target_grants_target` — serves the lookup "which teams reach this target".
 - `idx_requesters_enabled` — fast allowlist check on every `/sql`.
 
 ---

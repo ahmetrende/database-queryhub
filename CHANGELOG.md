@@ -11,22 +11,23 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [1.0.34] — 2026-10-05
 
-The web editor undoes every edit and expands `*` to exactly the columns a
-statement reads, quoting reserved words. A table the catalog does not list,
-such as a partition, is read live from the target. A super-admin can choose
-where one query runs, a grant can carry auto-approve, and a deleted instance
-shows as deleted. The trusted-portal seam is ready, and a sync that would
-disable many people waits for a super-admin. Patch bump.
+The web editor undoes every edit, expands `*` to exactly the columns a
+statement reads, and quotes reserved words. For a table that the catalog does
+not list, such as a partition, QueryHub reads its columns live from the
+target. A super-admin can choose where one query runs, a grant can carry
+auto-approve, and a deleted instance shows as deleted. The trusted-portal seam
+is ready, and a sync that would disable many people waits for a super-admin.
+Patch bump.
 
 ### Upgrading
 
 - **Run `scripts/apply_migrations.py`.** It applies 132–140.
-- **`WEB_SESSION_SECRET` must be at least 32 bytes when set,** or the web
-  process does not start. Unset, the key is derived from the master key, as
-  before.
-- **An unreadable `secrets.enc` stops the process.** It used to fall back to
-  the plaintext environment; `QH_SECRETS_PLAINTEXT_FALLBACK=1` allows that on
-  purpose.
+- **`WEB_SESSION_SECRET` must be at least 32 bytes when you set it,** or the
+  web process does not start. If you do not set it, QueryHub derives the key
+  from the master key, as before.
+- **An unreadable `secrets.enc` stops the process.** It used to read the
+  plaintext environment instead. `QH_SECRETS_PLAINTEXT_FALLBACK=1` allows that
+  on purpose.
 - **New `bot_config` keys:** `web_slack_team_id`, `target_ssl_verify_hosts`,
   `target_ssl_verify_exempt_hosts`, `web_employment_grace_hours`,
   `idp_clock_skew_seconds`, `idp_outbox_enabled`, `idp_outbox_retention_days`,
@@ -41,305 +42,333 @@ disable many people waits for a super-admin. Patch bump.
 
 - **A grant can carry auto-approve, in the same transaction.** The web grant
   form has an Auto-approve box with a tier (RO by default, never above the
-  grant's tier, never DDL); `/sql grant` has an "Auto-approve read-only
+  grant's tier, never DDL). `/sql grant` has an "Auto-approve read-only
   queries" box. `POST /admin/grants` takes `autoApprove` / `autoApproveTier`.
-  - One waiver per granted database, with the grant's expiry. A waiver that
-    fails to write rolls the grant back.
-  - A waiver the subject already holds, equal or broader, is not written
-    again. The response (`autoApprove`), the toast and the Slack summary name
-    the one that covers it.
+  - QueryHub writes one waiver per granted database, with the grant's expiry.
+    If a waiver fails to write, QueryHub reverts the grant.
+  - QueryHub does not write a waiver when the subject already holds an equal
+    or broader one. The response (`autoApprove`), the toast and the Slack
+    summary name the held waiver that covers the grant.
   - A person's waiver goes to `auto_approve_grants` (the migration-109 mirror
-    projects it); a team's is an `access_grant` row in the grant's transaction.
+    projects it). A team's waiver is an `access_grant` row in the grant's
+    transaction.
 
 - **A super-admin can choose where one query runs:** Auto (as before), the
   primary, or a named read replica (`runOn` on `POST /queries`, migration 137).
   See OPERATIONS.md §26.
   - A chosen replica skips the automatic rules. If it cannot run the query,
-    the request fails and says why; it never falls back to the primary.
-  - Each honoured choice is audited (`execution_run_on_forced`). The status
-    poll and history rows say where a query ran (`ranOn`).
-  - A scheduled request keeps the choice, and now keeps `unmasked` too: the
-    scheduler dropped it, so a scheduled unmasked result came back masked.
+    the request fails and says why. The request never runs on the primary
+    instead.
+  - QueryHub audits each honoured choice (`execution_run_on_forced`). The
+    status poll and history rows say where a query ran (`ranOn`).
+  - A scheduled request keeps the choice, and now keeps `unmasked` too. The
+    scheduler used to drop it, so a scheduled unmasked result arrived masked.
 - **An Athena approver sees how far the archive reaches.** The hint adds
   "Archive complete up to <date> UTC", with any known gaps, or "Archive coverage
-  unknown". It comes from the marker the archive writes
-  (`engine_config.freshness_marker`); see docs/CONFIGURATION.md.
+  unknown". It comes from the marker that the archive writes
+  (`engine_config.freshness_marker`). See docs/CONFIGURATION.md.
   - The hourly catalog refresh reads it, for enabled and disabled targets, and
     stores the verdict in `target_servers.archive_freshness` (migration 140).
-  - A marker not rewritten within `athena_freshness_stale_hours` (36) adds a
-    warning.
-  - A marker that cannot be read in full says unknown, never complete.
+  - If the archive does not rewrite the marker within
+    `athena_freshness_stale_hours` (36), the hint adds a warning.
+  - If QueryHub cannot read the whole marker, the hint says unknown, never
+    complete.
 
 ### Changed
 
-- **Auto-approve is offered only where the subject can already query.** A
-  waiver skips review; it grants no access. One written elsewhere decided
-  nothing until the day access arrived, already approved.
-  - The Auto-approve form lists nothing until a person or team is picked, then
-    only the connections and databases they reach, with the tier capped at
-    what they hold there.
-  - `POST /admin/auto-grants` and `/auto-grants/bulk` refuse, by name, a
-    target they cannot query and a tier above theirs (`409`, nothing written).
-    Each refusal carries `connectionId` / `databaseId`, so the form marks the
-    row it came from.
+- **QueryHub offers auto-approve only where the subject can already query.**
+  A waiver skips review. It grants no access. A waiver written anywhere else
+  did nothing until the subject got access there. On that day, the access
+  arrived already approved.
+  - The Auto-approve form lists nothing until you pick a person or team. Then
+    it lists only the connections and databases they reach, with the tier
+    capped at what they hold there.
+  - `POST /admin/auto-grants` and `/auto-grants/bulk` refuse a target that the
+    subject cannot query, and a tier above the one the subject holds. They
+    answer `409`, name what they refuse and write nothing. Each refusal carries
+    `connectionId` / `databaseId`, so the form marks the row that caused it.
   - A fleet-wide row reads "every server they can reach", not "all databases".
 
-- **A target whose instance was deleted shows as deleted and cannot be enabled.** It
-  looked like any other disabled target, and the admin screen offered to enable it.
-  Measured 2026-09-30: 26 of 68 disabled targets were deleted instances, every one
-  with an endpoint that no longer resolved.
-  - `target_servers.deleted_at` / `deleted_reason` (migration 139), with a CHECK that
-    forbids a deleted target that is enabled, so no path can enable one.
-  - The hourly inventory sync marks any target whose instance is gone, enabled or
-    not, and clears the mark (without enabling) if the endpoint comes back.
-  - The admin connection list shows them last, under their own heading, with no
-    controls. Enabling one answers `409 deleted`.
-  - Fixed: an endpoint with both a deleted and a live inventory row (an instance
-    recreated under the same name) was judged by whichever row came last, so a
-    live target could be disabled as deleted. The live row now wins.
+- **A target whose instance was deleted shows as deleted, and no one can
+  enable it.** It looked like any other disabled target, and the admin screen
+  offered to enable it. Measured 2026-09-30: 26 of 68 disabled targets were
+  deleted instances. Every one had an endpoint that no longer resolved.
+  - Migration 139 adds `target_servers.deleted_at` / `deleted_reason`, with a
+    CHECK that forbids a target that is both deleted and enabled. So no path
+    can enable a deleted target.
+  - The hourly inventory sync marks any target whose instance is gone, enabled
+    or not. If the endpoint returns, the sync clears the mark but does not
+    enable the target.
+  - The admin connection list shows deleted targets last, under their own
+    heading, with no controls. A request to enable one gets `409 deleted`.
+  - Fixed: an instance recreated under the same name gives its endpoint both a
+    deleted and a live inventory row. QueryHub judged such an endpoint by
+    whichever row came last, so it could disable a live target as deleted. The
+    live row now wins.
 
-- **A pod lead approves requests on their pod's servers from anyone.** The lead's
-  approver role used to require the request to come from their own pod as well,
-  so a person given access to another pod's database reached nobody but the
-  admins: 58 of 120 single-server personal grants, and 28 of 268 requests
-  decided in 30 days. `scripts/sync_team_approvers.py` now writes each
-  owned-server row for any requester (`all_teams`). The ceiling (RO by default)
-  and the rule that no one approves their own request are unchanged.
+- **A pod lead approves requests on their pod's servers from anyone.** The
+  lead's approver role used to require the request to come from the lead's own
+  pod as well. So a person with access to another pod's database reached no
+  approver except the admins. This applied to 58 of 120 single-server personal
+  grants, and to 28 of 268 requests decided in 30 days.
+  `scripts/sync_team_approvers.py` now writes each owned-server row for any
+  requester (`all_teams`). The ceiling (RO by default) and the rule that no one
+  approves their own request stay the same.
 
 - **The trusted-portal seam is ready for its first connection** (AUTH.md §1.2).
   Everything here is inert while `idp_assertion_enabled` is off.
-  - An assertion is accepted with up to `idp_clock_skew_seconds` (10) of
-    clock skew. It is refused when no email domain is configured, when it
-    lives longer than 120 s, and on a websocket.
-  - The reconcile has a dry run. It never disables an admin, a role holder
-    or the sync account.
-  - The reconcile and the outbox answer the sync principal only, which
-    needs no admin role.
-  - The notification outbox is written only while `idp_outbox_enabled` is on,
-    and the daily cleanup trims it.
+  - QueryHub accepts an assertion with up to `idp_clock_skew_seconds` (10) of
+    clock skew. It refuses an assertion when no email domain is configured or
+    when the assertion lives longer than 120 s. It also refuses any assertion
+    on a websocket.
+  - The reconcile has a dry run. It never disables an admin, a role holder or
+    the sync account.
+  - The reconcile and the outbox answer only the sync principal. That
+    principal needs no admin role.
+  - QueryHub writes the notification outbox only while `idp_outbox_enabled` is
+    on. The daily cleanup trims it.
 - **A portal sync that would disable more than five requesters waits for a
-  super-admin.** The reconcile disables everyone the panel's list leaves out, so
-  a wrong list (a role not yet granted) would lock that many people out of Slack,
-  the web and MCP within one tick. Such a run now changes nothing and answers
-  `409 approval_required`, and every super-admin gets one Slack card asking
+  super-admin.** The reconcile disables everyone who is not on the panel's
+  list. So a wrong list would block that many people from Slack, the web and
+  MCP within one tick. For example, the list is wrong when a role is not
+  granted yet. A run over the limit now changes nothing and answers
+  `409 approval_required`. Every super-admin gets one Slack card that asks
   whether they approve.
   - Approve covers those people, once, for 24 hours. Reject keeps the list
     blocked until it changes.
-  - The limit is `idp_sync_max_disable` (default 5, migration 138). Inert while
-    `idp_assertion_enabled` is off.
-- **The S3 metrics dashboard looks like the admin panel's Metrics view:** the
-  same typeface (inlined at build time, so the page stays one file), cards,
-  section labels and colours — RW is blue, rejected amber, as in the panel.
-  Status mixes are stacked bars, and the per-team, top-user and admin-workload
-  charts are the panel's labelled bars. The filters and every figure are
-  unchanged.
+  - The limit is `idp_sync_max_disable` (default 5, migration 138). All of this
+    is inert while `idp_assertion_enabled` is off.
+- **The S3 metrics dashboard matches the admin panel's Metrics view:** the
+  same typeface, cards, section labels and colours. The build inlines the
+  typeface, so the page stays one file. As in the panel, RW is blue and
+  rejected is amber. Status mixes are stacked bars, and the per-team, top-user
+  and admin-workload charts are the panel's labelled bars. The filters and
+  every figure stay the same.
 - **A super-admin can end a session, run a mixed script and set
   `search_path`.** `pg_terminate_backend` / `pg_cancel_backend` ask first and
-  run as the elevated role; a script mixing tiers runs as one request at its
-  highest tier; `SET search_path` takes a list of schema names for the one
-  request. All three stay refused for everyone else. See OPERATIONS.md §25.
-- **ClickHouse `system` and `information_schema` tables are readable.**
-  Partition sizes, columns, running merges and the query log can be queried
-  on a ClickHouse target a requester holds a grant on; they were refused as
+  run as the elevated role. A script that mixes tiers runs as one request at
+  its highest tier. `SET search_path` takes a list of schema names for the one
+  request. QueryHub still refuses all three for everyone else. See
+  OPERATIONS.md §25.
+- **ClickHouse `system` and `information_schema` tables are readable.** A
+  requester with a grant on a ClickHouse target can query its partition sizes,
+  columns, running merges and query log. Before, QueryHub refused them as
   server internals. Table functions stay default-deny.
-- **A statement the web refuses is recorded** in `submission_failures`, as
-  the Slack modal's already were, with the SQL (passwords masked) and the
-  reason. A confirmation prompt is not recorded.
+- **QueryHub records a statement that the web refuses** in
+  `submission_failures`, as it already did for the Slack modal's refusals. The
+  record holds the SQL (with passwords masked) and the reason. QueryHub does
+  not record a confirmation prompt.
 
 - **The MCP `describe_database` search picks its tables in SQL.** A loose
-  filter read every column of every matching table and kept 25. On the
-  largest catalogue here: 31,412 rows in 124 ms before, 353 in 4 ms now.
-- **An Excel download of a CSV result is converted once.** The workbook is
-  kept beside the result and removed with it.
+  filter used to read every column of every matching table and keep 25. On the
+  largest catalogue here, that read 31,412 rows in 124 ms. The search now reads
+  353 rows in 4 ms.
+- **An Excel download of a CSV result needs only one conversion.** QueryHub
+  keeps the workbook beside the result and deletes it with the result.
 - **The container image shows its build.** The build stamp was empty in the
   image, which has no `.git`. The release stamps the commit and version, and
   `QH_IMAGE_DIGEST` adds the image digest.
 
 - **Every admin screen stops at 1600 px on a wide monitor,** centred beside
-  the nav, and the approval queue's detail pane stops at 1120 px. This
-  replaces the Audit log's own 1480 px cap from 1.0.33. Nothing changes below
-  about 1860 px wide.
+  the nav. The approval queue's detail pane stops at 1120 px. This replaces the
+  Audit log's own 1480 px cap from 1.0.33. Nothing changes below about 1860 px
+  wide.
 - **The admin panel is one click away at the head of the left column,** with
   the approval badge on it. The Developer / Admin tabs left the top bar. When
-  the sidebar is hidden, the entry folds into an icon beside its toggle.
+  the sidebar is hidden, the entry becomes an icon beside its toggle.
 - **The admin panel opens in your real role.** The "Viewing as" switch is gone.
 - **Only a super-admin sees the kill switch's button.** Other admins still see
   its state, who engaged it and why. The server already refused them.
 - **"Browse connections" on the Welcome page works.** It opens the sidebar if
-  it is hidden, shows Connections and puts the cursor in its search box.
+  the sidebar is hidden, shows Connections and puts the cursor in its search
+  box.
 - **Back from the admin panel returns to the editor.** The panel's first
   history write replaced the editor's entry.
 - **The admin Connections screen lists each read replica under its primary.**
-  It says whether the replica is in rotation, and offers no credential
-  rotation for it, since it uses its primary's login. Every other admin picker
-  leaves replicas out.
+  It says whether the replica is in rotation. It offers no credential rotation
+  for the replica, because the replica uses its primary's login. Every other
+  admin picker omits replicas.
 - **The admin Connections table fits its panel.** Test and Edit stay on each
-  row. Rotating credentials, disabling, refreshing the schema and deleting
-  moved into a ⋯ menu. Engine and hosting share one column, and the
+  row. The actions to rotate credentials, disable, refresh the schema and
+  delete moved into a ⋯ menu. Engine and hosting share one column, and the
   environment tag sits beside the name. The pinned actions column no longer
-  covers the databases. In a narrow window the table scrolls sideways instead
-  of squeezing the database names.
+  covers the databases. In a narrow window, the table scrolls sideways and
+  does not squeeze the database names.
 - **The masking exemption form's pickers filter as you type.** Server,
-  database, schema, table and column still accept only what the catalog
-  lists: a typo keeps the previous choice. The column picker clears after
-  each pick.
+  database, schema, table and column still accept only what the catalog lists.
+  A typo keeps the previous choice. The column picker clears after each pick.
 - **The effective-access screen describes the per-server rule.** A team's
   grant names each member whose own grant on that server applies instead. The
   summaries say "auto-approved".
 
 ### Fixed
 
-- **A column or table named like a reserved word is quoted when the editor
-  writes it.** `*` expansion, autocomplete and tree drags wrote `user`, `order`
-  or `group` bare, so the query failed or, for `user`, returned the login's
-  name on every row (PostgreSQL and SQL Server both read it as the current
-  user). `qhQuoteIdentFor` now quotes each engine's reserved words: PostgreSQL's
-  key-word table, Trino's for Athena, and Transact-SQL's reserved keywords.
-  ClickHouse and MySQL use the PostgreSQL list plus their clause words. Oracle
-  is left alone, since it folds names to upper case.
+- **When the editor writes a column or table named like a reserved word, it
+  now quotes the name.** `*` expansion, autocomplete and tree drags wrote
+  `user`, `order` or `group` bare, and the query failed. For `user`, the query
+  returned the login's name on every row instead (PostgreSQL and SQL Server
+  both read it as the current user). `qhQuoteIdentFor` now quotes each
+  engine's reserved words: PostgreSQL's key-word table, Trino's for Athena, and
+  Transact-SQL's reserved keywords. ClickHouse and MySQL use the PostgreSQL
+  list plus their clause words. Nothing changes for Oracle, because Oracle
+  folds names to upper case.
 
 - **`*` in the web editor expands to the columns of what the statement reads,
   and nothing else.** On a partition, Tab on the star filled the select list
   with every column in the database.
-  - Cause: the catalog folds partitions into their parent, and a table it did
-    not list fell back to the whole database's columns. The table was also read
-    from the first `from` in the editor, not the statement under the caret.
-  - Fix: the star is read from its own statement. A table the catalog does not
-    list is looked up live: `GET /connections/{conn}/databases/{db}/columns?table=`,
-    a fixed read-only metadata query (`to_regclass` + `pg_attribute`) with the
-    RO login and a 3 s timeout, PostgreSQL only. If that does not know it
-    either, nothing is offered.
-  - A join expands every table qualified by its alias; `t.*` expands t.
+  - Cause: the catalog merges partitions into their parent. For a table that
+    the catalog did not list, the star used the whole database's columns. The
+    star also took its table from the first `from` anywhere in the editor, not
+    from the statement under the caret.
+  - Fix: the editor reads the table for each star from the star's own
+    statement. For a table that the catalog does not list, the editor reads
+    the columns live through
+    `GET /connections/{conn}/databases/{db}/columns?table=`. That endpoint
+    runs a fixed read-only metadata query (`to_regclass` + `pg_attribute`)
+    with the RO login and a 3 s timeout, on PostgreSQL only. If the target
+    does not know the table either, the editor offers nothing.
+  - A join expands the columns of every table, each qualified by its table's
+    alias. `t.*` expands t.
 
-- **Every edit in the web editor can be undone.** ⌘Z / Ctrl+Z did nothing
-  after the editor changed the text itself: expanding `*` with Tab, accepting
-  a completion, Tab indent, a dropped tree object, a whole-line cut or paste.
+- **You can undo every edit in the web editor.** ⌘Z / Ctrl+Z did nothing after
+  an edit that the editor made itself. These edits are `*` expansion with Tab,
+  an accepted completion, Tab indent, a dropped tree object, and a whole-line
+  cut or paste.
   - Cause: those edits set the controlled textarea's value, and that empties
     the browser's own undo stack.
-  - Fix: the editor keeps its own history, one per tab, and owns ⌘Z / Ctrl+Z,
-    ⌘⇧Z / Ctrl+Shift+Z and Ctrl+Y (not on a Mac). Typing groups by word; every
-    other edit is one step, including text the app puts in from outside.
-  - The history survives a tab switch and is cleared on sign-out.
+  - Fix: the editor keeps its own history, one per tab. It owns ⌘Z / Ctrl+Z,
+    ⌘⇧Z / Ctrl+Shift+Z and Ctrl+Y (not on a Mac). Typed text makes one undo
+    step per word. Every other edit is one step. That includes text that the
+    app inserts from outside.
+  - The history survives a tab switch, and sign-out clears it.
 - **On an Athena archive, only admins, the owning team's lead and waiver
   holders skip review, and only for reads.** A fingerprint match would have run
-  anyone's repeat query there with no review. With `engine_config.auto_approve`
-  unset (docs/CONFIGURATION.md):
+  anyone's repeat query there with no review. When `engine_config.auto_approve`
+  is not set (docs/CONFIGURATION.md):
   - The lead of the team that owns the archive, and anyone with an admin role,
-    auto-approve reads, waiver or not. The request records `archive: owner lead`
-    or `archive: admin` as the reason.
-  - A waiver that covers the read applies, fleet-wide or naming the archive.
+    auto-approve reads, with or without a waiver. The request records
+    `archive: owner lead` or `archive: admin` as the reason.
+  - A waiver that covers the read applies, whether it is fleet-wide or names
+    the archive.
   - Everyone else's query goes to that lead and the admins. The fingerprint
-    cache never applies, and no auto-approve window is offered.
-  - Except super-admins, nobody is shown more than RO there, on any screen. A
-    write is refused for everyone, as before.
-  - `true` makes the target behave like any other; `false` lets nothing through
-    but a super-admin's own query, which is unchanged.
+    cache never applies, and QueryHub offers no auto-approve window.
+  - No screen shows more than RO there to anyone except a super-admin.
+    QueryHub refuses every write there, as before.
+  - `true` makes the target behave like any other. `false` lets no query skip
+    review except a super-admin's own query, which is unchanged.
 - **"All databases" in the web grant forms wrote a grant on a database named
   `*`.** It matched nothing. Any spelling of every database (`*`, empty, `all`,
   `any`) now means every database, for person and team grants alike.
-- **A team's auto-approve rows show as the team's.** The list recognised a team
-  by a `(team)` suffix only the prototype's mock sends, so on the real server a
-  team's card read as a person and "Add targets" posted the team's name as a
-  person id, which was refused.
-- **A statement too big to check is refused with a message, not a 500.**
-  sqlparse gives up on a statement of more than 10,000 tokens, which is about
-  3,000 values in an `IN (...)` list, or one nested more than 100 levels deep.
-  The refusal says how to split it, or how to pass a long list as one value.
-- **A long chain of operators is refused in milliseconds.** Each new operator
-  in `a + b + c ...` made sqlparse 0.5 re-read the whole chain, so 1,000 of
-  them took 7 s to refuse and held a web worker the whole time. sqlparse 0.6
-  builds a group's text from its children's, and QueryHub now requires it
-  (`sqlparse>=0.6.0`, as the image's lock already had).
+- **A team's auto-approve rows show as the team's.** The list recognised a
+  team by a `(team)` suffix that only the prototype's mock sends. So on the
+  real server, a team's card read as a person. "Add targets" posted the team's
+  name as a person id, and the server refused it.
+- **A statement too big to check gets a refusal with a message, not a 500.**
+  sqlparse stops parsing a statement of more than 10,000 tokens, which is
+  about 3,000 values in an `IN (...)` list. It also stops on a statement nested
+  more than 100 levels deep. The refusal says how to split the statement, or
+  how to pass a long list as one value.
+- **QueryHub refuses a long chain of operators in milliseconds.** Each new
+  operator in `a + b + c ...` made sqlparse 0.5 re-read the whole chain. So
+  1,000 operators took 7 s to refuse and held a web worker the whole time.
+  sqlparse 0.6 builds a group's text from its children's text, and QueryHub
+  now requires it (`sqlparse>=0.6.0`, as the image's lock already had).
 
 - **The metrics dashboards read pods, not the emptied teams table.** Every
-  request showed as "(unteamed)" since pods replaced teams. The per-team chart
+  request showed as "(unteamed)" after pods replaced teams. The per-team chart
   and filter now use the requester's current pod (migration 135).
 - **Who-can-what, `/sql whoami` and `/sql roles` read the access model.** They
-  listed legacy grants and missed roles and grants written since the switch.
+  listed legacy grants and missed roles and grants written after the switch.
 - **A request's tier on the dashboard is the tier it ran at.** A leading
-  comment or a line break after SELECT counted a read as DDL.
-- **Approval latency counts decisions taken by people.** Auto-approvals, most
-  decisions, pulled every percentile to near zero; the S3 dashboard shows
-  their count on its own card and leaves them out of admin workload. A pod
-  captain's decisions show their name instead of a Slack id.
+  comment or a line break after SELECT made the dashboard count a read as DDL.
+- **Approval latency counts decisions taken by people.** Auto-approvals are
+  most of the decisions, and they pulled every percentile to near zero. The S3
+  dashboard shows their count on its own card and excludes them from admin
+  workload. A pod captain's decisions show the captain's name instead of a
+  Slack id.
 
 - **`/api/auth/local/start` answers 404, not 500.** The password provider has
   no redirect leg, and the redirect routes called it anyway.
 - **An AWS secret that is JSON but not an object fails with a clear error.**
-  A string, a list or `null` got past the parse and failed later as an
-  `AttributeError`, after being cached for the TTL.
+  A string, a list or `null` passed the parse, and QueryHub cached it for the
+  TTL. It failed later, as an `AttributeError`.
 
 - **An all-RO batch reaches the pod captain, as a single RO request does.**
-  The batch DM went to admins alone, and its bulk buttons were admin-only.
-  A scoped approver now gets the batch when they can approve every item,
-  and the bulk buttons admit the same people.
+  The batch DM went to admins alone, and its bulk buttons were admin-only. A
+  scoped approver now gets the batch when they can approve every item. The
+  bulk buttons admit the same people.
 - **A person's own grant replaces their team's on the whole server,
   everywhere.** The database list already worked this way. Submit, the
-  effective-access screen and team auto-approve decided it per database, so
-  the screen could show a team grant the person could not pick. To keep the
-  team's grants as well, set `merge_with_team` on the person's own grant.
-- **Two browser tabs refreshing at once no longer sign you out.** The second
-  refresh got a different token from the first, and the tab whose token the
-  browser kept could not refresh again. A rotation now always issues the
-  same successor for the same token.
+  effective-access screen and team auto-approve decided it per database. So
+  the screen could show a team grant that the person could not pick. To keep
+  the team's grants as well, set `merge_with_team` on the person's own grant.
+- **Two browser tabs that refresh at the same time no longer end your
+  session.** The second refresh got a different token from the first. Then the
+  tab whose token the browser kept could not refresh again. A rotation now
+  always issues the same successor for the same token.
 - **An admin with no requester row keeps their name after a refresh.** The
   refresh read the profile from the requesters table only.
 
 ### Security
 
-- **The metadata database's roles can be split, so the service cannot edit
+- **You can split the metadata database's roles, so the service cannot edit
   the audit trail.** `scripts/split_metadata_roles.py` moves every object to a
-  NOLOGIN owner and leaves the runtime login DML on tables, SELECT on views
-  and only SELECT/INSERT on `audit_log`. Migrations then run as a migrator
-  (`BOT_DB_MIGRATOR_USER`, `BOT_DB_MIGRATOR_PASSWORD`, `BOT_DB_OWNER_ROLE`),
-  which re-applies the runtime's grants after each run. Plan, rehearse, apply
-  and rollback modes; the runbook is docs/OPERATIONS.md §28. CI runs the
-  integration suite a second time as a split runtime.
+  NOLOGIN owner. After the split, the runtime login has DML on tables, SELECT
+  on views and only SELECT/INSERT on `audit_log`. Migrations then run as a
+  migrator (`BOT_DB_MIGRATOR_USER`, `BOT_DB_MIGRATOR_PASSWORD`,
+  `BOT_DB_OWNER_ROLE`), which re-applies the runtime's grants after each run.
+  The script has plan, rehearse, apply and rollback modes, and the runbook is
+  docs/OPERATIONS.md §28. CI runs the integration suite a second time as a
+  split runtime.
 - **The container image installs a hash-locked dependency set.**
-  `docker/requirements.lock` pins every package the image installs, with the
-  hashes of its files; the build backend is in it too. Two builds of one
-  commit used to be able to ship different wheels, and nothing checked what
-  was downloaded. Regenerate it with `scripts/lock_image_deps.sh`. A release
-  now stops on a known vulnerability in that set.
-- **A web write needs Slack to confirm the person, live.** An RW/DDL submit
-  without an answer from `users.info` is refused with a 503, and nobody is
-  signed out. A sign-in or refresh with no answer passes only if Slack called
-  the person active within `web_employment_grace_hours` (default 2). A
-  transport error used to pass everyone. The write check ran for Slack
-  sign-ins only and now covers SSO sessions too, and users.info's
-  `user_not_found` counts as gone (migration 134).
-- **An unreadable `secrets.enc` stops the process.** It used to fall back to
-  the plaintext environment. `QH_SECRETS_PLAINTEXT_FALLBACK=1` allows that on
-  purpose.
+  `docker/requirements.lock` pins every package that the image installs, with
+  the hashes of its files. The build backend is in it too. Before, two builds
+  of one commit could ship different wheels, and nothing checked what the
+  build downloaded. Regenerate the lock with `scripts/lock_image_deps.sh`. A
+  release now stops on a known vulnerability in that set.
+- **A web write needs a live Slack check of the person.** QueryHub refuses an
+  RW/DDL submit with a 503 when `users.info` gives no answer, and nobody loses
+  their session. A sign-in or refresh with no answer passes only if Slack
+  called the person active within `web_employment_grace_hours` (default 2). A
+  transport error used to pass everyone. The write check ran for Slack sign-ins
+  only, and now covers SSO sessions too. users.info's `user_not_found` counts
+  as gone (migration 134).
+- **An unreadable `secrets.enc` stops the process.** It used to read the
+  plaintext environment instead. `QH_SECRETS_PLAINTEXT_FALLBACK=1` allows that
+  on purpose.
 - **A `WEB_SESSION_SECRET` shorter than 32 bytes stops the web process.**
-  Unset, the key is derived from the master key, as before.
-- **Target certificates can be verified one host, or one cloud, at a time.**
-  `target_ssl_verify_hosts` switches the listed hosts to `verify-full`
-  against `target_ssl_rootcert`; `target_ssl_verify_exempt_hosts` keeps a
-  server that cannot verify on `require`. SQL Server follows the same lists.
-  The CA file now goes only with a verifying mode, because libpq reads
-  `require` plus a root file as `verify-ca`. Two connections that hardcoded
-  `require` (the CSV import's table check and the web roles list) follow the
-  settings too. The metadata DB takes `BOT_DB_SSLMODE` and
-  `BOT_DB_SSLROOTCERT`. Nothing changes until a key is set (migration 133).
-- **The header row of an export is guarded against formulas too.** Data
-  cells were. A column alias such as `"=HYPERLINK(...)"` opened as a live
-  formula in CSV and XLSX downloads, including the web's CSV-to-XLSX
-  conversion.
-- **A Slack sign-in is refused when the workspace cannot be checked.** It
-  used to skip the workspace comparison whenever `auth.test` failed. New key
-  `web_slack_team_id` pins the workspace, for an install running Slack
+  If you do not set it, QueryHub derives the key from the master key, as
+  before.
+- **QueryHub can check target certificates for one host, or one cloud, at a
+  time.** Nothing changes until you set a key (migration 133).
+  - `target_ssl_verify_hosts` switches the listed hosts to `verify-full`
+    against `target_ssl_rootcert`.
+  - `target_ssl_verify_exempt_hosts` is for a server that cannot pass the
+    check. It keeps that server on `require`.
+  - SQL Server follows the same lists. Two connections that hardcoded
+    `require` (the CSV import's table check and the web roles list) follow the
+    settings too.
+  - The CA file now goes only with a mode that checks the certificate, because
+    libpq reads `require` plus a root file as `verify-ca`.
+  - The metadata DB takes `BOT_DB_SSLMODE` and `BOT_DB_SSLROOTCERT`.
+- **QueryHub now guards the header row of an export against formulas too.** It
+  already guarded the data cells. A column alias such as `"=HYPERLINK(...)"`
+  opened as a live formula in CSV and XLSX downloads, including the web's
+  CSV-to-XLSX conversion.
+- **QueryHub refuses a Slack sign-in when it cannot check the workspace.** It
+  used to skip the workspace comparison whenever `auth.test` failed. The new
+  key `web_slack_team_id` pins the workspace, for an install that runs Slack
   sign-in without the bot (migration 132).
 - **The avatar proxy checks every redirect.** `urlopen` follows redirects on
-  its own, so only the first URL met the host allow-list. Each hop is now
-  held to it, and at most three are followed.
+  its own, so the host allow-list checked only the first URL. The proxy now
+  checks each hop against the allow-list and follows at most three.
 - **An email resolves to one principal across both people tables, or to
-  none.** One row in `requesters` and a different person's row in `admins`
-  sharing an address resolved to whichever table was asked first. Every
-  external sign-in and the principal sync now use one resolver
+  none.** If a row in `requesters` and a different person's row in `admins`
+  shared an address, the address resolved to whichever table QueryHub asked
+  first. Every external sign-in and the principal sync now use one resolver
   (`requesters.principal_by_email`).
-- **The AWS Secrets Manager cache is keyed by region as well as secret id.**
-  The same secret name in two regions returned the first region's
+- **QueryHub keys the AWS Secrets Manager cache by region as well as secret
+  id.** The same secret name in two regions returned the first region's
   credentials for both.
 
 ## [1.0.33] — 2026-09-23

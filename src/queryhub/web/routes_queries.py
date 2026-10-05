@@ -122,11 +122,11 @@ def _employment_gate(uid: str, what: str) -> None:
     if state == "gone":
         sessions.revoke_user(uid, f"users.info: gone before {what}")
         raise deps._error(401, "unauthenticated",
-                          "Slack account verification failed.")
+                          "Refused: Slack reports that your account is gone.")
     if state != "active":
         raise deps._error(503, "server_error",
-                          "Slack could not confirm your account just now, so "
-                          "the write was not sent. Try again in a minute.")
+                          "Slack could not confirm your account just now. "
+                          "QueryHub did not send the write. Try again in a minute.")
 
 
 def _origin_for(claims: dict) -> str:
@@ -474,8 +474,8 @@ def _derive_notifications(uid: str) -> list[dict]:
         granted = r["status"] == "approved"
         items.append({"id": f"er{r['id']}", "kind": "endpoint",
                       "title": "Endpoint provisioned" if granted else "Access request declined",
-                      "body": (f"Your access request for {loc} was granted." if granted
-                               else f"Your access request for {loc} was declined."),
+                      "body": (f"An admin granted your access request for {loc}." if granted
+                               else f"An admin declined your access request for {loc}."),
                       "createdAt": mapping.iso(r["decided_at"])})
     for r in db.fetch_all(
             "SELECT id, actor_name, details, created_at FROM audit_log "
@@ -484,11 +484,11 @@ def _derive_notifications(uid: str) -> list[dict]:
             "ORDER BY id DESC LIMIT 6"):
         d = r["details"] if isinstance(r["details"], dict) else {}
         on = bool(d.get("enabled"))
-        who = r["actor_name"] or "an admin"
+        who = r["actor_name"] or "An admin"
         items.append({"id": f"kill{r['id']}", "kind": "kill",
                       "title": "Execution paused" if on else "Execution resumed",
-                      "body": (f"The fleet-wide kill switch was engaged by {who}." if on
-                               else f"The fleet-wide kill switch was lifted by {who}."),
+                      "body": (f"{who} engaged the fleet-wide kill switch." if on
+                               else f"{who} lifted the fleet-wide kill switch."),
                       "createdAt": mapping.iso(r["created_at"])})
     items.sort(key=lambda x: x["createdAt"] or "", reverse=True)
     return items[:50]
@@ -549,7 +549,9 @@ def submit_batch(body: BatchIn, request: Request,
     name = claims.get("name") or uid
     client_ip, user_agent = _client_ctx(request)
     if not bundles.is_enabled():
-        raise deps._error(409, "conflict", "Batch submission is disabled.")
+        raise deps._error(409, "conflict",
+                          "Refused: batch submission is disabled. "
+                          "Submit each query on its own.")
     if len(body.items) > bundles.max_items():
         raise deps._error(422, "validation",
                           f"A batch can hold at most {bundles.max_items()} items.")
@@ -856,19 +858,23 @@ def _explain_hints(query: str, analysis: dict) -> list[dict]:
     if "seq_scan_large" in flags and analysis.get("seq_scans"):
         rel, rows = max(analysis["seq_scans"], key=lambda x: x[1])
         hints.append({"level": "high",
-                      "text": f"Seq scan on {rel} (~{pre_flight._fmt_int(rows)} rows) — no usable index"})
+                      "text": f"Seq scan on {rel} (~{pre_flight._fmt_int(rows)} rows). "
+                              "The planner found no usable index."})
     if "high_cost" in flags:
         hints.append({"level": "med",
-                      "text": f"High planner cost (size {analysis.get('cost_band', '?')})"})
+                      "text": f"The planner cost is high (size {analysis.get('cost_band', '?')})."})
     t = " ".join((query or "").lower().split())
     if "select *" in t:
-        hints.append({"level": "med", "text": "SELECT * returns all columns — may include PII"})
+        hints.append({"level": "med",
+                      "text": "SELECT * returns all columns. The result may include PII."})
     if "select" in t and "limit" not in t:
-        hints.append({"level": "med", "text": "No LIMIT — result set may be large"})
+        hints.append({"level": "med",
+                      "text": "The query has no LIMIT. The result set may be large."})
     if "like '%" in t:
-        hints.append({"level": "low", "text": "Leading-wildcard LIKE — cannot use an index"})
+        hints.append({"level": "low",
+                      "text": "A LIKE with a leading wildcard cannot use an index."})
     if not hints:
-        hints.append({"level": "low", "text": "No obvious risks detected"})
+        hints.append({"level": "low", "text": "QueryHub found no obvious risks."})
     return hints
 
 
@@ -924,8 +930,8 @@ def explain_query(body: ExplainIn, claims: dict = Depends(deps.current_user)):
     explain_mode = query_safety.required_mode(sql, engine=t.engine)
     if explain_mode not in ("ro", "rw") or not pre_flight.is_explainable(sql):
         raise deps._error(422, "validation",
-                          "Plan preview is for a single read-only or read-write "
-                          "statement (not DDL).")
+                          "Plan preview works only for one read-only or read-write "
+                          "statement. It does not work for DDL.")
     database = body.databaseId or t.default_database
     allowed = grant["allowed_databases"]
     if allowed is not None and database not in allowed:
@@ -940,16 +946,17 @@ def explain_query(body: ExplainIn, claims: dict = Depends(deps.current_user)):
         db_mode = teams.effective_mode_for_database(uid, t.id, database)
         if db_mode not in ("rw", "ddl"):
             raise deps._error(403, "forbidden",
-                              "A read-write plan preview needs a read-write grant.")
+                              "Refused: a read-write plan preview needs a read-write grant.")
 
     ok, err, plan = pre_flight.explain(t.id, database, explain_mode, sql,
                                        summary=True, allow_write=True)
     if not ok:
-        raise deps._error(422, "validation", err or "Could not plan the query.")
+        raise deps._error(422, "validation",
+                          err or "QueryHub could not plan the query.")
     view = _explain_view(plan, sql)
     if view is None:
         raise deps._error(503, "server_error",
-                          "No plan produced (target unreachable — try again).")
+                          "QueryHub got no plan. The target is unreachable. Try again.")
     return view
 
 
@@ -988,14 +995,14 @@ def _retire_admin_cards(row: dict, claims: dict) -> None:
     if client is None:          # vanilla profile: no Slack, nothing to retire
         return
     from ..slack_app import notifications
-    who = claims.get("name") or claims.get("sub") or "the requester"
+    who = claims.get("name") or claims.get("sub") or "The requester"
     try:
         if row.get("bundle_id"):
             notifications.update_bundle_admin_dms(client, row["bundle_id"])
         else:
             notifications.update_all_admin_messages(
                 client, row,
-                f":wastebasket: Withdrawn by {who} — no action needed.")
+                f":wastebasket: {who} withdrew this request. You do not need to act.")
             notifications.update_requester_card(
                 client, row, status_emoji=":wastebasket:",
                 status_text="Withdrawn before it ran")
@@ -1033,14 +1040,14 @@ def query_cancel(request_id: int, claims: dict = Depends(deps.current_user)):
             _retire_admin_cards(row, claims)
             return {"id": str(request_id), "stopped": True,
                     "outcome": "withdrawn",
-                    "message": "Request withdrawn before it ran."}
+                    "message": "You withdrew the request before it ran."}
         # Lost the race: it started executing (or somebody else closed it)
         # between the read above and the UPDATE. Re-read and fall through.
         row = db.fetch_one("SELECT * FROM requests WHERE id = %s", (request_id,))
         if row is None or row["status"] != "executing":
             raise deps._error(409, "conflict",
-                              "That request is no longer waiting — reload to "
-                              "see where it got to.")
+                              "That request is no longer waiting. Reload the "
+                              "page to see its current status.")
 
     elif row["status"] != "executing":
         raise deps._error(409, "conflict",
@@ -1057,12 +1064,13 @@ def query_cancel(request_id: int, claims: dict = Depends(deps.current_user)):
             cancellation.CancelOutcome.CANCELLED:
                 "Query cancelled.",
             cancellation.CancelOutcome.TERMINATED:
-                "Query would not respond to a cancel, so its database "
-                "connection was closed. It is stopped.",
+                "The query did not respond to the cancel, so QueryHub closed "
+                "its database connection. The query is stopped.",
             cancellation.CancelOutcome.NOT_RUNNING:
-                "It finished before the cancel reached it.",
+                "The query finished before the cancel reached it.",
             cancellation.CancelOutcome.FAILED:
-                "Could not reach the database to stop it — ask a DBA.",
+                "QueryHub could not reach the database to stop the query. "
+                "Ask a DBA.",
         }[outcome],
     }
 
@@ -1101,11 +1109,12 @@ def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
 def _result_file(row: dict) -> Path:
     path = row.get("csv_file_path")
     if not path:
-        raise deps._error(404, "not_found", "No stored result for this query.")
+        raise deps._error(404, "not_found", "This query has no stored result.")
     p = Path(path)
     if not p.is_file():
         raise deps._error(404, "not_found",
-                          "Result file expired (results are kept for a limited time).")
+                          "The result file expired. QueryHub keeps results "
+                          "for a limited time only.")
     return p
 
 
@@ -1144,7 +1153,8 @@ def _open_statement(p: Path, index: int):
         raise deps._error(409, "conflict", "This result has no table to show.")
     if index < 1 or index > len(members):
         raise deps._error(404, "not_found",
-                          f"Statement {index} — this result has {len(members)}.")
+                          f"Statement {index} does not exist. This result has "
+                          f"{len(members)} statement(s).")
     if p.suffix.lower() != ".zip":
         with p.open(newline="", encoding="utf-8") as fh:
             yield fh
@@ -1287,7 +1297,8 @@ def query_result(request_id: int, statement: int = 1,
     row = _own_request(request_id, claims["sub"])
     if row["status"] != "completed":
         raise deps._error(409, "conflict",
-                          f"Result not ready (status: {mapping.status_to_web(row['status'])}).")
+                          "The result is not ready. "
+                          f"Status: {mapping.status_to_web(row['status'])}.")
 
     if not row.get("csv_file_path"):
         # Write/DDL — no result set; report affected rows.
@@ -1379,7 +1390,7 @@ def query_rows(request_id: int, offset: int = 0, limit: int = 100,
     deps.require_whitelisted(claims)
     row = _own_request(request_id, claims["sub"])
     if row["status"] != "completed" or not row.get("csv_file_path"):
-        raise deps._error(409, "conflict", "No table result to page.")
+        raise deps._error(409, "conflict", "This result has no table to page.")
     p = _result_file(row)
     offset = max(0, int(offset))
     limit = max(1, min(int(limit), 2000))
@@ -1414,7 +1425,7 @@ def query_result_csv(request_id: int, statement: int | None = None,
     deps.require_whitelisted(claims)
     row = _own_request(request_id, claims["sub"])
     if row["status"] != "completed":
-        raise deps._error(409, "conflict", "Result not ready.")
+        raise deps._error(409, "conflict", "The result is not ready.")
     p = _result_file(row)
 
     if statement is not None and p.suffix.lower() == ".zip":
@@ -1454,7 +1465,7 @@ def query_result_xlsx(request_id: int, statement: int | None = None,
     deps.require_whitelisted(claims)
     row = _own_request(request_id, claims["sub"])
     if row["status"] != "completed":
-        raise deps._error(409, "conflict", "Result not ready.")
+        raise deps._error(409, "conflict", "The result is not ready.")
     p = _result_file(row)
     xlsx_media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     audit_mod.log(request_id, claims["sub"], claims.get("name"),
@@ -1469,11 +1480,13 @@ def query_result_xlsx(request_id: int, statement: int | None = None,
     if p.suffix.lower() == ".zip" and statement is None:
         raise deps._error(
             409, "conflict",
-            "This result has several tables — ask for one with ?statement=N, "
-            "or download the archive from result.csv.")
+            "This result has several tables. Ask for one table with "
+            "?statement=N. To get every table, download the archive from "
+            "result.csv.")
     if p.suffix.lower() not in (".csv", ".zip"):
         raise deps._error(409, "conflict",
-                          "Stored result can't be exported as Excel — download it directly.")
+                          "QueryHub cannot export this stored result as Excel. "
+                          "Download the file directly.")
     name = f"queryhub_result_{request_id}.xlsx"
     cached = _xlsx_cache_path(p, statement or 1)
     if _xlsx_cache_fresh(cached, p):

@@ -117,7 +117,7 @@ def test_a_waiver_already_in_place_is_named_in_the_summary(slack):
          "server they can reach, no expiry)", "reason": "already covered by ..."}]}
     _submit(slack)
     text = slack.dms[0][1]
-    assert "already in place" in text and "auto-approve #12" in text
+    assert "already existed" in text and "auto-approve #12" in text
     # Nothing new was written, so the grantee is not told it as news.
     assert slack.notified == [("U0EXAMPLE002", None)]
 

@@ -59,8 +59,8 @@ class ToolError(Exception):
 def _require_enabled() -> None:
     if not policy.enabled():
         raise ToolError("disabled",
-                        "The QueryHub MCP surface is switched off. An operator "
-                        "enables it with the `mcp_enabled` setting.")
+                        "Refused: the QueryHub MCP server is off. To enable it, "
+                        "an operator sets `mcp_enabled` to `on`.")
 
 
 def _me() -> str:
@@ -83,7 +83,8 @@ def _target_or_refuse(uid: str, connection: str):
         t = None
     if t is None:
         raise ToolError("unknown_connection",
-                        f"No connection named '{connection}' that you can use.")
+                        f"There is no connection named '{connection}' that you "
+                        f"can use. Call `list_connections` to see your connections.")
     return t
 
 
@@ -162,9 +163,9 @@ def describe_database(connection: str, database: str,
         if not rows:
             raise ToolError(
                 "no_catalog",
-                f"No catalogued schema for '{database}' on '{connection}'. It "
-                f"may not be a database you hold, or its first snapshot has "
-                f"not run.")
+                f"No catalogued schema exists for '{database}' on '{connection}'. "
+                f"Two causes are possible: you hold no grant for that database, "
+                f"or its first schema snapshot has not run yet.")
         more = len(rows) > MAX_TABLES
         rows = rows[:MAX_TABLES]
         return {
@@ -173,10 +174,11 @@ def describe_database(connection: str, database: str,
                         "kind": r["relkind"], "columns": r["columns"]}
                        for r in rows],
             "truncated": more,
-            "note": (f"Showing the first {MAX_TABLES} tables. Pass `table` with "
-                     f"part of a name to see columns."
+            "note": (f"This database has more than {MAX_TABLES} tables. The list "
+                     f"shows the first {MAX_TABLES}. To see columns, pass `table` "
+                     f"with part of a table name."
                      if more else
-                     "Pass `table` with part of a name to see its columns."),
+                     "To see columns, pass `table` with part of a table name."),
         }
 
     # The tables are chosen in SQL, capped, and only their columns are read. A
@@ -201,8 +203,9 @@ def describe_database(connection: str, database: str,
     if not rows:
         raise ToolError(
             "no_match",
-            f"No catalogued table matching '{table}' in '{database}' on "
-            f"'{connection}'. Call this without `table` to see what is there.")
+            f"No catalogued table in '{database}' on '{connection}' matches "
+            f"'{table}'. To see the table names, call `describe_database` "
+            f"without `table`.")
     tables: dict[tuple, dict] = {}
     for r in rows:
         e = tables.setdefault((r["schema_name"], r["table_name"]),
@@ -225,8 +228,9 @@ def describe_database(connection: str, database: str,
         "connection": t.alias, "database": database, "match": table,
         "tables": list(tables.values()),
         "truncated": matched > len(tables),
-        "note": (f"{matched} tables matched; showing {len(tables)}. Narrow the "
-                 f"`table` filter." if matched > len(tables) else None),
+        "note": (f"{matched} tables matched. This result shows {len(tables)} of "
+                 f"them. Use a more specific `table` filter."
+                 if matched > len(tables) else None),
     }
 
 
@@ -244,7 +248,7 @@ def classify_sql(connection: str, sql: str) -> dict:
     if blockers:
         return {"requiredTier": None, "accepted": False,
                 "maxTier": policy.max_tier().upper(),
-                "blocked": True, "reason": "; ".join(blockers)}
+                "blocked": True, "reason": " ".join(blockers)}
     ok = policy.tier_allowed(required)
     return {"requiredTier": required.upper(), "accepted": ok,
             "maxTier": policy.max_tier().upper(), "blocked": False,
@@ -279,7 +283,7 @@ def submit_query(connection: str, database: str | None, sql: str,
         # catch it. The point is that the CEILING must not be the thing that
         # let it past: a blocked statement reports `ro`, so a ro ceiling would
         # have said yes to it.
-        raise ToolError("blocked", "; ".join(blockers))
+        raise ToolError("blocked", " ".join(blockers))
     if not policy.tier_allowed(required):
         raise ToolError("tier_refused", policy.refusal(required))
 
@@ -318,8 +322,9 @@ def submit_query(connection: str, database: str | None, sql: str,
     if not outcome.auto_approved:
         # Waiting here would burn the whole budget and still return nothing: a
         # human approval is minutes, not seconds.
-        out["note"] = ("A DBA has been notified. Poll query_status for the "
-                       "outcome; approval is a human step and takes minutes.")
+        out["note"] = ("QueryHub notified a DBA. Approval is a human step and "
+                       "takes minutes. Poll `query_status` with this `requestId` "
+                       "for the outcome.")
         return out
 
     wait = max(0, min(int(wait_seconds), MAX_WAIT_SECONDS))
@@ -327,7 +332,7 @@ def submit_query(connection: str, database: str | None, sql: str,
         final = _await_result(rid, wait)
         out.update(final)
     else:
-        out["note"] = "Poll query_status for the outcome."
+        out["note"] = "Poll `query_status` with this `requestId` for the outcome."
     return out
 
 
@@ -372,8 +377,9 @@ def _await_result(request_id: int, seconds: int) -> dict:
             return out
         if time.monotonic() >= deadline:
             return {"status": status,
-                    "note": (f"Still {status} after {seconds}s. Poll "
-                             f"query_status; the work continues either way.")}
+                    "note": (f"The request is still {status} after {seconds} "
+                             f"seconds. The wait ended, but the work continues. "
+                             f"Poll `query_status` for the outcome.")}
         time.sleep(delay)
         delay = min(delay * 1.5, 1.0)   # tight at first, then back off
 
@@ -390,7 +396,7 @@ def _own(request_id: int, uid: str) -> dict:
     # Not found and not yours are one answer, so a caller cannot count other
     # people's requests by watching which refusal comes back.
     if row is None or row["requester_slack_id"] != uid:
-        raise ToolError("not_found", f"No query {request_id} of yours.")
+        raise ToolError("not_found", f"You have no request with id {request_id}.")
     return row
 
 
@@ -423,20 +429,21 @@ def fetch_result(request_id: int, offset: int = 0, limit: int = 50) -> dict:
     row = _own(int(request_id), uid)
     if row["status"] != "completed":
         raise ToolError("not_ready",
-                        f"Query {row['id']} is {row['status']}, not completed.")
+                        f"Request {row['id']} is not completed. Its status is "
+                        f"'{row['status']}'.")
     if not row["csv_file_path"]:
         return {"requestId": row["id"], "kind": "affected",
                 "affected": row["row_count"], "rows": [], "columns": []}
     p = Path(row["csv_file_path"])
     if not p.is_file():
         raise ToolError("expired",
-                        "That result has been purged; results are kept for a "
-                        "limited time. Submit the query again.")
+                        "QueryHub deleted that result. It keeps results for a "
+                        "limited time only. Submit the statement again.")
     if p.suffix.lower() == ".zip":
         raise ToolError(
             "multi_statement",
-            "That request stored one result per statement. Reading those "
-            "through MCP is not supported yet; use the web UI.")
+            "That request stored one result for each statement. This MCP "
+            "server cannot read those results yet. Use the web UI.")
 
     offset = max(0, int(offset))
     limit = max(1, min(int(limit), MAX_ROWS))

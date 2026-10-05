@@ -71,5 +71,5 @@ def test_withdraw_itself_stays_a_database_function():
 def test_the_status_line_says_no_action_is_needed():
     """An admin reading the card should not have to work out whether the
     absence of buttons means "already handled by someone" or "gone"."""
-    assert "no action needed" in inspect.getsource(
+    assert "You do not need to act" in inspect.getsource(
         routes_queries._retire_admin_cards)

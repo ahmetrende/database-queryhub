@@ -40,7 +40,7 @@ def test_a_database_outside_the_grant_is_refused(monkeypatch, target):
                         lambda tid: ["app", "other"])
     got, err = sc._resolve_database("U0EXAMPLE01", target, "other")
     assert got is None
-    assert "does not include database `other`" in err
+    assert "does not include the database `other`" in err
 
 
 def test_the_refusal_lists_what_the_user_may_browse(monkeypatch, target):

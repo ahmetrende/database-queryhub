@@ -926,13 +926,13 @@ def test_an_archive_burst_is_not_offered_a_window(banner, user):
     """No window is offered on the archive, whoever bursts there."""
     banner["burst"] = _burst(ARCHIVE)
     text = banner["text"](user)
-    assert "Running a lot of reads?" not in text
+    assert "Skip the approval wait for reads" not in text
     assert '"text": "Request"' in text, "the modest button stays for elsewhere"
 
 
 def test_a_burst_elsewhere_still_is(banner):
     banner["burst"] = _burst(LEDGER)
-    assert "Running a lot of reads?" in banner["text"](MEMBER)
+    assert "Skip the approval wait for reads" in banner["text"](MEMBER)
 
 
 @pytest.mark.parametrize("user", [CAPTAIN, LEAD, ADMIN])
@@ -949,21 +949,21 @@ def test_an_archive_burst_gets_no_dm_and_one_elsewhere_does(banner, user):
 @pytest.mark.parametrize("user", [CAPTAIN, LEAD])
 def test_an_every_connection_badge_reaches_the_archive(banner, user):
     text = banner["text"](user)
-    assert "on every connection (up to *RO*" in text and "except" not in text
+    assert "on every target (up to *RO*" in text and "except" not in text
 
 
 @pytest.mark.parametrize("user,phrase", [(ADMIN, "as an admin"),
                                          (LEAD_BARE, "as the owning team's lead")])
 def test_a_role_on_the_archive_is_badged(banner, user, phrase):
     text = banner["text"](user)
-    assert f"Auto-approve active* on `example-athena` (all dbs) (up to *RO*, {phrase})" in text
+    assert f"Auto-approve active* on `example-athena` (all databases) (up to *RO*, {phrase})" in text
     assert "example-postgres" not in text, "the role is the archive's only"
 
 
 def test_a_role_already_covered_by_a_waiver_says_nothing_more(banner):
     banner["held"][ADMIN] = [_waiver(511, ADMIN)]
     text = banner["text"](ADMIN)
-    assert "on every connection (up to *RO*" in text and "as an admin" not in text
+    assert "on every target (up to *RO*" in text and "as an admin" not in text
 
 
 def test_a_member_is_promised_nothing(banner):
@@ -974,24 +974,24 @@ def test_an_archive_the_reader_cannot_query_is_not_named(banner):
     banner["reach"] = {LEDGER.id}
     assert "Auto-approve active" not in banner["text"](ADMIN)
     text = banner["text"](CAPTAIN)
-    assert "on every connection (up to *RO*" in text and "example-athena" not in text
+    assert "on every target (up to *RO*" in text and "example-athena" not in text
 
 
 def test_a_waiver_that_names_the_archive_is_badged(banner):
-    assert "Auto-approve active* on `example-athena` (all dbs)" in banner["text"](NAMED)
+    assert "Auto-approve active* on `example-athena` (all databases)" in banner["text"](NAMED)
 
 
 def test_an_archive_that_turns_it_off_badges_nothing_there(banner):
     banner["fleet"] = [LEDGER, ARCHIVE_OFF]
     assert "Auto-approve active" not in banner["text"](NAMED)
     assert "Auto-approve active" not in banner["text"](ADMIN)
-    assert "every connection except `example-athena`" in banner["text"](CAPTAIN)
+    assert "every target except `example-athena`" in banner["text"](CAPTAIN)
 
 
 def test_an_archive_that_turns_it_on_is_badged_like_any_other(banner):
     banner["fleet"] = [LEDGER, ARCHIVE_ON]
-    assert "Auto-approve active* on `example-athena` (all dbs)" in banner["text"](NAMED)
-    assert "on every connection (up to *RO*" in banner["text"](CAPTAIN)
+    assert "Auto-approve active* on `example-athena` (all databases)" in banner["text"](NAMED)
+    assert "on every target (up to *RO*" in banner["text"](CAPTAIN)
     assert "Auto-approve active" not in banner["text"](ADMIN), "no role rule there"
 
 

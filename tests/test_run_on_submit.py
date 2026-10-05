@@ -135,7 +135,7 @@ def test_with_several_replicas_the_id_picks_one(submit):
 def test_with_several_replicas_leaving_the_id_out_is_refused(submit):
     out = submit(run_on="replica", replica_rows=TWO)
     assert isinstance(out, cs.Rejection) and out.reason == "replica_required"
-    assert out.message == "Pick which replica — this connection has 2."
+    assert out.message == "Choose one replica. This connection has 2 replicas."
 
 
 def test_primary_is_stored_as_primary_for_any_tier(submit):
@@ -234,7 +234,7 @@ def test_http_several_replicas_and_no_id_is_400(web):
     r = _post(web, runOn="replica")
     assert r.status_code == 400
     assert _error(r) == {"code": "bad_request",
-                         "message": "Pick which replica — this connection has 2."}
+                         "message": "Choose one replica. This connection has 2 replicas."}
 
 
 def test_http_a_scheduled_submit_carries_the_choice(web, monkeypatch):

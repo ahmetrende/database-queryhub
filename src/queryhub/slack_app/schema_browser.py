@@ -34,9 +34,9 @@ def browse_cta_block() -> dict:
         "type": "section",
         "block_id": "blk_schema_browse_cta",
         "text": {"type": "mrkdwn",
-                 "text": ":book: *Table and column reference* — look up a "
-                         "table on the selected target without losing your "
-                         "draft."},
+                 "text": ":book: *Table and column reference.* See the details "
+                         "of a table on the selected target. Your draft stays "
+                         "in this form."},
         "accessory": {
             "type": "button",
             "action_id": ACTION_OPEN,

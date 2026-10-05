@@ -146,7 +146,7 @@ def explain(
 
     target = targets.get(target_id)
     if target is None:
-        return False, f"target_id={target_id} not found", None
+        return False, f"QueryHub found no target with id {target_id}.", None
 
     # Pre-flight EXPLAIN (FORMAT JSON ...) is Postgres syntax. For an engine
     # that doesn't support it (SQL Server, ClickHouse), no-op (fail-open) —
@@ -316,7 +316,7 @@ def explain_write_estimate(
     if rows is None:
         return None
     verb = head[0].upper().strip("(")
-    return f":pencil2: Est. ~{_fmt_int(rows)} rows affected ({verb.title()})"
+    return f":pencil2: Estimate: ~{_fmt_int(rows)} rows affected ({verb.title()})"
 
 
 def _affected_rows(plan: list | None) -> int | None:

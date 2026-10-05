@@ -1,13 +1,13 @@
 name: Bug report
-description: Something isn't working as expected
+description: Something does not work as expected
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report. Please do **not** include secrets, real
-        hostnames, account IDs, or personal data. For a security
-        vulnerability, use private disclosure instead — see SECURITY.md.
+        Please do **not** include secrets, real hostnames, account IDs, or
+        personal data. For a security vulnerability, use private disclosure
+        instead. See SECURITY.md. Thanks for the report.
   - type: textarea
     id: what-happened
     attributes:
@@ -45,7 +45,7 @@ body:
     id: env
     attributes:
       label: Environment
-      description: Version/commit, Python version, OS. Redact anything sensitive.
+      description: Version or commit, Python version, and OS. Redact anything sensitive.
   - type: textarea
     id: logs
     attributes:

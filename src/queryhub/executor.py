@@ -532,10 +532,9 @@ def _fail_on_chosen_replica(client: WebClient, request: dict, route,
             pass
     csv_paths.clear()
     _fail(client, request,
-          f"This query was sent to the read replica `{route.alias}` by choice, "
-          f"and the replica failed it: {errors.scrub(error)}. It was not run on "
-          f"the primary instead. Submit it again with Auto or Primary to run it "
-          f"there.")
+          f"The chosen read replica `{route.alias}` failed this query: "
+          f"{errors.scrub(error)}. QueryHub did not run it on the primary "
+          f"instead. To run it there, submit it again with Auto or Primary.")
 
 
 def _forced_record(run_on, target, route) -> dict | None:
@@ -567,13 +566,14 @@ def _run(request: dict, client: WebClient) -> None:
             request = {**request, "query": query_secrets.statement_to_run(request)}
         except query_secrets.SecretGone:
             _fail(client, request,
-                  "This statement sets a password, and QueryHub no longer "
-                  "holds it: it keeps a password only until the request can "
-                  "no longer run. Submit it again with the password.")
+                  "This statement sets a password, and QueryHub no longer has "
+                  "that password. QueryHub keeps a password only until the "
+                  "request can no longer run. Submit it again with the password.")
             return
         target = targets.get(request["target_server_id"])
         if target is None:
-            _fail(client, request, "Target server not found at execution time.")
+            _fail(client, request,
+                  "QueryHub could not find the target server at execution time.")
             return
 
         # A DISABLED target must not be reached, at execution time and not just
@@ -589,9 +589,9 @@ def _run(request: dict, client: WebClient) -> None:
         # would be a different bug.
         if not target.enabled:
             _fail(client, request,
-                  f"Target `{target.alias}` was disabled before this request "
-                  f"ran, so it was not executed. Ask an admin why the target is "
-                  f"disabled, then resubmit.")
+                  f"Not run: target `{target.alias}` was disabled before this "
+                  f"request ran. Ask an admin why the target is disabled, then "
+                  f"submit the request again.")
             return
 
         # Fail closed for a known-but-unwired engine. A target tagged with an
@@ -602,7 +602,7 @@ def _run(request: dict, client: WebClient) -> None:
         if not engines.is_executable(target.engine):
             _fail(client, request,
                   f"Target `{target.alias}` runs on the `{target.engine}` "
-                  f"engine, which the bot cannot execute yet.")
+                  f"engine. QueryHub cannot run queries on this engine yet.")
             return
 
         # Re-analyze the query NOW (instead of trusting the modal classification)
@@ -649,16 +649,15 @@ def _run(request: dict, client: WebClient) -> None:
         if not (admins.is_admin(requester) or requesters.is_allowed(requester)):
             _fail(
                 client, request,
-                "The requester's QueryHub access has been withdrawn, so this "
-                "query was not run.")
+                "Not run: the requester's QueryHub access was withdrawn.")
             return
         current_mode = teams.effective_mode_for_database(
             requester, target.id, request["database_name"])
         if current_mode is None or _AUTH_RANK[mode] > _AUTH_RANK[current_mode]:
             _fail(
                 client, request,
-                "Your access to this database changed after approval, so this "
-                "query was not run. Please re-submit if you still need it.")
+                "Not run: your access to this database changed after approval. "
+                "If you still need this query, submit it again.")
             return
 
         # Masking: the request row records what was ASKED for; whether it is
@@ -704,15 +703,15 @@ def _run(request: dict, client: WebClient) -> None:
                 _fail(
                     client, request,
                     f"Target `{target.alias}` is not ready for {mode.upper()} "
-                    f"queries (credentials not configured on the bot side). "
-                    f"Please contact the DBA team.",
+                    f"queries. Its {mode.upper()} credentials are not "
+                    f"configured in QueryHub. Contact the DBA team.",
                 )
                 return
             if password == _SENTINEL_PASSWORD:
                 _fail(
                     client, request,
                     f"Target `{target.alias}` is not ready yet. "
-                    f"Please contact the DBA team.",
+                    f"Contact the DBA team.",
                 )
                 return
 
@@ -732,10 +731,10 @@ def _run(request: dict, client: WebClient) -> None:
                                       db_user, password)
             if replica.refused:
                 _fail(client, request,
-                      f"This query was sent to a read replica by choice, and it "
-                      f"cannot run there: {replica.refused}. It was not run on "
-                      f"the primary instead. Submit it again with Auto or "
-                      f"Primary to run it there.")
+                      f"Not run: the chosen read replica cannot run this query, "
+                      f"because {replica.refused}. QueryHub did not run it on "
+                      f"the primary instead. To run it there, submit it again "
+                      f"with Auto or Primary.")
                 return
         else:
             replica = replicas.choose(target, request, mode, db_user, password)
@@ -887,11 +886,12 @@ def _run(request: dict, client: WebClient) -> None:
             if bad is not None:
                 _escalate_to_dba(
                     client, request,
-                    "This request runs multiple statements (so the bot uses "
-                    "a transaction), but one of them can't run inside a "
-                    "transaction block (e.g. CREATE INDEX CONCURRENTLY, "
-                    "VACUUM). Submit it as a single-statement request, or "
-                    "the DBA team can run it out-of-band.",
+                    "This request has more than one statement, so QueryHub "
+                    "runs it in a transaction. One of the statements cannot "
+                    "run inside a transaction block, for example CREATE INDEX "
+                    "CONCURRENTLY or VACUUM. Submit that statement as its own "
+                    "request. Otherwise, the DBA team can run it outside "
+                    "QueryHub.",
                 )
                 return
 
@@ -1066,8 +1066,8 @@ def _run(request: dict, client: WebClient) -> None:
         msg = (
             f"Query exceeded the {_fmt_duration(timeout_sec)} statement "
             f"timeout ({timeout_sec}s, `bot_config.query_timeout_sec`) "
-            f"and was cancelled. Try narrowing the WHERE clause, adding "
-            f"a LIMIT, or asking the DBA team to raise the cap.\n"
+            f"and was cancelled. Narrow the WHERE clause, add a LIMIT, or "
+            f"ask the DBA team to raise the limit.\n"
             f"_Postgres said:_ {scrubbed}"
         )
         _fail(client, request, msg)
@@ -1151,9 +1151,9 @@ def _run(request: dict, client: WebClient) -> None:
         if isinstance(e, psycopg.OperationalError) and (
                 "timeout expired" in low or "timed out" in low):
             user_msg = (
-                f"Could not connect to the target within the 15s connect "
-                f"timeout. The DB may be down, unreachable from the bot "
-                f"host, or saturated. _Postgres said:_ {user_msg}"
+                f"QueryHub could not connect to the target within the 15s "
+                f"connect timeout. The database may be down, overloaded, or "
+                f"unreachable from the QueryHub host. _Postgres said:_ {user_msg}"
             )
         _fail(client, request, user_msg)
 
@@ -1291,8 +1291,8 @@ def _finalize(client: WebClient, request: dict, stmt_results: list,
         max_mb = max_csv_bytes // 1024 // 1024
         _fail(
             client, request,
-            f"Result would exceed the {max_mb} MB result-size limit. "
-            f"Add a LIMIT / narrow the columns, or ask the DBA team for "
+            f"The result would exceed the {max_mb} MB result-size limit. "
+            f"Add a LIMIT, select fewer columns, or ask the DBA team for "
             f"a larger export.",
         )
         _alert_admins_size_cap(client, request, max_mb)
@@ -2171,11 +2171,11 @@ def _pii_hint(masked: list | None, exempted: bool = False) -> str:
     parts = []
     if masked:
         label = ", ".join(masked)
-        parts.append(f"\n:lock: _Output PII-masked ({label}) — matching values "
-                     f"are partially hidden in the result file._")
+        parts.append(f"\n:lock: _Output PII-masked ({label}). Matching values "
+                     f"are partly hidden in the result file._")
     if exempted:
-        parts.append("\n:unlock: _PII masking skipped for (part of) this "
-                     "result — public-data exemption._")
+        parts.append("\n:unlock: _PII masking skipped for all or part of this "
+                     "result, because of a public-data exemption._")
     return "".join(parts)
 
 
@@ -2362,8 +2362,9 @@ def _complete_with_plan(
             "type": "context",
             "elements": [{
                 "type": "mrkdwn",
-                "text": (":scissors: _Plan truncated to fit Slack — raise "
-                         "`bot_config.explain_max_chars` or narrow the query._"),
+                "text": (":scissors: _Plan truncated to fit Slack. To see more, "
+                         "raise `bot_config.explain_max_chars` or narrow the "
+                         "query._"),
             }],
         })
 
@@ -2460,7 +2461,7 @@ def _complete_multi(
             suffix_bits.append(f"showing first {_fmt_count(cap)} — result was larger")
         if r.csv_path is not None:
             suffix_bits.append("→ csv")
-        suffix = f" ({'; '.join(suffix_bits)})" if suffix_bits else ""
+        suffix = f" ({', '.join(suffix_bits)})" if suffix_bits else ""
         summary_lines.append(f"  • Statement {r.index} ({r.leading}): {rc} {rs}{suffix}")
     summary = "\n".join(summary_lines)
 
@@ -2536,8 +2537,8 @@ def _escalate_to_dba(client: WebClient, request: dict, pg_error: str) -> None:
            else request.get("decided_by_name") or "an admin")
     status_line = (
         f":construction: Approved by {who}{_fmt_approve_ts(request)} — *DDL needs DBA "
-        f"manual execution*. Run the query out-of-band with elevated "
-        f"creds, then close out below.\n"
+        f"manual execution*. Run the query outside QueryHub with elevated "
+        f"credentials. Then close the request with the buttons below.\n"
         f"_Reason: {pg_error}_"
     )
     if request.get("bundle_id"):
@@ -2559,9 +2560,10 @@ def _escalate_to_dba(client: WebClient, request: dict, pg_error: str) -> None:
         notifications.dm_requester(
             client, request["requester_slack_id"],
             f":construction: *SQL query `#{request['id']}` needs DBA-level "
-            f"execution* — your DDL touches an object the bot's DDL role "
-            f"can't modify directly. The DBA team has been notified and "
-            f"will run it out-of-band. You'll be notified when it completes.\n"
+            f"execution*. Your DDL affects an object that the QueryHub DDL "
+            f"role cannot change directly. QueryHub told the DBA team, and the "
+            f"DBA team will run it outside QueryHub. You will get a message "
+            f"when it completes.\n"
             + notifications.request_context_md(request),
         )
 
@@ -2577,10 +2579,10 @@ def _alert_admins_size_cap(client: WebClient, request: dict, max_mb: int) -> Non
         text = (
             f":warning: SQL request `#{request['id']}` from "
             f"<@{request['requester_slack_id']}> hit the *{max_mb} MB* "
-            f"result-size limit on `{alias}/{request['database_name']}` — the "
-            f"result was too large for a Slack file, so it failed. Options: "
-            f"raise `bot_config.csv_size_mb_ceiling`, grant a row/size "
-            f"override, or an S3 export."
+            f"result-size limit on `{alias}/{request['database_name']}`. The "
+            f"result was too large for a Slack file, so the request failed. "
+            f"Options: raise `bot_config.csv_size_mb_ceiling`, grant a row or "
+            f"size override, or use an S3 export."
         )
         for admin in admins.list_active():
             try:
@@ -2654,7 +2656,7 @@ def _complete_with_delivery_warning(
             "UPDATE requests SET status = 'completed', completed_at = NOW(), "
             " error_message = %s "
             " WHERE id = %s AND status = 'executing'",
-            (f"change applied; result delivery failed: {message}", request["id"]),
+            (f"Change applied. Result delivery failed: {message}", request["id"]),
         )
         if cur.rowcount == 0:
             audit.log_in(cur, request["id"], "SYSTEM", "delivery guard",
@@ -2679,10 +2681,10 @@ def _complete_with_delivery_warning(
         if _deliver_result_to_requester(request):
             notifications.dm_requester(
                 client, request["requester_slack_id"],
-                f":warning: *SQL query `#{request['id']}` was applied* — but an "
-                f"error occurred delivering the result:\n```{message}```\n"
-                f"Your change is in effect; do *not* re-run it unless you mean "
-                f"to apply it again.")
+                f":warning: *SQL query `#{request['id']}` was applied*, but "
+                f"QueryHub could not deliver the result:\n```{message}```\n"
+                f"Your change is in effect. Do *not* run it again, unless you "
+                f"want to apply it a second time.")
     except Exception:
         log.exception("Request %s: delivery-warning notification failed "
                       "(row already completed)", request["id"])
@@ -2714,8 +2716,9 @@ def reconcile_orphaned_executing() -> int:
         (lease,))
     if not stuck:
         return 0
-    note = ("Orphaned: the process running this query stopped (restart / "
-            "crash / migration) before it finished. Re-submit if still needed.")
+    note = ("Orphaned: the process that ran this query stopped (restart, crash "
+            "or migration) before the query finished. If you still need it, "
+            "submit it again.")
     n = 0
     with db.transaction() as cur:
         for r in stuck:
@@ -2854,7 +2857,8 @@ def _import_run(imp: dict, client: WebClient) -> None:
     try:
         target = targets.get(imp["target_server_id"])
         if target is None:
-            _import_fail(client, imp, "Target server not found at execution time.")
+            _import_fail(client, imp, "QueryHub could not find the target "
+                                      "server at execution time.")
             return
         # CSV import is a Postgres-only COPY path; refuse any other engine.
         if target.engine != "postgres" or not engines.is_executable(target.engine):
@@ -2873,34 +2877,35 @@ def _import_run(imp: dict, client: WebClient) -> None:
             from . import csv_import as _ci_auth
             if not _ci_auth.can_import(requester):
                 _import_fail(client, imp,
-                             "Your permission to import was removed after this "
-                             "request was approved, so it was not run.")
+                             "Not run: your permission to import was removed "
+                             "after this request was approved.")
                 return
             if not teams.can_use_database(requester, target.id,
                                           imp["database_name"]):
                 _import_fail(client, imp,
-                             f"Your access to database `{imp['database_name']}` "
-                             f"on `{target.alias}` was removed after this "
-                             f"request was approved, so it was not run.")
+                             f"Not run: your access to database "
+                             f"`{imp['database_name']}` on `{target.alias}` was "
+                             f"removed after this request was approved.")
                 return
         try:
             db_user, password = targets.get_credentials(target.id, "ddl")
         except LookupError:
             _import_fail(client, imp,
                          f"Target `{target.alias}` has no DDL credentials "
-                         f"configured (required for import). Contact the DBA team.")
+                         f"configured, and an import needs them. Contact the "
+                         f"DBA team.")
             return
         if password == _SENTINEL_PASSWORD:
             _import_fail(client, imp,
                          f"Target `{target.alias}` is not ready yet. "
-                         f"Please contact the DBA team.")
+                         f"Contact the DBA team.")
             return
 
         csv_path = Path(imp["csv_file_path"])
         if not csv_path.exists():
             _import_fail(client, imp,
-                         "Uploaded CSV is no longer available (it may have "
-                         "expired). Re-submit the import.")
+                         "The uploaded CSV is no longer available. It may have "
+                         "expired. Submit the import again.")
             return
 
         # column_defs (user-supplied typed schema) wins over the all-TEXT

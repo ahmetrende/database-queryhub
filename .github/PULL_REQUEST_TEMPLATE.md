@@ -1,8 +1,8 @@
-<!-- Thanks for contributing to QueryHub. Keep PRs focused and small. -->
+<!-- Keep PRs small and focused. Thanks for contributing to QueryHub. -->
 
 ## What & why
 
-<!-- What does this change and why? Link any related issue: Fixes #123 -->
+<!-- What does this PR change, and why? Link any related issue: Fixes #123 -->
 
 ## Type
 
@@ -16,13 +16,13 @@
 
 - [ ] `ruff check src tests scripts` passes
 - [ ] `pytest` passes
-- [ ] Added/updated tests for the change
+- [ ] Added or updated tests for the change
 - [ ] No secrets, real hostnames, account IDs, or personal data in the diff
-- [ ] Docs updated if behavior changed (README / docs/)
+- [ ] Updated the docs (README / docs/) if behavior changed
 
 ## Security note
 
-<!-- Does this touch the trust chain — query safety, tier classification,
-     credentials, approval, masking, or audit? If so, describe the impact
-     and how you verified it. Do NOT post exploit details in a public PR;
-     see SECURITY.md for private disclosure. -->
+<!-- Does this PR affect the trust chain: query safety, tier classification,
+     credentials, approval, masking, or audit? If yes, describe the impact
+     and how you verified it. Do NOT post exploit details in a public PR.
+     For private disclosure, see SECURITY.md. -->

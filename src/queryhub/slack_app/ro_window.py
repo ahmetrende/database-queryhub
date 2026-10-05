@@ -52,7 +52,7 @@ def is_valid_window(minutes: int) -> bool:
 
 
 def _scope_label(target_alias: str, database_name: str | None) -> str:
-    return f"`{target_alias}`" + (f" / `{database_name}`" if database_name else " (all dbs)")
+    return f"`{target_alias}`" + (f" / `{database_name}`" if database_name else " (all databases)")
 
 
 def nudge_blocks(
@@ -75,9 +75,9 @@ def nudge_blocks(
             "elements": [{
                 "type": "mrkdwn",
                 "text": (
-                    f":package: You've run *{count}* reads in {window_min} min — "
-                    "switch to *Batch* mode (below) to submit several in one "
-                    "approval round."
+                    f":package: You ran *{count}* reads in {window_min} min. "
+                    "To submit several queries in one approval round, use "
+                    "*Batch* mode below."
                 ),
             }],
         }]
@@ -89,18 +89,17 @@ def nudge_blocks(
         {
             "type": "header",
             "text": {"type": "plain_text",
-                     "text": ":zap: Running a lot of reads?", "emoji": True},
+                     "text": ":zap: Skip the approval wait for reads", "emoji": True},
         },
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    f"You've run *{count}* read queries in the last {window_min} "
-                    f"min. Skip the per-query approval wait — get a *{win_label} "
-                    f"read-only auto-approve* window for "
-                    f"{_scope_label(target_alias, database_name)}. RO queries "
-                    "there then dispatch immediately until it expires."
+                    f"You ran *{count}* read queries in the last {window_min} "
+                    f"min. Request a *{win_label} read-only auto-approve* window "
+                    f"for {_scope_label(target_alias, database_name)}. Until the "
+                    "window ends, RO queries there run immediately."
                 ),
             },
         },
@@ -124,7 +123,7 @@ def nudge_blocks(
             "type": "context",
             "elements": [{
                 "type": "mrkdwn",
-                "text": (":package: Or switch to *Batch* mode (below) to submit "
+                "text": (":package: Or use *Batch* mode below to submit "
                          "several reads in one approval round."),
             }],
         },
@@ -144,7 +143,7 @@ def active_waivers_block(scopes: list[dict], limit: int = 3) -> dict:
     """
     parts = []
     for s in scopes[:limit]:
-        where = ("every connection" if s["alias"] is None
+        where = ("every target" if s["alias"] is None
                  else _scope_label(s["alias"], s["database"]))
         if s["alias"] is None and s.get("except"):
             where += " except " + ", ".join(f"`{a}`" for a in s["except"])
@@ -153,13 +152,15 @@ def active_waivers_block(scopes: list[dict], limit: int = 3) -> dict:
     more = len(scopes) - limit
     if more > 0:
         parts.append(f"and {more} more")
+    # " · " and not "; " between scopes: STE has no semicolon, and a comma
+    # would collide with the commas inside one scope's except-list.
     return {
         "type": "context",
         "elements": [{
             "type": "mrkdwn",
-            "text": (":zap: *Auto-approve active* on " + "; ".join(parts) + ". "
-                     "Queries there at or below that tier dispatch immediately; "
-                     "anything else still waits for approval."),
+            "text": (":zap: *Auto-approve active* on " + " · ".join(parts) + ". "
+                     "Queries there at or below that tier run immediately. "
+                     "All other queries still wait for approval."),
         }],
     }
 
@@ -177,8 +178,8 @@ def request_cta_blocks() -> list[dict]:
     return [{
         "type": "section",
         "text": {"type": "mrkdwn",
-                 "text": ":zap: *Read-only auto-approve* — skip per-query "
-                         "approval on a target for a set window."},
+                 "text": ":zap: *Read-only auto-approve.* Skip the approval of "
+                         "each read query on a target, for a set time window."},
         "accessory": {
             "type": "button",
             "action_id": ACTION_OPEN,
@@ -237,10 +238,10 @@ def request_modal(
                 "text": {
                     "type": "mrkdwn",
                     "text": (
-                        ":zap: *Read-only auto-approve window.* While active, your "
-                        "SELECT queries on the chosen target dispatch immediately "
-                        "(writes still need approval). An admin approves this "
-                        "request first."
+                        ":zap: *Read-only auto-approve window.* While the window "
+                        "is active, your SELECT queries on the chosen target run "
+                        "immediately. Writes still need approval. An admin must "
+                        "approve this request first."
                     ),
                 },
             },
@@ -271,7 +272,8 @@ def request_modal(
                     "multiline": True,
                     "min_length": 5,
                     "placeholder": {"type": "plain_text",
-                                    "text": "e.g. investigating ticket PASS-123; many lookups on this DB"},
+                                    "text": "Example: investigating ticket PASS-123, "
+                                            "many lookups on this DB"},
                 },
             },
         ],
@@ -288,9 +290,10 @@ def admin_dm_blocks(req: dict, target_alias: str) -> list[dict]:
                 "type": "mrkdwn",
                 "text": (
                     f":zap: *Auto-approve window request* #{req['id']}\n"
-                    f"<@{req['requester_slack_id']}> wants *{req['max_tier'].upper()}* "
-                    f"auto-approve for *{win_label}* on "
-                    f"{_scope_label(target_alias, req.get('database_name'))}."
+                    f"<@{req['requester_slack_id']}> requests *{req['max_tier'].upper()}* "
+                    f"auto-approve on "
+                    f"{_scope_label(target_alias, req.get('database_name'))} "
+                    f"for *{win_label}*."
                 ),
             },
         },

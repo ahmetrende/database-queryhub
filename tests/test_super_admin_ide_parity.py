@@ -36,7 +36,7 @@ KILLS = [
 @pytest.mark.parametrize("sql", KILLS)
 def test_everyone_else_is_still_refused(sql):
     r = qs.analyze(sql)
-    assert r.blocked and "is blocked by the bot's safety policy" in r.blockers[0]
+    assert r.blocked and "is blocked by the QueryHub safety policy" in r.blockers[0]
 
 
 @pytest.mark.parametrize("sql", KILLS)

@@ -51,8 +51,9 @@ def blocked_ephemeral_blocks() -> list[dict]:
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    ":lock: You don't have access to any database targets yet.\n"
-                    "Use the button below to request access — admins will review."
+                    ":lock: You do not have access to any database target yet.\n"
+                    "To ask for access, click *Request access*. An admin reviews "
+                    "each request."
                 ),
             },
         },
@@ -86,9 +87,9 @@ def build_request_modal() -> dict:
                 "text": {
                     "type": "mrkdwn",
                     "text": (
-                        "Tell admins which target / database you need and what "
-                        "you want to run. They'll review and grant if "
-                        "appropriate."
+                        "Tell the admins which target and database you need. "
+                        "Tell them what you want to run. An admin reviews the "
+                        "request and grants access if it is appropriate."
                     ),
                 },
             },
@@ -107,11 +108,11 @@ def build_request_modal() -> dict:
                 "type": "input",
                 "block_id": B_DATABASE,
                 "optional": True,
-                "label": {"type": "plain_text", "text": "Database (leave blank for default)"},
+                "label": {"type": "plain_text", "text": "Database (leave empty to use the default)"},
                 "element": {
                     "type": "plain_text_input",
                     "action_id": A_DATABASE,
-                    "placeholder": {"type": "plain_text", "text": "e.g. payment_db"},
+                    "placeholder": {"type": "plain_text", "text": "Example: payment_db"},
                 },
             },
             {
@@ -244,7 +245,7 @@ def admin_dm_blocks(access_request: dict, target: targets.TargetServer | None,
             "type": "context",
             "elements": [{
                 "type": "mrkdwn",
-                "text": ":page_facing_up: _The attempted SQL is attached as a snippet in the thread below._",
+                "text": ":page_facing_up: _The thread below has the attempted SQL as a snippet._",
             }],
         })
 
@@ -304,12 +305,12 @@ def admin_dm_blocks(access_request: dict, target: targets.TargetServer | None,
         "text": {
             "type": "mrkdwn",
             "text": (
-                ":wrench: *Approve below auto-grants* the requester per-user "
-                "access at the requested tier (default RO) for the listed "
-                "database. Prefer a *team-level* grant instead? Run the SQL "
-                "below first — the auto-grant then only adds a narrower or "
-                "equal per-user row. For a *new* team see "
-                "`deploy/team_admin_templates.sql`."
+                ":wrench: *Approve* (below) grants the requester per-user "
+                "access automatically, at the requested tier (default RO), "
+                "for the listed database. To give a *team-level* grant "
+                "instead, run the SQL below first. The automatic grant then "
+                "adds only a per-user row that is narrower or equal. For a "
+                "*new* team, see `deploy/team_admin_templates.sql`."
             ),
         },
     })
@@ -333,13 +334,13 @@ def admin_dm_blocks(access_request: dict, target: targets.TargetServer | None,
                     "text": {
                         "type": "mrkdwn",
                         "text": (
-                            "Approving creates the per-user grant for this "
-                            "request automatically (requested tier, listed "
-                            "database) and notifies the user."
+                            "Approve creates the per-user grant for this "
+                            "request automatically, at the requested tier, for "
+                            "the listed database. Then it notifies the user."
                         ),
                     },
                     "confirm": {"type": "plain_text", "text": "Yes, approve"},
-                    "deny": {"type": "plain_text", "text": "Wait"},
+                    "deny": {"type": "plain_text", "text": "Cancel"},
                 },
             },
             {

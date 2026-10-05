@@ -75,7 +75,7 @@ def test_a_target_they_cannot_query_is_refused_by_name_and_nothing_is_written(en
     assert e.value.status_code == 409
     [r] = e.value.detail["refused"]
     assert r["target"] == "prod-ledger/ledger"
-    assert "prod-ledger/ledger" in r["reason"] and "grant access first" in r["reason"]
+    assert "prod-ledger/ledger" in r["reason"] and "Grant access first" in r["reason"]
     # The form marks the row it came from with these two.
     assert (r["connectionId"], r["databaseId"]) == ("prod-ledger", "ledger")
     assert env.cur.sql == []
@@ -87,7 +87,7 @@ def test_a_tier_above_what_they_hold_there_is_refused(env):
         _bulk(tier="rw")
     [r] = e.value.detail["refused"]
     assert r["target"] == "prod-ledger/ledger"
-    assert "only run RO on prod-ledger/ledger" in r["reason"]
+    assert "run only RO on prod-ledger/ledger" in r["reason"]
     assert env.cur.sql == []
 
 

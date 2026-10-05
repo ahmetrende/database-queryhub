@@ -34,9 +34,10 @@ def blocks(hold: dict) -> list[dict]:
                 "type": "mrkdwn",
                 "text": (
                     f":warning: *The IDP sync wants to disable {n} people*\n"
-                    f"The panel's list leaves out {n} people who can use QueryHub "
-                    f"today. That is more than the limit of {hold['limit_at_hold']}, "
-                    "so nothing has changed yet.\n*Do you approve?*"
+                    f"The panel's list does not include {n} people who can use "
+                    f"QueryHub today. That is more than the limit of "
+                    f"{hold['limit_at_hold']}, so QueryHub did not change anything "
+                    "yet.\n*Do you approve?*"
                 ),
             },
         },
@@ -45,8 +46,8 @@ def blocks(hold: dict) -> list[dict]:
             "type": "context",
             "elements": [{
                 "type": "mrkdwn",
-                "text": ("Approve lets the panel's next sync disable these people. "
-                         "Reject keeps this list blocked until it changes."),
+                "text": ("*Approve* lets the panel's next sync disable these people. "
+                         "*Reject* blocks this list until the list changes."),
             }],
         },
         {
@@ -77,7 +78,7 @@ def decided_text(hold: dict, *, approved: bool, actor_id: str) -> str:
         return (f":white_check_mark: *Approved* by <@{actor_id}>. The panel's next "
                 f"sync will disable these {n} people.")
     return (f":no_entry: *Rejected* by <@{actor_id}>. This list of {n} people stays "
-            "blocked until it changes.")
+            "blocked until the list changes.")
 
 
 def already_text(status: str) -> str:

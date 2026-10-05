@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 
 TIER_LABELS = {"ro": "RO — read only",
-               "rw": "RW — read + write",
+               "rw": "RW — read and write",
                "ddl": "DDL — schema changes"}
 
 # ---- grant modal ----
@@ -89,13 +89,13 @@ def grant_modal(
         "type": "multi_external_select", "action_id": A_TARGET,
         "min_query_length": 0,
         "placeholder": {"type": "plain_text",
-                        "text": "Type to search; pick one or more"}}
+                        "text": "Type to search. Pick one or more."}}
     if target_initial_options:
         target_element["initial_options"] = target_initial_options
 
     reason_element: dict = {"type": "plain_text_input", "action_id": A_REASON,
                             "placeholder": {"type": "plain_text",
-                                            "text": "e.g. onboarding to the auth team"}}
+                                            "text": "Example: onboarding to the auth team"}}
     if reason:
         reason_element["initial_value"] = reason
 
@@ -140,11 +140,11 @@ def grant_modal(
                 # Empty = all databases.
                 "type": "input", "block_id": B_DBS, "optional": True,
                 "label": {"type": "plain_text",
-                          "text": "Databases (leave empty = all databases)"},
+                          "text": "Databases (leave empty for all databases)"},
                 "element": {"type": "multi_external_select", "action_id": A_DBS,
                             "min_query_length": 0,
                             "placeholder": {"type": "plain_text",
-                                            "text": "Pick target(s) first, then choose databases"}},
+                                            "text": "First pick the target(s). Then pick the databases."}},
             },
             {
                 "type": "input", "block_id": B_REASON, "optional": True,
@@ -209,8 +209,8 @@ def revoke_modal(*, selected_user: str | None = None,
     blocks: list[dict] = [
         {"type": "actions", "block_id": B_REVOKE_USER, "elements": [picker]},
         {"type": "context", "elements": [{"type": "mrkdwn",
-            "text": "Only users with active grants are listed. Pick one to "
-                    "see their grants, then Revoke any of them."}]},
+            "text": "This list shows only users with active grants. Pick a user "
+                    "to see their grants. To revoke a grant, click *Revoke*."}]},
     ]
     if selected_user and not grants:
         blocks.append({"type": "section", "text": {

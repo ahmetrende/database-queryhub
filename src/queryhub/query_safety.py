@@ -149,11 +149,11 @@ BANNED_LEADING_REASONS: dict[str, str] = {
     "COPY":        "COPY is not allowed. Use SELECT to read or INSERT to write.",
     "RESET":       "Session config (RESET) is not allowed.",
     "DISCARD":     "DISCARD is not allowed.",
-    "BEGIN":       "Don't include BEGIN — the bot wraps your query in a transaction.",
-    "START":       "Don't include START TRANSACTION — the bot wraps your query in a transaction.",
-    "COMMIT":      "Don't include COMMIT — the bot wraps your query in a transaction.",
-    "END":         "Don't include END — the bot wraps your query in a transaction.",
-    "ROLLBACK":    "Don't include ROLLBACK — the bot wraps your query in a transaction.",
+    "BEGIN":       "Remove BEGIN. QueryHub runs your query in its own transaction.",
+    "START":       "Remove START TRANSACTION. QueryHub runs your query in its own transaction.",
+    "COMMIT":      "Remove COMMIT. QueryHub runs your query in its own transaction.",
+    "END":         "Remove END. QueryHub runs your query in its own transaction.",
+    "ROLLBACK":    "Remove ROLLBACK. QueryHub runs your query in its own transaction.",
     "SAVEPOINT":   "Savepoints are not allowed.",
     "RELEASE":     "RELEASE is not allowed.",
     "NOTIFY":      "Async messaging (NOTIFY) is not allowed.",
@@ -348,10 +348,10 @@ class SafetyReport:
 # sqlparse reads a string literal as a single token however long it is. Only for
 # engines where the rewrite is plain SQL the user can type.
 _ONE_VALUE_LIST = {
-    "postgres": "or pass the list as one array value: "
-                "`WHERE id = ANY('{1,2,3}'::bigint[])`",
-    "mssql": "or pass the list as one string: "
-             "`WHERE id IN (SELECT value FROM STRING_SPLIT('1,2,3', ','))`",
+    "postgres": "You can also pass the list as one array value: "
+                "`WHERE id = ANY('{1,2,3}'::bigint[])`.",
+    "mssql": "You can also pass the list as one string: "
+             "`WHERE id IN (SELECT value FROM STRING_SPLIT('1,2,3', ','))`.",
 }
 
 
@@ -366,14 +366,14 @@ def _too_big_to_check(detail: str, engine: str) -> str:
     """
     if "number of tokens" in detail:
         tip = _ONE_VALUE_LIST.get(engine)
-        return ("This statement is too long to check. One statement can be at "
-                "most 10,000 SQL tokens, which is about 3,000 values in an "
-                "`IN (...)` list. Split it into several statements in the same "
-                "script" + (f", {tip}." if tip else "."))
-    return ("This statement is nested too deeply to check: more than 100 levels "
-            "of brackets, or a chain of more than 100 operators such as `+`, "
-            "`||` or `=`. Split it into smaller statements, or build a long "
-            "string with `concat(a, b, c)` in place of `a || b || c`.")
+        return ("This statement is too long to check. A statement can have at "
+                "most 10,000 SQL tokens, about 3,000 values in an `IN (...)` "
+                "list. Split it into several statements in the same script."
+                + (f" {tip}" if tip else ""))
+    return ("This statement is nested too deeply to check. It has more than 100 "
+            "levels of brackets, or a chain of more than 100 operators such as "
+            "`+`, `||` or `=`. Split it into smaller statements. To build a "
+            "long string, use `concat(a, b, c)` in place of `a || b || c`.")
 
 
 def analyze(sql: str, engine: str = "postgres",
@@ -395,10 +395,11 @@ def analyze(sql: str, engine: str = "postgres",
     silenced = _silences_audit(sql)
     if silenced:
         report.blockers.append(
-            f"Changing the `{silenced}` logging setting is blocked, including "
-            f"for a super-admin. This path exists to leave an audit trail, and "
-            f"a statement that turns logging off would make that voluntary. "
-            f"Change it out-of-band if you mean to.")
+            f"Changing the `{silenced}` logging setting is blocked for every "
+            f"user, super-admins included. The audit trail is the reason to run "
+            f"SQL through QueryHub. A statement that stops logging would make "
+            f"that trail optional. If you intend this change, make it outside "
+            f"QueryHub.")
         return report
     # Per-engine classification. Each spec field that is None falls back to
     # the Postgres module constant below, so the postgres path is
@@ -448,27 +449,28 @@ def analyze(sql: str, engine: str = "postgres",
     if bad_literal is not None:
         # E'...' is a PostgreSQL extension; suggesting it on SQL Server would
         # send the user to a syntax error.
-        escape_hint = ("Escape a quote as '' , or use an E'...' literal, so "
-                       "what is reviewed is exactly what runs."
+        escape_hint = ("Escape a quote as '', or use an E'...' literal. Then "
+                       "the reviewed SQL is exactly the SQL that runs."
                        if spec.name == "postgres" else
-                       "Escape a quote as '' so what is reviewed is exactly "
-                       "what runs.")
+                       "Escape a quote as ''. Then the reviewed SQL is exactly "
+                       "the SQL that runs.")
         report.blockers.append(
-            "Statement structure is ambiguous — the SQL parses differently "
-            "than this engine would read it (a backslash before a quote inside "
-            f"the literal {bad_literal[:40]!r}). Under this server a backslash "
-            "in a literal is an ordinary character, so the quote after it CLOSES "
-            "the string and everything following can end up commented out — "
-            "including a WHERE clause. " + escape_hint)
+            "Statement structure is ambiguous: QueryHub's parser and this "
+            "engine would read this SQL differently. The cause is a backslash "
+            f"before a quote inside the literal {bad_literal[:40]!r}. On this "
+            "server, a backslash in a literal is an ordinary character. So the "
+            "quote after the backslash closes the string. The text after that "
+            "quote can become a comment, including a WHERE clause. "
+            + escape_hint)
         return report
 
     if _statement_count_disagrees(sql, spec):
         report.blockers.append(
-            "Statement structure is ambiguous — the SQL parses differently "
-            "than this engine would read it (usually a backslash inside a "
-            "string literal). Rewrite the literal without backslash escapes, "
-            "or split the statements explicitly, so what is reviewed is "
-            "exactly what runs.")
+            "Statement structure is ambiguous: QueryHub's parser and this "
+            "engine would read this SQL differently. The usual cause is a "
+            "backslash inside a string literal. Rewrite the literal without "
+            "backslash escapes, or split the statements explicitly. Then the "
+            "reviewed SQL is exactly the SQL that runs.")
         return report
 
     # set_config() is SET by another name. The SET branch below only runs when
@@ -530,8 +532,8 @@ def analyze(sql: str, engine: str = "postgres",
         # past the per-engine allow-list.
         if read_only and upper not in _READ_ONLY_LEADING:
             report.blockers.append(
-                f"This target's engine is read-only — only SELECT / WITH "
-                f"queries are allowed here (got `{leading}`)."
+                f"This target's engine is read-only. It accepts only SELECT "
+                f"and WITH queries, and this statement starts with `{leading}`."
             )
             return report
 
@@ -543,8 +545,8 @@ def analyze(sql: str, engine: str = "postgres",
         if upper not in allowed_leading and not (unrestricted
                                                  and upper in SUPER_ADMIN_LEADING):
             report.blockers.append(
-                f"Unrecognized SQL: leading word '{leading}' is not allowed. "
-                f"Did you mistype a keyword like UPDATE / DELETE / SELECT?"
+                f"Unrecognized SQL: the leading word '{leading}' is not allowed. "
+                f"Check for a mistyped keyword, such as UPDATE, DELETE or SELECT."
             )
             return report
 
@@ -586,8 +588,8 @@ def analyze(sql: str, engine: str = "postgres",
                 if not _explain_wraps_read(stripped):
                     report.blockers.append(
                         "EXPLAIN ANALYZE is allowed only for read queries "
-                        "(SELECT / WITH). It would EXECUTE a write or DDL "
-                        "statement here — submit that as a normal request."
+                        "(SELECT or WITH). Here it would run a write or DDL "
+                        "statement. Submit that statement as a normal request."
                     )
                     return report
                 # ANALYZE executes the inner query. sqlglot parses the whole
@@ -600,7 +602,8 @@ def analyze(sql: str, engine: str = "postgres",
                 from . import ast_safety as _ast
                 _inner = _explain_inner(_raw_body(stmt))
                 _inner_blockers = _ast.check(_inner, engine=engine) if _inner else [
-                    "EXPLAIN ANALYZE target could not be parsed."]
+                    "QueryHub could not parse the statement inside EXPLAIN "
+                    "ANALYZE."]
                 if _inner_blockers:
                     report.blockers.extend(_inner_blockers)
                     return report
@@ -657,13 +660,13 @@ def analyze(sql: str, engine: str = "postgres",
             body = _raw_body(stmt)
             if upper in IRREVERSIBLE_LEADING:
                 report.confirmations.append(
-                    f"{upper} cannot be undone — the objects and every row in "
-                    f"them are gone once this runs.")
+                    f"{upper} cannot be undone. When this runs, the objects and "
+                    f"every row in them are gone.")
             elif _ALTER_DROPS_RE.search(body):
                 what = _ALTER_DROPS_RE.search(body).group(1).upper()
                 report.confirmations.append(
-                    f"This drops a {what.lower()}; a dropped column takes its "
-                    f"data with it.")
+                    f"This drops a {what.lower()}. Dropping a column also "
+                    f"deletes its data.")
 
         # MERGE is a write whose row selector is the ON condition, not a WHERE
         # clause, so it slipped past both write guards below: `MERGE INTO t
@@ -674,16 +677,16 @@ def analyze(sql: str, engine: str = "postgres",
             on_text = _extract_merge_on_text(sql, spec)
             if on_text is None:
                 if _stop_or_confirm(
-                        "MERGE without an ON condition is blocked — the ON "
-                        "condition is what limits the rows it changes.",
+                        "MERGE without an ON condition is blocked. The ON "
+                        "condition limits the rows that a MERGE changes.",
                         "This MERGE has no ON condition, so it can touch every "
                         "row it matches."):
                     return report
             elif _where_is_always_true(on_text):
                 if _stop_or_confirm(
-                        "MERGE with an always-true ON condition is blocked "
-                        "(e.g. `ON TRUE`, `ON 1=1`). The ON condition must "
-                        "constrain the rows actually affected.",
+                        "MERGE with an always-true ON condition is blocked, "
+                        "for example `ON TRUE` or `ON 1=1`. The ON condition "
+                        "must limit the rows that the MERGE changes.",
                         "This MERGE's ON condition is always true, so it "
                         "touches every row."):
                     return report
@@ -693,16 +696,17 @@ def analyze(sql: str, engine: str = "postgres",
             where_text = _extract_where_text(stmt)
             if where_text is None:
                 if _stop_or_confirm(
-                        f"{upper} without WHERE clause is blocked. Add a "
-                        f"WHERE filter that targets specific rows.",
+                        f"{upper} without a WHERE clause is blocked. Add a "
+                        f"WHERE clause that selects specific rows.",
                         f"This {upper} has no WHERE clause, so it rewrites "
                         f"every row in the table."):
                     return report
             elif _where_is_always_true(where_text):
                 if _stop_or_confirm(
-                        f"{upper} with always-true WHERE clause is blocked "
-                        f"(e.g. `WHERE 1=1`, `WHERE TRUE`, `OR 1=1`). WHERE "
-                        f"clause must constrain the rows actually affected.",
+                        f"{upper} with an always-true WHERE clause is blocked, "
+                        f"for example `WHERE 1=1`, `WHERE TRUE` or `OR 1=1`. "
+                        f"The WHERE clause must limit the rows that the "
+                        f"{upper} changes.",
                         f"This {upper}'s WHERE clause is always true, so it "
                         f"rewrites every row in the table."):
                     return report
@@ -770,8 +774,9 @@ def analyze(sql: str, engine: str = "postgres",
 
     if not any(s.kind != "set" for s in report.statements):
         report.blockers.append(
-            "No main query found — only SET statements provided. "
-            "Add at least one SELECT/INSERT/UPDATE/etc. after the SET prelude."
+            "No main query found: this request has only SET statements. Add "
+            "at least one SELECT, INSERT, UPDATE or other statement after the "
+            "SET statements."
         )
         return report
 
@@ -791,10 +796,11 @@ def analyze(sql: str, engine: str = "postgres",
     if len(main_tier_set) > 1:
         tiers = sorted(main_tier_set)
         report.blockers.append(
-            f"Mixed-tier submission rejected: this request contains "
-            f"statements at different permission tiers ({', '.join(tiers)}). "
-            f"Split into separate requests so each is reviewed at its own "
-            f"tier (e.g. one request for SELECTs, another for UPDATEs)."
+            f"Mixed-tier submission rejected: this request has statements at "
+            f"different permission tiers ({', '.join(tiers)}). Split it into "
+            f"separate requests, one for each tier. Then each request is "
+            f"reviewed at its own tier. For example, send the SELECTs in one "
+            f"request and the UPDATEs in another."
         )
         return report
 
@@ -827,12 +833,12 @@ def _ast_module():
 def _session_control_cost(functions: list[str]) -> str:
     """The confirmation a super-admin reads before a session-control call."""
     if "pg_terminate_backend" in functions:
-        return ("This calls pg_terminate_backend: the session it names is "
-                "disconnected, its open transaction is rolled back and that "
+        return ("This calls pg_terminate_backend. The session that it names is "
+                "disconnected, and its open transaction is rolled back. The "
                 "uncommitted data is lost.")
-    return ("This calls pg_cancel_backend: the query running in the session it "
-            "names is stopped, and a write in progress there is rolled back, "
-            "its data lost.")
+    return ("This calls pg_cancel_backend. The query that runs in the session it "
+            "names is stopped. A write in progress there is rolled back, and "
+            "its data is lost.")
 
 
 def required_mode(sql: str, engine: str = "postgres",
@@ -933,23 +939,26 @@ def _validate_set_value(param: str, raw: str) -> tuple[bool, str]:
     if param in _DURATION_MS_MAX:
         ms = _parse_pg_duration_ms(raw)
         if ms is None:
-            return False, f"`{param}` must be a duration (e.g. 5000, '30s', '2min')."
+            return False, (f"`{param}` must be a duration, for example 5000, "
+                           f"'30s' or '2min'.")
         if ms <= 0:
-            return False, (f"`{param} = {val}` would DISABLE the limit (0/unlimited "
-                           f"is not allowed — it removes a safety timeout).")
+            return False, (f"`{param} = {val}` would DISABLE the limit. A value "
+                           f"of 0 (unlimited) is not allowed, because it removes "
+                           f"a safety timeout.")
         if ms > _DURATION_MS_MAX[param]:
-            return False, (f"`{param} = {val}` exceeds the max "
-                           f"{_DURATION_MS_MAX[param]} ms allowed here.")
+            return False, (f"`{param} = {val}` exceeds the maximum of "
+                           f"{_DURATION_MS_MAX[param]} ms.")
         return True, ""
     if param in _SIZE_KB_MAX:
         kb = _parse_pg_size_kb(raw)
         if kb is None:
-            return False, f"`{param}` must be a size (e.g. 65536, '64MB', '1GB')."
+            return False, (f"`{param}` must be a size, for example 65536, "
+                           f"'64MB' or '1GB'.")
         if kb <= 0:
             return False, f"`{param} = {val}` must be a positive size."
         if kb > _SIZE_KB_MAX[param]:
-            return False, (f"`{param} = {val}` exceeds the max "
-                           f"{_SIZE_KB_MAX[param]} kB ({_SIZE_KB_MAX[param] // 1024} MB) here.")
+            return False, (f"`{param} = {val}` exceeds the maximum of "
+                           f"{_SIZE_KB_MAX[param]} kB ({_SIZE_KB_MAX[param] // 1024} MB).")
         return True, ""
     if param in _BOOL_PARAMS:
         if val.lower() not in {"on", "off", "true", "false", "yes", "no", "1", "0"}:
@@ -1006,26 +1015,27 @@ def _validate_set(stmt_text: str, allowed: set[str],
     text = _strip_sql_comments(stmt_text).strip().rstrip(";").strip()
     if re.match(r"^\s*SET\s+SESSION\b", text, flags=re.IGNORECASE):
         return False, "", (
-            "SET SESSION is not allowed. Use `SET LOCAL <param> = <value>` "
-            "(transaction-scoped) — bot rewrites plain `SET` to `SET LOCAL` "
-            "automatically."
+            "SET SESSION is not allowed. Use `SET LOCAL <param> = <value>`, "
+            "which lasts for one transaction. QueryHub changes a plain `SET` "
+            "to `SET LOCAL` automatically."
         )
 
     m = _SET_RE.match(text)
     if not m:
         return False, "", (
-            "Could not parse SET statement. Expected form: "
-            "`SET LOCAL <param> = <value>` (or plain `SET <param> = <value>` — "
-            "we add LOCAL for you)."
+            "QueryHub could not parse this SET statement. Use "
+            "`SET LOCAL <param> = <value>`, or a plain `SET <param> = <value>`. "
+            "QueryHub adds LOCAL to a plain SET."
         )
 
     param = m.group("param").lower()
     search_path = unrestricted and param == "search_path"
     if param not in allowed and not search_path:
         return False, "", (
-            f"SET parameter `{param}` is not allowed. Only a small set of "
-            f"safe tuning parameters (e.g. work_mem, statement_timeout) "
-            f"can be used here. Contact the DBA team if you need this one."
+            f"SET parameter `{param}` is not allowed. You can set only a small "
+            f"list of safe tuning parameters, for example work_mem and "
+            f"statement_timeout. If you need this parameter, contact the DBA "
+            f"team."
         )
 
     # Validate the VALUE (type + bound) so an allow-listed param can't be
@@ -1186,16 +1196,16 @@ def _check_set_config_calls(sql: str, spec, set_allowed=None) -> list[str]:
                     isinstance(a, exp.Literal) for a in args[:2]):
                 out.append(
                     "`set_config()` with a computed parameter or value is "
-                    "blocked — the safety policy can only validate literal "
+                    "blocked. The safety policy can check only literal "
                     "settings. Use `SET LOCAL <param> = <value>` instead.")
                 continue
             param = str(args[0].this).strip().lower()
             value = str(args[1].this)
             if param not in set_allowed:
                 out.append(
-                    f"`set_config('{param}', ...)` is blocked — `{param}` is "
-                    f"not in the allowed settings list (same policy as `SET "
-                    f"LOCAL {param}`). Allowed: "
+                    f"`set_config('{param}', ...)` is blocked: `{param}` is "
+                    f"not on the list of allowed settings. The same rule "
+                    f"applies to `SET LOCAL {param}`. Allowed: "
                     f"{', '.join(sorted(set_allowed))}.")
                 continue
             ok, err = _validate_set_value(param, value)

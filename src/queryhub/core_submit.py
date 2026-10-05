@@ -62,8 +62,8 @@ def kill_switch_on() -> bool:
 def kill_switch_message() -> str:
     return cfg.get_setting(
         "kill_switch_message",
-        ":construction: The SQL bot is temporarily disabled. Please try again "
-        "later or contact the DBA team.",
+        ":construction: QueryHub is temporarily disabled. Try again later, or "
+        "contact the DBA team.",
     )
 
 
@@ -190,8 +190,8 @@ def validate_submission(
     if lifecycle.is_draining():
         return Rejection(
             "draining",
-            "QueryHub is restarting for maintenance — please resubmit in a "
-            "moment.")
+            "QueryHub is restarting for maintenance. Submit your request again "
+            "in a moment.")
 
     # Per-user rate limit: cap in-flight requests (pending / approved /
     # scheduled / executing) per Slack user. Admins are exempt — they may
@@ -203,8 +203,8 @@ def validate_submission(
         if open_count >= max_open:
             return Rejection(
                 "rate_limit",
-                f"You already have {open_count} request(s) in flight "
-                f"(max {max_open}). Wait for them to complete, or ask "
+                f"You already have {open_count} open request(s), and the "
+                f"maximum is {max_open}. Wait for them to complete, or ask "
                 f"an admin to cancel some.")
 
     query = (query or "").strip()
@@ -223,15 +223,15 @@ def validate_submission(
     if query_safety.has_masked_password(query):
         return Rejection(
             "query",
-            "This statement's password was hidden when QueryHub stored it. "
-            "Type the password in again, then submit.")
+            "QueryHub hid this statement's password when it stored the "
+            "statement. Type the password again, then submit.")
 
     # Resolve the target first so the safety pass uses its engine: a
     # non-Postgres engine parses with its own sqlglot dialect + dangerous-
     # function blocklist, and a read-only engine rejects writes up front.
     target = targets.get(target_server_id)
     if target is None:
-        return Rejection("server", "Selected server is no longer available.")
+        return Rejection("server", "The selected server is no longer available.")
     # A read replica is reached through its primary, never picked: the primary
     # holds the grants, and its read-only requests use the replica on their own.
     if getattr(target, "replica_of", None) is not None:
@@ -239,8 +239,8 @@ def validate_submission(
         return Rejection(
             "server",
             f"`{target.alias}` is a read replica. Submit to "
-            f"`{primary.alias if primary else 'its primary'}`: read-only queries "
-            f"there run on the replica when it is healthy.")
+            f"`{primary.alias if primary else 'its primary'}` instead. Read-only "
+            f"queries there run on the replica when it is healthy.")
 
     # Whether the bulk-destructive refusals apply to this submitter.
     #
@@ -276,7 +276,7 @@ def validate_submission(
     if unmasked and not unrestricted:
         return Rejection(
             "unmasked",
-            "Only a super-admin can run a query with masking turned off.",
+            "Only a super-admin can run a query without masking.",
             reason="not_super_admin")
 
     # Choosing where a query runs is the same kind of affordance, refused the
@@ -368,8 +368,9 @@ def validate_submission(
             more = "" if len(known) <= 8 else f" (+{len(known) - 8} more)"
             return Rejection(
                 "database",
-                f"`{target.alias}` has no database named `{database_name}` — "
-                f"did it come from another server? It has: {sample}{more}.")
+                f"`{target.alias}` has no database named `{database_name}`. "
+                f"It may be a database from another server. Databases on "
+                f"`{target.alias}`: {sample}{more}.")
 
     # allowed_databases is None = no restriction; non-None set = whitelist.
     allowed_dbs = grant["allowed_databases"]
@@ -393,12 +394,13 @@ def validate_submission(
     if granted_mode is None or rank[required_mode] > rank[granted_mode]:
         if required_mode == "rw":
             msg = (f"You don't have *write* access on `{target.alias}`. "
-                   f"This is a read-only grant — contact your team lead or "
-                   f"the DBA team to request RW.")
+                   f"Your grant is read-only. To request RW, contact your team "
+                   f"lead or the DBA team.")
         else:  # ddl
             msg = (f"You don't have *DDL* access on `{target.alias}` "
-                   f"(CREATE/ALTER/DROP/TRUNCATE/VACUUM/...). DDL grants are "
-                   f"issued individually by the DBA team.")
+                   f"(CREATE, ALTER, DROP, TRUNCATE, VACUUM and similar). The "
+                   f"DBA team issues each DDL grant individually. To request "
+                   f"one, contact the DBA team.")
         return Rejection("query", msg, reason="tier_exceeds")
 
     # Mandatory justification for write/DDL queries (audit hygiene) — unless the
@@ -542,7 +544,7 @@ def validate_submission(
         if sched_for > now + timedelta(days=max_days):
             return Rejection(
                 "schedule_date",
-                f"Scheduled time exceeds the {max_days}-day max.")
+                f"Scheduled time exceeds the {max_days}-day maximum.")
 
     # Duplicate guard: same (user, target, database, query) already in
     # flight? Block the re-submit so the user doesn't accidentally create
@@ -563,8 +565,8 @@ def validate_submission(
             "query",
             f"You already have an active request "
             f"(#{dup['id']}, status={dup['status']}) with the same "
-            f"query on this target+database. Wait for it to "
-            f"complete, or cancel it before resubmitting.",
+            f"query on this target and database. Wait for it to "
+            f"complete, or cancel it before you submit again.",
             reason="duplicate")
 
     return Prepared(
@@ -610,7 +612,8 @@ def _chosen_replica(target, required_mode: str,
         if len(candidates) == 1:
             return candidates[0]["id"]
         return Rejection("run_on",
-                         f"Pick which replica — this connection has {len(candidates)}.",
+                         f"Choose one replica. This connection has "
+                         f"{len(candidates)} replicas.",
                          reason="replica_required")
     for r in candidates:
         if str(r["id"]) == wanted:
@@ -668,8 +671,8 @@ def _recheck_open_limits(
         if open_count >= max_open:
             return Rejection(
                 "rate_limit",
-                f"You already have {open_count} request(s) in flight "
-                f"(max {max_open}). Wait for them to complete, or ask "
+                f"You already have {open_count} open request(s), and the "
+                f"maximum is {max_open}. Wait for them to complete, or ask "
                 f"an admin to cancel some.")
 
     cur.execute(
@@ -689,8 +692,8 @@ def _recheck_open_limits(
             "query",
             f"You already have an active request "
             f"(#{dup['id']}, status={dup['status']}) with the same "
-            f"query on this target+database. Wait for it to "
-            f"complete, or cancel it before resubmitting.",
+            f"query on this target and database. Wait for it to "
+            f"complete, or cancel it before you submit again.",
             reason="duplicate")
     return None
 

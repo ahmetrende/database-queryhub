@@ -77,11 +77,11 @@ def _result_format_block(block_id: str, action_id: str,
     decision. Values are the canonical strings persisted to
     requests.result_format ('csv', 'xlsx') plus 'none' for wants_result=False."""
     options = [
-        {"text": {"type": "plain_text", "text": "Send me CSV"},
+        {"text": {"type": "plain_text", "text": "Send me a CSV file"},
          "value": "csv"},
-        {"text": {"type": "plain_text", "text": "Send me Excel (.xlsx)"},
+        {"text": {"type": "plain_text", "text": "Send me an Excel file (.xlsx)"},
          "value": "xlsx"},
-        {"text": {"type": "plain_text", "text": "No file — execution status only"},
+        {"text": {"type": "plain_text", "text": "No file. Send only the run status."},
          "value": "none"},
     ]
     initial = next((o for o in options if o["value"] == default), options[0])
@@ -519,9 +519,9 @@ def build_modal(target_id: int | None = None,
         "elements": [{
             "type": "mrkdwn",
             "text": (
-                ":bulb: Tip: type `/sql help` for inline commands. "
-                "Bookmark a query as a template (bottom of this form) "
-                "to re-use it later."
+                ":bulb: Tip: type `/sql help` to see the commands. "
+                "To use a query again later, save it as a template "
+                "at the bottom of this form."
             ),
         }],
     }
@@ -538,13 +538,13 @@ def build_modal(target_id: int | None = None,
         "optional": True,
         "dispatch_action": True,   # fire on select, not on submit
         "label": {"type": "plain_text",
-                  "text": "Load from saved template (optional)"},
+                  "text": "Load from a saved template (optional)"},
         "element": {
             "type": "external_select",
             "action_id": A_LOAD_TEMPLATE,
             "min_query_length": 0,
             "placeholder": {"type": "plain_text",
-                            "text": "Pick a saved query to start from"},
+                            "text": "Pick a saved template"},
         },
     }
 
@@ -556,7 +556,7 @@ def build_modal(target_id: int | None = None,
         "optional": True,
         "dispatch_action": True,
         "label": {"type": "plain_text",
-                  "text": "Load from recent history (optional)"},
+                  "text": "Load from your recent history (optional)"},
         "element": {
             "type": "external_select",
             "action_id": A_LOAD_HISTORY,
@@ -575,7 +575,7 @@ def build_modal(target_id: int | None = None,
         "optional": True,
         "dispatch_action": True,
         "label": {"type": "plain_text",
-                  "text": "⭐ Favorites — load a starred query"},
+                  "text": "⭐ Favorites: load a starred query"},
         "element": {
             "type": "external_select",
             "action_id": A_LOAD_FAVORITE,
@@ -644,7 +644,7 @@ def build_modal(target_id: int | None = None,
                 "type": "input",
                 "block_id": B_DATABASE,
                 "optional": True,
-                "label": {"type": "plain_text", "text": "Database (leave blank for default)"},
+                "label": {"type": "plain_text", "text": "Database (leave empty to use the default)"},
                 "element": {
                     "type": "external_select",
                     "action_id": db_action_id,
@@ -668,7 +668,7 @@ def build_modal(target_id: int | None = None,
                 "type": "input",
                 "block_id": B_QUERY_FILE,
                 "optional": True,
-                "label": {"type": "plain_text", "text": "...or upload a .sql file (instead of pasting)"},
+                "label": {"type": "plain_text", "text": "Or upload a .sql file (instead of pasting the query)"},
                 "element": {
                     "type": "file_input",
                     "action_id": A_QUERY_FILE,
@@ -699,8 +699,8 @@ def build_modal(target_id: int | None = None,
                 "optional": True,
                 "label": {"type": "plain_text", "text": "Justification"},
                 "hint": {"type": "plain_text",
-                         "text": "Required for write/DDL, unless an auto-approve "
-                                 "grant covers it. Optional for reads."},
+                         "text": "Required for write and DDL queries, unless an "
+                                 "auto-approve grant covers them. Optional for reads."},
                 "element": {
                     "type": "plain_text_input",
                     "action_id": A_JUSTIFICATION,
@@ -713,9 +713,10 @@ def build_modal(target_id: int | None = None,
                 "elements": [{
                     "type": "mrkdwn",
                     "text": (
-                        ":alarm_clock: *Schedule (optional).* Leave both empty "
-                        "to run as soon as approved. Pick a date *and* a time "
-                        "— interpreted in your Slack profile timezone."
+                        ":alarm_clock: *Schedule (optional).* To run the query "
+                        "immediately after approval, leave both fields empty. "
+                        "To schedule it, pick a date *and* a time. The time is "
+                        "in the timezone of your Slack profile."
                     ),
                 }],
             },
@@ -747,10 +748,10 @@ def build_modal(target_id: int | None = None,
                 "elements": [{
                     "type": "mrkdwn",
                     "text": (
-                        ":arrows_counterclockwise: *Quick start.* Pre-fill this "
-                        "form from a saved template or one of your recent "
-                        "queries. All optional — leave blank to ignore. "
-                        "(Favorites are at the top of the form.)"
+                        ":arrows_counterclockwise: *Quick start.* Fill this "
+                        "form from a saved template or from one of your recent "
+                        "queries. Both fields are optional. "
+                        "Your favorites are at the top of the form."
                     ),
                 }],
             },
@@ -762,9 +763,9 @@ def build_modal(target_id: int | None = None,
                 "elements": [{
                     "type": "mrkdwn",
                     "text": (
-                        ":bookmark_tabs: *Save as template.* Name this query as a "
-                        "reusable template to re-use later. Optional. "
-                        "(To favorite it, use the ⭐ under the query box.)"
+                        ":bookmark_tabs: *Save as template (optional).* Give this "
+                        "query a name to save it as a template for later use. "
+                        "To add it to your favorites, use the ⭐ box under the query."
                     ),
                 }],
             },
@@ -779,14 +780,14 @@ def build_modal(target_id: int | None = None,
                     "action_id": A_SAVE_TEMPLATE,
                     "max_length": 64,
                     "placeholder": {"type": "plain_text",
-                                    "text": "Template name — e.g. daily-active-users"},
+                                    "text": "Template name. Example: daily-active-users"},
                 },
             },
             {
                 "type": "input",
                 "block_id": B_TEMPLATE_SHARE,
                 "optional": True,
-                "label": {"type": "plain_text", "text": "Share with team"},
+                "label": {"type": "plain_text", "text": "Share with everyone"},
                 "element": {
                     "type": "checkboxes",
                     "action_id": A_TEMPLATE_SHARE,
@@ -907,7 +908,7 @@ def parse_submission(view_or_state: dict) -> dict:
         except (ValueError, TypeError):
             pass
     if not server_id_str:
-        raise ValueError("Submitted modal has no target server selected.")
+        raise ValueError("The submitted form has no target server.")
     server_id = int(server_id_str)
     # Database action_id is dynamic (carries a target_id suffix to bust the
     # Slack client's options cache when the target changes) — see
@@ -1053,7 +1054,7 @@ def _batch_item_blocks(
         "type": "input",
         "block_id": f"{BATCH_B_DATABASE}_{index}",
         "optional": True,
-        "label": {"type": "plain_text", "text": "Database (leave blank for default)"},
+        "label": {"type": "plain_text", "text": "Database (leave empty to use the default)"},
         "element": {
             "type": "external_select",
             "action_id": db_action_id,
@@ -1172,9 +1173,9 @@ def build_batch_modal(
             "elements": [{
                 "type": "mrkdwn",
                 "text": (
-                    f":package: *Batch mode* — submit up to {max_items} "
-                    "queries in one approval round. Justification and "
-                    "scheduling apply to the whole batch."
+                    f":package: *Batch mode.* Submit up to {max_items} "
+                    "queries in one approval round. The justification and "
+                    "the schedule apply to the whole batch."
                 ),
             }],
         },
@@ -1217,8 +1218,8 @@ def build_batch_modal(
             "type": "context",
             "elements": [{
                 "type": "mrkdwn",
-                "text": (f":no_entry_sign: Maximum of {max_items} items reached. "
-                         "Submit this batch first, then start another if needed."),
+                "text": (f":no_entry_sign: This batch has the maximum of {max_items} "
+                         "items. To add more, submit this batch and start a new one."),
             }],
         })
 
@@ -1231,16 +1232,16 @@ def build_batch_modal(
         # one bundle is one approval round, so a human reads this text.
         "optional": True,
         "label": {"type": "plain_text",
-                  "text": "Justification (applies to whole batch)"},
+                  "text": "Justification (for the whole batch)"},
         "hint": {"type": "plain_text",
-                 "text": "A batch goes to one approval round, so this is what "
-                         "the approver reads. Required if any query writes."},
+                 "text": "A batch goes to one approval round. The approver reads "
+                         "this text. Required if any query writes."},
         "element": {
             "type": "plain_text_input",
             "action_id": BATCH_A_JUSTIFICATION,
             "multiline": True,
             "placeholder": {"type": "plain_text",
-                            "text": "Why are these queries needed?"},
+                            "text": "Why do you need these queries?"},
         },
     }
     if justification:
@@ -1252,9 +1253,10 @@ def build_batch_modal(
         "elements": [{
             "type": "mrkdwn",
             "text": (
-                ":alarm_clock: *Schedule (optional, whole-batch).* Leave "
-                "both empty to run as soon as approved. Pick a date *and* "
-                "a time — interpreted in your Slack profile timezone."
+                ":alarm_clock: *Schedule (optional, for the whole batch).* To run "
+                "the batch immediately after approval, leave both fields empty. "
+                "To schedule it, pick a date *and* a time. The time is in the "
+                "timezone of your Slack profile."
             ),
         }],
     })
@@ -1487,21 +1489,22 @@ def build_import_modal() -> dict:
         {"text": {"type": "plain_text", "text": "Tab"},           "value": "tab"},
     ]
     mode_opts = [
-        {"text": {"type": "plain_text", "text": "New table (auto-create in dba)"},
+        {"text": {"type": "plain_text", "text": "New table (QueryHub creates it in dba)"},
          "value": IMPORT_MODE_NEW},
-        {"text": {"type": "plain_text", "text": "Existing dba.* table (append)"},
+        {"text": {"type": "plain_text", "text": "Existing dba.* table (add the rows to it)"},
          "value": IMPORT_MODE_EXISTING},
     ]
     persist_opts = [
-        {"text": {"type": "plain_text", "text": "Temporary — one-off / scratch"},
+        {"text": {"type": "plain_text", "text": "Temporary: for one-time or scratch work"},
          "description": {"type": "plain_text",
-             "text": "UNLOGGED: fastest load, but the data is WIPED if the DB "
-                     "restarts/crashes and is NOT backed up or replicated."},
+             # Slack allows 75 characters in an option description.
+             "text": "UNLOGGED: fastest. A crash or restart WIPES the data. "
+                     "No backup or replica."},
          "value": "temp"},
-        {"text": {"type": "plain_text", "text": "Permanent — keep the data"},
+        {"text": {"type": "plain_text", "text": "Permanent: keep the data"},
          "description": {"type": "plain_text",
-             "text": "LOGGED: a normal durable table — crash-safe, backed up, "
-                     "replicated. Slightly slower load."},
+             "text": "LOGGED: crash-safe, backed up, replicated. "
+                     "Slightly slower load."},
          "value": "perm"},
     ]
     return {
@@ -1512,19 +1515,20 @@ def build_import_modal() -> dict:
         "close": {"type": "plain_text", "text": "Cancel"},
         "blocks": [
             {"type": "context", "elements": [{"type": "mrkdwn",
-                "text": ":inbox_tray: Bulk-load a CSV into the *dba* schema. "
-                        "Admin approval required."}]},
+                "text": ":inbox_tray: Load a CSV file into the *dba* schema. "
+                        "An admin must approve the import."}]},
             {"type": "input", "block_id": B_IMPORT_SERVER,
              "label": {"type": "plain_text", "text": "Target server"},
              "element": {"type": "external_select", "action_id": A_IMPORT_SERVER,
                          "min_query_length": 0,
                          "placeholder": {"type": "plain_text", "text": "Pick a target"}}},
             {"type": "input", "block_id": B_IMPORT_DATABASE, "optional": True,
-             "label": {"type": "plain_text", "text": "Database (blank = target default)"},
+             "label": {"type": "plain_text",
+                       "text": "Database (leave empty to use the target's default)"},
              "element": {"type": "plain_text_input", "action_id": A_IMPORT_DATABASE,
-                         "placeholder": {"type": "plain_text", "text": "e.g. billing_service"}}},
+                         "placeholder": {"type": "plain_text", "text": "Example: billing_service"}}},
             {"type": "input", "block_id": B_IMPORT_FILE,
-             "label": {"type": "plain_text", "text": "CSV file (UTF-8, with header row)"},
+             "label": {"type": "plain_text", "text": "CSV file (UTF-8, with a header row)"},
              "element": {"type": "file_input", "action_id": A_IMPORT_FILE,
                          "filetypes": ["csv"], "max_files": 1}},
             {"type": "input", "block_id": B_IMPORT_TABLE_MODE,
@@ -1532,18 +1536,20 @@ def build_import_modal() -> dict:
              "element": {"type": "radio_buttons", "action_id": A_IMPORT_TABLE_MODE,
                          "initial_option": mode_opts[0], "options": mode_opts}},
             {"type": "input", "block_id": B_IMPORT_TABLE_NAME,
-             "label": {"type": "plain_text", "text": "Table name (in dba schema)"},
+             "label": {"type": "plain_text", "text": "Table name (in the dba schema)"},
              "element": {"type": "plain_text_input", "action_id": A_IMPORT_TABLE_NAME,
-                         "placeholder": {"type": "plain_text", "text": "e.g. import_balances_2026"}}},
+                         "placeholder": {"type": "plain_text",
+                                         "text": "Example: import_balances_2026"}}},
             {"type": "input", "block_id": B_IMPORT_COLDEFS, "optional": True,
              "label": {"type": "plain_text", "text": "Column types (optional, new table only)"},
              "element": {"type": "plain_text_input", "action_id": A_IMPORT_COLDEFS,
                          "multiline": True,
                          "placeholder": {"type": "plain_text",
-                             "text": "Blank = all TEXT. e.g. id int, name text, amount numeric(10,2)"}},
+                             "text": "Empty = all TEXT. Example: id int, name text, amount numeric(10,2)"}},
              "hint": {"type": "plain_text",
-                      "text": "Define types yourself instead of all-TEXT. Must list "
-                              "every CSV column in order. Type mismatch fails the load."}},
+                      "text": "Set the column types yourself instead of all TEXT. List "
+                              "every CSV column, in order. A type mismatch makes the "
+                              "load fail."}},
             {"type": "input", "block_id": B_IMPORT_DELIM,
              "label": {"type": "plain_text", "text": "Column delimiter"},
              "element": {"type": "radio_buttons", "action_id": A_IMPORT_DELIM,

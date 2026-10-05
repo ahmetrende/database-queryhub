@@ -136,8 +136,8 @@ def endpoint_request(body: EndpointRequestIn,
         open_n = access_requests.open_count_for(uid)
         if open_n >= max_open:
             raise deps._error(409, "conflict",
-                              f"You already have {open_n} pending access "
-                              f"request(s) (max {max_open}). Wait for the DBA "
+                              f"Refused: you already have {open_n} pending access "
+                              f"request(s). The limit is {max_open}. Wait for the DBA "
                               "team to review them.")
 
     # A picked row is authoritative: resolve it, and refuse rather than fall
@@ -152,7 +152,7 @@ def endpoint_request(body: EndpointRequestIn,
                               f"Unknown connection '{picked}'.")
         if t.id in grants.control_plane_target_ids():
             raise deps._error(400, "bad_request",
-                              "That connection cannot be requested.")
+                              "Refused: you cannot request access to that connection.")
         wanted = (body.database or "").strip()
         known = _catalog_databases(t.id)
         if wanted and known and wanted not in known:
@@ -208,8 +208,8 @@ def endpoint_request(body: EndpointRequestIn,
     ts = access.fan_out_admin_dms(_bot_client(), row, t, requested_server=server)
     if not admins_mod.list_active():
         raise deps._error(503, "server_error",
-                          "Your request was saved but there are no active "
-                          "admins to review it. Contact the DBA team.")
+                          "QueryHub saved your request, but no active admin "
+                          "can review it. Contact the DBA team.")
     return {"id": f"er_{row['id']}", "status": "submitted",
             "slackMessageTs": ts}
 

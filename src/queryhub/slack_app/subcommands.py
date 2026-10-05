@@ -40,7 +40,7 @@ def dispatch(text: str, user_id: str, client: WebClient, respond,
     parts = text.strip().split(maxsplit=1)
     if not parts:
         # Shouldn't reach here — caller checks text non-empty
-        _respond(respond, "Usage: `/sql help` for available commands.")
+        _respond(respond, "Run `/sql help` to see the commands.")
         return
     name = parts[0].lower()
     rest = parts[1] if len(parts) > 1 else ""
@@ -49,13 +49,13 @@ def dispatch(text: str, user_id: str, client: WebClient, respond,
         if cmd == name:
             if admin_only and not admins.is_admin(user_id):
                 _respond(respond,
-                         f":no_entry: `/sql {name}` is admin-only.")
+                         f":no_entry: Refused: `/sql {name}` is for admins only.")
                 return
             try:
                 fn(user_id, rest, client, respond, body or {})
             except Exception:
                 log.exception("sub-command /sql %s failed", name)
-                _respond(respond, f":x: `/sql {name}` failed unexpectedly. "
+                _respond(respond, f":x: `/sql {name}` failed with an unexpected error. "
                                   f"Check the bot logs.")
             return
 
@@ -64,8 +64,8 @@ def dispatch(text: str, user_id: str, client: WebClient, respond,
     close = difflib.get_close_matches(name, known, n=1, cutoff=0.5)
     hint = f"Did you mean `/sql {close[0]}`? " if close else ""
     _respond(respond,
-             f":question: Unknown sub-command `/sql {name}`. "
-             f"{hint}Run `/sql help` for the full list.")
+             f":question: `/sql {name}` is not a command. "
+             f"{hint}Run `/sql help` to see all commands.")
 
 
 # ---------- helpers ----------
@@ -150,7 +150,7 @@ def _handle_help(user_id, rest, client, respond, body):
         flag = " (admin)" if admin_only else ""
         lines.append(f"  /sql {cmd:<10s} {desc}{flag}")
     lines.append("")
-    lines.append("  /sql            Open the SQL request modal")
+    lines.append("  /sql            Open the SQL request form")
     _respond(respond, "*Available commands:*\n" + _code_block(lines))
 
 
@@ -175,8 +175,8 @@ def _handle_whoami(user_id, rest, client, respond, body):
 
     if row is None and not temp_grants:
         _respond(respond,
-                 ":information_source: You're not in the bot's user "
-                 "list yet. Contact the DBA team to be added.")
+                 ":information_source: You are not in the bot's user "
+                 "list yet. Ask the DBA team to add you.")
         return
 
     # row may be NULL but temp_grants set — synthesise a minimal display row.
@@ -215,7 +215,7 @@ def _handle_whoami(user_id, rest, client, respond, body):
         row["user_grants"], functools.cache(lambda: admins.is_super_admin(user_id)),
         _engine_lookup())
     lines.append(f"User grants : {', '.join(user_grants) if user_grants else '-'}")
-    _respond(respond, "*Your roles + grants:*\n" + _code_block(lines))
+    _respond(respond, "*Your roles and grants:*\n" + _code_block(lines))
 
 
 # ---------- /sql history ----------
@@ -292,7 +292,7 @@ def _handle_history(user_id, rest, client, respond, body):
 def _handle_roles(user_id, rest, client, respond, body):
     rows = db.fetch_all("SELECT * FROM p_metrics_who_can_what")
     if not rows:
-        _respond(respond, "_No users in the system._")
+        _respond(respond, "_There are no users in the system._")
         return
     header = f"{_trunc('NAME', 22)} {_trunc('SLACK_ID', 13)} ROLE / GRANTS"
     lines = [header]
@@ -321,7 +321,7 @@ def _handle_pending(user_id, rest, client, respond, body):
         " ORDER BY (r.status = 'pending') DESC, r.created_at"   # pending first, then oldest
     )
     if not rows:
-        _respond(respond, ":sparkles: _No in-flight requests right now._")
+        _respond(respond, ":sparkles: _There are no unfinished requests now._")
         return
 
     from datetime import datetime
@@ -339,12 +339,13 @@ def _handle_pending(user_id, rest, client, respond, body):
     MAX_DETAIL = 15
     blocks: list[dict] = [{
         "type": "section",
-        "text": {"type": "mrkdwn", "text": f"*In-flight requests ({len(rows)})* — pending first."},
+        "text": {"type": "mrkdwn",
+                 "text": f"*Unfinished requests ({len(rows)})*. Pending requests are first."},
     }]
     for i, r in enumerate(rows):
         if i >= MAX_DETAIL:
             blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
-                "text": f"_…and {len(rows) - MAX_DETAIL} more not shown._"}]})
+                "text": f"_This list does not show {len(rows) - MAX_DETAIL} more requests._"}]})
             break
         name = r["requester_name"] or r["requester_slack_id"]
         q = " ".join((r["query"] or "").split())        # collapse whitespace to one line
@@ -375,9 +376,10 @@ def _handle_pending(user_id, rest, client, respond, body):
         blocks.append({"type": "divider"})
 
     blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
-        "text": "_Acting decides the request and notifies the requester. Re-run `/sql pending` to refresh this list._"}]})
+        "text": "_Approve and Reject decide the request and notify the requester. "
+                "Run `/sql pending` again to refresh this list._"}]})
     respond({"response_type": "ephemeral",
-             "text": f"In-flight requests ({len(rows)})", "blocks": blocks})
+             "text": f"Unfinished requests ({len(rows)})", "blocks": blocks})
 
 
 # ---------- /sql kill (admin) ----------
@@ -391,8 +393,8 @@ def _handle_kill(user_id, rest, client, respond, body):
     # super — but an authority that differs by door is one nobody can reason
     # about, and this is the most consequential command in the product.
     if not admins.is_super_admin(user_id):
-        _respond(respond, ":lock: The kill switch is super-admin only. "
-                          "Ask a super-admin, or use the web Kill switch.")
+        _respond(respond, ":lock: Refused: only a super-admin can set the kill switch. "
+                          "Ask a super-admin, or use the Kill switch in the web app.")
         return
     arg = rest.strip().lower()
     current = (db.fetch_one("SELECT value FROM bot_config WHERE key = 'kill_switch'") or {}).get("value", "off")
@@ -424,8 +426,8 @@ def _handle_kill(user_id, rest, client, respond, body):
     cfg.invalidate_cache()   # the kill switch must take effect on the next call
     log.warning("kill_switch toggled to %s by %s", arg, actor)
     _respond(respond,
-             f":zap: `kill_switch` set to *{arg}* by {actor}. "
-             f"(was: `{current}`)")
+             f":zap: {actor} set `kill_switch` to *{arg}*. "
+             f"It was `{current}`.")
 
 
 # ---------- /sql teams ----------
@@ -442,7 +444,7 @@ def _handle_teams(user_id, rest, client, respond, body):
 
     rows = teams.list_team_summaries()
     if not rows:
-        _respond(respond, "_No teams defined yet._")
+        _respond(respond, "_There are no teams yet._")
         return
     header = (f"{_trunc('TEAM', 22)} {_trunc('MEMBERS', 9)} "
               f"{_trunc('GRANTS', 8)} DESCRIPTION")
@@ -456,7 +458,7 @@ def _handle_teams(user_id, rest, client, respond, body):
         )
     _respond(respond,
              f"*Teams ({len(rows)}):*\n" + _code_block(lines)
-             + "\nDrill into one: `/sql teams <name>`")
+             + "\nTo see one team: `/sql teams <name>`")
 
 
 def _handle_one_team(team_name, respond):
@@ -467,8 +469,8 @@ def _handle_one_team(team_name, respond):
     detail = teams.team_detail(team_name)
     if detail is None:
         _respond(respond,
-                 f":question: No team named `{team_name}`. "
-                 "Run `/sql teams` for the full list.")
+                 f":question: There is no team with the name `{team_name}`. "
+                 "Run `/sql teams` to see all teams.")
         return
     team, grants, members = detail["team"], detail["grants"], detail["members"]
 
@@ -530,11 +532,11 @@ def _handle_templates(user_id, rest, client, respond, body):
             return
         ok = templates.delete(user_id, tail)
         if ok:
-            _respond(respond, f":wastebasket: Template `{tail}` deleted.")
+            _respond(respond, f":wastebasket: You deleted the template `{tail}`.")
         else:
             _respond(respond,
-                     f":question: No template `{tail}` owned by you. "
-                     f"Shared templates can only be deleted by their owner.")
+                     f":question: You do not own a template with the name `{tail}`. "
+                     f"Only the owner can delete a shared template.")
         return
     if head in ("share", "unshare"):
         if not tail:
@@ -543,21 +545,24 @@ def _handle_templates(user_id, rest, client, respond, body):
         is_shared = (head == "share")
         ok = templates.set_shared(user_id, tail, is_shared)
         if ok:
-            verb = "shared with the workspace" if is_shared else "made personal"
-            _respond(respond, f":lock_with_ink_pen: Template `{tail}` {verb}.")
+            done = (f"You shared the template `{tail}` with the workspace."
+                    if is_shared else f"You made the template `{tail}` personal.")
+            _respond(respond, f":lock_with_ink_pen: {done}")
         else:
             _respond(respond,
-                     f":question: No template `{tail}` owned by you. "
-                     f"Only the owner can change the share flag.")
+                     f":question: You do not own a template with the name `{tail}`. "
+                     f"Only the owner can change the share setting.")
         return
 
     # Anything else (e.g. someone typing `/sql templates foo`) → point
     # them at the modal, which is the primary way to use a template now.
     _respond(respond,
-             f":bulb: To use a template, run `/sql` and pick "
-             f"`{rest.strip()}` from the *Template* dropdown at the top "
-             f"of the modal. Subcommand actions: "
-             f"`delete <name>`, `share <name>`, `unshare <name>`.")
+             f":bulb: To use the template `{rest.strip()}`:\n"
+             f"1. Run `/sql`.\n"
+             f"2. Pick the template in *Load from a saved template*, "
+             f"near the bottom of the form.\n"
+             f"Other actions: `/sql templates delete <name>`, `share <name>`, "
+             f"`unshare <name>`.")
 
 
 def _list_templates(user_id, respond):
@@ -566,9 +571,12 @@ def _list_templates(user_id, respond):
     shared = data["shared"]
     if not own and not shared:
         _respond(respond,
-                 "_You have no saved templates yet. Run `/sql`, fill the "
-                 "form, type a name into *Save as template* before "
-                 "submitting — the query gets saved alongside the run._")
+                 "_You have no saved templates yet._ To save one:\n"
+                 "1. Run `/sql`.\n"
+                 "2. Complete the form.\n"
+                 "3. Type a name in *Save as template*.\n"
+                 "4. Submit the form. QueryHub saves the query as a template "
+                 "when you submit it.")
         return
 
     sections = []
@@ -601,7 +609,7 @@ def _list_templates(user_id, respond):
             )
         sections.append(f"*Shared templates ({len(shared)}):*\n" + _code_block(lines))
 
-    sections.append("Run a template: `/sql templates <name>`")
+    sections.append("How to use a template: `/sql templates <name>`")
     sections.append("Manage: `/sql templates delete <name>` · `/sql templates share <name>`")
     _respond(respond, "\n\n".join(sections))
 
@@ -613,12 +621,13 @@ def _handle_batch(user_id, rest, client, respond, body):
     can ship the wiring dark and flip it on after smoke-testing."""
     if not bundles.is_enabled():
         _respond(respond,
-                 ":information_source: Batch mode is currently disabled. "
+                 ":information_source: Batch mode is disabled. "
                  "Use `/sql` to submit a single query.")
         return
     trigger_id = body.get("trigger_id")
     if not trigger_id:
-        _respond(respond, ":x: Could not open the batch modal (missing trigger_id).")
+        _respond(respond, ":x: The batch form did not open: "
+                          "the Slack request has no `trigger_id`.")
         return
     try:
         client.views_open(
@@ -631,29 +640,30 @@ def _handle_batch(user_id, rest, client, respond, body):
         )
     except Exception:
         log.exception("views_open failed for /sql batch")
-        _respond(respond, ":x: Could not open the batch modal — check the bot logs.")
+        _respond(respond, ":x: The batch form did not open. Check the bot logs.")
 
 
 def _handle_import(user_id, rest, client, respond, body):
     """Open the CSV import modal. Gated by bot_config.csv_import_enabled
     and the per-user import grant."""
     if not csv_import.is_enabled():
-        _respond(respond, ":information_source: CSV import is currently disabled.")
+        _respond(respond, ":information_source: CSV import is disabled.")
         return
     if not csv_import.can_import(user_id):
         _respond(respond,
-                 ":no_entry: You don't have import permission. "
-                 "Contact the DBA team to be granted CSV import access.")
+                 ":no_entry: Refused: you do not have import permission. "
+                 "Ask the DBA team for CSV import access.")
         return
     trigger_id = body.get("trigger_id")
     if not trigger_id:
-        _respond(respond, ":x: Could not open the import modal (missing trigger_id).")
+        _respond(respond, ":x: The import form did not open: "
+                          "the Slack request has no `trigger_id`.")
         return
     try:
         client.views_open(trigger_id=trigger_id, view=modal.build_import_modal())
     except Exception:
         log.exception("views_open failed for /sql import")
-        _respond(respond, ":x: Could not open the import modal — check the bot logs.")
+        _respond(respond, ":x: The import form did not open. Check the bot logs.")
 
 
 # ---------- schema catalog (tables / schema / findcol) ----------
@@ -687,9 +697,10 @@ def _resolve_target(user_id: str, name: str):
         return subs[0], None
     if len(subs) > 1:
         opts = ", ".join(f"`{t.alias}`" for t in subs[:8])
-        return None, f"Ambiguous target `{name}` — did you mean: {opts}?"
-    return None, (f"No target `{name}` among the ones you can browse. "
-                  f"`/sql whoami` shows your grants.")
+        return None, (f"`{name}` matches more than one target. "
+                      f"Did you mean one of these: {opts}?")
+    return None, (f"No target that you can browse matches `{name}`. "
+                  f"Run `/sql whoami` to see your grants.")
 
 
 def _resolve_database(user_id: str, target,
@@ -717,19 +728,19 @@ def _resolve_database(user_id: str, target,
             sample = ", ".join(f"`{d}`" for d in sorted(allowed)[:8])
             more = "" if len(allowed) <= 8 else f" (+{len(allowed) - 8} more)"
             return None, (f"Your grant on `{target.alias}` does not include "
-                          f"database `{database}`. Allowed: {sample}{more}.")
+                          f"the database `{database}`. Allowed databases: {sample}{more}.")
         return None, (f"Your grant on `{target.alias}` does not include "
-                      f"database `{database}`. `/sql whoami` shows your grants.")
+                      f"the database `{database}`. Run `/sql whoami` to see your grants.")
     snapshotted = schema_catalog.list_snapshot_databases(target.id)
     if database in snapshotted:
         return database, None
     if snapshotted:
-        return None, (f"No schema snapshot for `{target.alias}/{database}`. "
-                      f"Snapshotted databases: "
+        return None, (f"There is no schema snapshot for `{target.alias}/{database}`. "
+                      f"Databases with a snapshot: "
                       + ", ".join(f"`{d}`" for d in snapshotted))
-    return None, (f"No schema snapshot for `{target.alias}` yet — the "
-                  f"hourly catalog job hasn't covered it (or its RO "
-                  f"credential is missing).")
+    return None, (f"There is no schema snapshot for `{target.alias}`. "
+                  f"Cause: the hourly catalog job did not read it yet, "
+                  f"or its RO credential is missing.")
 
 
 def _snapshot_note(target_id: int, database: str) -> str:
@@ -759,7 +770,7 @@ def _handle_tables(user_id, rest, client, respond, body):
     rows = schema_catalog.search_tables(target.id, database, pattern, limit=40)
     if not rows:
         _respond(respond,
-                 f"No tables matching `{pattern}` in `{target.alias}/{database}`.")
+                 f"No table in `{target.alias}/{database}` matches `{pattern}`.")
         return
     name_w = min(max(len(f"{r['schema_name']}.{r['table_name']}") for r in rows), 44)
     lines = [
@@ -800,13 +811,13 @@ def _handle_schema(user_id, rest, client, respond, body):
                     + ", ".join(f"`{r['schema_name']}.{r['table_name']}`"
                                 for r in hits))
         _respond(respond,
-                 f"No table `{table_ref}` in `{target.alias}/{database}`.{hint}")
+                 f"There is no table `{table_ref}` in `{target.alias}/{database}`.{hint}")
         return
     if isinstance(res, list):
         opts = ", ".join(f"`{r['schema_name']}.{r['table_name']}`" for r in res)
         _respond(respond,
                  f"`{table_ref}` exists in more than one schema: {opts}. "
-                 f"Use the qualified name.")
+                 f"Type the name with its schema, as `schema.table`.")
         return
     trow, cols = res
     name = f"{trow['schema_name']}.{trow['table_name']}"
@@ -831,14 +842,14 @@ def _handle_findcol(user_id, rest, client, respond, body):
         return
     allowed = _allowed_schema_targets(user_id)
     if not allowed:
-        _respond(respond, "You don't have access to any targets yet.")
+        _respond(respond, "You do not have access to any target yet.")
         return
     by_id = {t.id: t for t in allowed}
     rows = schema_catalog.find_column(pattern, list(by_id), limit=40)
     if not rows:
         _respond(respond,
-                 f"No columns matching `{pattern}` across your "
-                 f"{len(by_id)} target(s).")
+                 f"No column on your {len(by_id)} target(s) "
+                 f"matches `{pattern}`.")
         return
     lines = []
     for r in rows:
@@ -877,12 +888,13 @@ def _handle_grant(user_id, rest, client, respond, body):
     cap = grants.authz(user_id)
     if cap is None:
         _respond(respond,
-                 ":no_entry: You're not allowed to grant access. Ask a "
-                 "super-admin to enable `can_grant` for you.")
+                 ":no_entry: Refused: you do not have permission to grant access. "
+                 "Ask a super-admin to enable `can_grant` for you.")
         return
     trigger_id = body.get("trigger_id")
     if not trigger_id:
-        _respond(respond, ":x: Could not open the grant modal (missing trigger_id).")
+        _respond(respond, ":x: The grant form did not open: "
+                          "the Slack request has no `trigger_id`.")
         return
     try:
         client.views_open(
@@ -892,23 +904,24 @@ def _handle_grant(user_id, rest, client, respond, body):
         )
     except Exception:
         log.exception("views_open failed for /sql grant")
-        _respond(respond, ":x: Could not open the grant modal — check the bot logs.")
+        _respond(respond, ":x: The grant form did not open. Check the bot logs.")
 
 
 def _handle_revoke(user_id, rest, client, respond, body):
     """Open the revoke modal (pick a user → see + remove their grants)."""
     if grants.authz(user_id) is None:
-        _respond(respond, ":no_entry: You're not allowed to revoke access.")
+        _respond(respond, ":no_entry: Refused: you do not have permission to revoke access.")
         return
     trigger_id = body.get("trigger_id")
     if not trigger_id:
-        _respond(respond, ":x: Could not open the revoke modal (missing trigger_id).")
+        _respond(respond, ":x: The revoke form did not open: "
+                          "the Slack request has no `trigger_id`.")
         return
     try:
         client.views_open(trigger_id=trigger_id, view=admin_grant.revoke_modal())
     except Exception:
         log.exception("views_open failed for /sql revoke")
-        _respond(respond, ":x: Could not open the revoke modal — check the bot logs.")
+        _respond(respond, ":x: The revoke form did not open. Check the bot logs.")
 
 
 # ---------- registry ----------
@@ -916,18 +929,18 @@ def _handle_revoke(user_id, rest, client, respond, body):
 # (name, handler, admin_only, description)
 _SUBCOMMANDS: list[tuple[str, callable, bool, str]] = [
     ("help",    _handle_help,    False, "Show this command list"),
-    ("whoami",  _handle_whoami,  False, "Your roles + grants"),
-    ("history", _handle_history, False, "Your last 10 requests"),
-    ("teams",   _handle_teams,   False, "List teams (or `/sql teams <name>` to drill in)"),
-    ("templates", _handle_templates, False, "Manage saved templates (list / delete / share). Pick one to USE via the modal's Template dropdown."),
+    ("whoami",  _handle_whoami,  False, "Show your roles and grants"),
+    ("history", _handle_history, False, "Show your last 10 requests"),
+    ("teams",   _handle_teams,   False, "List the teams. To see one team: `/sql teams <name>`"),
+    ("templates", _handle_templates, False, "Manage your saved templates: list, delete, share. To use a template, pick it in the /sql form."),
     ("batch",   _handle_batch,   False, "Submit up to N queries in one approval round"),
-    ("import",  _handle_import,  False, "Bulk-load a CSV into the dba schema (requires import permission)"),
-    ("tables",  _handle_tables,  False, "List tables on a target: `/sql tables <target>[/<db>] [pattern]`"),
-    ("schema",  _handle_schema,  False, "Columns + indexes of a table: `/sql schema <target>[/<db>] <table>`"),
-    ("findcol", _handle_findcol, False, "Search column names across all your targets: `/sql findcol <pattern>`"),
-    ("grant",   _handle_grant,   True,  "Grant a user access to a target (pick user / RDS / tier)"),
+    ("import",  _handle_import,  False, "Load a CSV file into the dba schema. You need import permission."),
+    ("tables",  _handle_tables,  False, "List the tables on a target: `/sql tables <target>[/<db>] [pattern]`"),
+    ("schema",  _handle_schema,  False, "Show the columns and indexes of a table: `/sql schema <target>[/<db>] <table>`"),
+    ("findcol", _handle_findcol, False, "Search column names on all your targets: `/sql findcol <pattern>`"),
+    ("grant",   _handle_grant,   True,  "Grant a user access to a target. You pick the user, the RDS and the tier."),
     ("revoke",  _handle_revoke,  True,  "Revoke a user's access to a target"),
-    ("roles",   _handle_roles,   True,  "All users' roles + grants"),
-    ("pending", _handle_pending, True,  "In-flight request queue"),
-    ("kill",    _handle_kill,    True,  "Toggle the master kill switch"),
+    ("roles",   _handle_roles,   True,  "Show the roles and grants of all users"),
+    ("pending", _handle_pending, True,  "Show the unfinished requests"),
+    ("kill",    _handle_kill,    True,  "Set the master kill switch to on or off"),
 ]

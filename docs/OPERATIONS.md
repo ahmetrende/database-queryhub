@@ -1,15 +1,19 @@
 # QueryHub — operations cheatsheet
 
-All CLI commands, DB configs, and admin SQL snippets in one place.
-Copy-paste ready. Most commands assume `set -a; source /etc/queryhub/env; set +a`
-(needed by anything that connects to the bot DB). Each section is
-self-contained — read what you need, skip the rest.
+Load the bot environment first: `set -a; source /etc/queryhub/env; set +a`.
+Most commands assume it, and anything that connects to the bot DB needs it.
 
-> **Not in this document:** backing up and restoring the control plane, and
-> what happens if you lose the master key — [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md).
-> Replacing the master key without downtime — [KEY_ROTATION.md](KEY_ROTATION.md).
-> What personal data the system stores, for how long, and how to answer a
-> data-subject request — [COMPLIANCE.md](COMPLIANCE.md).
+This page holds all CLI commands, DB configs and admin SQL snippets in one
+place, ready to copy and paste. Each section stands alone, so read only what
+you need.
+
+> **Not in this document:**
+>
+> - Backup and restore of the control plane, and what happens if you lose the
+>   master key: [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md).
+> - Replacing the master key without downtime: [KEY_ROTATION.md](KEY_ROTATION.md).
+> - What personal data the system stores, for how long, and how to answer a
+>   data-subject request: [COMPLIANCE.md](COMPLIANCE.md).
 
 ## Contents
 
@@ -65,9 +69,9 @@ sudo journalctl -u queryhub --since "1 hour ago" --no-pager | grep -iE "ERROR|WA
 ```
 
 **Service file**: `/etc/systemd/system/queryhub.service` →
-`WorkingDirectory=<repo-path>`, `EnvironmentFile=/etc/queryhub/env`,
-runs as the user the repo is owned by (whoever you chose at install
-time). See `deploy/INSTALL.md` for the placeholder substitution.
+`WorkingDirectory=<repo-path>`, `EnvironmentFile=/etc/queryhub/env`. The
+service runs as the user that owns the repo (the user you chose at install
+time). For the placeholder substitution, see `deploy/INSTALL.md`.
 
 **Update flow**: `cd <repo-path> && git pull && sudo systemctl restart queryhub`.
 
@@ -98,16 +102,16 @@ sudo .venv/bin/python scripts/manage_env_secrets.py remove
 sudo systemctl restart queryhub
 ```
 
-File format: line 1 is `SLBOT_SECRETS_v1` (signature for human
-identification), line 2 is the Fernet ciphertext. Permissions enforced
-to `0600`; the loader rejects any group/other bits.
+File format: line 1 is `SLBOT_SECRETS_v1`, a signature that lets a human
+identify the file. Line 2 is the Fernet ciphertext. The permissions must be
+`0600`: the loader rejects any group/other bits.
 
 ---
 
 ## 3. Bot config knobs (bot_config table)
 
-All runtime tunables live here. Edited via SQL; bot reads on each
-relevant operation (no restart needed unless noted).
+All runtime tunables live here. Edit them with SQL. The bot reads them on each
+relevant operation, so a change needs no restart unless noted.
 
 ```sql
 -- See everything:
@@ -119,22 +123,22 @@ UPDATE bot_config SET value = '<new>' WHERE key = '<key>';
 
 | Key | Default | Restart? | What it does |
 |---|---|---|---|
-| `bot_display_icon` | `:query_hub:` | no | Emoji used as bot avatar in chat. Needs to be uploaded as a custom emoji in the workspace. |
+| `bot_display_icon` | `:query_hub:` | no | Emoji that the bot uses as its avatar in chat. Upload it to the workspace as a custom emoji. |
 | `bot_display_name` | `QueryHub` | no | Username shown in chat |
-| `csv_size_mb` | `10` | no | Max CSV file size; result-streaming aborts at this cap |
-| `kill_switch` | `off` | no | Master kill switch. `on` blocks new submissions + scheduler dispatch (admin approve still works) |
+| `csv_size_mb` | `10` | no | Max CSV file size. Result streaming aborts at this cap |
+| `kill_switch` | `off` | no | Master kill switch. `on` blocks new submissions and scheduler dispatch. Admins can still approve |
 | `kill_switch_message` | (banner text) | no | Ephemeral message shown when kill_switch is on |
 | `log_level` | `INFO` | yes | Python logging level |
 | `max_open_requests_per_user` | `5` | no | Cap on in-flight requests per non-admin Slack user (pending/approved/scheduled/executing) |
 | `max_rows` | `1000` | no | Max rows returned in CSV |
 | `max_schedule_days` | `7` | no | Max future days for `/sql` scheduling. Set `0` to disable scheduling |
-| `min_query_length` | `6` | no | Reject queries shorter than this |
-| `pre_flight_explain` | `off` | no | Run EXPLAIN at modal-submit time to catch typos. RO queries only — RW/DDL skipped automatically |
-| `query_plan_logging` | `off` | no | When pre_flight_explain is on AND this is on, store EXPLAIN plan in `requests.explain_plan` (capped at 64KB) |
+| `min_query_length` | `6` | no | The bot rejects queries shorter than this |
+| `pre_flight_explain` | `off` | no | Runs EXPLAIN at modal-submit time to catch typos. RO queries only: the bot skips RW/DDL automatically |
+| `query_plan_logging` | `off` | no | When pre_flight_explain AND this key are on, the bot stores the EXPLAIN plan in `requests.explain_plan` (capped at 64KB) |
 | `query_timeout_sec` | `300` | no | Per-query `statement_timeout` (5 min) |
-| `require_justification` | `false` | no | Require justification field even for RO queries (RW/DDL always require it) |
-| `results_ttl_hours` | `72` | no | How long Slack/local CSV results are kept before cleanup deletes. Kept short to limit how long sensitive result data lives in Slack |
-| `rating_enabled` | `on` | no | Post a 1-5 rating prompt DM after every terminal-state request (suppressed 30 days after a user's most recent rating). See section 13 |
+| `require_justification` | `false` | no | Requires the justification field for RO queries too. RW/DDL always require it |
+| `results_ttl_hours` | `72` | no | How long the bot keeps CSV results, in Slack and locally, before cleanup deletes them. The default is short on purpose: it limits how long sensitive result data stays in Slack |
+| `rating_enabled` | `on` | no | Sends a DM with a 1-5 rating prompt after every terminal-state request. The bot suppresses it for 30 days after a user's most recent rating. See section 13 |
 | `set_allowed_params` | (~23 params) | no | Comma-separated list of Postgres parameters allowed in a `SET LOCAL` prelude. See section 14 |
 
 Common toggles:
@@ -173,7 +177,7 @@ UPDATE bot_config SET value = 'on' WHERE key = 'grant_reaper_enabled';
 
 ## 4. Migrations
 
-Idempotent SQL files under `migrations/`. Numbered sequentially.
+Migrations are idempotent SQL files under `migrations/`, numbered in sequence.
 
 ```bash
 # Apply all (skips already-applied; commits per file)
@@ -189,16 +193,17 @@ To add a new migration:
 2. Run `apply_migrations.py`
 3. Commit the file
 
-Files stay idempotent all the same (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF
-NOT EXISTS`, `ON CONFLICT DO NOTHING`), and an applied file is never edited:
-the ledger refuses a changed checksum, so a change is a new file.
+Files stay idempotent even with the ledger (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF
+NOT EXISTS`, `ON CONFLICT DO NOTHING`). Never edit an applied file. The ledger
+refuses a changed checksum, so put each change in a new file.
 
 ---
 
 ## 5. Targets — add / disable / rotate
 
-Target = a Postgres cluster the bot can query. Stored in `target_servers`
-with Fernet-encrypted credentials per tier (RO required, RW/DDL optional).
+A target is a Postgres cluster that the bot can query. Each target is a row in
+`target_servers`, with Fernet-encrypted credentials per tier (RO is required,
+RW/DDL are optional).
 
 ### List / inspect
 
@@ -288,8 +293,8 @@ UPDATE target_servers SET enabled = TRUE  WHERE alias = 'acme-prod-orders';
 
 ## 6. Admins
 
-Admins approve/reject requests. They bypass team grants and
-allowlist; queries run against any enabled target.
+Admins approve or reject requests. They bypass team grants and the allowlist,
+and their queries can run against any enabled target.
 
 ```sql
 -- List active admins
@@ -307,16 +312,16 @@ UPDATE admins SET enabled = FALSE WHERE slack_user_id = 'U01ABCDEFG';
 UPDATE admins SET enabled = TRUE  WHERE slack_user_id = 'U01ABCDEFG';
 ```
 
-`name` and `email` get auto-refreshed from Slack on every interaction
-(profile_sync). You can leave them blank on insert.
+The bot refreshes `name` and `email` from Slack automatically on every
+interaction (profile_sync). You can leave them blank on insert.
 
 ---
 
 ## 7. Requesters (allowlist + bypass)
 
-The allowlist for `/sql`. If table is empty (zero enabled rows), the
-bot is OPEN to everyone in the workspace. Otherwise only enabled
-requesters can submit.
+This table is the allowlist for `/sql`. Only enabled requesters can submit.
+Exception: if the table is empty (zero enabled rows), the bot is OPEN to
+everyone in the workspace.
 
 ```sql
 -- List
@@ -334,10 +339,10 @@ UPDATE requesters SET enabled = TRUE  WHERE slack_user_id = 'U01ABCDEFG';
 
 ### Bypass team grants
 
-`bypass_team_grants = TRUE` makes the user see every enabled target
-(admin-equivalent visibility) and submit any tier (synthetic
-'ddl' grant on everything). They are still NOT admin — cannot
-approve/reject.
+`bypass_team_grants = TRUE` lets the user see every enabled target, with the
+same visibility as an admin. The user can also submit any tier (a synthetic
+'ddl' grant on everything). The user is still NOT an admin, and cannot approve
+or reject.
 
 ```sql
 -- Grant bypass
@@ -355,9 +360,9 @@ UPDATE requesters
 
 ## 8. Teams + members + grants
 
-Teams own targets (via `team_target_grants`). Users belong to teams (via
-`team_members`). User effective grant = most-permissive across their
-team grants on a given target.
+Teams own targets (through `team_target_grants`). Users belong to teams
+(through `team_members`). On a given target, a user's effective grant is the
+most permissive of their team grants.
 
 ### Inspect
 
@@ -435,25 +440,26 @@ DELETE FROM team_target_grants
 
 ### Postgres-side fence (target_role)
 
-`target_role` lets the executor `SET LOCAL ROLE <name>` for queries from
-this team — extra defense layer at the cluster level. Optional but
-recommended for RW/DDL tier; not yet provisioned for the pilot.
+`target_role` lets the executor run `SET LOCAL ROLE <name>` for queries from
+this team. This adds an extra defense layer at the cluster level. It is
+optional, but recommended for the RW/DDL tier. It is not yet provisioned for
+the pilot.
 
 ```bash
 # Generate runbook for currently-unprovisioned (team, target) pairs:
 .venv/bin/python scripts/plan_team_role_provisioning.py > /tmp/runbook.md
 ```
 
-The runbook outputs psql commands to run on each target cluster, plus
-the `UPDATE team_target_grants SET target_role = ...` statement to wire
-it on the bot side.
+The runbook lists the psql commands to run on each target cluster. It also
+gives the `UPDATE team_target_grants SET target_role = ...` statement that
+sets the role on the bot side.
 
 ---
 
 ## 9. Per-user grants (overrides)
 
 `user_target_grants` overrides team grants for a specific (user, target).
-Use sparingly; prefer team grants.
+Use it sparingly. Prefer team grants.
 
 ```sql
 -- See overrides for a user
@@ -487,15 +493,14 @@ DELETE FROM user_target_grants WHERE slack_user_id = 'U01ABCDEFG';
 
 **With `access_model_v2` on** (the live model, see
 [SCHEMA.md → Access model](SCHEMA.md#access-model)), the resolver does not read
-this table. Every write above is mirrored into `access_grant`, one row per
-database, marked `mirrored_from = 'user_target_grants'`. The resolver reads that
-row, so the statements above still work.
+this table. The mirror copies every write above into `access_grant`: one row
+per database, marked `mirrored_from = 'user_target_grants'`. The resolver reads
+that row, so the statements above still work.
 
 A person's own grant replaces their teams' grants **on the whole server**, not
-only on the databases it names. Giving someone a personal grant on one
-database of a server therefore hides a team grant they have on another database
-there. To keep the team's grants as well, set `merge_with_team` on the mirrored
-row:
+only on the databases it names. So a personal grant on one database of a
+server hides a team grant that the person has on another database there. To
+keep the team's grants as well, set `merge_with_team` on the mirrored row:
 
 ```sql
 -- Keep a person's team grants beside their own grant on one server
@@ -510,9 +515,9 @@ UPDATE access_grant g SET merge_with_team = TRUE
 ```
 
 The flag stays until the person's `user_target_grants` row changes scope or
-tier. Then the mirror replaces the row without it, so set it again after such
-a change. The Effective access screen shows the result: under the team's grant
-it names each member whose own grant applies instead.
+tier. Then the mirror replaces the row without the flag. Set the flag again
+after such a change. The Effective access screen shows the result: under the
+team's grant, it names each member whose own grant applies instead.
 
 ---
 
@@ -653,8 +658,8 @@ The same key:
 - Decrypts `/etc/queryhub/secrets.enc` (Slack tokens + bot DB password)
 
 **If you rotate this key, you must also re-encrypt every dependent
-secret with the new key.** No tooling for that today; do not rotate
-casually.
+secret with the new key.** `scripts/rotate_master_key.py` does that. KEY_ROTATION.md describes the procedure. Do not rotate
+the key casually.
 
 ---
 
@@ -705,11 +710,11 @@ UNION ALL SELECT 'requesters_enabled',
 ## 13. Ratings & feedback
 
 After each terminal-state request (`completed` / `failed` / `rejected` /
-`cancelled`) the bot DMs the requester a 1-5 rating prompt. A user who
-has rated anything in the last 30 days is silently skipped (cooldown).
-Low ratings (1-2) get a contextual "What went wrong?" follow-up button
-that opens a feedback modal; high ratings get an "Add feedback"
-button. One rating per request — first click locks.
+`cancelled`), the bot DMs the requester a 1-5 rating prompt. The bot silently
+skips a user who rated anything in the last 30 days (cooldown). Low ratings
+(1-2) get a contextual "What went wrong?" follow-up button that opens a
+feedback modal. High ratings get an "Add feedback" button. Each request takes
+one rating: the first click locks it.
 
 Storage: `request_ratings (request_id, slack_user_id, rating 1-5,
 feedback_text, rated_at)`. See `migrations/019_request_ratings.sql`.
@@ -767,17 +772,18 @@ SELECT slack_user_id, count(*) AS n_ratings,
 
 ## 14. Multi-statement / SET prelude
 
-Users may submit multiple `;`-separated statements in one /sql request,
-optionally preceded by `SET LOCAL <param> = <value>` lines. Rules:
+Users can submit multiple `;`-separated statements in one /sql request.
+Optional `SET LOCAL <param> = <value>` lines can come before them. Rules:
 
 - All non-SET ("main") statements must be the **same tier** (all RO, or
-  all RW, or all DDL). Mixing — e.g. `SELECT 1; UPDATE t SET x=1 WHERE id=1`
-  — is rejected with a "mixed-tier" error.
-- `SET ...` is auto-rewritten to `SET LOCAL ...` (transaction-scoped).
-- Only parameters in `bot_config.set_allowed_params` are accepted;
-  others rejected with a friendly error.
-- SET must come BEFORE any main statement — trailing SETs rejected.
-- For multiple read result sets, each SELECT writes its own CSV; bot
+  all RW, or all DDL). The bot rejects a mix, e.g.
+  `SELECT 1; UPDATE t SET x=1 WHERE id=1`, with a "mixed-tier" error.
+- The bot rewrites `SET ...` to `SET LOCAL ...` automatically
+  (transaction-scoped).
+- The bot accepts only parameters in `bot_config.set_allowed_params`. It
+  rejects others with a friendly error.
+- SET must come BEFORE any main statement. The bot rejects trailing SETs.
+- For multiple read result sets, each SELECT writes its own CSV. The bot
   zips them into `req_<id>_results_<ts>.zip` for the user.
 
 ### Examples
@@ -795,7 +801,7 @@ SELECT alias FROM target_servers WHERE enabled = TRUE;
 ### Edit the SET allowlist
 
 The default has ~23 safe tuning parameters (work_mem, statement_timeout,
-enable_*, random_page_cost, ...). To add or remove:
+enable_*, random_page_cost, ...). To add or delete a parameter:
 
 ```sql
 -- See current
@@ -807,7 +813,7 @@ UPDATE bot_config
  WHERE key = 'set_allowed_params';
 ```
 
-Bot reads on every submission — no restart needed.
+The bot reads the list on every submission, so no restart is needed.
 
 ### Explicitly DO NOT add to the allowlist
 
@@ -824,8 +830,8 @@ These break the security model:
 
 ## 15. Product metrics (p_metrics_*)
 
-Thirteen read-only views in the bot DB. All carry the `p_metrics_`
-prefix; cost numbers are tunable via `bot_config.cost_*` rows.
+The bot DB has thirteen read-only views. All carry the `p_metrics_` prefix.
+You can tune the cost numbers with the `bot_config.cost_*` rows.
 
 ### Cost & savings
 
@@ -904,9 +910,9 @@ SELECT total_saving_this_month_usd, dba_saving_this_month_usd,
 
 ## 16. Admin scopes (role-based approval)
 
-Every admin starts as a "super admin" (can approve every request).
-Three optional scope columns narrow that authority — set any, all, or
-none. NULL on a column means "no restriction in that dimension".
+Every admin starts as a "super admin", who can approve every request. Three
+optional scope columns narrow that authority. Set any of them, all of them,
+or none. NULL on a column means "no restriction in that dimension".
 
 | Column | Type | Meaning when NULL | Meaning when set |
 |---|---|---|---|
@@ -914,13 +920,13 @@ none. NULL on a column means "no restriction in that dimension".
 | `scope_target_ids` | int[] | Any target | Only requests on these `target_servers.id` values |
 | `scope_team_ids` | int[] | Any requester team | Only requests from a requester who is a member of at least one of these teams |
 
-Resolution goes through a single function (`admins.can_approve`) — all
-button checks, DM-button visibility, and modal-submit guards use it.
-When an out-of-scope admin clicks anyway, they're rejected with a DM:
+A single function resolves the scope: `admins.can_approve`. The button
+guards, the DM-button visibility and the modal-submit guards all use it.
+When an out-of-scope admin clicks anyway, the bot rejects them with a DM:
 "This request is outside your admin scope (tier / target / team)."
 
-Out-of-scope admins still receive the request DM (audit + transparency)
-but with a "view only" footer instead of Approve / Reject / Request
+Out-of-scope admins still receive the request DM (audit + transparency).
+Their DM has a "view only" footer instead of the Approve / Reject / Request
 changes buttons.
 
 ### Common patterns
@@ -979,16 +985,15 @@ SELECT a.slack_user_id, a.name, a.max_tier,
 ### Watch out for
 
 - **At least one super admin** (all scopes NULL) should exist. If
-  every admin has a non-NULL scope, some requests may end up with
-  no eligible approver and stay pending.
-- **No-team requesters** are not matched by a non-NULL
-  `scope_team_ids`. If you scope an admin to `team_ids`, that admin
-  cannot approve requests from standalone users (those with only
-  `user_target_grants`). Either widen the admin's scope, or grant a
-  super admin alongside.
+  every admin has a non-NULL scope, some requests may have no eligible
+  approver and stay pending.
+- **No-team requesters** do not match a non-NULL `scope_team_ids`. If you
+  scope an admin to `team_ids`, that admin cannot approve requests from
+  standalone users (users with only `user_target_grants`). Either widen the
+  admin's scope, or grant a super admin alongside.
 - **Tier changes when a query is edited** through Request-changes.
-  The bot re-classifies on resubmit; the new admin scope check
-  applies to the new tier.
+  The bot re-classifies the query on resubmit, and verifies the admin scope
+  again, against the new tier.
 
 ---
 
@@ -996,47 +1001,46 @@ SELECT a.slack_user_id, a.name, a.max_tier,
 
 Almost everything QueryHub puts on a screen names something real: a
 connection alias, a database, a hostname in an error message, the person
-who asked. That is the point in normal use, and a problem the moment any
-of it leaves the deployment — a screenshot in a ticket, a log excerpt in
-a chat, a config snippet in a bug report upstream.
+who asked. In normal use, that is the point. It becomes a problem as soon as
+any of it leaves the deployment. For example: a screenshot in a ticket, a log
+excerpt in a chat, a config snippet in a bug report upstream.
 
-Four places it leaks most easily:
+It leaks most easily in four places:
 
-- **The connection list and the audit log.** Both are alias-dense by
-  design. Crop or redact before pasting.
+- **The connection list and the audit log.** Both are dense with aliases by
+  design. Crop or redact them before you paste.
 - **Error text.** `errors.py` scrubs libpq messages before a user sees
   them, but the unscrubbed original is in the service log.
 - **Result files.** A CSV or XLSX under `QH_RESULTS_DIR` is real data
-  until the retention job removes it (`results_ttl_hours`).
+  until the retention job deletes it (`results_ttl_hours`).
 - **A fork of this repository.** If you commit your own `bot_config`
   rows, migrations or fixtures, the aliases and user ids go with them.
 
-If you maintain a fork, the practice worth copying is a pre-commit check
-that builds its denylist *from the metadata database* rather than from a
-hand-kept list — every alias, host, team name and user id it currently
-holds — so the list cannot go stale as people and targets come and go.
-Static patterns alone (token shapes, private keys, RFC1918 addresses)
-will not catch the thing most likely to leak, which is a name.
+If you maintain a fork, this practice is worth copying. Let the pre-commit
+scan build its denylist *from the metadata database*, not from a hand-kept
+list. The denylist then contains every alias, host, team name and user id
+that the database currently holds. So the list cannot go stale as the set of
+people and targets changes. Static patterns alone (token shapes, private
+keys, RFC1918 addresses) will not catch the thing most likely to leak, which
+is a name.
 
 
 ## 18. Batch submissions (`/sql batch`)
 
-The bot lets a user submit up to N queries in one approval round.
-Each item becomes its own `requests` row, linked by `bundle_id`.
-Per-item Approve / Reject / Changes buttons re-use the existing
-handlers; "Approve all remaining" / "Reject all remaining" buttons
-collapse a single admin's pending items in one click. A single
-summary DM lands once the whole bundle is decided + executed, with
-every completed item's CSV attached.
+A user can submit up to N queries in one approval round. Each item becomes
+its own `requests` row, linked by `bundle_id`. The per-item Approve / Reject /
+Changes buttons re-use the existing handlers. The "Approve all remaining" /
+"Reject all remaining" buttons decide all of one admin's pending items in one
+click. When the whole bundle is decided and executed, one summary DM arrives,
+with the CSV of every completed item attached.
 
-Every admin gets the batch DM. A scoped approver, such as a pod
-captain, gets it too when they can approve every item on its own.
-For a captain, whose role reaches RO on their own pod's servers, that
-means an all-RO batch from their pod: the same rule that brings them a
-single RO request. The bulk buttons admit the same people, and act
-only on the items in the presser's scope. A batch with one item
-outside a captain's scope, such as a write or another pod's server,
-stays with the admins.
+Every admin gets the batch DM. A scoped approver, such as a pod captain,
+gets it too when they can approve every item on its own. A captain's role
+reaches RO on their own pod's servers. So for a captain, that means an all-RO
+batch from their pod: the same rule that brings them a single RO request. The
+bulk buttons admit the same people, and act only on the items in the
+presser's scope. A batch with one item outside a captain's scope, such as a
+write or another pod's server, stays with the admins.
 
 ### Feature flag
 
@@ -1050,10 +1054,11 @@ UPDATE bot_config SET value = '5' WHERE key = 'batch_max_items';
 
 ### How users access it
 
-- `/sql` → modal shows a *Single ↔ Batch* radio toggle at the top
-  when `batch_enabled = 'on'`. Switching preserves whatever the user
-  already typed (single's query becomes batch item #1 and vice versa;
-  batch → single warns when items #2+ are dropped).
+- `/sql` → the modal shows a *Single ↔ Batch* radio toggle at the top
+  when `batch_enabled = 'on'`. A switch keeps whatever the user already
+  typed. The single query becomes batch item #1, and batch item #1 becomes
+  the single query. A switch from batch to single warns when it
+  drops items #2+.
 - `/sql batch` → opens the modal directly in batch mode (fast path
   for power users).
 
@@ -1083,9 +1088,9 @@ SELECT r.position, r.status, ts.alias, r.database_name,
 
 ### Bundle status trigger
 
-`requests.status` changes fire an AFTER UPDATE trigger
-(`trg_recompute_bundle_status`) that recomputes `request_bundles.status`
-using `pg_advisory_xact_lock(bundle_id)` to serialise concurrent
+A change to `requests.status` fires an AFTER UPDATE trigger
+(`trg_recompute_bundle_status`) that recomputes `request_bundles.status`.
+The trigger uses `pg_advisory_xact_lock(bundle_id)` to serialise concurrent
 recomputes. The rule set:
 
 | Item mix | Bundle status |
@@ -1098,19 +1103,20 @@ recomputes. The rule set:
 ### Summary DM idempotency
 
 `request_bundles.requester_summary_message_ts` records the Slack ts of
-the requester's bundle-summary DM. First time the bundle reaches a
-terminal state → DM posted + ts saved. Subsequent state changes
+the requester's bundle-summary DM. The first time the bundle reaches a
+terminal state, the bot posts the DM and saves the ts. Later state changes
 (e.g. a manually-completed DDL item closed hours later) `chat.update`
-the same DM rather than posting a new one.
+the same DM instead of posting a new one.
 
 ---
 
 ## 19. Auto-approve grants
 
-Per-user, time-bounded, tier-scoped exemption from admin approval.
-The bot evaluates grants at submit time AND at scheduled run time
-(if scheduled_for is set) — a grant that's active now but expires
-before the run falls back to admin approval with a user-facing warning.
+An auto-approve grant is a per-user, time-bounded, tier-scoped exemption from
+admin approval. The bot evaluates grants at submit time AND at scheduled run
+time (if scheduled_for is set). If a grant is active now but expires before
+the run, the request goes to admin approval instead, with a user-facing
+warning.
 
 ### Schema cheat sheet
 
@@ -1119,38 +1125,41 @@ before the run falls back to admin approval with a user-facing warning.
 \d v_active_auto_approve
 ```
 
-`max_tier` is `ro` / `rw` / `ddl`. RO covers RO only; RW covers RO+RW;
-DDL covers everything. Queries above the grant's tier route through
-the normal admin flow.
+`max_tier` is `ro` / `rw` / `ddl`. RO covers RO only. RW covers RO+RW.
+DDL covers everything. Queries above the grant's tier use the normal admin
+flow.
 
 ### With a grant, and only where they can query
 
-A waiver skips review; it grants no access. The web panel and `/sql grant`
-therefore tie the two together:
+A waiver skips review, but it grants no access. So the web panel and
+`/sql grant` tie the two together:
 
-- **Grant + auto-approve in one step.** The web grant form's Auto-approve box
+- **Grant + auto-approve in one step.** Two boxes write the waiver in the
+  grant's own transaction. One is the web grant form's Auto-approve box
   (`POST /admin/grants` with `autoApprove: true`, `autoApproveTier` `ro` by
-  default) and the "Auto-approve read-only queries" box on `/sql grant` write
-  the waiver in the grant's own transaction: one row per granted database
-  (NULL for all of them), same target, same expiry, reason
-  `auto-approve with the grant: <reason>`. A person's row goes into
-  `auto_approve_grants` and the migration-109 mirror projects it; a team's is
-  an `access_grant` row (`auto_approve = TRUE`, `team_id` set, `mirrored_from`
-  NULL). A tier above the grant's, or DDL, is refused before anything is
-  written.
-- **Not written twice.** A waiver the subject already holds that is equal or
-  broader (any target or the same one, any database or the same one, a tier
-  at least as high, started, and ending no sooner) makes the new one
-  redundant, so it is skipped. The response's `autoApprove.skipped`, the web
-  toast and the Slack summary name the covering row. A team's waiver does not
-  count for a person: their own grant on the server displaces the team's rows
-  there.
+  default). The other is the "Auto-approve read-only queries" box on
+  `/sql grant`. The waiver gets one row per granted database (NULL for all of
+  them), with the same target, the same expiry and the reason
+  `auto-approve with the grant: <reason>`.
+
+  A person's row goes into `auto_approve_grants`, and the migration-109 mirror
+  projects it. A team's row is an `access_grant` row (`auto_approve = TRUE`,
+  `team_id` set, `mirrored_from` NULL). QueryHub refuses a tier above the
+  grant's, or DDL, before it writes anything.
+- **Not written twice.** If the subject already holds an equal or broader
+  waiver, the new one is redundant, so QueryHub skips it. Equal or broader
+  means any target or the same one, any database or the same one, and a tier
+  at least as high. The held waiver must also have started, and it must end
+  no sooner. The response's `autoApprove.skipped`, the web toast and the Slack
+  summary name the covering row. A team's waiver does not count for a person:
+  their own grant on the server displaces the team's rows there.
 - **Only where they can query.** `POST /admin/auto-grants` and
-  `/admin/auto-grants/bulk` refuse (`409`, nothing written) a target or
-  database the subject cannot reach, and a tier above the one they hold there,
-  as read by the effective-access resolvers. A fleet-wide row (no target) is
-  not checked: it already means "every server they can reach". Rows written
-  by hand in SQL are not checked either, so look at the person's Effective
+  `/admin/auto-grants/bulk` read the subject's access from the
+  effective-access resolvers. They refuse a target or database that the
+  subject cannot reach, and a tier above the one they hold there. A refusal
+  returns `409` and writes nothing. QueryHub does not verify a fleet-wide row
+  (no target): it already means "every server they can reach". It does not
+  verify rows written by hand in SQL either, so open the person's Effective
   access screen first.
 
 ### Grant patterns
@@ -1221,30 +1230,30 @@ UPDATE auto_approve_grants SET expires_at = NOW() WHERE id = :grant_id;
 
 ### Behavioural notes
 
-- Modal banner (":zap: Auto-approve active — up to RO, until …")
-  appears at the top of the `/sql` modal whenever the user has any
-  active grant.
-- Auto-approved requests INSERT with `status=approved` (or
+- A modal banner appears at the top of the `/sql` modal whenever the user
+  has any active grant. The banner reads ":zap: Auto-approve active — up to
+  RO, until …".
+- On INSERT, an auto-approved request gets `status=approved` (or
   `'scheduled'`), `decided_by_slack_id='AUTO'`, and a
   `decided_by_name` like `auto-approved (grant #N, max_tier=ro, until ...)`.
-- A short FYI DM lands on every active admin per auto-approved
-  request — header + the inline query (truncated at 500 chars).
-  Bundle FYI batches all auto-approved items in one DM per admin.
-- Higher-tier queries (e.g. user has RO grant, submits RW) fall
-  back to the standard pending → admin approval flow. No silent
+- Every active admin gets a short FYI DM per auto-approved request: a header
+  and the inline query (truncated at 500 chars). The bundle FYI puts all
+  auto-approved items in one DM per admin.
+- A higher-tier query (e.g. the user has an RO grant and submits RW) goes to
+  the standard pending → admin approval flow instead. There is no silent
   privilege escalation.
-- Scheduling guardrail: if `scheduled_for` lands AFTER `expires_at`,
-  the submit handler falls back to admin approval and warns the
-  user in the confirmation DM.
+- Scheduling guardrail: if `scheduled_for` is AFTER `expires_at`, the submit
+  handler sends the request to admin approval instead. It warns the user in
+  the confirmation DM.
 
 ---
 
 ## 20. Milestone annotations
 
-`metric_annotations` is a free-form table for marking notable
-moments on the product-metrics timeline (go-live, access cutover,
-incident, config change). The `p_metrics_usage_daily` view joins
-these by day so a dashboard can label its bars.
+`metric_annotations` is a free-form table that marks notable moments on the
+product-metrics timeline (go-live, access cutover, incident, config change).
+The `p_metrics_usage_daily` view joins these by day, so a dashboard can label
+its bars.
 
 ```sql
 -- Add an annotation (TR-local time).
@@ -1265,15 +1274,15 @@ SELECT day, submitted, completed, active_users, annotations
  ORDER BY day DESC;
 ```
 
-UNIQUE(`occurred_at, label`) so the migration seed is safe to re-run.
+A UNIQUE(`occurred_at, label`) constraint makes the migration seed safe to re-run.
 
 
 
 ## 21. Temporary admin grants (vacation / on-call coverage)
 
-Time-bounded admin role. A **super-admin** (a permanent admin with
-ALL scope columns NULL) can deputise someone for a defined window;
-the deputy automatically loses admin status the moment
+A temporary admin grant is a time-bounded admin role. A **super-admin** (a
+permanent admin with ALL scope columns NULL) can deputise someone for a
+defined window. The deputy automatically loses admin status the moment
 `expires_at` passes.
 
 ### Who is a super-admin?
@@ -1321,19 +1330,20 @@ VALUES ('U0ZZZZZZZZZ',
         :your_slack_id);
 ```
 
-The bot keeps the permanent `admins` table immutable — temp grants
-go into `temp_admin_grants`, and `is_admin` / `can_approve` /
-`list_active` consult both tables.
+The bot keeps the permanent `admins` table immutable. Temp grants go into
+`temp_admin_grants`, and `is_admin` / `can_approve` / `list_active` consult
+both tables.
 
-> **Not in force while `access_model_v2` is on.** Under the new model
-> those three answers come from `access.py`, which reads
-> `role_assignment` and does not know this table; the migration-109
-> mirror does not project it either, so a row written here decides
-> nothing. Nobody has been caught by it — the table has never held a
-> row — but do not use this recipe to arrange on-call cover until the
-> temp grant is either mirrored into `role_assignment` or replaced by
-> a time-bounded `admin` role row, which `role_assignment.valid_until`
-> already supports. Write the role row directly in the meantime.
+> **Not in force while `access_model_v2` is on.** Under the new model,
+> those three answers come from `access.py`. It reads `role_assignment`
+> and does not know this table. The migration-109 mirror does not project
+> it either, so a row written here decides nothing. This gap caught nobody,
+> because the table never held a row.
+>
+> Do not use this recipe to arrange on-call cover until one of two changes
+> is made. Either the temp grant is mirrored into `role_assignment`, or a
+> time-bounded `admin` role row replaces it. `role_assignment.valid_until`
+> already supports such a row. In the meantime, write the role row directly.
 
 ### Inspect
 
@@ -1403,34 +1413,35 @@ admins.list_temp_grants('U0YYYYYYYYY')
   `admins.list_active()`).
 - Approval / reject buttons respect their scope (`can_approve()`
   evaluates both permanent and temp rows).
-- Admin DM "Approved by @user @ `2026-05-20 17:38 UTC`" doesn't
-  distinguish permanent vs temp — slack id is enough for audit; the
-  `temp_admin_grants` table holds the per-grant context.
+- The admin DM "Approved by @user @ `2026-05-20 17:38 UTC`" does not
+  distinguish permanent and temp admins. The Slack id is enough for audit,
+  and the `temp_admin_grants` table holds the per-grant context.
 
 
 ## 22. Excluding test traffic from product metrics
 
-Operator self-tests would otherwise pollute every `p_metrics_*` view
-(volume, top users, admin workload, ratings, cost savings). The
-`report_excluded_users` table is an allowlist-of-exclusions consulted
-by three thin wrapper views (`requests_reportable`,
-`audit_log_reportable`, `request_ratings_reportable`); every metric
-view reads from those instead of the raw base tables. The bot's
-runtime paths (kill-switch, allowlist, team grants, admin scope,
-audit_log) all keep reading the raw tables — exclusion is metrics-only.
+The `report_excluded_users` table excludes operator self-tests from every
+`p_metrics_*` view (volume, top users, admin workload, ratings, cost savings).
+Without it, the self-tests would pollute those views. The table is an
+allowlist-of-exclusions. Three thin wrapper views consult it
+(`requests_reportable`, `audit_log_reportable`, `request_ratings_reportable`),
+and every metric view reads from those instead of the raw base tables.
+
+The bot's runtime paths (kill-switch, allowlist, team grants, admin scope,
+audit_log) all keep reading the raw tables. The exclusion is metrics-only.
 
 ### Filter semantics
 
 | View family | Filter applied |
 |---|---|
 | `requests_reportable` | drops rows where `requester_slack_id` is in `report_excluded_users` |
-| `audit_log_reportable` | drops rows whose linked `request_id` is itself dropped from `requests_reportable`. Actor identity alone never excludes — an excluded user's approvals of OTHER people's real requests stay visible in admin reports (so their actual DBA workload is preserved). |
+| `audit_log_reportable` | drops rows whose linked `request_id` is itself dropped from `requests_reportable`. Actor identity alone never excludes a row. An excluded user's approvals of OTHER people's real requests stay visible in admin reports, so the reports keep that user's actual DBA workload. |
 | `request_ratings_reportable` | drops ratings whose rater is excluded OR whose underlying request was dropped from `requests_reportable` |
 
-So an excluded user's **own** requests (and any audit actions on
-them) vanish from the reports. Actions the excluded user took on
-OTHER people's real requests stay visible — admin reports reflect
-the user's actual DBA workload, just minus the self-test noise.
+So an excluded user's **own** requests (and any audit actions on them)
+vanish from the reports. Actions that the excluded user took on OTHER
+people's real requests stay visible. Admin reports show the user's actual
+DBA workload, minus the self-test noise.
 
 ### Add / remove a user
 
@@ -1448,24 +1459,24 @@ SELECT slack_user_id, reason, added_by, added_at
   FROM report_excluded_users ORDER BY added_at;
 ```
 
-Changes take effect on the next view read — no restart, no
-re-aggregation, no migration.
+A change takes effect on the next view read. It needs no restart, no
+re-aggregation and no migration.
 
 
 
 ## 23. Publishing the metrics dashboard to S3
 
-The dashboard HTML (`metrics_dashboard.html`) is regenerated and
-uploaded to an S3 bucket on a systemd timer. Browsers hit a fronted
-URL (private ALB / CloudFront with auth) → S3 → fresh-ish HTML
-(refresh interval = timer cadence, default hourly).
+A job on a systemd timer regenerates the dashboard HTML
+(`metrics_dashboard.html`) and uploads it to an S3 bucket. Browsers open a
+fronted URL (private ALB / CloudFront with auth) → S3 → fresh-ish HTML. The
+refresh interval is the timer cadence (default hourly).
 
 ### One-time setup
 
 **What has to exist before the upload works:**
 
-1. Private S3 bucket — e.g. `<company>-internal-dba-dashboards`.
-   Block-Public-Access ON; no public listing.
+1. Private S3 bucket, e.g. `<company>-internal-dba-dashboards`.
+   Block-Public-Access ON, with no public listing.
 2. **IAM role** attached to the bot's EC2 instance (preferred) with
    exactly this policy on the dashboard prefix:
 
@@ -1481,18 +1492,18 @@ URL (private ALB / CloudFront with auth) → S3 → fresh-ish HTML
    ```
 
    (Alternative: an IAM user with an access key written to the bot
-   user's `~/.aws/credentials`. The role approach is preferred —
-   no key to rotate.)
-3. Fronting:
+   user's `~/.aws/credentials`. Prefer the role approach, because it
+   leaves no key to rotate.)
+3. Fronting, with one of these two:
    - **CloudFront distribution** with an Origin Access Control (OAC)
-     reading the bucket privately, OR
+     that reads the bucket privately.
    - **Private ALB** with an S3 VPC endpoint.
 4. **TLS cert** on the front (ACM).
 5. **Internal DNS** record (e.g.
    `dba-metrics.<company-internal>.com`).
-6. **Authentication** — minimum is Cognito (IdP-backed) at the
+6. **Authentication**: the minimum is Cognito (IdP-backed) at the
    CloudFront / ALB layer. Anonymous internal access is also
-   acceptable on a tight VPN, but adds a rotation-of-trust step.
+   acceptable on a tight VPN, but it adds a rotation-of-trust step.
 
 ### Bot-side wiring
 
@@ -1557,9 +1568,9 @@ Then `sudo systemctl daemon-reload && sudo systemctl restart dba-metrics-publish
 
 ### Cost / footprint sanity
 
-- HTML size: ~50 KB; 24 uploads/day × 50 KB ≈ 1.2 MB/day → bucket
+- HTML size: ~50 KB. 24 uploads/day × 50 KB ≈ 1.2 MB/day → bucket
   storage ≈ negligible.
-- `Cache-Control: max-age=300, must-revalidate` — readers see a fresh
+- `Cache-Control: max-age=300, must-revalidate`: readers see a fresh
   copy within 5 minutes of the next upload, even through CloudFront.
 
 
@@ -1568,24 +1579,24 @@ Then `sudo systemctl daemon-reload && sudo systemctl restart dba-metrics-publish
 
 ## 24. Monitoring: `/metrics` and structured logs
 
-Two things an operator needs and neither existed: nothing to scrape, and log
-lines only a regex could parse.
+An operator needs two things that did not exist before: an endpoint to scrape,
+and log lines that a parser can read without a regex.
 
 ### `GET /metrics`
 
 Prometheus text format, **off by default**. A self-hosted tool should not start
-publishing its queue depth, fleet size and user counts because somebody
-upgraded, so turning it on is a decision:
+to publish its queue depth, fleet size and user counts because somebody
+upgraded. So enabling it is a decision:
 
 ```sql
 UPDATE bot_config SET value = 'on' WHERE key = 'web_metrics_enabled';
 ```
 
-Runtime-effective — no restart. While off the route answers **404**, not 403; a
-403 would confirm the endpoint is there.
+Runtime-effective: no restart. While off, the route answers **404**, not 403.
+A 403 would reveal that the endpoint is there.
 
-For a scraper, set a token as well — Prometheus can send a bearer header but
-cannot hold a session cookie:
+For a scraper, set a token as well. Prometheus can send a bearer header, but
+it cannot hold a session cookie:
 
 ```sql
 UPDATE bot_config SET value = 'PASTE_TOKEN' WHERE key = 'web_metrics_token';
@@ -1597,9 +1608,9 @@ Generate it like any other credential:
 python -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
 
-With the token empty, the endpoint requires an **admin session** instead — so
-enabling the key alone does not publish it. The token is compared in constant
-time.
+With the token empty, the endpoint requires an **admin session** instead. So
+enabling the key alone does not publish it. The endpoint compares the token in
+constant time.
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" https://queryhub.internal/metrics
@@ -1619,30 +1630,30 @@ scrape_configs:
 ```
 
 **The values come from SQL at scrape time, not from in-process counters.** That
-is deliberate: counters in memory reset on restart, and the two processes
+is deliberate. Counters in memory reset on restart. Also, the two processes
 (`queryhub` and `queryhub-web`) each see only part of the traffic, so neither
-would have the whole picture. Counters here are cumulative over all history,
-which is what `rate()` expects.
+would see all of it. Counters here are cumulative over all history, which is
+what `rate()` expects.
 
 ### What is worth alerting on
 
 | Metric | Why |
 | --- | --- |
-| `queryhub_oldest_request_age_seconds{status="pending"}` | **The one that matters.** Depth alone cannot tell "three arrived this second" from "one has waited since yesterday". This is what a developer experiences as the tool being broken. |
-| `queryhub_requests_in_state{status="executing"}` | Stuck executions. Should return to 0; a value that never falls means a lease is not being released. |
-| `queryhub_kill_switch_active` | 1 means all new query traffic is halted. Easy to leave on after an incident. |
-| `queryhub_auth_event_outbox_depth` | Monotonic growth means the auth-event poller is not running — grant changes are being recorded and never announced. This is a real failure mode: the poller once lived only in the Slack process, so a vanilla install grew this table forever and nothing said so. |
-| `queryhub_scrape_errors` | Non-zero means some collector failed and the numbers are partial. A dashboard of zeros because every query broke looks exactly like a healthy idle system. |
+| `queryhub_oldest_request_age_seconds{status="pending"}` | **The one that matters.** Depth alone cannot tell "three arrived this second" from "one has waited since yesterday". A developer experiences this wait as the tool being broken. |
+| `queryhub_requests_in_state{status="executing"}` | Stuck executions. The value should return to 0. A value that never falls means that a lease stays held. |
+| `queryhub_kill_switch_active` | 1 means the kill switch stops all new query traffic. It is easy to leave enabled after an incident. |
+| `queryhub_auth_event_outbox_depth` | Monotonic growth means that the auth-event poller is not running. QueryHub records grant changes but never announces them. This is a real failure mode. The poller once lived only in the Slack process, so a vanilla install grew this table forever, and nothing said so. |
+| `queryhub_scrape_errors` | Non-zero means that some collector failed and the numbers are partial. When every query breaks, the dashboard shows only zeros. That looks exactly like a healthy idle system. |
 | `rate(queryhub_requests_total{status="failed"}[15m])` | Execution failures. |
 
-Durations are exposed as `_sum`/`_count` pairs, so
+The endpoint exposes durations as `_sum`/`_count` pairs, so
 `rate(queryhub_execution_seconds_sum[1h]) / rate(queryhub_execution_seconds_count[1h])`
-gives the average over whatever window you pick. There are no quantiles: real
-ones need histogram buckets kept in process memory, and per the above there is
-no process memory to keep them in.
+gives the average over whatever window you pick. There are no quantiles. Real
+quantiles need histogram buckets kept in process memory. As explained above,
+there is no process memory to keep them in.
 
-One failing collector does not fail the scrape — a partial payload beats a 500
-at the exact moment something is already wrong.
+One failing collector does not fail the scrape. A partial payload is better
+than a 500 at the exact moment something is already wrong.
 
 ### Structured logs
 
@@ -1653,16 +1664,16 @@ object per line:
 {"timestamp":"2026-07-25T15:26:01+00:00","level":"INFO","logger":"queryhub.executor","message":"executing request 4242 on target demo-primary","request_id":4242,"tier":"ro"}
 ```
 
-`timestamp` is RFC 3339 in **UTC** regardless of `web_display_timezone` —
-correlating two hosts across a DST boundary is the kind of problem that costs an
-hour at 3am. Tracebacks stay on one line as an `exception` field, which is the
-main reason to switch: in text format a traceback arrives at the log backend as
-N unrelated lines, and the one naming the exception is not the one with the
-context.
+`timestamp` is RFC 3339 in **UTC**, regardless of `web_display_timezone`.
+Correlating two hosts across a DST boundary is the kind of problem that costs
+an hour at 3am. Tracebacks stay on one line as an `exception` field, and that
+is the main reason to switch. In text format, a traceback arrives at the log
+backend as N unrelated lines. The line that names the exception is not the line
+with the context.
 
-`text` remains the default, because a human tailing `journalctl` is the common
-case and JSON is worse for that. Both this and `LOG_LEVEL` are read once at
-process start, so a change needs a restart:
+`text` remains the default, because a human who tails `journalctl` is the
+common case. JSON is worse for that. Each process reads this setting and
+`LOG_LEVEL` once, at process start, so a change needs a restart:
 
 ```bash
 sudo systemctl restart queryhub queryhub-web
@@ -1672,31 +1683,33 @@ sudo systemctl restart queryhub queryhub-web
 
 ## 25. Super-admin elevation on a target
 
-A super-admin runs without the tier and safety limits an ordinary
-requester has — the point is not to give them power they lack (a DBA
-already has it through their own tooling), but to make the work they were
-going to do anyway *land in the audit trail*. What follows provisions the
-one role that makes it possible on a cluster.
+A super-admin runs without the tier and safety limits that an ordinary
+requester has. The point is not to give them power they lack: a DBA already
+has it through their own tooling. The point is that the audit trail *records
+the work* they were going to do anyway. The steps below provision the one role
+that makes this possible on a cluster.
 
 The model is in `docs/SCHEMA.md` → "Super-admin elevation". This section
 is the runbook.
 
 ### What a super-admin can do that others cannot
 
-Each of these is refused for everyone else, as before:
+QueryHub refuses each of these for everyone else, as before:
 - **End or cancel a session.** `SELECT pg_terminate_backend(pid)` or
-  `pg_cancel_backend(pid)`, alone or over `pg_stat_activity`. It asks first,
-  then runs at the ddl tier, as the elevated role: the read-only login cannot
-  signal another role's backend. On a cluster without the role (no
-  `super_ddl_role`) the DDL login runs it and the server may refuse.
+  `pg_cancel_backend(pid)`, alone or over `pg_stat_activity`. QueryHub asks
+  first. Then it runs the statement at the ddl tier, as the elevated role,
+  because the read-only login cannot signal another role's backend. On a
+  cluster without the role (no `super_ddl_role`), the DDL login runs it, and
+  the server may refuse.
 - **Run a mixed script.** A SELECT, an UPDATE and a SELECT go as one request,
   at the script's highest tier, in one transaction.
-- **Set `search_path`.** `SET search_path = app, public` before the query,
-  limited to a list of schema names and kept to the one request (SET LOCAL).
+- **Set `search_path`.** `SET search_path = app, public` before the query.
+  QueryHub limits the value to a list of schema names, and keeps it to the one
+  request (SET LOCAL).
 
-Still refused for a super-admin too: logging-setting changes, file reads,
-`dblink`, `pg_reload_conf`, and replication-slot changes (a dropped slot breaks
-the CDC streams that migrations run on).
+QueryHub still refuses these for a super-admin too: logging-setting changes,
+file reads, `dblink`, `pg_reload_conf`, and replication-slot changes. A
+dropped slot breaks the CDC streams that migrations run on.
 
 ### Once per cluster
 
@@ -1724,14 +1737,14 @@ BEGIN
 END $$;
 ```
 
-The version guard is not decoration. `WITH INHERIT FALSE, SET TRUE` is
-PostgreSQL 16+; without the guard an older server would create the role,
-fail on the grant, and leave the login **inheriting** admin rights in
-every session — the exact property the design exists to prevent. Failing
-whole is the safe outcome.
+The version guard is not decoration. `WITH INHERIT FALSE, SET TRUE` needs
+PostgreSQL 16+. Without the guard, an older server would create the role,
+fail on the grant, and leave the login **inheriting** admin rights in every
+session. That is the exact property the design exists to prevent. The safe
+outcome is that the whole block fails.
 
-Picking the admin role from the catalog instead of naming it keeps one
-statement working on both clouds.
+The block picks the admin role from the catalog instead of naming it. So one
+statement works on both clouds.
 
 ### Then, in the bot DB
 
@@ -1741,7 +1754,7 @@ UPDATE target_servers
  WHERE alias = '<target>';
 ```
 
-Runtime-effective — the executor reads it per request, no restart.
+Runtime-effective: the executor reads it per request, so no restart is needed.
 
 ### Verify from the catalog, not from the absence of errors
 
@@ -1757,7 +1770,7 @@ SELECT CASE WHEN pg_has_role('queryhub_superadmin','rds_superuser','USAGE')
             THEN 'VERIFIED' ELSE 'INCOMPLETE' END;
 ```
 
-And prove the property end to end by logging in as the DDL user:
+Then prove the property end to end, connected as the DDL user:
 
 ```sql
 SELECT pg_has_role(current_user,'rds_superuser','USAGE');  -- must be false
@@ -1770,8 +1783,8 @@ SELECT current_user;                                        -- back to the login
 
 ### What to exclude, and why
 
-- **The control-plane cluster.** `audit_log` lives there; an elevated
-  session able to write it could erase its own trail. This exclusion is
+- **The control-plane cluster.** `audit_log` lives there. An elevated
+  session that can write it could delete its own trail. This exclusion is
   not negotiable.
 - **Non-PostgreSQL targets.** The role model is Postgres-specific.
 - **Read replicas need nothing.** Roles are cluster-global, so a replica
@@ -1780,18 +1793,18 @@ SELECT current_user;                                        -- back to the login
 ### Traps measured on the real fleet
 
 - **`target_servers.username_ddl` and the cluster's actual roles disagree
-  in both directions.** A stored credential can name a role that was
-  never created, and a role can exist with no credential stored. Neither
-  is evidence of the other — check the cluster.
+  in both directions.** A stored credential can name a role that nobody
+  created, and a role can exist with no stored credential. Neither is
+  evidence of the other, so verify the roles on the cluster.
 - **A target with zero request history hides this indefinitely.** Grants
-  gate visibility, so a target nobody is granted is never exercised. When
-  auditing, start from the targets with no requests.
-- **Fernet ciphertext is not deterministic.** Two targets showing
+  gate visibility, so a target that nobody holds a grant on gets no requests.
+  When you audit, start from the targets with no requests.
+- **Fernet ciphertext is not deterministic.** Two targets that show
   different `password_ddl_encrypted` blobs may hold the identical
-  password; do not infer a mismatch from the ciphertext.
-- **`pg_authid` is not readable on RDS even as `rds_superuser`**, so a
-  SCRAM verifier cannot be copied between clusters to clone a login
-  without knowing its plaintext.
+  password. Do not infer a mismatch from the ciphertext.
+- **`pg_authid` is not readable on RDS even as `rds_superuser`.** So you
+  cannot copy a SCRAM verifier between clusters to clone a login without
+  knowing its plaintext.
 
 ---
 
@@ -1799,34 +1812,34 @@ SELECT current_user;                                        -- back to the login
 
 A read-only request on a target that has a read replica runs on the replica
 when the replica is healthy, and on the primary otherwise. Nobody picks a
-replica: every list shows the primary's one name, and the request, its grant
+replica. Every list shows the primary's one name, and the request, its grant
 and its history stay on the primary. The one exception is a super-admin, who
 can choose the node for a single query (see "Choosing where one query runs"
 below). Code: `src/queryhub/replicas.py`.
 
 **How a replica is known.** `target_servers.replica_of` points a replica row at
 its primary. The hourly inventory import sets it from `v_server.replica_source`
-(step 1c) and clears it when the inventory stops calling that host a replica.
-A target the inventory does not list keeps a link set by hand.
+(step 1c). The import clears it when the inventory stops calling that host a
+replica. A target that the inventory does not list keeps a link set by hand.
 
 **What decides where a request runs**, in order:
 
 1. `bot_config.replica_routing = 'on'`. This is the kill switch. The default is `off`.
-2. PostgreSQL, and the request runs at the RO tier.
+2. The target is PostgreSQL, and the request runs at the RO tier.
 3. The SQL reads nothing that describes the server itself (`pg_stat_*`,
-   `pg_locks`, WAL positions, `txid_*` ...). On a replica those answer about
+   `pg_locks`, WAL positions, `txid_*` ...). On a replica, those answer about
    the replica.
 4. The requester ran no RW/DDL on this target in the last
-   `replica_read_your_writes_minutes` (5). A SELECT that checks their own
-   UPDATE then reads it back.
+   `replica_read_your_writes_minutes` (5). So a SELECT that verifies their own
+   UPDATE sees that UPDATE.
 5. The replica row is **enabled**, and healthy: still in recovery, and at most
-   `replica_max_lag_seconds` (10) behind. Lag is measured against the
-   primary's current WAL position, then the replica's replay position. One
-   check is trusted for `replica_health_ttl_seconds` (15), per process.
+   `replica_max_lag_seconds` (10) behind. QueryHub measures lag against the
+   primary's current WAL position, then the replica's replay position. Each
+   process trusts one health probe for `replica_health_ttl_seconds` (15).
 
 A replica needs no credential of its own. A physical replica has the primary's
-roles and passwords, so the primary's RO login is used, and an admin can enable
-a replica row that has only the placeholder password.
+roles and passwords, so QueryHub uses the primary's RO login. An admin can
+therefore enable a replica row that has only the placeholder password.
 
 **Putting one in or out of rotation.** Enable or disable the replica row, in
 the admin Connections screen or with SQL. The importer never enables anything.
@@ -1837,17 +1850,17 @@ SELECT r.id, r.alias, r.enabled, p.alias AS primary_alias
   FROM target_servers r JOIN target_servers p ON p.id = r.replica_of;
 ```
 
-**If the replica fails the query.** When the replica is unreachable, or
-cancels the statement to keep replaying ("conflict with recovery", measured
-`max_standby_streaming_delay = 30s` on the fleet), the query runs again on the
-primary once. The audit log records a `replica_fallback` row. A timeout or a
-user's cancel is not re-run.
+**If the replica fails the query.** When the replica is unreachable, the query
+runs again on the primary, once. The same happens when the replica cancels the
+statement to keep replaying ("conflict with recovery", measured
+`max_standby_streaming_delay = 30s` on the fleet). The audit log records a
+`replica_fallback` row. QueryHub does not re-run a timeout or a user's cancel.
 
 **Where a request ran.** `requests.executed_target_id` names the replica. The
-`execution_started` audit row carries `replica` and `replica_lag_s`, or
-`replica_skipped` with the reason the replica was passed over. The requester
-sees "Ran on a read replica ..." in the Slack result and in the web Messages
-tab. The replica's name is not shown.
+`execution_started` audit row carries `replica` and `replica_lag_s`. Or it
+carries `replica_skipped`, with the reason why QueryHub skipped the replica. The
+requester sees "Ran on a read replica ..." in the Slack result and in the web
+Messages tab. Neither shows the replica's name.
 
 ```sql
 -- Read requests served by a replica, last day
@@ -1861,37 +1874,40 @@ SELECT r.id, t.alias AS target, x.alias AS ran_on, r.completed_at
 
 **Choosing where one query runs (super-admin).** The web submit takes
 `runOn`: `auto` (the rules above, the default), `primary`, or `replica` with a
-`replicaId` (optional when the connection has exactly one enabled replica).
-Anyone who is not a super-admin is refused with 403. The choice is stored as
-`requests.run_on` (`NULL`, `'primary'`, `'replica:<target id>'`) and, like
-`unmasked`, is re-checked at execution: a requester who is no longer a
-super-admin runs as auto, and `execution_started` records `run_on_ignored`.
-A scheduled submit keeps its choice; the standing is checked when the
-scheduler runs it, not when it was submitted.
+`replicaId`. That id is optional when the connection has exactly one enabled
+replica. QueryHub refuses anyone who is not a super-admin with 403. QueryHub
+stores the choice as `requests.run_on` (`NULL`, `'primary'`, `'replica:<target id>'`).
 
-- `primary` never consults a replica, at any tier. On SQL Server a read skips
+Like `unmasked`, QueryHub verifies the choice again at execution. A requester
+who is no longer a super-admin runs as auto, and `execution_started` records
+`run_on_ignored`. A scheduled submit keeps its choice. QueryHub verifies the
+requester's standing when the scheduler runs it, not at submit time.
+
+- `primary` never consults a replica, at any tier. On SQL Server, a read skips
   the availability group's readable secondary and goes to the listener.
 - A chosen replica skips `replica_routing`, the node-local rule,
-  read-your-writes and the lag limit. Reading a replica's own
-  `pg_stat_activity` is the use this exists for. It must still be an enabled
-  replica of the request's target, the statement must be read-only (the submit
-  refuses anything else with 400), and a fresh probe must find it answering
-  and in recovery. The probe does not need the primary: while the primary is
-  down, the lag is the replica's replay age.
-- A chosen replica that cannot run the query, before or during the run, fails
-  the request. The message names the replica and the reason. It never falls
-  back to the primary. To take a replica away from chosen runs as well as from
-  automatic ones, disable its row.
+  read-your-writes and the lag limit. This option exists to read a replica's
+  own `pg_stat_activity`. Three conditions still apply:
+  - It must be an enabled replica of the request's target.
+  - The statement must be read-only. The submit refuses anything else
+    with 400.
+  - A fresh probe must find the replica answering and in recovery. The probe
+    does not need the primary: while the primary is down, the lag is the
+    replica's replay age.
+- If a chosen replica cannot run the query, before or during the run, the
+  request fails. The message names the replica and the reason. The request
+  never runs on the primary instead. To exclude a replica from chosen runs as
+  well as from automatic ones, disable its row.
 
 Every honoured choice writes an `execution_run_on_forced` audit row in the
 claim's transaction: `requested`, `ran_on` (`primary` / `replica`),
 `target_id`, `target` and `lag_s`. `GET /api/queries/<id>` and every
 `GET /api/history` row carry `ranOn` (`kind`, `name`, `forced`,
-`lagSeconds`), read from that row; the web UI builds its "ran on" sentence
+`lagSeconds`), read from that row. The web UI builds its "ran on" sentence
 from it. The server writes no Messages line and no Slack line for a chosen
-node, and the "Ran on a read replica ..." line for automatic routing is
-unchanged. `GET /api/connections/<conn>/replicas` shows a super-admin each
-replica's health as automatic routing sees it (the cached check,
+node. The "Ran on a read replica ..." line for automatic routing does not
+change. `GET /api/connections/<conn>/replicas` shows a super-admin each
+replica's health as automatic routing sees it (the cached probe,
 `replica_health_ttl_seconds`).
 
 ```sql
@@ -1904,26 +1920,26 @@ SELECT a.request_id, a.actor_name, a.details->>'requested' AS requested,
  ORDER BY a.id DESC;
 ```
 
-Masking follows the request's target, the primary, wherever the query runs:
-exemptions and the column catalog are looked up by `target_server_id`, never
-by the replica's own id. An exemption written against a replica's connection
-row therefore never applies.
+Masking follows the request's target, the primary, wherever the query runs.
+QueryHub finds exemptions and the column catalog by `target_server_id`, never
+by the replica's own id. So an exemption written against a replica's
+connection row never applies.
 
 **Cancel and lockout.** A cancel signals the backend on the server that runs
 the query (`executed_target_id`), with the primary's login.
 `scripts/breakglass_lockout.py` ends QueryHub sessions on replicas too. It
 writes no role change there: the NOLOGIN reaches a replica through replication.
-Replicas are processed after the primaries.
+The script processes the replicas after the primaries.
 
 ## 27. Verifying target certificates
 
-`sslmode=require` encrypts a target connection but accepts any certificate,
-so a machine in the network path could answer in the server's place and read
-the login and the results. Verification is switched on per host, so a fleet
-spread over two clouds, which means two certificate authorities, moves one
-cloud at a time. The keys are in CONFIGURATION.md, "Target TLS".
+`sslmode=require` encrypts a target connection but accepts any certificate.
+So a machine in the network path could answer in the server's place, and read
+the login and the results. You enable verification per host, so a fleet spread
+over two clouds (two certificate authorities) moves one cloud at a time. The
+keys are in CONFIGURATION.md, "Target TLS".
 
-**1. Measure without logging in.** A TLS handshake is enough to see whether a
+**1. Measure without a login.** A TLS handshake is enough to see whether a
 CA file verifies a server, host name included:
 
 ```bash
@@ -1935,10 +1951,10 @@ openssl s_client -starttls postgres -connect <host>:5432 -servername <host> \
 `0 (ok)` means `verify-full` will connect to that host with that file.
 
 **2. Install the CA file** on the QueryHub host, readable by the service user.
-For AWS RDS it is the global bundle, which covers every region:
+For AWS RDS, it is the global bundle, which covers every region:
 `https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem`. For
 another cloud, take the provider's database CA from its console or API, never
-from the server itself: a certificate the server hands you proves nothing
+from the server itself. A certificate that the server gives you proves nothing
 about who the server is. When two clouds verify, put both CAs in one file.
 
 ```bash
@@ -1947,71 +1963,71 @@ sudo install -D -m 0644 global-bundle.pem /etc/queryhub/tls/target-ca.pem
 
 **3. One host first.** Set `target_ssl_rootcert` to the file and
 `target_ssl_verify_hosts` to one host. The settings screen refuses the change
-while the file cannot be read. Run a query there, and leave it a day.
+while it cannot read the file. Run a query there, then wait a day.
 
 **4. Then the whole cloud,** for example `*.rds.amazonaws.com`. Each process
 logs one line at startup with the number of enabled targets still unverified.
 
-**5. A server that cannot verify** goes on `target_ssl_verify_exempt_hosts`,
+**5. A server that cannot verify** belongs on `target_ssl_verify_exempt_hosts`,
 with the reason in its connection notes.
 
 **Undo:** clear `target_ssl_verify_hosts`. The change applies to the next
 connection, with no restart.
 
 SQL Server reads the same two lists (`TrustServerCertificate=no` for a listed
-host); `mssql_trust_server_cert` covers the hosts neither list names. A target
-reached by IP address verifies only if its certificate names that address.
-ClickHouse always verifies, against the public CA bundle.
+host). `mssql_trust_server_cert` covers the hosts that neither list names. A
+target reached by IP address verifies only if its certificate names that
+address. ClickHouse always verifies, against the public CA bundle.
 
-The metadata DB is not a target and has its own two settings,
+The metadata DB is not a target. It has its own two settings,
 `BOT_DB_SSLMODE` and `BOT_DB_SSLROOTCERT`, in the service environment. A
-change there needs a restart of both services, and a wrong value stops both,
-so measure it with the command above first. Do not set libpq's `PGSSLROOTCERT`
-instead: libpq applies it to every connection that names no root file, which
+change there needs a restart of both services, and a wrong value stops both.
+So measure it with the command above first. Do not set libpq's `PGSSLROOTCERT`
+instead. libpq applies it to every connection that names no root file, which
 turns each target's `require` into `verify-ca` against the wrong CA.
 
 ## 28. Splitting the metadata database roles
 
-One login owns the metadata database and everything in it, and both services
-and the scheduled jobs connect with it. Owning `audit_log` means UPDATE, DELETE
-and TRUNCATE on it, whatever the code does, so a leaked runtime credential
-could rewrite the audit trail. The split takes that away without changing the
-services' configuration: the runtime keeps its login and password.
+One login owns the metadata database and everything in it. Both services and
+the scheduled jobs connect with it. Owning `audit_log` means UPDATE, DELETE
+and TRUNCATE on it, whatever the code does. So a leaked runtime credential
+could rewrite the audit trail. The split withdraws that power without a change
+to the services' configuration: the runtime keeps its login and password.
 
 | Role | Login | Holds |
 |---|---|---|
 | owner (e.g. `queryhub_owner`) | no | the database and every object in `public` |
-| migrator (e.g. `queryhub_migrator`) | yes | membership in owner; used only by `scripts/apply_migrations.py` |
-| runtime (`BOT_DB_USER`, unchanged) | yes | DML on tables, SELECT on views, USAGE on sequences, CONNECT and TEMPORARY on the database; SELECT and INSERT only on `audit_log`; nothing on `schema_migrations` |
+| migrator (e.g. `queryhub_migrator`) | yes | membership in owner. Only `scripts/apply_migrations.py` uses it |
+| runtime (`BOT_DB_USER`, unchanged) | yes | DML on tables, SELECT on views, USAGE on sequences, CONNECT and TEMPORARY on the database. On `audit_log`, only SELECT and INSERT. On `schema_migrations`, nothing |
 
 Code: `src/queryhub/metadata_roles.py` (the policy),
 `scripts/split_metadata_roles.py` (the change). CI runs the whole integration
-suite a second time as a split runtime, so a code path that needs more than
+suite a second time as a split runtime. So a code path that needs more than
 DML fails there first.
 
 What the runtime needs, and why each piece is there:
 - **TEMPORARY on the database.** The access-model mirror trigger (migration
-  109) creates a temporary table on every write to the legacy access tables,
-  including the profile refresh on each `/sql` submission.
+  109) creates a temporary table on every write to the legacy access tables.
+  That includes the profile refresh on each `/sql` submission.
 - **SELECT only on views.** A simple view such as `audit_log_reportable` is
-  auto-updatable, and an UPDATE through it is checked against the view's owner.
-  A blanket grant on all tables includes views and would leave the audit rows
-  editable one step removed.
+  auto-updatable. PostgreSQL verifies an UPDATE through it against the view's
+  owner. A blanket grant on all tables includes views. It would leave the
+  audit rows editable indirectly, through a view.
 - **INSERT and USAGE on `audit_log`'s sequence.** The `bot_config` audit
   trigger (migration 066) writes it as the invoker.
 
-**1. Look at the plan.** Read-only, and it locks nothing:
+**1. Read the plan.** The command is read-only, and it locks nothing:
 
 ```bash
 PGPASSWORD=... python scripts/split_metadata_roles.py --owner queryhub_owner --admin-user <admin login>
 ```
 
 The admin login is the database's administrative user (the RDS master), not
-the runtime: the runtime is the role losing privileges and cannot hand them
-over.
+the runtime. The runtime is the role that loses privileges, and it cannot
+transfer them.
 
-**2. Create the two roles**, as that admin login. The migrator's password is
-yours to choose and never passes through the script:
+**2. Create the two roles**, as that admin login. You choose the migrator's
+password, and it never passes through the script:
 
 ```sql
 CREATE ROLE queryhub_owner NOLOGIN;
@@ -2032,18 +2048,24 @@ BOT_DB_MIGRATOR_PASSWORD=...
 BOT_DB_OWNER_ROLE=queryhub_owner
 ```
 
-**3. Rehearse.** `--rehearse` runs everything in one transaction, checks it,
-and rolls back. It takes an ACCESS EXCLUSIVE lock on every table for the
-second or two it runs, so do it at a quiet moment, or on a restored copy.
+**3. Rehearse.** `--rehearse` runs everything in one transaction, verifies
+it, and rolls back. It takes an ACCESS EXCLUSIVE lock on every table for the
+second or two it runs. So run it at a quiet moment, or on a restored copy.
 
-**4. Apply.** `--apply` runs the same transaction and commits it only if the
-checks pass: nothing left owned by the runtime, INSERT but no UPDATE, DELETE
-or TRUNCATE on `audit_log`, UPDATE still on `requests`, TEMPORARY held, no
-CREATE on `public`, no view writable. A table another session is using makes it
-give up after 3 seconds; run it again. No restart is needed.
+**4. Apply.** `--apply` runs the same transaction. It commits only if all of
+these hold:
 
-**5. Check the live paths** once: a `/sql` read, a web submit, an admin
-button. Each exercises a trigger.
+- nothing left owned by the runtime
+- INSERT but no UPDATE, DELETE or TRUNCATE on `audit_log`
+- UPDATE still on `requests`
+- TEMPORARY held
+- no CREATE on `public`, and no view writable
+
+If another session is using a table, the script aborts after 3 seconds. Run it
+again. No restart is needed.
+
+**5. Test the live paths** once: a `/sql` read, a web submit, an admin
+button. Each one exercises a trigger.
 
 **6. Migrations from now on** run as the migrator:
 
@@ -2052,17 +2074,19 @@ set -a; . /etc/queryhub/migrator.env; set +a
 python scripts/apply_migrations.py
 ```
 
-Without those variables the runner says the ledger is unreadable and stops.
-After the last file it re-applies the runtime's grants, so a new table gets DML
-and a new view SELECT only. The container entrypoint unsets the three
-variables after migrating; a separate one-off migration container keeps them
-out of the service container altogether.
+Without those variables, the runner says the ledger is unreadable and stops.
+After the last file, it re-applies the runtime's grants, so a new table gets
+DML and a new view gets SELECT only. The container entrypoint unsets the three
+variables after it migrates. With a separate one-off migration container, the
+service container never holds them at all.
 
-**Undo:** `--rollback --apply` gives everything back to the runtime login, the
-state before the split.
+**Undo:** `--rollback --apply` returns everything to the runtime login, which
+is the state before the split.
 
-Not done by the split, still open (SEC-AUDIT): a hash chain over `audit_log`
-with an anchor outside the database, and `audit_log.request_id`'s `ON DELETE
-SET NULL`, which lets a DELETE on `requests` rewrite audit rows through the
-foreign key. No runtime path deletes an audited request today: drafts, the
-only requests the runtime deletes, have no audit rows.
+Not done by the split, and still open (SEC-AUDIT):
+
+- A hash chain over `audit_log`, with an anchor outside the database.
+- `audit_log.request_id`'s `ON DELETE
+  SET NULL`, which lets a DELETE on `requests` rewrite audit rows through the
+  foreign key. No runtime path deletes an audited request today. Drafts are
+  the only requests that the runtime deletes, and they have no audit rows.

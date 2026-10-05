@@ -165,7 +165,7 @@ def handle_slash_sql(ack: Ack, body: dict, client: WebClient, respond) -> None:
                 "response_type": "ephemeral",
                 "text": (
                     ":no_entry: *You don't have access to `/sql`.*\n"
-                    "Reach out to the DBA team to be added."
+                    "Ask the DBA team to add you."
                 ),
             })
             return
@@ -189,7 +189,7 @@ def handle_slash_sql(ack: Ack, body: dict, client: WebClient, respond) -> None:
             "response_type": "ephemeral",
             "text": (
                 ":no_entry: *You don't have access to `/sql`.*\n"
-                "Reach out to the DBA team to be added."
+                "Ask the DBA team to add you."
             ),
         })
         return
@@ -435,11 +435,11 @@ def _reopen_modal_prefilled(client: WebClient, body: dict, *, user_id: str,
             "type": "context",
             "elements": [{
                 "type": "mrkdwn",
-                "text": (f":warning: _That saved query is {len(query):,} "
-                         "characters — too long to load into the form "
-                         "(Slack caps it at 3000). Target and database are "
-                         "set; paste the SQL above or upload it as a .sql "
-                         "file._"),
+                "text": (f":warning: _That saved query has {len(query):,} "
+                         "characters. The form holds at most 3000 (a Slack "
+                         "limit), so the bot did not load it. The bot set the "
+                         "target and the database. Paste the SQL above, or "
+                         "upload it as a .sql file._"),
             }],
         }
         for i, b in enumerate(fresh["blocks"]):
@@ -606,8 +606,8 @@ def handle_favorite_button(ack: Ack, body: dict, client: WebClient) -> None:
         opened = client.conversations_open(users=uid)
         notifications._post(client,
             channel=opened["channel"]["id"],
-            text=f":star: Saved query `#{rid}` to your favorites — "
-                 f"pick it from the *Load from favorites* dropdown in `/sql`.",
+            text=f":star: Query `#{rid}` is now in your favorites. "
+                 f"Pick it from the *Load from favorites* dropdown in `/sql`.",
         )
     except Exception:
         log.exception("favorite confirm DM failed (req=%s)", rid)
@@ -896,9 +896,9 @@ def _inject_single_initials(view_dict: dict, first_item: dict, prev_view: dict) 
             "type": "context",
             "elements": [{
                 "type": "mrkdwn",
-                "text": (f":information_source: _Switched to single mode — "
-                         f"only item #1 carried over. {len(items) - 1} "
-                         f"other item(s) discarded._"),
+                "text": (f":information_source: _You switched to single mode. "
+                         f"Only item #1 stays. The bot discarded the other "
+                         f"{len(items) - 1} item(s)._"),
             }],
         }
         # Insert right after the mode toggle (which is the second block
@@ -1051,11 +1051,11 @@ def _download_uploaded_query(client: WebClient, file_id: str) -> str:
     size = int(file_meta.get("size") or 0)
     if size > _MAX_UPLOAD_BYTES:
         raise ValueError(
-            f"file is {size // 1024} KB, max allowed is {_MAX_UPLOAD_BYTES // 1024} KB"
+            f"it is {size // 1024} KB and the limit is {_MAX_UPLOAD_BYTES // 1024} KB"
         )
     download_url = file_meta.get("url_private_download") or file_meta.get("url_private")
     if not download_url:
-        raise RuntimeError("no download URL in files.info response")
+        raise RuntimeError("Slack returned no download URL for the file")
     req = urllib.request.Request(
         download_url,
         headers={"Authorization": f"Bearer {cfg.ENV.slack_bot_token}"},
@@ -1063,7 +1063,7 @@ def _download_uploaded_query(client: WebClient, file_id: str) -> str:
     with urllib.request.urlopen(req, timeout=10) as resp:
         raw = resp.read(_MAX_UPLOAD_BYTES + 1)
     if len(raw) > _MAX_UPLOAD_BYTES:
-        raise ValueError(f"file exceeds {_MAX_UPLOAD_BYTES // 1024} KB cap")
+        raise ValueError(f"it is larger than the {_MAX_UPLOAD_BYTES // 1024} KB limit")
     return raw.decode("utf-8", errors="replace")
 
 
@@ -1135,21 +1135,21 @@ def _finish_supersede(client: WebClient, user_id: str, old_id: int,
         else:
             notifications.update_all_admin_messages(
                 client, superseded_row,
-                f":pencil2: Superseded by request #{new_row['id']} — "
-                f"withdrawn by the requester",
+                f":pencil2: The requester withdrew this request and "
+                f"replaced it with request #{new_row['id']}.",
             )
             notifications.update_requester_card(
                 client, superseded_row,
                 status_emoji=":pencil2:",
-                status_text=f"Superseded — edited into request #{new_row['id']}",
+                status_text=f"Replaced by your edited request #{new_row['id']}",
             )
         return
     notifications.dm_requester(
         client, user_id,
-        f":warning: Request `#{old_id}` had already been decided while you "
-        f"were editing, so it could not be withdrawn. Your edit was "
-        f"submitted separately as request `#{new_row['id']}` — check both "
-        f"so the same change doesn't run twice.",
+        f":warning: Request `#{old_id}` was already decided while you "
+        f"edited it, so the bot could not withdraw it. The bot submitted "
+        f"your edit as a separate request, `#{new_row['id']}`. Check both, "
+        f"so that the same change does not run twice.",
     )
 
 
@@ -1172,13 +1172,13 @@ def handle_view_submission(ack: Ack, body: dict, client: WebClient) -> None:
             log.exception("failed to download uploaded SQL file")
             ack({
                 "response_action": "errors",
-                "errors": {modal.B_QUERY_FILE: f"Could not read the uploaded file: {e}"},
+                "errors": {modal.B_QUERY_FILE: f"The bot could not read the uploaded file: {e}"},
             })
             return
         if not file_query.strip():
             ack({
                 "response_action": "errors",
-                "errors": {modal.B_QUERY_FILE: "Uploaded file is empty."},
+                "errors": {modal.B_QUERY_FILE: "The uploaded file is empty."},
             })
             return
         parsed["query"] = file_query.strip()
@@ -1187,7 +1187,7 @@ def handle_view_submission(ack: Ack, body: dict, client: WebClient) -> None:
         ack({
             "response_action": "errors",
             "errors": {modal.B_QUERY:
-                       "Provide your SQL — paste it here, or upload a .sql file below."},
+                       "Paste your SQL here, or upload a .sql file below."},
         })
         return
 
@@ -1304,7 +1304,7 @@ def _maybe_dm_ro_burst(client: WebClient, principal_id: str, required_mode: str)
         )
         notifications.dm_requester(
             client, principal_id,
-            text="You've run several read queries — here's a faster path.",
+            text="You ran several read queries. Here is a faster way.",
             blocks=blocks,
         )
     except Exception:
@@ -1325,8 +1325,8 @@ def _maybe_save_template(client: WebClient, user: dict, parsed: dict,
         try:
             notifications.dm_requester(
                 client, user["id"],
-                f":warning: Request submitted, but the template wasn't "
-                f"saved: {err}",
+                f":warning: The bot submitted your request but did not "
+                f"save the template: {err}",
             )
         except Exception:
             log.exception("template-name-error DM failed")
@@ -1402,7 +1402,9 @@ def _resolve_schedule(
     if sched_for <= now:
         return None, modal.BATCH_B_SCHEDULE_TIME, "Scheduled time must be in the future (UTC)."
     if sched_for > now + timedelta(days=max_days):
-        return None, modal.BATCH_B_SCHEDULE_DATE, f"Scheduled time exceeds the {max_days}-day max."
+        return (None, modal.BATCH_B_SCHEDULE_DATE,
+                f"The scheduled time is more than {max_days} days from now. "
+                "Pick an earlier time.")
     return sched_for, None, None
 
 
@@ -1449,7 +1451,7 @@ def _validate_batch_item(
     # for a read-only engine).
     target = targets.get(target_id)
     if target is None:
-        errors[b_server] = "Selected server is no longer available."
+        errors[b_server] = "The selected server is no longer available."
         return None, errors
 
     safety = query_safety.analyze(query, engine=target.engine)
@@ -1461,7 +1463,8 @@ def _validate_batch_item(
 
     grant = teams.effective_grant_for_user(user_id, target_id)
     if grant is None:
-        errors[b_server] = "You are not authorized to query this server."
+        errors[b_server] = ("You have no grant on this server. "
+                            "Ask the DBA team for access.")
         return None, errors
 
     database = raw_item.get("database_name") or target.default_database
@@ -1497,8 +1500,8 @@ def _validate_batch_item(
     # must be set. We flag the bundle field if it's empty.
     if required_mode != "ro" and not bundle_justification:
         errors[modal.BATCH_B_JUSTIFICATION] = (
-            f"Justification is required because item #{idx} is a "
-            f"{required_mode.upper()} query."
+            f"Item #{idx} is a {required_mode.upper()} query, so the "
+            f"batch needs a justification."
         )
         return None, errors
 
@@ -1581,10 +1584,10 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
         if open_count + len(raw_items) > max_open:
             ack({"response_action": "errors",
                  "errors": {modal.BATCH_B_JUSTIFICATION:
-                            f"This batch ({len(raw_items)} items) would put you "
-                            f"at {open_count + len(raw_items)} in-flight requests, "
-                            f"over the {max_open} cap. Wait for some to complete, "
-                            f"or remove items."}})
+                            f"This batch ({len(raw_items)} items) would give you "
+                            f"{open_count + len(raw_items)} open requests. The "
+                            f"limit is {max_open}. Wait for some to finish, or "
+                            f"remove items."}})
             return
 
     # Per-item validation. Tag each raw item with its 1-based index so
@@ -1613,7 +1616,7 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
     if cfg.get_bool("require_justification", False) and not parsed["justification"]:
         ack({"response_action": "errors",
              "errors": {modal.BATCH_B_JUSTIFICATION:
-                        "Justification is required."}})
+                        "Enter a justification."}})
         return
 
     ack()
@@ -1754,7 +1757,8 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
             notifications.dm_requester(
                 client, user["id"],
                 f":warning: *SQL batch `B#{bundle_id}` ({len(pending_items)} "
-                f"item(s)) saved* but no admins are configured to approve them.",
+                f"item(s)) saved*, but there is no active admin to approve "
+                f"them. Contact the DBA team.",
             )
         else:
             notifications.notify_admins_bundle(client, bundle_id)
@@ -1777,8 +1781,8 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
         items_str = ", ".join(f"#{i}" for i in aa_expired_warning_items)
         expired_note = (
             f"\n:warning: _Items {items_str}: your auto-approve grant "
-            "expires before the scheduled run time, so admin approval "
-            "is required._"
+            "expires before the scheduled run time, so they need admin "
+            "approval._"
         )
 
     notifications.dm_requester(
@@ -1944,7 +1948,7 @@ def handle_approve(ack: Ack, body: dict, client: WebClient) -> None:
     if outcome is None:
         notifications.dm_requester(
             client, user["id"],
-            f"Request `#{request_id}` has already been decided.")
+            f"Request `#{request_id}` is already decided.")
         return
     core_decide.apply_effects(client, outcome)
 
@@ -2081,8 +2085,8 @@ def handle_cancel_scheduled(ack: Ack, body: dict, client: WebClient) -> None:
             # Either already executed or someone else cancelled.
             notifications.dm_requester(
                 client, user_id,
-                f"Request `#{request_id}` is no longer scheduled — it may have "
-                f"already started executing or been cancelled.",
+                f"Request `#{request_id}` is no longer scheduled. It may have "
+                f"started already, or someone may have cancelled it.",
             )
             return
         audit.log_in(cur, request_id, user_id, user_name, "cancelled")
@@ -2101,7 +2105,7 @@ def handle_cancel_scheduled(ack: Ack, body: dict, client: WebClient) -> None:
         notifications.update_user_scheduled_dm(
             client, updated,
             f":no_entry: *SQL query `#{request_id}` cancelled by <@{user_id}>* — "
-            f"the scheduled execution was skipped.",
+            f"the bot skipped the scheduled run.",
         )
         ratings.maybe_prompt(client, updated)
 
@@ -2111,8 +2115,8 @@ def handle_cancel_scheduled(ack: Ack, body: dict, client: WebClient) -> None:
     if not is_owner and not _is_bundle_item(updated):
         notifications.dm_requester(
             client, updated["requester_slack_id"],
-            f":no_entry: Your scheduled SQL query `#{request_id}` was "
-            f"cancelled by admin <@{user_id}> before execution.\n"
+            f":no_entry: Admin <@{user_id}> cancelled your scheduled SQL "
+            f"query `#{request_id}` before it ran.\n"
             + notifications.request_context_md(updated),
         )
 
@@ -2160,8 +2164,8 @@ def handle_cancel_request(ack: Ack, body: dict, client: WebClient) -> None:
             # and this update. The card refreshes via that flow.
             notifications.dm_requester(
                 client, user_id,
-                f"Request `#{request_id}` is no longer pending — an admin "
-                f"may have already acted on it. Check its latest status DM.",
+                f"Request `#{request_id}` is no longer pending. An admin "
+                f"may have decided it already. Check its latest status DM.",
             )
             return
         audit.log_in(cur, request_id, user_id, user_name, "cancelled",
@@ -2177,7 +2181,7 @@ def handle_cancel_request(ack: Ack, body: dict, client: WebClient) -> None:
     # card swaps the [Cancel request] button for a terminal status line.
     notifications.update_all_admin_messages(
         client, updated,
-        ":no_entry: Withdrawn by the requester before a decision",
+        ":no_entry: The requester withdrew this request before a decision.",
     )
     notifications.update_requester_card(
         client, updated,
@@ -2229,7 +2233,7 @@ def handle_access_request_submission(ack: Ack, body: dict, client: WebClient) ->
     if not parsed["reason"] or len(parsed["reason"]) < 5:
         ack({
             "response_action": "errors",
-            "errors": {access.B_REASON: "Please provide a meaningful reason (at least 5 characters)."},
+            "errors": {access.B_REASON: "Enter a meaningful reason of at least 5 characters."},
         })
         return
 
@@ -2244,8 +2248,8 @@ def handle_access_request_submission(ack: Ack, body: dict, client: WebClient) ->
                 access.B_REASON: (
                     f"You already have a pending access request "
                     f"(#{existing['id']}, opened {existing['created_at']:%Y-%m-%d}). "
-                    f"Wait for it to be decided before submitting another for the "
-                    f"same target + query."
+                    f"Wait for a decision on it before you submit another for "
+                    f"the same target and query."
                 )
             },
         })
@@ -2255,7 +2259,7 @@ def handle_access_request_submission(ack: Ack, body: dict, client: WebClient) ->
     if target is None:
         ack({
             "response_action": "errors",
-            "errors": {access.B_TARGET: "Selected target no longer exists."},
+            "errors": {access.B_TARGET: "The selected target no longer exists."},
         })
         return
 
@@ -2279,8 +2283,8 @@ def handle_access_request_submission(ack: Ack, body: dict, client: WebClient) ->
         # Lost a race with another submission — tell the user gently.
         notifications.dm_requester(
             client, user["id"],
-            ":warning: Looks like an identical pending request exists already. "
-            "No new request was created.",
+            ":warning: An identical pending request already exists. "
+            "The bot did not create a new one.",
         )
         return
 
@@ -2290,9 +2294,9 @@ def handle_access_request_submission(ack: Ack, body: dict, client: WebClient) ->
     if not active:
         notifications.dm_requester(
             client, user["id"],
-            ":warning: Your access request was saved (#"
-            f"{new_row['id']}) but there are no admins configured to review it. "
-            "Contact the DBA team out-of-band.",
+            ":warning: The bot saved your access request (#"
+            f"{new_row['id']}), but there is no active admin to review it. "
+            "Contact the DBA team directly.",
         )
         return
 
@@ -2360,7 +2364,7 @@ def handle_access_approve(ack: Ack, body: dict, client: WebClient) -> None:
     if updated is None:
         notifications.dm_requester(
             client, user["id"],
-            f"Access request `#{access_request_id}` has already been decided.",
+            f"Access request `#{access_request_id}` is already decided.",
         )
         return
 
@@ -2376,18 +2380,18 @@ def handle_access_approve(ack: Ack, body: dict, client: WebClient) -> None:
         requester_note = "\n\nYou can now run `/sql` — your access is active."
     elif ag.get("reason") == "tier_conflict":
         grant_line = ("\n:warning: Auto-grant skipped: an active grant at a different "
-                      f"tier (*{(ag.get('mode') or '?').upper()}*) already exists — "
-                      "adjust it manually if intended.")
+                      f"tier (*{(ag.get('mode') or '?').upper()}*) already exists. "
+                      "To give the requested tier, change that grant manually.")
         requester_note = "\n\nA DBA will finalize your access shortly."
     elif ag.get("reason") == "control_plane":
         grant_line = ("\n:no_entry: Auto-grant refused: this is the bot's own "
                       "control-plane database. It holds the audit log and the "
-                      "grant tables, and is not grantable from here.")
-        requester_note = ("\n\nThis connection cannot be granted through an "
-                          "access request.")
+                      "grant tables. An access request cannot grant it.")
+        requester_note = ("\n\nAn access request cannot grant this "
+                          "connection.")
     elif ag.get("reason") == "no_target":
-        grant_line = ("\n:warning: Auto-grant skipped: this server is not onboarded "
-                      "as a target yet — onboard it, then grant manually.")
+        grant_line = ("\n:warning: Auto-grant skipped: this server is not a "
+                      "target yet. Onboard it, then grant access manually.")
         requester_note = "\n\nA DBA will finalize your access shortly."
     else:
         grant_line = ""
@@ -2588,7 +2592,7 @@ def handle_dba_mark_failed(ack: Ack, body: dict, client: WebClient) -> None:
                     "type": "input",
                     "block_id": "reason_block",
                     "label": {"type": "plain_text",
-                              "text": "What went wrong? (visible to requester)"},
+                              "text": "What went wrong? (The requester sees this.)"},
                     "element": {
                         "type": "plain_text_input",
                         "action_id": "reason_input",
@@ -2692,7 +2696,7 @@ def handle_bundle_approve_all(ack: Ack, body: dict, client: WebClient) -> None:
     if not items:
         notifications.dm_requester(
             client, user["id"],
-            f":eyes: No pending items in your scope on bundle B#{bundle_id}.",
+            f":eyes: Batch B#{bundle_id} has no pending items in your scope.",
         )
         return
 
@@ -2736,8 +2740,9 @@ def handle_bundle_approve_all(ack: Ack, body: dict, client: WebClient) -> None:
     notifications.dm_requester(
         client, user["id"],
         f":white_check_mark: Approved {len(items) - skipped} item(s) in "
-        f"bundle B#{bundle_id}"
-        + (f" — {skipped} raced and were skipped." if skipped else "."),
+        f"batch B#{bundle_id}."
+        + (f" The bot skipped {skipped} item(s) that were no longer pending."
+           if skipped else ""),
     )
 
 
@@ -2755,14 +2760,14 @@ def handle_bundle_reject_all(ack: Ack, body: dict, client: WebClient) -> None:
             "type": "modal",
             "callback_id": "bundle_reject_modal",
             "private_metadata": str(bundle_id),
-            "title": {"type": "plain_text", "text": "Reject bundle items"},
+            "title": {"type": "plain_text", "text": "Reject batch items"},
             "submit": {"type": "plain_text", "text": "Reject all"},
             "close": {"type": "plain_text", "text": "Cancel"},
             "blocks": [
                 {"type": "context",
                  "elements": [{"type": "mrkdwn",
-                               "text": (f"Applies to every pending item in "
-                                        f"*B#{bundle_id}* that's in your scope.")}]},
+                               "text": (f"This rejects every pending item in "
+                                        f"*B#{bundle_id}* that is in your scope.")}]},
                 {"type": "input",
                  "block_id": "reason_block",
                  "label": {"type": "plain_text", "text": "Reason"},
@@ -2806,7 +2811,7 @@ def handle_bundle_reject_submission(ack: Ack, body: dict, client: WebClient) -> 
     notifications.update_bundle_admin_dms(client, bundle_id)
     notifications.dm_requester(
         client, user["id"],
-        f":x: Rejected {rejected} item(s) in bundle B#{bundle_id} "
+        f":x: Rejected {rejected} item(s) in batch B#{bundle_id} "
         f"— {reason or '(no reason)'}.",
     )
 
@@ -2869,15 +2874,15 @@ def handle_import_submission(ack: Ack, body: dict, client: WebClient) -> None:
     norm_table = csv_import.normalize_column(parsed["table_name"], 0, seen)
     if not norm_table or norm_table.startswith("col_"):
         return err(modal.B_IMPORT_TABLE_NAME,
-                   "Invalid table name. Use letters, digits, underscores.")
+                   "Invalid table name. Use only letters, digits and underscores.")
 
     # Target must be one the user can reach.
     grant = teams.effective_grant_for_user(uid, parsed["target_server_id"])
     if grant is None:
-        return err(modal.B_IMPORT_SERVER, "You can't reach this target server.")
+        return err(modal.B_IMPORT_SERVER, "You have no access to this target server.")
     target = targets.get(parsed["target_server_id"])
     if target is None:
-        return err(modal.B_IMPORT_SERVER, "Selected server is unavailable.")
+        return err(modal.B_IMPORT_SERVER, "The selected server is not available.")
 
     # An import CREATEs a table and COPYs into it, and the executor runs it with
     # the target's DDL credential — so it must be authorized like DDL, per
@@ -2893,9 +2898,9 @@ def handle_import_submission(ack: Ack, body: dict, client: WebClient) -> None:
         return err(
             modal.B_IMPORT_SERVER,
             f"A CSV import creates a table, so it needs a *DDL* grant on "
-            f"`{target.alias}` / `{import_db}` — your grant there is "
+            f"`{target.alias}` / `{import_db}`. Your grant there is "
             f"{(db_mode or 'none').upper()}. Ask the DBA team for a DDL grant "
-            f"on that database, or import into one where you already have it.")
+            f"on that database, or import into a database where you have one.")
 
     ack()  # modal closes; heavy work runs in the background
 
@@ -2908,8 +2913,8 @@ def handle_import_submission(ack: Ack, body: dict, client: WebClient) -> None:
         try:
             notifications.dm_requester(
                 client, uid,
-                ":x: *CSV import failed to process.* Please try again or "
-                "contact the DBA team.")
+                ":x: *The bot could not process your CSV import.* Try again, "
+                "or contact the DBA team.")
         except Exception:
             pass
 
@@ -2926,7 +2931,7 @@ def _process_import(client: WebClient, user: dict, parsed: dict, target) -> None
     data = _download_csv_bytes(client, parsed["file_id"])
     pc = csv_import.parse_csv(data, delimiter)
     if pc.error:
-        notifications.dm_requester(client, uid, f":x: *CSV import rejected:* {pc.error}")
+        notifications.dm_requester(client, uid, f":x: *CSV import refused:* {pc.error}")
         return
 
     # Table existence check against the dba schema (RO creds, info schema).
@@ -2948,27 +2953,28 @@ def _process_import(client: WebClient, user: dict, parsed: dict, target) -> None
                 existing_cols = [r[0] for r in cur.fetchall()]
     except Exception as e:
         notifications.dm_requester(
-            client, uid, f":x: *CSV import:* could not verify target table "
-            f"`dba.{table}` — {str(e).splitlines()[0]}")
+            client, uid, f":x: *CSV import:* the bot could not check the target "
+            f"table `dba.{table}`: {str(e).splitlines()[0]}")
         return
 
     if is_new and exists:
         notifications.dm_requester(
-            client, uid, f":x: *CSV import rejected:* `dba.{table}` already "
-            f"exists. Use the 'existing table' option to append, or pick a new name.")
+            client, uid, f":x: *CSV import refused:* `dba.{table}` already "
+            f"exists. Use the 'existing table' option to add rows to it, or "
+            f"pick a new name.")
         return
     if not is_new and not exists:
         notifications.dm_requester(
-            client, uid, f":x: *CSV import rejected:* `dba.{table}` does not "
+            client, uid, f":x: *CSV import refused:* `dba.{table}` does not "
             f"exist. Use the 'new table' option to create it.")
         return
     if not is_new:
         missing = [c for c in pc.columns if c not in existing_cols]
         if missing:
             notifications.dm_requester(
-                client, uid, f":x: *CSV import rejected:* CSV columns "
+                client, uid, f":x: *CSV import refused:* the CSV columns "
                 f"{', '.join('`'+m+'`' for m in missing)} are not in "
-                f"`dba.{table}`. CSV header must be a subset of the table's columns.")
+                f"`dba.{table}`. The CSV header must use only the table's columns.")
             return
 
     # Optional user-supplied column types (new-table only). Blank = all TEXT.
@@ -2978,7 +2984,7 @@ def _process_import(client: WebClient, user: dict, parsed: dict, target) -> None
             parsed["coldefs_text"], len(pc.columns))
         if cd_err:
             notifications.dm_requester(
-                client, uid, f":x: *CSV import rejected:* {cd_err}")
+                client, uid, f":x: *CSV import refused:* {cd_err}")
             return
 
     # Insert the import row, then write the CSV to disk under its id.
@@ -3012,8 +3018,8 @@ def _process_import(client: WebClient, user: dict, parsed: dict, target) -> None
     imp = db.fetch_one("SELECT * FROM csv_imports WHERE id=%s", (import_id,))
     if not admins.list_active():
         notifications.dm_requester(
-            client, uid, f":warning: *CSV import `#{import_id}` saved* but no "
-            f"admins are configured to approve it.")
+            client, uid, f":warning: *CSV import `#{import_id}` saved*, but "
+            f"there is no active admin to approve it. Contact the DBA team.")
         return
     notifications.notify_admins_import(client, imp, pc)
     notifications.dm_requester(
@@ -3034,7 +3040,7 @@ def handle_import_approve(ack: Ack, body: dict, client: WebClient) -> None:
         notifications.update_import_admin_messages(
             client, {"id": import_id, "target_server_id": 0, "table_name": "?",
                      "requester_slack_id": "?", "database_name": "?"},
-            ":information_source: This import was already decided.")
+            ":information_source: This import is already decided.")
         return
     # Scope check: a CSV import creates/loads a table — a DDL-tier
     # operation. A scoped admin below DDL, or outside this target's scope,
@@ -3216,8 +3222,8 @@ def handle_open_ro_window(ack: Ack, body: dict, client: WebClient) -> None:
                 "title": {"type": "plain_text", "text": "Request RO window"},
                 "close": {"type": "plain_text", "text": "Close"},
                 "blocks": [{"type": "section", "text": {"type": "mrkdwn",
-                    "text": "You don't have access to any targets yet, so there's "
-                            "nothing to request a window for. Ask the DBA team."}}],
+                    "text": "You have no access to any target yet, so you cannot "
+                            "request a window. Ask the DBA team for access."}}],
             })
         except Exception:
             log.exception("ro_window: views_push (no-targets) failed")
@@ -3275,13 +3281,13 @@ def handle_ro_window_submission(ack: Ack, body: dict, client: WebClient) -> None
     if auto_approve_requests.notify_admins(client, row, t.alias) == 0:
         notifications.dm_requester(
             client, user["id"],
-            f":warning: Window request #{row['id']} saved, but no admins are "
-            "configured to review it. Contact the DBA team.")
+            f":warning: The bot saved window request #{row['id']}, but it could "
+            "not reach an admin to review it. Contact the DBA team.")
         return
     notifications.dm_requester(
         client, user["id"],
-        f":hourglass_flowing_sand: Window request *#{row['id']}* sent to the DBA "
-        "team for review.")
+        f":hourglass_flowing_sand: The bot sent window request *#{row['id']}* "
+        "to the DBA team for review.")
 
 
 def handle_ro_window_approve(ack: Ack, body: dict, client: WebClient) -> None:
@@ -3317,8 +3323,8 @@ def handle_ro_window_approve(ack: Ack, body: dict, client: WebClient) -> None:
     notifications.dm_requester(
         client, req["requester_slack_id"],
         f":zap: Your *{req['max_tier'].upper()}* auto-approve window on `{alias}` is "
-        f"active for the next {win} — matching queries dispatch immediately, no "
-        "approval needed.")
+        f"active for the next {win}. Matching queries run immediately, with no "
+        "approval step.")
 
 
 def handle_ro_window_reject(ack: Ack, body: dict, client: WebClient) -> None:
@@ -3341,7 +3347,7 @@ def handle_ro_window_reject(ack: Ack, body: dict, client: WebClient) -> None:
         client, body, f":no_entry: *Window #{rid} rejected* by <@{actor['id']}>.")
     notifications.dm_requester(
         client, out["request"]["requester_slack_id"],
-        f":no_entry: Your auto-approve window request (#{rid}) was rejected.")
+        f":no_entry: An admin rejected your auto-approve window request (#{rid}).")
 
 
 # --- IDP sync held for approval (idp_sync_guard) ----------------------------
@@ -3376,7 +3382,7 @@ def _idp_sync_decide(ack: Ack, body: dict, client: WebClient, *, approve: bool) 
         if e.status == 403:
             notifications.dm_requester(
                 client, actor["id"],
-                ":no_entry: Only a super-admin can decide whether the IDP sync goes ahead.")
+                ":no_entry: Only a super-admin can approve or reject the held IDP sync.")
         else:
             held = idp_sync_guard.get(hold_id)
             _replace_card(client, *clicked, idp_sync_card.already_text(
@@ -3436,8 +3442,8 @@ def handle_open_schema_browser(ack: Ack, body: dict, client: WebClient) -> None:
 
     if target_id is None or not database:
         _push(schema_browser.info_modal(
-            ":point_up: Pick a *target* and a *database* in the form first — "
-            "the schema browser shows the tables of that selection."))
+            ":point_up: Pick a *target* and a *database* in the form first. "
+            "The schema browser shows the tables of that database."))
         return
     if not _user_can_browse(user_id, target_id):
         _push(schema_browser.info_modal(
@@ -3449,9 +3455,9 @@ def handle_open_schema_browser(ack: Ack, body: dict, client: WebClient) -> None:
              user_id, target_id, database, snapshot_ts)
     if snapshot_ts is None:
         available = schema_catalog.list_snapshot_databases(target_id)
-        hint = (" Snapshotted databases here: "
+        hint = (" Databases with a snapshot on this target: "
                 + ", ".join(f"`{d}`" for d in available)) if available else (
-                " The hourly catalog job hasn't covered this target yet.")
+                " The hourly catalog job has no snapshot of this target yet.")
         _push(schema_browser.info_modal(
             f":hourglass: No schema snapshot for `{target.alias}/{database}`."
             + hint))
@@ -3651,7 +3657,7 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
     if cap is None:
         ack({"response_action": "errors",
              "errors": {admin_grant.B_TARGET:
-                        "You're no longer allowed to grant access."}})
+                        "You can no longer grant access."}})
         return
     state = body["view"]["state"]["values"]
     grantees = (state.get(admin_grant.B_USER, {}).get(admin_grant.A_USER, {})
@@ -3679,7 +3685,7 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
     if not target_ids:
         errors[admin_grant.B_TARGET] = "Pick at least one target."
     elif set(target_ids) & grants.control_plane_target_ids():
-        errors[admin_grant.B_TARGET] = "The bot's own DB can't be granted here."
+        errors[admin_grant.B_TARGET] = "This form cannot grant access to the bot's own DB."
     else:
         scope_ids = _granter_scope_target_ids(user["id"])
         if scope_ids is not None and any(t not in scope_ids for t in target_ids):
@@ -3742,11 +3748,11 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
     tlist = ", ".join(f"`{a}`" for a in aliases)
     msg = (f":white_check_mark: Granted *{tier.upper()}* on {tlist} ({scope}) "
            f"to {', '.join(granted)}." if granted
-           else ":x: No grant was written.")
+           else ":x: The bot wrote no grant.")
     if auto_tier and granted:
         msg += "\n" + _grant_waiver_summary(auto_tier, waived)
     if failed:
-        msg += f"\n:warning: Failed for {', '.join(failed)} — see the bot logs."
+        msg += f"\n:warning: The grant failed for {', '.join(failed)}. See the bot logs."
     notifications.dm_requester(client, user["id"], msg)
 
 
@@ -3763,9 +3769,9 @@ def _grant_waiver_summary(tier: str, outcomes: list[dict]) -> str:
         return f":zap: {label} is on for these."
     by = skipped[0]["by"]
     if not written:
-        return f":zap: {label} was already in place, so nothing new was written: {by}."
+        return f":zap: {label} already existed, so the bot wrote nothing new: {by}."
     return (f":zap: {label}: {written} written, {len(skipped)} skipped because "
-            f"one already covers it (for example {by}).")
+            f"an existing auto-approve covers it (for example {by}).")
 
 
 def handle_revoke_user_options(ack: Ack, payload: dict, body: dict) -> None:

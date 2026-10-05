@@ -273,7 +273,7 @@ def test_both_halves_are_capped_and_say_when_they_truncate():
     src = inspect.getsource(tools.describe_database)
     assert "MAX_TABLES" in src and "MAX_DETAIL_TABLES" in src
     assert src.count('"truncated"') == 2
-    assert "Narrow the" in src
+    assert "Use a more specific `table` filter" in src
 
 
 def test_a_loose_filter_cannot_pull_hundreds_of_tables_in_full(monkeypatch):
@@ -354,7 +354,7 @@ def test_a_wait_that_runs_out_says_the_work_continues():
     """A timeout here is not a failure of the query. Reporting it as one would
     have an assistant resubmit a statement that is still running."""
     src = inspect.getsource(tools._await_result)
-    assert "the work continues either way" in src
+    assert "The wait ended, but the work continues." in src
 
 
 def test_the_inline_page_is_small():

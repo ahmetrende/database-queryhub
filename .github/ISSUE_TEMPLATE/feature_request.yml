@@ -6,7 +6,7 @@ body:
     id: problem
     attributes:
       label: Problem
-      description: What problem would this solve? What are you trying to do?
+      description: What problem would this solve? What do you want to do?
     validations:
       required: true
   - type: textarea

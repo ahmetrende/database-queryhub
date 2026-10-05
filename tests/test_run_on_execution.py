@@ -373,7 +373,7 @@ def test_an_unusable_chosen_replica_fails_the_request_by_name(run_env, answer, w
     assert run_env["claims"] == [], "the request was claimed for a run that cannot happen"
     (msg,) = run_env["failed"]
     assert "`prod-ledger-read-1`" in msg and why in msg
-    assert "It was not run on the primary instead." in msg
+    assert "QueryHub did not run it on the primary instead." in msg
     assert _audit(run_env, "execution_run_on_forced") is None
 
 
@@ -407,7 +407,7 @@ def test_a_chosen_replica_that_fails_mid_run_is_not_rerun_on_the_primary(run_env
     assert not any("executed_target_id = NULL" in sql for sql, _p, _t in run_env["updates"])
     (msg,) = run_env["failed"]
     assert "`prod-ledger-read-1`" in msg and "conflict with recovery" in msg
-    assert "It was not run on the primary instead." in msg
+    assert "QueryHub did not run it on the primary instead." in msg
     assert run_env["unhealthy"] == [(99, "failed a query (SerializationFailure)")]
     # It did run there -- and failed there -- so the choice stays on record.
     assert _audit(run_env, "execution_run_on_forced")["ran_on"] == "replica"

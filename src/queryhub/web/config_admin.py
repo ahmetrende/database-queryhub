@@ -216,8 +216,8 @@ def _tls_settings_hold(pending: dict) -> str | None:
         return None
     path = (pending.get("target_ssl_rootcert") or "").strip()
     if not path:
-        return ("target_ssl_rootcert must name a CA file before certificates "
-                "can be verified.")
+        return ("target_ssl_rootcert must name a CA file. Without one, "
+                "QueryHub cannot verify certificates.")
     if not (os.path.isfile(path) and os.access(path, os.R_OK)):
         return f"target_ssl_rootcert: {path} is not a readable file on this host."
     return None
@@ -239,12 +239,12 @@ def _lease_covers_timeout(pending: dict) -> str | None:
         return None
     if lease <= timeout:
         return (f"execution_lease_sec ({lease}) must be greater than "
-                f"query_timeout_sec ({timeout}) — otherwise the orphan "
-                f"reconciler fails queries that are still running.")
+                f"query_timeout_sec ({timeout}). Otherwise the orphan "
+                "reconciler fails queries that are still running.")
     if lease < timeout + 30:
         return (f"execution_lease_sec ({lease}) leaves no margin over "
-                f"query_timeout_sec ({timeout}); allow at least 30s for "
-                f"result streaming and delivery.")
+                f"query_timeout_sec ({timeout}). Set the lease at least 30s "
+                "above the timeout. Result streaming and delivery need that time.")
     return None
 
 

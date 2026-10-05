@@ -802,7 +802,7 @@ def _run_note_messages(row: dict, when: str) -> list[dict]:
                     "text": f"{sev}{where}: {text}"})
     if notes.get("truncated"):
         out.append({"time": when, "kind": "info",
-                    "text": "More server messages followed than are shown here."})
+                    "text": "The server sent more messages than this list shows."})
     return out
 
 
@@ -888,8 +888,9 @@ def status_messages(row: dict) -> list[dict]:
     sf = row.get("scheduled_for")
     if sf and not row.get("executed_at"):
         msgs.append({"time": t(row.get("created_at")), "kind": "info",
-                     "text": f"Scheduled for {_to_display(sf):%Y-%m-%d %H:%M} — "
-                             "runs automatically; you'll be notified when it's done."})
+                     "text": f"Scheduled for {_to_display(sf):%Y-%m-%d %H:%M}. "
+                             "The query runs automatically. QueryHub notifies you "
+                             "when it finishes."})
     if row.get("decided_at"):
         approver = approver_label(row.get("decided_by_slack_id"),
                                   row.get("decided_by_name"))
@@ -922,8 +923,8 @@ def status_messages(row: dict) -> list[dict]:
                      "text": "QueryHub could not run this"
                              + (f": {why}" if why else "") + "."})
         msgs.append({"time": t(row.get("executed_at")), "kind": "info",
-                     "text": "Nothing was applied. A DBA has to run it by hand; "
-                             "the request closes when they mark it done or "
+                     "text": "QueryHub applied nothing. A DBA must run it manually. "
+                             "The request closes when the DBA marks it done or "
                              "failed."})
     return msgs
 

@@ -97,7 +97,7 @@ def create_app() -> FastAPI:
             if not deps.origin_is_same_site(request):
                 return JSONResponse(status_code=403, content={"error": {
                     "code": "forbidden",
-                    "message": "Cross-origin request refused."}})
+                    "message": "Refused: the request came from another origin."}})
         resp = await call_next(request)
         # Baseline security headers. The frontend is fully
         # self-contained — bundled JS/CSS, self-hosted fonts, no CDN — so the
@@ -209,7 +209,7 @@ def create_app() -> FastAPI:
             from .routes_queries import _bot_client
             notifications.dm_all_admins(
                 _bot_client(), ":arrows_counterclockwise: *QueryHub web* "
-                "restarted and is back online.")
+                "restarted. It is online again.")
         except Exception:
             log.exception("web startup admin DM failed")
 
@@ -326,7 +326,8 @@ def create_app() -> FastAPI:
             # or prefix oracle is exactly what a scraper endpoint should not be.
             import hmac
             if not presented or not hmac.compare_digest(presented, token):
-                raise deps._error(401, "unauthenticated", "Invalid metrics token.")
+                raise deps._error(401, "unauthenticated",
+                                  "Refused: the metrics token is not valid.")
         else:
             claims = deps.current_user(request)
             from . import admin as admin_mod

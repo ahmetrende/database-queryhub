@@ -84,7 +84,7 @@ def test_a_burst_on_a_covered_database_stands_the_nudge_down(env):
     env["rows"] = [_w(53, "ledger")]
     env["burst"] = {"count": 4, "target_server_id": 53, "database_name": "ledger"}
     blocks = modal._auto_approve_banner(UID)
-    assert "Running a lot of reads?" not in _text(blocks)
+    assert "Skip the approval wait for reads" not in _text(blocks)
     [btn] = [a for a in _actions(blocks) if a.get("action_id") == ro_window.ACTION_OPEN]
     assert btn["text"]["text"] == "Request"
 
@@ -102,7 +102,7 @@ def test_the_badge_names_where_the_waiver_applies(env):
     env["rows"] = [_w(53, "ledger")]
     text = _text(modal._auto_approve_banner(UID))
     assert "Auto-approve active* on `prod-ledger` / `ledger`" in text
-    assert "anything else still waits for approval" in text
+    assert "All other queries still wait for approval" in text
 
 
 def test_the_badge_names_the_team_a_waiver_comes_from(env):
@@ -118,7 +118,7 @@ def test_a_team_waiver_that_does_not_reach_the_member_is_not_promised(env):
 
 def test_a_fleet_wide_waiver_says_so(env):
     env["rows"] = [_w(None, None)]
-    assert "on every connection" in _text(modal._auto_approve_banner(UID))
+    assert "on every target" in _text(modal._auto_approve_banner(UID))
 
 
 def test_a_long_list_is_capped(env):
@@ -147,11 +147,11 @@ def test_a_wider_waiver_hides_the_narrower_ones_it_contains(env):
     that mattered behind "and 2 more"."""
     env["rows"] = [_w(53, None), _w(60, None), _w(61, None), _w(62, None), _w(None, None)]
     text = _text(modal._auto_approve_banner(UID))
-    assert "on every connection (up to *RO*" in text
+    assert "on every target (up to *RO*" in text
     assert "prod-ledger" not in text and "more" not in text
 
 
 def test_a_higher_tier_on_a_narrower_scope_is_kept(env):
     env["rows"] = [_w(None, None, tier="ro"), _w(53, "ledger", tier="rw")]
     text = _text(modal._auto_approve_banner(UID))
-    assert "every connection" in text and "`prod-ledger` / `ledger` (up to *RW*" in text
+    assert "every target" in text and "`prod-ledger` / `ledger` (up to *RW*" in text

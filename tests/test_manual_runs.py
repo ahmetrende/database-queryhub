@@ -244,7 +244,7 @@ def test_the_messages_tab_says_a_dba_takes_it_from_here():
            "error_message": "requires DBA manual execution — Permission denied to create role"}
     texts = [m["text"] for m in mapping.status_messages(row)]
     assert "QueryHub could not run this: Permission denied to create role." in texts
-    assert any("A DBA has to run it by hand" in t for t in texts)
+    assert any("A DBA must run it manually" in t for t in texts)
 
 
 @pytest.fixture

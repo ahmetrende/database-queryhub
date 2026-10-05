@@ -75,7 +75,8 @@ def require_sync_principal(claims: dict) -> str:
     uid = claims.get("sub") or ""
     expected = (cfg.get_setting("idp_sync_principal", "") or "").strip()
     if not expected or uid != expected or claims.get("provider") != "idp":
-        raise deps._error(403, "forbidden", "Not the sync principal.")
+        raise deps._error(403, "forbidden",
+                          "Refused: you are not the sync principal.")
     return uid
 
 
@@ -86,10 +87,11 @@ def require_admin(claims: dict, need: str = "review", *, request: dict | None = 
     the admin's tier/connection scope. Returns the admin's slack id."""
     uid = claims["sub"]
     if not admins.is_admin(uid):
-        raise deps._error(403, "forbidden", "Admin access required.")
+        raise deps._error(403, "forbidden", "Refused: you need admin access.")
     if need == "access" and not admins.is_super_admin(uid):
-        raise deps._error(403, "forbidden", "Super-admin access required.")
+        raise deps._error(403, "forbidden",
+                          "Refused: you need super-admin access.")
     if request is not None and not admins.can_approve(uid, request):
         raise deps._error(403, "forbidden",
-                          "This query is outside your approval scope.")
+                          "Refused: this query is outside your approval scope.")
     return uid

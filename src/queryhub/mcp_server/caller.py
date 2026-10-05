@@ -54,9 +54,9 @@ def acting_principal() -> str:
     if not pid:
         raise CallerError(
             "no_caller",
-            f"{ENV_VAR} is not set. The MCP server acts as one QueryHub user; "
-            f"export that user's id in the environment the client is started "
-            f"from.")
+            f"{ENV_VAR} is not set. The MCP server acts as one QueryHub user. "
+            f"Export that user's id as {ENV_VAR} in the environment where you "
+            f"start the MCP client.")
     if pid.startswith("$"):
         # An editor's MCP config may or may not expand `${VAR}` in the `env`
         # block; Claude Code passes it through literally. The value then
@@ -66,17 +66,19 @@ def acting_principal() -> str:
         # problem.
         raise CallerError(
             "unexpanded_placeholder",
-            f"{ENV_VAR} arrived as the literal text {pid!r}, so whatever set "
-            f"it did not expand the variable. Remove the `env` block from the "
-            f"MCP client config and export {ENV_VAR} in the environment the "
-            f"client itself is started from — the server inherits it.")
+            f"The value of {ENV_VAR} is the literal text {pid!r}. The process "
+            f"that set it did not expand the variable. Delete the `env` block "
+            f"from the MCP client config. Export {ENV_VAR} in the environment "
+            f"where you start the MCP client. The server inherits the variable "
+            f"from there.")
     if not (admins.is_admin(pid) or requesters.is_allowed(pid)):
         # Same wording the web gate uses, for the same reason: an id that is
         # merely unknown and one that is disabled are not distinguished, so
         # this cannot be used to probe who exists.
         raise CallerError(
             "not_whitelisted",
-            "That user is not whitelisted for QueryHub. Ask the DBA team.")
+            f"Refused: the user in {ENV_VAR} is not whitelisted for QueryHub. "
+            f"Ask the DBA team for access.")
     return pid
 
 

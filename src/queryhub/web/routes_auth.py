@@ -126,7 +126,7 @@ async def auth_local_login(request: Request):
     password = body.get("password") or ""
     if not username or not password:
         raise deps._error(400, "bad_request",
-                          "Username and password are required.")
+                          "Enter your username and password.")
 
     # Brute-force throttle: sliding-window failure caps per username and
     # per client IP (429 while saturated). Checked BEFORE the KDF so a
@@ -156,7 +156,8 @@ async def auth_local_login(request: Request):
         log.warning("local login rejected (not whitelisted): %s",
                     ident.principal_id)
         raise deps._error(403, "forbidden",
-                          "This account is not authorized for QueryHub.")
+                          "Refused: this account is not authorized for QueryHub. "
+                          "Ask the DBA team for access.")
 
     sid, refresh = sessions.create_session(
         ident.principal_id, provider=ident.provider,
@@ -294,12 +295,13 @@ async def auth_local_change_password(
     the new password."""
     if claims.get("provider") != "local":
         raise deps._error(400, "bad_request",
-                          "Password change is only for local accounts.")
+                          "Refused: only a local account can change its password here.")
     from .. import local_users
     from . import login_throttle
     username = local_users.username_of(claims.get("sub") or "")
     if not username:
-        raise deps._error(400, "bad_request", "Not a local account.")
+        raise deps._error(400, "bad_request",
+                          "Refused: this is not a local account.")
     try:
         body = await request.json()
     except Exception:
@@ -308,7 +310,7 @@ async def auth_local_change_password(
     new = body.get("newPassword") or ""
     if not current or not new:
         raise deps._error(400, "bad_request",
-                          "Current and new passwords are required.")
+                          "Enter your current password and a new password.")
     # Throttle current-password guesses the same way login is throttled.
     tkey = f"pwchange:{username}"
     if login_throttle.retry_after_seconds(tkey):
@@ -341,15 +343,17 @@ def auth_refresh(request: Request):
     live users.info + whitelist re-check, then a fresh short JWT."""
     token = request.cookies.get(deps.REFRESH_COOKIE)
     if not token:
-        raise deps._error(401, "unauthenticated", "No refresh token.")
+        raise deps._error(401, "unauthenticated",
+                          "You have no refresh token. Sign in again.")
     rotated = sessions.rotate_refresh(token)
     if rotated is None:
-        raise deps._error(401, "unauthenticated", "Session expired.")
+        raise deps._error(401, "unauthenticated",
+                          "Your session expired. Sign in again.")
     if rotated.get("reuse"):
         # A superseded refresh token was replayed → suspected theft;
         # rotate_refresh already revoked the session. Force re-login.
         raise deps._error(401, "unauthenticated",
-                          "Session ended for security reasons. Please sign in again.")
+                          "Your session ended for security reasons. Sign in again.")
     uid = rotated["slack_user_id"]
     # The live users.info "still employed?" check keys on a Slack id, so it
     # runs for every provider whose principal IS one — which is all of them
@@ -364,18 +368,20 @@ def auth_refresh(request: Request):
         verdict = deps.employment_verdict(uid)
         if verdict == "gone":
             sessions.revoke_session(rotated["id"], "users.info: gone at refresh")
-            raise deps._error(401, "unauthenticated", "Slack account gone.")
+            raise deps._error(401, "unauthenticated",
+                              "Refused: Slack reports that your account is gone.")
         if verdict != "active":
             # The rotated token never reaches the browser, and the one it holds
             # is spent, so the session ends either way. Say why.
             sessions.revoke_session(rotated["id"], "users.info: unconfirmed at refresh")
             raise deps._error(401, "unauthenticated",
                               "Slack could not confirm your account. Sign in "
-                              "again once Slack is reachable.")
+                              "again when Slack is reachable.")
     from .. import admins, requesters
     if not (admins.is_admin(uid) or requesters.is_allowed(uid)):
         sessions.revoke_session(rotated["id"], "whitelist lost at refresh")
-        raise deps._error(401, "unauthenticated", "Access removed.")
+        raise deps._error(401, "unauthenticated",
+                          "Refused: you no longer have QueryHub access.")
     # An admin need not be a requester, and login let them in on their admin
     # row; reading only `requesters` here dropped their name and email from
     # every token after the first refresh.

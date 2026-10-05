@@ -163,7 +163,7 @@ def test_a_scoped_admin_cannot_touch_the_registry(wire, name, call):
         call()
     assert e.value.status_code == 403
     assert e.value.detail["code"] == "forbidden"
-    assert "Super-admin" in e.value.detail["message"]
+    assert "super-admin" in e.value.detail["message"]
 
 
 def test_the_authorization_check_is_not_vacuous(wire, monkeypatch):
@@ -383,7 +383,7 @@ def test_a_disabled_connections_name_goes_to_the_new_one(wire):
                         if c[0].startswith("INSERT INTO target_servers"))
     assert wire["cur"].calls.index(moved[0]) < first_insert
     assert ("connection_renamed", {"target_id": 42, "from": "prod-beta", "to": "prod-beta-pg",
-            "why": "disabled; its name went to the connection now called 'prod-beta'"}) in wire["audit"]
+            "why": "disabled, and its name went to the connection now called 'prod-beta'"}) in wire["audit"]
     assert out["displaced"] == {"from": "prod-beta", "to": "prod-beta-pg"}
 
 
@@ -607,7 +607,7 @@ def test_testing_an_unprovisioned_target_never_dials_out(wire, monkeypatch):
         "probed a target whose password is the not-provisioned sentinel"))
     out = ra.admin_test_connection("prod-beta", claims=SUPER)
     assert out["ok"] is False
-    assert "No read-only credentials" in out["error"]
+    assert "no stored read-only credentials" in out["error"]
 
 
 def test_the_stored_probe_resolves_credentials_through_the_secrets_provider(

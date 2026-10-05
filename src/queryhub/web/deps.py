@@ -62,7 +62,7 @@ def current_user(conn: HTTPConnection) -> dict:
             # an assertion, and without falling back to the cookie either.
             log.warning("idp assertion refused: websocket")
             raise _error(401, "unauthenticated",
-                         "Identity assertions are not accepted on websockets.")
+                         "Refused: websockets do not accept identity assertions.")
         try:
             principal = idp_assertion.verify(
                 raw,
@@ -73,7 +73,7 @@ def current_user(conn: HTTPConnection) -> dict:
         except idp_assertion.AssertionError_ as e:
             log.warning("idp assertion refused: %s", e.code)
             raise _error(401, "unauthenticated",
-                         "Invalid identity assertion.") from e
+                         "Refused: the identity assertion is not valid.") from e
         # No `sid`: a proxied request has no server-side session to revoke.
         # Its bound is the 60-second lifetime plus the panel's own revocation,
         # so the liveness lookup below must not run for it — which the early
@@ -91,12 +91,14 @@ def current_user(conn: HTTPConnection) -> dict:
         if auth.lower().startswith("bearer "):
             token = auth[7:].strip()
     if not token:
-        raise _error(401, "unauthenticated", "No session.")
+        raise _error(401, "unauthenticated", "You have no session. Sign in.")
     claims = sessions.verify_access(token)
     if claims is None:
-        raise _error(401, "unauthenticated", "Session expired or invalid.")
+        raise _error(401, "unauthenticated",
+                     "Your session expired or is not valid. Sign in again.")
     if not sessions.session_alive(claims["sid"], claims.get("sub")):
-        raise _error(401, "unauthenticated", "Session revoked.")
+        raise _error(401, "unauthenticated",
+                     "Your session is revoked. Sign in again.")
     # Liveness for local accounts: a disabled local_users row must
     # lock the account out on the very next request, without waiting for the
     # short access token to expire or an explicit session revoke. Slack /
@@ -108,7 +110,8 @@ def current_user(conn: HTTPConnection) -> dict:
         uname = local_users.username_of(claims.get("sub") or "")
         row = local_users.get(uname) if uname else None
         if row is None or not row.get("enabled", False):
-            raise _error(401, "unauthenticated", "Account disabled.")
+            raise _error(401, "unauthenticated",
+                         "Your account is disabled. Ask an admin to enable it.")
     return claims
 
 
@@ -127,7 +130,8 @@ def require_whitelisted(claims: dict) -> None:
     if admins.is_admin(uid) or requesters.is_allowed(uid):
         return
     raise _error(403, "forbidden",
-                 "You are not whitelisted for QueryHub. Ask the DBA team.")
+                 "Refused: you are not whitelisted for QueryHub. "
+                 "Ask the DBA team for access.")
 
 
 def block_if_password_change_required(claims: dict) -> None:
@@ -144,7 +148,7 @@ def block_if_password_change_required(claims: dict) -> None:
     row = local_users.get(uname)
     if row and row.get("must_change_pw"):
         raise _error(403, "password_change_required",
-                     "You must change your password before running queries.")
+                     "You must change your password before you run queries.")
 
 
 def origin_is_same_site(conn: HTTPConnection) -> bool:

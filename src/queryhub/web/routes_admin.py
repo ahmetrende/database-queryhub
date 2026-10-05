@@ -234,13 +234,13 @@ def admin_decision(request_id: int, body: DecisionIn,
     reason = (body.note or "").strip()
     if decision in ("reject", "changes") and not reason:
         raise deps._error(400, "bad_request",
-                          "A note is required to reject or request changes.")
+                          "Enter a note to reject or to request changes.")
     outcome = core_decide.decide(
         request_id, decision, by_id=uid, by_name=claims.get("name"),
         reason=reason or None)
     if outcome is None:
         raise deps._error(409, "conflict",
-                          "This request was already decided.")
+                          "This request already has a decision.")
     core_decide.apply_effects(_slack_client(), outcome)
     return {"id": str(request_id),
             "status": mapping.status_to_web(outcome.row["status"])}
@@ -334,7 +334,7 @@ def admin_close_manual_run(request_id: int, body: ManualCloseIn,
     reason = (body.reason or "").strip()
     if not body.completed and not reason:
         raise deps._error(400, "bad_request",
-                          "Say why it failed; the requester is shown the reason.")
+                          "Say why it failed. QueryHub shows the reason to the requester.")
     closed = manual_runs.close(request_id, completed=body.completed,
                                actor_id=uid, actor_name=claims.get("name"),
                                reason=reason or None)
@@ -710,18 +710,20 @@ def _clean_tags(raw: dict | None) -> dict:
         if not _TAG_KEY_RE.match(key):
             raise deps._error(
                 422, "validation",
-                f"Tag key '{k}' is not usable — lower-case letters, digits, "
-                f"'-' and '_' only, starting with a letter (max 32).")
+                f"Tag key '{k}' is not valid. A tag key starts with a letter "
+                "and has at most 32 characters: lower-case letters, digits, "
+                "'-' and '_'.")
         val = ("" if v is None else str(v)).strip()
         if not val:
             continue
         if len(val) > TAG_MAX_VALUE:
             raise deps._error(422, "validation",
-                              f"Tag '{key}' is too long (max {TAG_MAX_VALUE}).")
+                              f"Tag '{key}' is too long. The maximum is "
+                              f"{TAG_MAX_VALUE} characters.")
         out[key] = val
     if len(out) > TAG_MAX_KEYS:
         raise deps._error(422, "validation",
-                          f"Too many tags (max {TAG_MAX_KEYS}).")
+                          f"Too many tags. The maximum is {TAG_MAX_KEYS}.")
     return out
 
 
@@ -762,8 +764,9 @@ def _clean_alias(alias: str | None) -> str:
     a = (alias or "").strip()
     if not _ALIAS_RE.match(a):
         raise deps._error(400, "bad_request",
-                          "alias must be 1-63 characters: letters, digits, "
-                          "dot, dash or underscore, starting alphanumeric.")
+                          "alias must have 1-63 characters: letters, digits, "
+                          "dot, dash or underscore. It must start with a letter "
+                          "or a digit.")
     return a
 
 
@@ -801,7 +804,7 @@ def _take_alias_in(cur, alias: str, engine: str, *, exclude_id: int | None,
     tid, old, new = claim.displaced
     audit.log_in(cur, None, uid, actor_name, "connection_renamed",
                  {"target_id": tid, "from": old, "to": new,
-                  "why": f"disabled; its name went to the connection now called '{alias}'"})
+                  "why": f"disabled, and its name went to the connection now called '{alias}'"})
     return {"from": old, "to": new}
 
 
@@ -829,8 +832,8 @@ def _clean_ident(value: str | None, what: str) -> str:
     v = (value or "").strip()
     if not _IDENT_RE.match(v):
         raise deps._error(400, "bad_request",
-                          f"{what} must not be empty or contain whitespace or "
-                          f"quote characters.")
+                          f"{what} must not be empty. It must not contain "
+                          "whitespace or quote characters.")
     return v
 
 
@@ -906,8 +909,7 @@ def _probe(engine: str, host: str, port: int, database: str,
         # ("No module named ...") reads like a bug in QueryHub.
         log.warning("connection test: driver unavailable for %s: %r", engine, e)
         return {"ok": False, "latencyMs": None, "serverVersion": None,
-                "error": "No driver for this engine is installed on the "
-                         "QueryHub host."}
+                "error": "The QueryHub host has no driver for this engine."}
     except Exception as e:
         log.info("connection test failed for %s:%s (%s): %r",
                  host, port, engine, e)
@@ -1136,9 +1138,9 @@ def _plan_connection_update(row: dict, body: "ConnectionPatch") -> tuple[dict, d
         if body.enabled and row.get("deleted_at") is not None:
             raise deps._error(
                 409, "deleted",
-                f"'{row['alias']}' is deleted: its instance no longer exists "
-                f"({row.get('deleted_reason') or 'reported gone'}). It stays "
-                f"listed for the record and cannot be enabled.")
+                f"'{row['alias']}' is deleted. Its instance no longer exists "
+                f"({row.get('deleted_reason') or 'reported gone'}). QueryHub "
+                "keeps it listed for the record. You cannot enable it.")
         # Enabling is the moment a target becomes reachable by developers, so
         # it is the moment to insist the credential is real. Without this an
         # admin can enable a freshly-imported placeholder, watch it appear in
@@ -1152,8 +1154,8 @@ def _plan_connection_update(row: dict, body: "ConnectionPatch") -> tuple[dict, d
                 not ro["configured"] or ro["placeholder"]):
             raise deps._error(
                 409, "conflict",
-                f"'{row['alias']}' has no read-only credentials yet — set them "
-                f"before enabling it.")
+                f"'{row['alias']}' has no read-only credentials yet. Set them "
+                "before you enable it.")
         changes["enabled"] = bool(body.enabled)
 
     return changes, creds
@@ -1253,7 +1255,7 @@ def admin_bulk_update_connections(body: BulkConnectionsIn,
         raise deps._error(400, "bad_request", "Name at least one connection.")
     if len(names) > _BULK_CONNECTIONS_MAX:
         raise deps._error(400, "bad_request",
-                          f"At most {_BULK_CONNECTIONS_MAX} connections per request.")
+                          f"Send at most {_BULK_CONNECTIONS_MAX} connections per request.")
     if body.enabled is None and not body.credentials:
         raise deps._error(400, "bad_request",
                           "Nothing to change: send `enabled`, `credentials`, or both.")
@@ -1272,8 +1274,8 @@ def admin_bulk_update_connections(body: BulkConnectionsIn,
     if refused:
         raise deps._error(
             409, "conflict",
-            f"{len(refused)} of {len(names)} connections cannot take this change; "
-            "nothing was written.", refused=refused)
+            f"{len(refused)} of {len(names)} connections cannot take this change. "
+            "QueryHub wrote nothing.", refused=refused)
 
     results = [{"connection": row["alias"],
                 "changes": sorted(changes) + [f"credentials:{m}" for m in sorted(creds)],
@@ -1321,8 +1323,8 @@ def admin_delete_connection(conn: str,
     if blocking:
         reason = ("This connection has " + ", ".join(
             f"{v} {k.replace('_', ' ')}" for k, v in sorted(blocking.items()))
-            + " — deleting it would rewrite history or silently drop access, "
-              "so it was disabled instead.")
+            + ". A delete would rewrite history or silently drop access. "
+              "QueryHub disabled the connection instead.")
         with db.transaction() as cur:
             targets.update_in(cur, target_id, {"enabled": False})
             audit.log_in(cur, None, uid, claims.get("name"),
@@ -1378,8 +1380,8 @@ def admin_test_connection(conn: str,
         # caller asked "can this connect?" and "it has no credentials" is the
         # answer, rendered in the same place as a refused login would be.
         return {"ok": False, "latencyMs": None, "serverVersion": None,
-                "error": "No read-only credentials are stored for this "
-                         "connection yet."}
+                "error": "This connection has no stored read-only "
+                         "credentials yet."}
     return _probe(row["engine"], row["host"], row["port"],
                   row["default_database"], username, password)
 
@@ -1415,7 +1417,7 @@ def admin_schema_refresh(conn: str, database: str | None = None,
     except Exception as e:
         log.warning("schema refresh: cannot reach %s: %r", conn, e)
         raise deps._error(502, "upstream",
-                          f"Could not reach '{conn}' to refresh its schema.")
+                          f"QueryHub could not reach '{conn}' to refresh its schema.")
     if database is not None:
         # Checked against what the server actually serves, not against the
         # catalog: refreshing is precisely what you do when the catalog is
@@ -1611,9 +1613,9 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
     if tid in grants.control_plane_target_ids():
         raise deps._error(
             403, "forbidden",
-            "That connection is the bot's own control-plane database — "
-            "granting access to it would allow tampering with the audit log "
-            "and the admin list.")
+            "Refused: that connection is the bot's own control-plane database. "
+            "Access to it would allow tampering with the audit log and the "
+            "admin list.")
     dbs = _grant_databases(body)
     # The waiver's tier is checked before either branch writes, like the date.
     auto_tier = None
@@ -1638,7 +1640,7 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         if expires_at <= datetime.now(timezone.utc):
             raise deps._error(400, "bad_request",
-                              "expiresAt is in the past — that grant would "
+                              "expiresAt is in the past. That grant would "
                               "never apply.")
 
     if stype == "team":
@@ -1654,7 +1656,8 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
         if team is None:
             raise deps._error(404, "not_found",
                               f"No team named '{named[0]}'. Create the team "
-                              "in Slack / SQL first — teams aren't created here.")
+                              "in Slack or SQL first. This screen does not "
+                              "create teams.")
         # Where the row goes depends on which model is authoritative, and
         # under the new one it CANNOT go to the legacy table: a pod team has
         # no `teams` row for `team_target_grants.team_id` to reference. After
@@ -1731,8 +1734,8 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
         if not _valid_principal(sid):
             raise deps._error(
                 400, "bad_request",
-                f"{sid} is not a principal id (expected a Slack user id or "
-                f"local:<username>). Nothing was written.")
+                f"{sid} is not a principal id. Use a Slack user id or "
+                "local:<username>. QueryHub wrote nothing.")
         if sid not in seen:
             seen.add(sid)
             ordered.append(sid)
@@ -2075,8 +2078,8 @@ def _refuse_synced_team(team: dict) -> None:
     if team.get("source"):
         raise deps._error(
             409, "synced_team",
-            f"This team is kept in step with '{team['source']}' and cannot be "
-            f"edited here; change it at the source.")
+            f"'{team['source']}' manages this team. You cannot edit it "
+            "here. Change it at the source.")
 
 
 @router.post("/teams", status_code=201)
@@ -2084,7 +2087,7 @@ def admin_create_team(body: TeamIn, claims: dict = Depends(deps.current_user)):
     uid = admin.require_admin(claims, "access")
     name = (body.name or "").strip()
     if not name:
-        raise deps._error(400, "bad_request", "Team name is required.")
+        raise deps._error(400, "bad_request", "Enter a team name.")
     if _resolve_team(name):
         raise deps._error(409, "conflict", f"A team named '{name}' already exists.")
     members = _valid_member_ids(body.members)
@@ -2129,7 +2132,7 @@ def admin_update_team(team_id: int, body: TeamIn,
     _refuse_synced_team(team)
     name = (body.name or "").strip()
     if not name:
-        raise deps._error(400, "bad_request", "Team name is required.")
+        raise deps._error(400, "bad_request", "Enter a team name.")
     if name.lower() != team["name"].lower() and _resolve_team(name):
         raise deps._error(409, "conflict", f"A team named '{name}' already exists.")
     desired = set(_valid_member_ids(body.members))
@@ -2227,7 +2230,9 @@ def admin_set_person_teams(slack_id: str, body: PersonTeamsIn,
     """Set the FULL team membership of one person (Teams → People tab)."""
     uid = admin.require_admin(claims, "access")
     if not _valid_principal(slack_id):
-        raise deps._error(400, "bad_request", "Bad principal id (expected a Slack user id or local:<username>).")
+        raise deps._error(400, "bad_request",
+                          "The principal id is not valid. "
+                          "Use a Slack user id or local:<username>.")
     desired: set[int] = set()
     for t in body.teams or []:
         try:
@@ -2406,7 +2411,7 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
     for pid in (slack_id, body.source):
         if not _valid_principal(pid):
             raise deps._error(400, "bad_request",
-                              f"Bad principal id: {pid!r}.")
+                              f"The principal id {pid!r} is not valid.")
     if slack_id == body.source:
         raise deps._error(400, "bad_request", "Source and target are the same person.")
     tier = (body.tier or "").lower() or None
@@ -2956,7 +2961,8 @@ def admin_effective_access(slack_id: str,
     uid = admin.require_admin(claims, "access")
     if not _valid_principal(slack_id):
         raise deps._error(400, "bad_request",
-                          "Bad principal id (expected a Slack user id or local:<username>).")
+                          "The principal id is not valid. "
+                          "Use a Slack user id or local:<username>.")
 
     person = db.fetch_one(
         "SELECT slack_user_id, name, email, enabled, 'requester' AS kind "
@@ -3409,10 +3415,10 @@ def _reach_refusals(subject: str, team: dict | None, tier: str,
     for i in scoped:
         have = held.get((i["tid"], i["db"]))
         if have is None:
-            reason = (f"{who} cannot query {i['label']}. Auto-approve only skips "
-                      "review where access already exists — grant access first.")
+            reason = (f"{who} cannot query {i['label']}. Auto-approve skips review "
+                      "only where access already exists. Grant access first.")
         elif _WAIVER_RANK[tier] > _WAIVER_RANK[have]:
-            reason = (f"{who} can only run {have.upper()} on {i['label']}, so an "
+            reason = (f"{who} can run only {have.upper()} on {i['label']}. An "
                       f"{tier.upper()} auto-approve would promise more than that.")
         else:
             continue
@@ -3607,10 +3613,10 @@ def admin_decide_window_request(request_id: int, body: WindowDecisionIn,
         from ..slack_app import notifications
         req, win = out["request"], ro_window.window_label(out["request"]["window_minutes"])
         text = (f":zap: Your *{req['max_tier'].upper()}* auto-approve window on "
-                f"`{out['alias']}` is active for the next {win} — matching queries "
-                "dispatch immediately, no approval needed."
+                f"`{out['alias']}` is active for the next {win}. Matching queries "
+                "skip approval and dispatch immediately."
                 if out["status"] == "approved" else
-                f":no_entry: Your auto-approve window request (#{request_id}) was declined.")
+                f":no_entry: An admin declined your auto-approve window request (#{request_id}).")
         try:
             notifications.dm_requester(client, req["requester_slack_id"], text)
         except Exception:
@@ -3660,7 +3666,7 @@ def admin_bulk_create_auto_grants(body: BulkAutoGrantIn,
         raise deps._error(400, "bad_request", "Name at least one connection.")
     if len(body.targets) > _BULK_AUTO_GRANTS_MAX:
         raise deps._error(400, "bad_request",
-                          f"At most {_BULK_AUTO_GRANTS_MAX} targets per request.")
+                          f"Send at most {_BULK_AUTO_GRANTS_MAX} targets per request.")
     team = None
     if stype == "team":
         if not teams_mod.use_v2():
@@ -3711,8 +3717,8 @@ def admin_bulk_create_auto_grants(body: BulkAutoGrantIn,
     if refused:
         raise deps._error(
             409, "conflict",
-            f"{len(refused)} of {len(body.targets)} targets cannot take this waiver; "
-            "nothing was written.", refused=refused)
+            f"{len(refused)} of {len(body.targets)} targets cannot take this waiver. "
+            "QueryHub wrote nothing.", refused=refused)
     # `applied` is a count, as on the connections bulk route: 0 for a dry run.
     if body.dryRun:
         return {"applied": 0, "targets": [p["label"] for p in plan]}
@@ -3759,12 +3765,12 @@ def admin_decide_endpoint(req_id: int, body: EndpointDecisionIn,
     if req is None:
         raise deps._error(404, "not_found", "No such request.")
     if req["status"] != "pending":
-        raise deps._error(409, "conflict", "This request was already decided.")
+        raise deps._error(409, "conflict", "This request already has a decision.")
 
     status = "approved" if body.approve else "rejected"
     row = access_requests.decide(req_id, status, uid, claims.get("name"), body.note)
     if row is None:  # lost the race — another admin just decided it
-        raise deps._error(409, "conflict", "This request was already decided.")
+        raise deps._error(409, "conflict", "This request already has a decision.")
 
     if not body.approve:
         with db.transaction() as cur:
@@ -3798,7 +3804,8 @@ def _apply_scope(body: ScopeIn, uid: str, actor_name: str | None) -> dict:
         raise deps._error(400, "bad_request", "role must be dba or super.")
     if role != "super" and admins.is_super_admin(target) and _count_super_admins() <= 1:
         raise deps._error(409, "conflict",
-                          "Can't demote the last super-admin — promote another first.")
+                          "Refused: you cannot demote the last super-admin. "
+                          "Promote another person first.")
 
     if role == "super":
         max_tier, target_ids, can_grant = None, None, True
@@ -3857,15 +3864,16 @@ def admin_update_scope(admin_id: str, body: ScopeIn,
 def admin_delete_scope(admin_id: str, claims: dict = Depends(deps.current_user)):
     uid = admin.require_admin(claims, "access")
     if admins.is_super_admin(admin_id) and _count_super_admins() <= 1:
-        raise deps._error(409, "conflict", "Can't remove the last super-admin.")
+        raise deps._error(409, "conflict",
+                          "Refused: you cannot remove the last super-admin.")
     with db.transaction() as cur:
         cur.execute("UPDATE admins SET enabled = FALSE "
                     "WHERE slack_user_id = %s AND enabled = TRUE "
                     "RETURNING slack_user_id", (admin_id,))
         if cur.fetchone() is None:
             raise deps._error(404, "not_found",
-                              "No active permanent admin to remove "
-                              "(temp admin grants are managed in Slack).")
+                              "No active permanent admin to remove. "
+                              "Manage temporary admin grants in Slack.")
         audit.log_in(cur, None, uid, claims.get("name"), "admin_scope_removed",
                      {"admin": admin_id})
 
@@ -4007,7 +4015,7 @@ def _check_role_spec(role: str, scope_team_id, scope_target_id, max_tier) -> str
     tier as the FK stores it."""
     if role not in _ROLES:
         raise deps._error(400, "bad_request",
-                          f"Unknown role. One of: {', '.join(_ROLES)}.")
+                          f"Unknown role. Use one of: {', '.join(_ROLES)}.")
     if role == "admin" and (scope_team_id is not None or scope_target_id is not None):
         # The schema refuses it too; saying so here gives a usable message
         # instead of a constraint violation.
@@ -4023,8 +4031,8 @@ def _check_role_spec(role: str, scope_team_id, scope_target_id, max_tier) -> str
     if tier is not None and role not in _ROLES_WITH_CEILING:
         raise deps._error(
             400, "tier_scope",
-            f"A tier ceiling only applies to {' and '.join(_ROLES_WITH_CEILING)}"
-            f" — nothing reads it on a {role}. Leave it empty.")
+            f"A tier ceiling applies only to {' and '.join(_ROLES_WITH_CEILING)}. "
+            f"Nothing reads it on a {role}. Leave it empty.")
     return tier
 
 
@@ -4076,8 +4084,8 @@ def admin_create_role(body: RoleIn, claims: dict = Depends(deps.current_user)):
             raise deps._error(
                 409, "conflict",
                 f"This person already holds {body.role} over that scope "
-                f"(role {dup['id']}, {where} is unchanged). Revoke it first "
-                f"if you meant to change its ceiling or expiry.",
+                f"(role {dup['id']}, which {where} is unchanged). Revoke it first "
+                "if you meant to change its ceiling or expiry.",
                 roleId=dup["id"])
         cur.execute(
             "INSERT INTO role_assignment "
@@ -4121,7 +4129,7 @@ def admin_revoke_role(role_id: int, claims: dict = Depends(deps.current_user)):
             # It would come straight back on the next write to that table.
             raise deps._error(
                 409, "conflict",
-                "This role mirrors the admins table — remove it there instead.")
+                "This role mirrors the admins table. Remove it there instead.")
         if row["source"]:
             # Same shape, different owner: the sync rebuilds its rows from the
             # team's own membership and the targets that team owns, so a
@@ -4129,9 +4137,9 @@ def admin_revoke_role(role_id: int, claims: dict = Depends(deps.current_user)):
             # approves means changing one of those two.
             raise deps._error(
                 409, "conflict",
-                f"This role is maintained by the '{row['source']}' sync — it "
-                f"would come back on the next run. Change the team's lead or "
-                f"what the team owns instead.")
+                f"The '{row['source']}' sync maintains this role, so it "
+                "would come back on the next run. Change the team's lead or "
+                "what the team owns instead.")
         cur.execute("UPDATE role_assignment SET revoked_at = NOW(), "
                     "       revoked_by = (SELECT p.id FROM principal p "
                     "         JOIN principal_identity i ON i.principal_id = p.id "
@@ -4193,21 +4201,21 @@ def admin_update_role(role_id: int, body: RolePatch,
             raise deps._error(404, "not_found", "No such active role.")
         if old["mirrored_from"]:
             raise deps._error(409, "conflict",
-                              "This role mirrors the admins table — change it there instead.")
+                              "This role mirrors the admins table. Change it there instead.")
         if old["source"]:
             raise deps._error(
                 409, "conflict",
-                f"This role is maintained by the '{old['source']}' sync — an edit "
-                f"would be undone on its next run. Change the team's lead or what "
-                f"the team owns instead.")
+                f"The '{old['source']}' sync maintains this role. Its next run "
+                "would undo an edit. Change the team's lead or what the team "
+                "owns instead.")
 
         sent = body.model_fields_set
         if "subject" in sent and body.subject and body.subject != old["external_id"]:
             # Moving a role to someone else is a revoke and a new role, and has
             # to read that way in the audit log -- not as an edit of this row.
             raise deps._error(400, "subject_immutable",
-                              "A role belongs to one person. Revoke it and create "
-                              "a new one for the other person.")
+                              "A role belongs to one person. Revoke this role. "
+                              "Then create a new one for the other person.")
         role = body.role or old["role"]
         team = (None if body.scopeTeamAll else
                 body.scopeTeamId if "scopeTeamId" in sent else old["scope_team_id"])
@@ -4534,9 +4542,9 @@ def _mask_edit_fields(body: MaskPatchIn) -> dict:
     if named:
         raise deps._error(
             400, "reach_immutable",
-            "What an exemption reaches cannot be edited — "
+            "You cannot edit what an exemption reaches. "
             f"{', '.join(named)} {'are' if len(named) > 1 else 'is'} fixed once "
-            "the row exists. Switch this one off and create the narrower one, "
+            "the row exists. Disable this one. Then create the narrower one, "
             "so each reason describes its own row.")
 
     out: dict = {}
@@ -4564,8 +4572,8 @@ def _mask_edit_fields(body: MaskPatchIn) -> dict:
         reason = body.reason.strip()
         if not reason:
             raise deps._error(400, "reason_required",
-                              "A reason is required — an exemption without one "
-                              "is unreadable to whoever finds it next.")
+                              "Enter a reason. An exemption without one means "
+                              "nothing to the next person who finds it.")
         out["reason"] = reason
     return out
 
@@ -4631,30 +4639,30 @@ def _mask_fields(body: MaskExemptionIn) -> tuple[int | None, dict]:
     def _need(value: str | None, what: str) -> str:
         v = (value or "").strip()
         if not v:
-            raise deps._error(400, "bad_request", f"{what} is required for the "
-                                                  f"{scope} rung.")
+            raise deps._error(400, "bad_request",
+                              f"The {scope} rung needs {what}.")
         return v
 
     dbname = schema = table = column = None
     if scope in ("database", "schema", "table", "column"):
-        dbname = _need(body.databaseId, "A database")
+        dbname = _need(body.databaseId, "a database")
     if scope in ("schema", "table", "column"):
-        schema = _need(body.schema_name, "A schema")
+        schema = _need(body.schema_name, "a schema")
     elif scope == "fleet":
         # The one rung where a schema is optional: it is how the fleet-wide
         # `dba` toolkit row is written, and without it the rung means the
         # whole fleet.
         schema = (body.schema_name or "").strip() or None
     if scope in ("table", "column"):
-        table = _need(body.table, "A table")
+        table = _need(body.table, "a table")
     if scope == "column":
-        column = _need(body.column, "A column")
+        column = _need(body.column, "a column")
 
     reason = (body.reason or "").strip()
     if not reason:
         raise deps._error(400, "bad_request",
-                          "A reason is required — an exemption without one is "
-                          "unreadable to whoever finds it next.")
+                          "Enter a reason. An exemption without one means "
+                          "nothing to the next person who finds it.")
 
     strength = (body.strength or "soft").lower()
     if strength not in ("soft", "full"):
@@ -4702,7 +4710,7 @@ def _mask_catalog_check(tid: int | None, dbname: str | None, schema: str | None,
         raise deps._error(
             400, "bad_request",
             f"The catalog has no table {schema + '.' if schema else ''}{table} "
-            f"in {dbname}. Pick it from the list rather than typing it.")
+            f"in {dbname}. Pick the table from the list instead of typing it.")
     if column and not db.fetch_one(
             "SELECT 1 AS x FROM schema_columns WHERE table_id = %s "
             "  AND column_name = %s", (row["id"], column)):
@@ -4748,8 +4756,8 @@ def admin_add_mask_exemption(body: MaskExemptionIn,
         raise deps._error(
             409, "conflict",
             f"Exemption #{dupe['id']} already covers exactly this"
-            + ("." if dupe["enabled"] else " — it is switched off. Turn it back "
-                                           "on rather than adding a second one."))
+            + ("." if dupe["enabled"] else ", but it is disabled. Enable it "
+                                           "instead of adding a second one."))
 
     # NOT suppressing app.auth_dm_suppress: the migration-122 trigger is what
     # tells the other admins a protection just came off.
@@ -4909,8 +4917,8 @@ def admin_mask_catalog(connection: str | None = None,
     if not rows:
         raise deps._error(
             404, "not_found",
-            "No catalog snapshot for that database yet. It is written hourly; "
-            "a connection added since the last run has none.")
+            "That database has no catalog snapshot yet. QueryHub writes the "
+            "snapshot hourly. A connection added since the last run has none.")
 
     explained = pii.explain_columns(
         sorted({r["column_name"] for r in rows if r["column_name"]}))
@@ -5848,7 +5856,7 @@ def principals_sync(body: PrincipalSyncIn,
     if live and not body.emails:
         raise deps._error(
             400, "empty_sync_refused",
-            "Refusing a sync that would disable every requester.")
+            "Refused: this sync would disable every requester.")
 
     unresolved: list[str] = []
     want: set[str] = set()

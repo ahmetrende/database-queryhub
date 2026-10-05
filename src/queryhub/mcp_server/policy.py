@@ -87,6 +87,7 @@ def refusal(required: str) -> str:
     Names the tier that was needed and the tier that is allowed, because "not
     permitted" sends an assistant into retrying the same statement.
     """
-    return (f"This connection accepts up to {max_tier().upper()} statements; "
-            f"that one needs {(required or '?').upper()}. Submit it from Slack "
-            f"or the web UI instead.")
+    return (f"This MCP server accepts statements up to tier "
+            f"{max_tier().upper()}. This statement needs tier "
+            f"{(required or '?').upper()}. Submit it from Slack or the web UI "
+            f"instead.")

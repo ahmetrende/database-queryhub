@@ -350,32 +350,32 @@ def _request_blocks(
         # the remainder.
         leading = kw_list[0].upper()
         if leading in ("UPDATE", "DELETE"):
-            kind = "MODIFIES rows on the target"
-            hint = ("Inspect the WHERE clause and confirm the intent "
-                    "before clicking Approve.")
+            kind = "CHANGES rows on the target"
+            hint = ("Check the WHERE clause and the intent of the query "
+                    "before you click Approve.")
         elif leading in ("INSERT", "MERGE"):
             kind = "WRITES new rows on the target"
-            hint = ("Inspect the row values being written and confirm "
-                    "the intent before clicking Approve.")
+            hint = ("Check the row values that it writes and the intent "
+                    "of the query before you click Approve.")
         elif leading == "TRUNCATE":
             kind = "EMPTIES the target table"
-            hint = ("This wipes ALL rows from the table; there is no "
-                    "WHERE. Double-check the table name before clicking "
-                    "Approve.")
+            hint = ("This removes ALL rows from the table. It has no "
+                    "WHERE clause. Check the table name again before you "
+                    "click Approve.")
         elif leading in ("DROP",):
             kind = "DROPS an object on the target"
-            hint = ("This permanently removes the named object. "
-                    "Double-check the object name before clicking Approve.")
+            hint = ("This permanently removes the named object. Check "
+                    "the object name again before you click Approve.")
         elif leading in ("ALTER", "CREATE", "GRANT", "REVOKE",
                          "COMMENT", "RENAME", "REFRESH", "REASSIGN",
                          "VACUUM", "ANALYZE", "REINDEX", "CLUSTER"):
-            kind = "MODIFIES the schema / metadata on the target"
-            hint = ("Inspect the object name and the change being made "
-                    "before clicking Approve.")
+            kind = "CHANGES the schema / metadata on the target"
+            hint = ("Check the object name and the change before you "
+                    "click Approve.")
         else:
-            kind = "MODIFIES the target"
-            hint = ("Inspect the statement and confirm the intent "
-                    "before clicking Approve.")
+            kind = "CHANGES the target"
+            hint = ("Check the statement and its intent before you "
+                    "click Approve.")
         blocks.append(
             {
                 "type": "section",
@@ -384,8 +384,8 @@ def _request_blocks(
                     "text": (
                         f":warning: *This query {kind}.* "
                         f"Statement type: `{kw}`.\n"
-                        f"Approving will execute it immediately and the "
-                        f"bot cannot undo the change. {hint}"
+                        f"If you approve, the bot runs it immediately. "
+                        f"The bot cannot undo the change. {hint}"
                     ),
                 },
             }
@@ -413,7 +413,7 @@ def _request_blocks(
             "type": "context",
             "elements": [{
                 "type": "mrkdwn",
-                "text": ":page_facing_up: _Full SQL is attached as a snippet in the thread below._",
+                "text": ":page_facing_up: _The full SQL is in a snippet in the thread below._",
             }],
         })
     request_id = str(request["id"])
@@ -423,9 +423,9 @@ def _request_blocks(
             "text": {
                 "type": "mrkdwn",
                 "text": f":warning: This is a *{', '.join(safety.keywords_found)}* "
-                        f"statement. It will modify data immediately and cannot be "
-                        f"undone by the bot. Confirm only if you have read the WHERE "
-                        f"clause and accept the impact.",
+                        f"statement. It changes data immediately. The bot cannot "
+                        f"undo the change. Click *Yes, run it* only after you read "
+                        f"the WHERE clause and accept the impact.",
             },
             "confirm": {"type": "plain_text", "text": "Yes, run it"},
             "deny": {"type": "plain_text", "text": "Wait"},
@@ -433,7 +433,7 @@ def _request_blocks(
     else:
         approve_confirm = {
             "title": {"type": "plain_text", "text": "Approve and run?"},
-            "text": {"type": "mrkdwn", "text": "This will execute the query immediately."},
+            "text": {"type": "mrkdwn", "text": "This runs the query immediately."},
             "confirm": {"type": "plain_text", "text": "Run it"},
             "deny": {"type": "plain_text", "text": "Wait"},
         }
@@ -530,7 +530,8 @@ def _dba_manual_blocks(
             "type": "context",
             "elements": [{"type": "mrkdwn", "text":
                           ":lock: The password in this script is hidden. Set a new "
-                          "one when you run it, and give it to the requester."}],
+                          "one when you run the script. Give the new password to "
+                          "the requester."}],
         })
     blocks.append({
         "type": "actions",
@@ -545,8 +546,8 @@ def _dba_manual_blocks(
                 "confirm": {
                     "title": {"type": "plain_text", "text": "Mark completed?"},
                     "text": {"type": "mrkdwn", "text":
-                             "Confirm you've run this DDL out-of-band "
-                             "and it succeeded."},
+                             "Click *Yes, completed* only if you ran this "
+                             "DDL outside the bot and it succeeded."},
                     "confirm": {"type": "plain_text", "text": "Yes, completed"},
                     "deny": {"type": "plain_text", "text": "Cancel"},
                 },
@@ -576,7 +577,7 @@ def _cancel_action_block(request: dict) -> dict:
             "confirm": {
                 "title": {"type": "plain_text", "text": "Cancel scheduled run?"},
                 "text": {"type": "mrkdwn",
-                         "text": "The scheduled execution will be skipped. This is final."},
+                         "text": "The bot will skip the scheduled run. This is final."},
                 "confirm": {"type": "plain_text", "text": "Yes, cancel"},
                 "deny": {"type": "plain_text", "text": "Keep"},
             },
@@ -679,7 +680,7 @@ def _bundle_item_status_line(item: dict) -> str | None:
     if status == "completed":
         rc = f"{row_count:,} row(s)" if row_count is not None else "no result set"
         if item.get("truncated"):
-            rc += " (showing first rows — result was larger)"
+            rc += " (first rows only: the result was larger)"
         return f":white_check_mark: _Completed — {rc}._{appr}"
     if status == "failed":
         return f":x: _Failed: {err or '(no detail)'}_"
@@ -693,7 +694,7 @@ def _bundle_item_status_line(item: dict) -> str | None:
         bit = f" — {reason}" if reason else ""
         return f":pencil2: _Changes requested{bit}._"
     if status == "awaiting_dba_manual":
-        return ":construction: _Awaiting manual DBA execution._"
+        return ":construction: _Waiting for a DBA to run it by hand._"
     return f"_Status: {status}._"
 
 
@@ -728,7 +729,7 @@ def _bundle_item_blocks(
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn",
-                     "text": f":warning: *Destructive ({kw}).* Inspect carefully before approving."},
+                     "text": f":warning: *Destructive ({kw}).* Check it carefully before you approve it."},
         })
 
     # Static risk hint from the pre-flight EXPLAIN plan (size + cost band).
@@ -746,7 +747,7 @@ def _bundle_item_blocks(
             "text": {"type": "mrkdwn", "text": f"```\n{esc_code(query_text)}\n```"},
         })
     elif len(query_text) > _BUNDLE_INLINE_QUERY_MAX:
-        preview = query_text[:_BUNDLE_INLINE_QUERY_MAX] + "\n... (truncated; full query stored on request #" + str(item['id']) + ")"
+        preview = query_text[:_BUNDLE_INLINE_QUERY_MAX] + "\n... (truncated: request #" + str(item['id']) + " holds the full query)"
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn", "text": f"```\n{esc_code(preview)}\n```"},
@@ -807,9 +808,9 @@ def _bundle_item_blocks(
             "text": {"type": "mrkdwn",
                      "text": (
                          f":warning: Destructive ({', '.join(safety.keywords_found)}). "
-                         "This runs immediately and the bot cannot undo it."
+                         "This runs immediately. The bot cannot undo it."
                          if safety.is_destructive
-                         else "This will execute immediately."
+                         else "This runs immediately."
                      )},
             "confirm": {"type": "plain_text",
                         "text": "Yes, run it" if safety.is_destructive else "Run it"},
@@ -1014,7 +1015,7 @@ def _import_dm_blocks(imp: dict, parsed, *, with_actions: bool) -> list[dict]:
                                 "text": f"*Will run:*\n```\n{ddl}\n```"}})
     else:
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
-            "text": f"_Appends into existing `dba.{table}` (COPY, no DDL)._"}]})
+            "text": f"_Adds the rows to the existing table `dba.{table}` (COPY, no DDL)._"}]})
 
     # PII-masked sample preview.
     if parsed is not None and getattr(parsed, "sample_rows", None):
@@ -1033,9 +1034,9 @@ def _import_dm_blocks(imp: dict, parsed, *, with_actions: bool) -> list[dict]:
         confirm = {
             "title": {"type": "plain_text", "text": "Approve CSV import?"},
             "text": {"type": "mrkdwn",
-                     "text": f":warning: This bulk-loads {imp.get('row_count',0):,} "
-                             f"rows into `dba.{table}`. This writes data and "
-                             f"cannot be undone by the bot."},
+                     "text": f":warning: This loads {imp.get('row_count',0):,} "
+                             f"rows into `dba.{table}`. It writes data. The "
+                             f"bot cannot undo it."},
             "confirm": {"type": "plain_text", "text": "Yes, import"},
             "deny": {"type": "plain_text", "text": "Wait"},
         }
@@ -1132,8 +1133,8 @@ def _bundle_bulk_action_blocks(bundle_id: int,
             "type": "context",
             "elements": [{
                 "type": "mrkdwn",
-                "text": (":eyes: _All remaining items are outside your scope; "
-                         "another admin will close this bundle._"),
+                "text": (":eyes: _All remaining items are outside your scope. "
+                         "Another admin will close this batch._"),
             }],
         }]
     confirm = {
@@ -1206,7 +1207,7 @@ def _build_bundle_dm_blocks(bundle: dict, items: list[dict],
                   "text": f"SQL batch B#{bundle['id']} ({len(items)} item(s))"[:150]}},
         {"type": "section",
          "text": {"type": "mrkdwn",
-                  "text": f"From {requester_md}{sched_md}  ·  bundle status: "
+                  "text": f"From {requester_md}{sched_md}  ·  batch status: "
                           f"{header_status_emoji} `{_bundle_status_label(status)}`"}},
     ]
     if bundle.get("justification"):
@@ -1237,7 +1238,8 @@ def _build_bundle_dm_blocks(bundle: dict, items: list[dict],
         blocks = blocks[:49] + [{
             "type": "context",
             "elements": [{"type": "mrkdwn",
-                          "text": ":warning: _Some items truncated — see the bot DB._"}],
+                          "text": ":warning: _This message does not show all items. "
+                                  "See the bot DB for the rest._"}],
         }]
     return blocks
 
@@ -1359,7 +1361,7 @@ def maybe_send_bundle_summary(client: WebClient, bundle_id: int) -> None:
         f"{len(items)} item(s): "
         f"{completed} completed, {failed} failed, {rejected} rejected, "
         f"{cancelled} cancelled"
-        + (f", {awaiting} awaiting manual DBA" if awaiting else "")
+        + (f", {awaiting} waiting for a DBA" if awaiting else "")
         + "."
     )
     body_lines = [_fmt_bundle_item_summary_line(it) for it in items]
@@ -1616,7 +1618,7 @@ def post_dba_manual_dms(client: WebClient, request: dict, status_line: str) -> i
             posted = _post(client,
                 channel=channel_id,
                 blocks=blocks,
-                text=f"SQL request #{request['id']} needs manual execution",
+                text=f"SQL request #{request['id']} needs a DBA to run it by hand",
                 **overrides,
             )
             db.execute(
@@ -1825,8 +1827,8 @@ def requester_card_blocks(
             blocks.append({
                 "type": "context",
                 "elements": [{"type": "mrkdwn",
-                              "text": f":page_facing_up: _Query is {len(q)} chars — "
-                                      f"see request #{request_id} for the full text._"}],
+                              "text": f":page_facing_up: _The query has {len(q)} characters. "
+                                      f"See request #{request_id} for the full text._"}],
             })
 
     if with_cancel:
@@ -1861,9 +1863,9 @@ def pending_actions_block(request_id: int) -> dict:
                 "confirm": {
                     "title": {"type": "plain_text", "text": "Cancel this request?"},
                     "text": {"type": "mrkdwn",
-                             "text": "It will be withdrawn before any admin acts "
-                                     "on it. This is final — submit a new request "
-                                     "if you change your mind."},
+                             "text": "The bot withdraws the request. After that, "
+                                     "no admin can decide it. This is final. If "
+                                     "you need it again, submit a new request."},
                     "confirm": {"type": "plain_text", "text": "Yes, cancel"},
                     "deny": {"type": "plain_text", "text": "Keep it"},
                 },
@@ -2028,6 +2030,6 @@ def dm_admins_auto_approved_fingerprint(
     header = (
         f":zap: *Auto-approved (fingerprint)* — query `#{request['id']}` "
         f"from <@{requester}> on `{target.alias}/{request['database_name']}` "
-        f"(RO; same shape as their completed request #{fp_hit['id']})."
+        f"(RO, same shape as their completed request #{fp_hit['id']})."
     )
     deliver_auto_approve_fyi(client, request, header, quiet=True)

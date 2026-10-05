@@ -1,16 +1,19 @@
 # Releasing
 
-The whole sequence, so that a release is a checklist rather than a memory
-exercise, and so anyone who inherits the project can cut one.
+This is the whole sequence. It makes a release a checklist, not a memory
+exercise. Anyone who inherits the project can cut a release with it.
 
 ## Before you tag
 
-CI runs all three checks below on every push to `main`: the sdist check in each
-`test` job, the `demo-stack` job (the round trip, masked result asserted), and the
-`frontend` job (a clean `npm ci` + build). So **a green CI run on the commit you
-are about to tag covers them**. Look before you tag:
-`gh run list --commit <full sha>` — a short sha matches nothing. Run them by hand
-only where CI cannot reach:
+**A green CI run on the commit that you are about to tag covers the three checks
+below.** CI runs all three on every push to `main`:
+
+- the sdist check, in each `test` job
+- the `demo-stack` job (the round trip, with the masked result asserted)
+- the `frontend` job (a clean `npm ci` + build)
+
+Look before you tag: `gh run list --commit <full sha>`. A short sha matches
+nothing. Run the checks by hand only where CI cannot reach:
 
 ```bash
 # 1. The package. Checks the BUILT sdist, in both directions — nothing licensed
@@ -27,17 +30,17 @@ git clean -xdn QueryHubWeb/app          # review, then -xdf if you mean it
 (cd QueryHubWeb/app && npm ci && npm run build)
 ```
 
-Then the content:
+Then check the content:
 
-- [ ] `CHANGELOG.md` has a section for this version, written for someone
-      upgrading — what changed, what breaks, what to do about it. Not a commit
-      dump.
-- [ ] Any migration added since the last release is idempotent and re-runnable
-      (`python scripts/apply_migrations.py --dry-run` twice in a row on a restored
-      copy of a real database, not an empty one).
-- [ ] Anything in `docs/KNOWN_LIMITATIONS.md` that this release fixes is removed
-      from it, and anything it introduces is added.
-- [ ] The version in `pyproject.toml` matches the tag you are about to push.
+- [ ] `CHANGELOG.md` has a section for this version, written for someone who
+      upgrades: what changed, what breaks, and what to do about it. It is not a
+      commit dump.
+- [ ] Any migration added since the last release is idempotent and re-runnable.
+      To check, run `python scripts/apply_migrations.py --dry-run` twice in a
+      row on a restored copy of a real database, not an empty one.
+- [ ] `docs/KNOWN_LIMITATIONS.md` no longer lists what this release fixes, and
+      it lists what this release introduces.
+- [ ] The version in `pyproject.toml` matches the tag that you are about to push.
 
 ## Tag and publish
 
@@ -47,26 +50,26 @@ git tag -s v0.2.0 -m "QueryHub v0.2.0"
 git push origin v0.2.0
 ```
 
-`.github/workflows/release.yml` then:
+`.github/workflows/release.yml` then does these steps:
 
-1. re-runs the full test suite and the vanilla-import gate — a tag is not
-   exempt from CI,
-2. runs `scripts/check_sdist_clean.py`,
-3. builds the sdist and the wheel,
-4. creates the GitHub Release with the CHANGELOG section for that version and
-   attaches both artifacts,
-5. publishes to PyPI **if** trusted publishing is configured (see below).
+1. It re-runs the full test suite and the vanilla-import gate. A tag is not
+   exempt from CI.
+2. It runs `scripts/check_sdist_clean.py`.
+3. It builds the sdist and the wheel.
+4. It creates the GitHub Release with the CHANGELOG section for that version,
+   and it attaches both artifacts.
+5. It publishes to PyPI, **if** trusted publishing is configured (see below).
 
-Tags are signed. `git tag -s` needs a signing key configured; an unsigned tag
-for a security tool is a bad look and the workflow does not care either way, so
-this is on you.
+This project signs its tags. `git tag -s` needs a configured signing key. An
+unsigned tag for a security tool looks bad, and the workflow accepts signed and
+unsigned tags alike. So the signature is your responsibility.
 
 ## PyPI: not configured yet
 
-The workflow's publish step is opt-in and will be skipped until someone sets it
-up. When you do, use **trusted publishing** (OIDC) rather than an API token —
-GitHub exchanges a short-lived token per run, so there is no long-lived secret in
-the repository to leak:
+The publish step of the workflow is opt-in. The workflow skips it until someone
+configures it. When you configure it, use **trusted publishing** (OIDC), not an
+API token. GitHub exchanges a short-lived token per run, so the repository holds
+no long-lived secret that can leak:
 
 1. Reserve the project name on PyPI.
 2. In the PyPI project settings, add a trusted publisher: this repository, the
@@ -81,41 +84,42 @@ Until then, the GitHub Release with attached artifacts *is* the release, and
 ## Versioning
 
 See [README.md](README.md#versioning-and-support) for what the major version
-does and does not guarantee, and for the support window. Two rules that live here because they
-constrain what a release may contain:
+does and does not guarantee, and for the support window. Two rules live here,
+because they constrain what a release may contain:
 
-- **Migrations are append-only.** A released migration is never edited, only
-  superseded. The ledger stores a checksum precisely so an edit is caught.
+- **Migrations are append-only.** You never edit a released migration. You only
+  supersede it. The ledger stores a checksum precisely so that an edit is caught.
 - **The audit contract does not break in a minor release.** If a change would
-  make an old `audit_log` row unreadable or ambiguous, it is a major version and
-  needs a documented migration path for the historical rows.
+  make an old `audit_log` row unreadable or ambiguous, it is a major version. It
+  also needs a documented migration path for the historical rows.
 
 ## Container image (GHCR)
 
 The `publish-image` job in `.github/workflows/release.yml` builds and pushes
-`ghcr.io/<owner>/<repo>` on every `v*` tag: the version tag plus `latest`, for
-`linux/amd64` and `linux/arm64`, using `GITHUB_TOKEN` — no registry secret in the
-repository. It smoke-tests the pushed image by constructing the app inside it,
-because publishing an image that cannot start fails for the user rather than for
-us.
+`ghcr.io/<owner>/<repo>` on every `v*` tag. It pushes the version tag plus
+`latest`, for `linux/amd64` and `linux/arm64`. It uses `GITHUB_TOKEN`, so the
+repository holds no registry secret. The job smoke-tests the pushed image: it
+constructs the app inside the image. The reason: an image that cannot start
+fails for the user, not for us.
 
-- [ ] First release only: the GHCR package is created private. Make it public in
-      the repository's Packages settings, or `docker pull` fails for everyone
-      with an authentication error that looks like the image does not exist.
+- [ ] First release only: GHCR creates the package as private. Make it public in
+      the Packages settings of the repository. If you do not, `docker pull` fails
+      for everyone, with an authentication error that looks like the image does
+      not exist.
 - [ ] Update the example image tag in `README.md`, `.env.example` and
       `docker-compose.install.yml` to this version.
-      `tests/test_release_docs.py` fails if you forget, which is how this
-      became a checklist item: the README went on advertising 1.0.0 after
-      1.0.1 shipped. Naming a version rather than `latest` is deliberate —
-      see the next box — so the tag has to be maintained, not removed.
+      If you forget, `tests/test_release_docs.py` fails. That is how this
+      became a checklist item: the README continued to advertise 1.0.0 after
+      1.0.1 shipped. Naming a version rather than `latest` is deliberate (see
+      the next box). So you have to maintain the tag, not remove it.
 - [ ] Reference the **version** tag in any deployment, not `latest`. A SQL
-      gateway should not change underneath you because a tag moved.
+      gateway should not change without your knowledge because a tag moved.
 
 ## After the release
 
-- [ ] Bump `pyproject.toml` to the next `-dev` version so `main` is never
-      mistaken for the release.
-- [ ] Add an `## Unreleased` heading back to `CHANGELOG.md`.
-- [ ] If the release changes anything an operator must do (a new required config
-      key, a manual step), say so at the top of the release notes rather than in
-      the middle of a list.
+- [ ] Bump `pyproject.toml` to the next `-dev` version, so that nobody mistakes
+      `main` for the release.
+- [ ] Add an `## Unreleased` heading to `CHANGELOG.md` again.
+- [ ] If the release changes anything that an operator must do, say so at the
+      top of the release notes. Do not put it in the middle of a list. Examples:
+      a new config key that is required, or a manual step.

@@ -5,7 +5,7 @@ contact_links:
   # person from asking at all.
   - name: Questions and setup help
     url: https://github.com/ahmetrende/database-queryhub/discussions
-    about: Install trouble, "how do I", "is this the right tool for X" — ask here rather than opening an issue.
+    about: Ask here about install trouble, "how do I" and "is this the right tool for X". Do not open an issue for these.
   - name: Security vulnerability
     url: https://github.com/ahmetrende/database-queryhub/security/advisories/new
     about: Please report security issues privately, not as a public issue. See SECURITY.md.
