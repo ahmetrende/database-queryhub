@@ -1538,7 +1538,11 @@ function App() {
 
               <WhyBar show={showWhy} need={needWhy} value={why} onChange={setWhy} err={whyErr && needWhy}
                 inputRef={whyRef} recent={reasons} autoApprove={autoApprove} tier={classify.tier} isSuper={isSuper}
-                onEnter={primary} onEscape={() => setEdFocus(n => n + 1)} />
+                onEnter={primary} onEscape={() => setEdFocus(n => n + 1)}
+                onOpen={() => {
+                  patch(activeId, { whyOpen: true });
+                  requestAnimationFrame(() => { const el = whyRef.current; if (el) el.focus(); });
+                }} />
 
               <AccessNotice state={targetState} expired={tab.expired} alias={tab.conn}
                 onRequest={() => setReqOpen(true)} onDismiss={() => patch(activeId, { expired: null })} />
@@ -1869,17 +1873,29 @@ function AccessNotice({ state, expired, alias, onRequest, onDismiss }) {
   );
 }
 
-function WhyBar({ show, need, value, onChange, err, inputRef, recent, autoApprove, tier, isSuper, onEnter, onEscape }) {
+function WhyBar({ show, need, value, onChange, err, inputRef, recent, autoApprove, tier, isSuper, onEnter, onEscape, onOpen }) {
   if (!show) {
+    // A reason is optional when nothing asks for one. Sometimes the record
+    // still needs one, so "Add a reason" opens the field. The audit log keeps
+    // the reason with the request.
+    const add = onOpen ? (
+      <button type="button" className="qh-why-chip qh-why-add" onClick={onOpen}
+        title="Optional. The audit log keeps the reason with this request.">Add a reason</button>
+    ) : null;
     // Only where a reason WOULD have been asked for: on read-only work this
-    // line would be on every query and would stop being read.
-    if (!autoApprove || tier === 'RO') return null;
+    // line would be on every query and would stop being read. A super-admin
+    // keeps the button alone there, because a super-admin runs everything
+    // without approval and still has to explain some of it.
+    if (!autoApprove || tier === 'RO') {
+      return (isSuper && add) ? <div className="qh-why is-auto is-min">{add}</div> : null;
+    }
     return (
       <div className="qh-why is-auto">
         <span className="qh-why-ic">{ICN_WHY_OK}</span>
         <span className="qh-why-auto" title="No approver means no one to write the reason for. The audit log still records why this ran: it records the grant that allowed it.">
           <b>Runs without approval</b> — {isSuper ? 'you are a super-admin' : 'an auto-approve grant covers this'}. <span>No reason needed.</span>
         </span>
+        {add}
       </div>
     );
   }

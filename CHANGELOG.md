@@ -9,6 +9,18 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+### Added
+
+- **A super-admin can add a reason to a run that needs no approval.** The
+  web shows "Add a reason" where no reason is asked for. The audit log keeps
+  the reason with the request.
+
+### Changed
+
+- **User-facing messages follow Simplified Technical English.** Slack, the
+  web API and the MCP server give the cause first, then the fix. Only the
+  words changed. No check decides differently.
+
 ## [1.0.34] — 2026-10-05
 
 The web editor undoes every edit, expands `*` to exactly the columns a

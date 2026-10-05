@@ -2510,3 +2510,9 @@
   user-select: none;
 }
 .qh-wn-audtoggle input { cursor: pointer; margin: 0; }
+
+/* "Add a reason" on a query that asks for none (qh-app.jsx WhyBar). Alone on a
+   read-only super-admin query it takes a slim row, so it does not crowd the
+   editor; beside the "Runs without approval" line it sits at the end. */
+.qh-why.is-min { height: 30px; }
+.qh-why.is-auto .qh-why-add { margin-left: auto; flex-shrink: 0; }
