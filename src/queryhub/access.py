@@ -160,9 +160,10 @@ def super_admin_only_ids(target_ids) -> set[int]:
     ids = list(dict.fromkeys(int(t) for t in target_ids))
     if not ids:
         return set()
-    return {r.get("id") for r in db.fetch_all(
+    found = (r.get("id") for r in db.fetch_all(
         "SELECT id FROM target_servers WHERE id = ANY(%s) AND super_admin_only",
-        (ids,)) if r.get("id") is not None}
+        (ids,)))
+    return {int(i) for i in found if i is not None}
 
 
 def explicit_only(principal_id: str, target_id: int) -> bool:
@@ -478,9 +479,10 @@ def resolve_many(principal_id: str,
         held = super_admin_only_ids(ids)
         if held and is_super_admin(principal_id):
             held = set()
-        out_admin = {tid: {"tier": "ddl", "auto_tier": None, "source": "admin",
-                           "unrestricted": True, "db_role": None, "databases": None}
-                     for tid in ids if tid not in held}
+        out_admin: dict[int, dict | None] = {
+            tid: {"tier": "ddl", "auto_tier": None, "source": "admin",
+                  "unrestricted": True, "db_role": None, "databases": None}
+            for tid in ids if tid not in held}
         # A flagged target answers from the grants that name it, one by one:
         # there are a handful of them, and the rule stays in one place.
         for tid in held:

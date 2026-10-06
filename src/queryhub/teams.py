@@ -425,8 +425,9 @@ def effective_grants_for_user(
         held = access.super_admin_only_ids(ids)
         if held and admins.is_super_admin(principal_id):
             held = set()
-        out_all = {tid: {"mode": "ddl", "allowed_databases": None,
-                         "source": "admin_or_bypass"} for tid in ids if tid not in held}
+        out_all: dict[int, dict | None] = {
+            tid: {"mode": "ddl", "allowed_databases": None, "source": "admin_or_bypass"}
+            for tid in ids if tid not in held}
         for tid in held:
             out_all[tid] = effective_grant_for_user(principal_id, tid)
         return out_all
