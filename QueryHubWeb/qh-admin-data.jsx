@@ -539,6 +539,17 @@ function useAdminState(pushToast, active, isAdminViewer) {
     });
   // A replica is nobody's target (CODE 2026-09-23 (e)): enabling it puts it back
   // in rotation for its primary's reads, and the toast says that, not "query it".
+  // Grants on every server, and the super-admin-only switch (CODE 2026-10-06 (c)).
+  // The block reads its own list (adminFleetGrants); these reject to the caller,
+  // which prints the server's words beside the control.
+  const addFleetGrant = (b) => qhApi.adminAddFleetGrant(b)
+    .then(r => { loadAudit(); pushToast && pushToast('Read-only access to every server granted to ' + ((r && r.subjectName) || b.subject) + '.'); return r; });
+  const revokeFleetGrant = (id, name) => qhApi.adminRevokeFleetGrant(id)
+    .then(r => { loadAudit(); pushToast && pushToast('Access to every server revoked' + (name ? ' for ' + name : '') + '.'); return r; });
+  const setSuperAdminOnly = (conn, on) => qhApi.adminSetSuperAdminOnly(conn, on)
+    .then(r => { loadConnections(); loadAudit();
+      if (r && r.changed !== false) pushToast && pushToast(on ? 'Only super-admins and grants that name it reach this connection now.' : 'Grants on every server reach this connection again.');
+      return r; });
   const setConnectionEnabled = (conn, on) =>
     qhApi.adminUpdateConnection(conn, { enabled: !!on })
       .then(() => { loadConnections(); loadAudit();
@@ -582,6 +593,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
     addTeam, updateTeam, removeTeam, setPersonTeams,
     addConnection, updateConnection, removeConnection, setConnectionEnabled, bulkConnections,
     reloadConnections: loadConnections,
+    addFleetGrant, revokeFleetGrant, setSuperAdminOnly,
   };
 }
 

@@ -403,6 +403,101 @@ function GrantForm({ init, actor, st, people, teams, onDone }) {
 //     with the full text on hover, or a sentence would stretch the column.
 function grantByLabel(g) { return qhPersonName(g.grantedByName || g.grantedBy) || '—'; }
 
+// Grants on every server (CODE 2026-10-06 (c)): RO only, a person or a team,
+// optionally with reads auto-approved (the fleet waiver). Above the
+// per-connection list, because it reaches every row of it. A super-admin-only
+// connection stays outside these grants; the server decides that, so the
+// block says it once and does not compute it. A mirrored row (`syncedFrom`)
+// has no Remove: its source writes it again.
+function FleetGrantsBlock({ st, canWrite }) {
+  const people = st.people || [], teams = st.teams || [];
+  const [rows, setRows] = useAcc(null);
+  const [loadErr, setLoadErr] = useAcc(null);
+  const [adding, setAdding] = useAcc(false);
+  const [busyId, setBusyId] = useAcc(null);
+  const [rowErr, setRowErr] = useAcc(null);
+  const blankF = { subjectType: 'user', subject: '', autoApprove: false, reason: '', ttl: 'none', expDate: '' };
+  const [f, setF] = useAcc(blankF);
+  const [formErr, setFormErr] = useAcc(null);
+  const [saving, setSaving] = useAcc(false);
+  const load = () => qhApi.adminFleetGrants()
+    .then(r => { setRows(r.grants || []); setLoadErr(null); })
+    .catch(e => setLoadErr((e && e.message) || 'QueryHub could not read the grants on every server.'));
+  React.useEffect(() => { load(); }, []);
+  const set = (p) => { setF(x => ({ ...x, ...p })); setFormErr(null); };
+  const why = !f.subject.trim() ? 'Pick a ' + (f.subjectType === 'team' ? 'team' : 'person') + '.'
+    : !f.reason.trim() ? 'Write a reason.' : expBad(f) ? 'Pick a date from today on.' : null;
+  const save = () => {
+    if (why || saving) return;
+    setSaving(true);
+    st.addFleetGrant({ subjectType: f.subjectType, subject: f.subject.trim(), tier: 'ro', autoApprove: !!f.autoApprove, reason: f.reason.trim(), expiresAt: expIso(f) })
+      .then(() => { setSaving(false); setAdding(false); setF(blankF); load(); })
+      .catch(e => { setSaving(false); setFormErr((e && e.message) || 'QueryHub could not add the grant.'); });
+  };
+  const remove = (g) => {
+    const name = grantName(g, people);
+    if (!window.confirm('Revoke read-only access to every server for ' + name + '?' + (g.autoApprove ? ' QueryHub also revokes the auto-approve on every server.' : '') + ' Grants that name a connection stay.')) return;
+    setBusyId(g.id); setRowErr(null);
+    st.revokeFleetGrant(g.id, name)
+      .then(() => { setBusyId(null); load(); })
+      .catch(e => { setBusyId(null); setRowErr({ id: g.id, msg: (e && e.message) || 'QueryHub could not revoke the grant.' }); });
+  };
+  return (
+    <div className="qh-fleet">
+      <div className="qh-fleet-h">
+        <div><div className="qh-fleet-t">Every server</div>
+          <div className="qh-fleet-sub">Read-only access to every server, now and later. A super-admin-only server stays outside.</div></div>
+        {canWrite && !adding && <button className="qh-btn qh-btn-sm" onClick={() => { setAdding(true); setFormErr(null); }}><AIcon.plus />Add</button>}
+      </div>
+      {adding && canWrite && (
+        <div className="qh-fleet-form">
+          <div className="qh-addrow wrap" style={{ marginBottom: 0 }}>
+            <div className="qh-seg qh-seg-sm">
+              {[['user', 'person'], ['team', 'team']].map(([v, l]) => <button key={v} className={'qh-seg-opt' + (f.subjectType === v ? ' is-active' : '')} onClick={() => set({ subjectType: v, subject: '' })}>{l}</button>)}
+            </div>
+            {f.subjectType === 'user'
+              ? <PersonPick people={people} value={f.subject} onChange={v => set({ subject: v })} resolve={st.resolvePerson} autoFocus />
+              : <select className="qh-select" value={f.subject} onChange={e => set({ subject: e.target.value })}><option value="">Select team…</option>{teams.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}</select>}
+            <TierBadge tier="RO" sm />
+            <ExpiryPick f={f} onChange={p => set(p)} />
+            <label className="qh-percopy-tm">
+              <input type="checkbox" checked={!!f.autoApprove} onChange={e => set({ autoApprove: e.target.checked })} />
+              Reads skip review
+            </label>
+          </div>
+          <input className="qh-input qh-input-sm qh-fleet-reason" placeholder="Reason (required) — why this person or team reads every server" value={f.reason} onChange={e => set({ reason: e.target.value })} />
+          <ExpiryNote f={f} subjectType={f.subjectType} />
+          {f.autoApprove && <div className="qh-exp-note">{f.subjectType === 'team' ? 'Every member’s' : 'Their'} reads on every server run without a DBA{f.ttl && f.ttl !== 'none' ? ', until the grant ends' : ', with no end date'}.</div>}
+          {formErr && <div className="qh-roleform-err">{formErr}</div>}
+          <div className="qh-fleet-acts">
+            <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => { setAdding(false); setF(blankF); setFormErr(null); }} disabled={saving}>Cancel</button>
+            <span title={why || undefined}><button className="qh-btn qh-btn-primary qh-btn-sm" disabled={!!why || saving} onClick={save}>{saving ? <span className="qh-spin" /> : 'Grant RO on every server'}</button></span>
+          </div>
+        </div>
+      )}
+      {loadErr && <div className="qh-fleet-empty is-bad">{loadErr} <button className="qh-linkbtn" onClick={load}>Try again</button></div>}
+      {!loadErr && rows === null && <div className="qh-fleet-empty">Loading…</div>}
+      {!loadErr && rows && rows.length === 0 && <div className="qh-fleet-empty">Nobody has access to every server. Each grant below names its connection.</div>}
+      {!loadErr && rows && rows.map(g => (
+        <div key={g.id} className="qh-fleet-row">
+          <span className="qh-fleet-who" title={g.subject}>{grantName(g, people)}</span>
+          {g.subjectType === 'team' && <span className="qh-fleet-kind">team</span>}
+          <TierBadge tier={g.tier || 'RO'} sm />
+          {g.autoApprove && <span className="qh-fleet-auto" title="Reads on every server run without a DBA.">auto-approve</span>}
+          {g.expiresAt ? <ExpiryChip iso={g.expiresAt} /> : <span className="qh-fleet-kind">No expiry</span>}
+          {g.reason && <span className="qh-fleet-reason-t" title={g.reason}>{g.reason}</span>}
+          <span className="qh-fleet-end">
+            {g.syncedFrom
+              ? <span className="qh-fleet-kind" title={'QueryHub copies this row from ' + g.syncedFrom + '. Change it there.'}>synced from {g.syncedFrom}</span>
+              : canWrite && <button className="qh-revoke" disabled={busyId === g.id} onClick={() => remove(g)}>Remove</button>}
+          </span>
+          {rowErr && rowErr.id === g.id && <div className="qh-roleform-err qh-fleet-rowerr">{rowErr.msg}</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function GrantsView({ st, user }) {
   const actor = 'dba.' + user.name.split(' ')[0].toLowerCase();
   // Person first, and it is the DEFAULT (CODE brief 2026-08-20 §6): the report
@@ -440,6 +535,8 @@ function GrantsView({ st, user }) {
             the create — it opens the same editor with the subject combo unlocked. */}
         <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={newBtn}><AIcon.plus />{mode === 'grant' ? 'New grant' : mode === 'person' ? 'Add person' : 'Grant access'}</button>
       </div>
+
+      <FleetGrantsBlock st={st} canWrite={!!(user && user.role === 'super')} />
 
       <div className="qh-conn-controls">
         {/* Person mode carries its own search — it filters people, not grants. */}
@@ -1391,8 +1488,22 @@ function HostingFields({ tags, onChange, vocab }) {
 // rotate shows only the credential block, because rotating a password is the
 // routine job and making someone scroll past the host and port to do it is how
 // the host and port get changed by accident.
-function ConnectionForm({ st, init, mode, onDone }) {
+function ConnectionForm({ st, init, mode, onDone, canSuper }) {
   const editing = mode !== 'create';
+  // Super-admin-only (CODE 2026-10-06 (c)) is its own endpoint, so the switch
+  // saves at once and says so. It is not part of Save: a toggle that waited for
+  // Save would be lost on Cancel without a word.
+  const [sao, setSao] = useAcc(!!(init && init.superAdminOnly));
+  const [saoBusy, setSaoBusy] = useAcc(false);
+  const [saoErr, setSaoErr] = useAcc(null);
+  const toggleSao = () => {
+    if (saoBusy || !init) return;
+    const next = !sao;
+    setSaoBusy(true); setSaoErr(null);
+    st.setSuperAdminOnly(init.id, next)
+      .then(r => { setSaoBusy(false); setSao(r && r.superAdminOnly != null ? !!r.superAdminOnly : next); })
+      .catch(e => { setSaoBusy(false); setSaoErr((e && e.message) || 'QueryHub could not change this setting.'); });
+  };
   const [f, setF] = useAcc(() => ({
     alias: init ? init.name : '',
     host: init ? (init.host || '') : '',
@@ -1516,6 +1627,17 @@ function ConnectionForm({ st, init, mode, onDone }) {
             <input className="qh-input" placeholder="optional — who owns it, why it exists" value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} />
           </label>
           <HostingFields tags={f.tags} vocab={vocab} onChange={tags => setF({ ...f, tags })} />
+          {editing && canSuper && init && !init.replicaOf && (
+            <div className="qh-sao-row">
+              <button type="button" role="switch" aria-checked={sao} aria-label="Super-admin only" className={'qh-switch' + (sao ? ' is-on' : '')} disabled={saoBusy} onClick={toggleSao} />
+              <div>
+                <div className="qh-sao-t">Only super-admins, and grants that name this connection, reach it.</div>
+                <div className={'qh-sao-h' + (saoErr ? ' is-bad' : '')}>{saoErr || (sao
+                  ? 'On. Grants on every server and admins who are not super-admins stop here. This saves at once.'
+                  : 'Off. Grants on every server reach this connection. This saves at once.')}</div>
+              </div>
+            </div>
+          )}
         </>)}
         {QH_RO_ENGINES.indexOf(f.engine) >= 0 && <div className="qh-req-note">Read-only engine — only SELECT and WITH run here.</div>}
         {QH_CRED_TIERS.filter(([t]) => t === 'ro' || QH_RO_ENGINES.indexOf(f.engine) < 0).map(([t, label, hint]) => (
@@ -1729,7 +1851,7 @@ function ConnectionsView({ st, user }) {
         <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => setForm({ mode: 'create', conn: null })}><AIcon.plus />Add connection</button>
       </div>
       {form && form.mode === 'owners' && <ConnOwnersForm st={st} conn={form.conn} onDone={() => setForm(null)} />}
-      {form && form.mode !== 'owners' && <ConnectionForm st={st} init={form.conn} mode={form.mode} onDone={() => setForm(null)} />}
+      {form && form.mode !== 'owners' && <ConnectionForm st={st} init={form.conn} mode={form.mode} canSuper={!!(user && user.role === 'super')} onDone={() => setForm(null)} />}
 
       {pending.length > 0 && <div className="qh-section-label">Pending requests · {pending.length}</div>}
       <div className="qh-erlist">
@@ -1863,7 +1985,7 @@ function ConnectionsView({ st, user }) {
                 return (
                 <tr key={c.id} className={(sel.indexOf(c.id) >= 0 ? 'is-sel' : '') + (refusedNames.indexOf(c.name) >= 0 ? ' is-refused' : '') + (c.replicaOf ? ' is-replica' : '')}>
                   <td className="qh-conn-selcol"><ConnCheck on={sel.indexOf(c.id) >= 0} onChange={() => toggleSel(c.id)} label={'Select ' + c.name} /></td>
-                  <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b><span className={'qh-envtag env-' + c.env}>{c.env}</span></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}{!c.replicaOf && <div className="qh-muted qh-conn-owners" title="The lead of each owner team approves requests to this connection.">{(c.owners || []).length ? 'Owners: ' + c.owners.map(o => o.displayName).join(', ') : 'No owner'}</div>}</td>
+                  <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b><span className={'qh-envtag env-' + c.env}>{c.env}</span></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}{!c.replicaOf && <div className="qh-muted qh-conn-owners" title="The lead of each owner team approves requests to this connection.">{(c.owners || []).length ? 'Owners: ' + c.owners.map(o => o.displayName).join(', ') : 'No owner'}</div>}{!c.replicaOf && c.superAdminOnly && <span className="qh-sao-chip" title="Only super-admins, and grants that name this connection, reach it.">super-admin only</span>}</td>
                   {/* Engine over hosting in ONE column, and the environment beside
                       the name: seven columns plus pinned actions were ~400px wider
                       than the panel, so Databases sat under the actions. The

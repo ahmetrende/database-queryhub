@@ -654,6 +654,20 @@ function mockOwnerResult(row, before) {
   return { ...st, changed: { approversAdded: now.filter(n => before.indexOf(n) < 0),
     approversRevoked: before.filter(n => now.indexOf(n) < 0), maxTier: 'RO', notes } };
 }
+function mockFleet() {
+  if (ADMIN.fleet) return ADMIN.fleet;
+  const D = (n) => new Date(Date.now() + n * 86400000).toISOString();
+  const p = ADMIN.people[1] || ADMIN.people[0] || { handle: 'amara.osei', name: 'Amara Osei' };
+  const t = ADMIN.teams[0] || { name: 'data-eng' };
+  // One mirrored row (no Remove) and one with reads auto-approved and an end date.
+  ADMIN.fleet = [
+    { id: 'fg_1', subjectType: 'team', subject: t.name, subjectName: t.name, tier: 'RO', autoApprove: true,
+      reason: 'Fleet-wide read access for on-call analysis.', expiresAt: D(45), createdAt: D(-20), syncedFrom: null },
+    { id: 'fg_2', subjectType: 'user', subject: p.handle, subjectName: p.name, tier: 'RO', autoApprove: false,
+      reason: 'Migrated from the old fleet-reader list.', expiresAt: null, createdAt: D(-90), syncedFrom: 'fleet_readers' },
+  ];
+  return ADMIN.fleet;
+}
 function connRegistry() {
   if (ADMIN.connections) return ADMIN.connections;
   const engineOf = (c) => (window.qhEngineId ? window.qhEngineId(c.engine) : 'postgres');
@@ -670,6 +684,9 @@ function connRegistry() {
       defaultDatabase: (c.databases[0] || {}).name || 'postgres', notes: '',
       databases: c.databases.map(d => ({ id: d.id, name: d.name, tier: d.tier })),
       autoApproveRO: !!c.autoApproveRO,
+      // Super-admin-only (CODE 2026-10-06 (c), migration 141): one connection on,
+      // so the chip and the switch render in both states.
+      superAdminOnly: c.id === 'svc-prod-billing',
       // Owner teams (CODE 2026-10-05 (g)): one synced, so the screen shows both kinds.
       owners: c.id === 'prod-main' ? [{ id: 't_payments', name: 'payments', displayName: 'payments', syncedFrom: 'pod-sync' }] : [],
       credentials: {
@@ -2669,6 +2686,47 @@ const qhApi = {
   // requests sent to the connection, from anyone, up to the fleet's ceiling.
   // MOCK: a team's first member stands in for its lead, because the mock teams
   // carry no lead. The ceiling is RO, as on the live fleet.
+  // ---- admin: grants on every server (CODE 2026-10-06 (c)) ----
+  // RO only. A row with `autoApprove` also holds a fleet waiver. A mirrored row
+  // (`syncedFrom`) cannot be revoked here. Writes are super-admin only.
+  adminFleetGrants: () => mockDelay(() => ({ grants: mockFleet().slice() }), 200),
+  adminAddFleetGrant: (b) => mockDelay(() => {
+    if (!mockUser() || mockUser().role !== 'super') return mockFail('Super-admin access required.', 403, 'forbidden');
+    const p = b || {};
+    if (String(p.tier || 'ro').toLowerCase() !== 'ro') return mockFail('A grant on every server is read-only. Use tier ro.', 400, 'bad_request');
+    if (p.subjectType !== 'user' && p.subjectType !== 'team') return mockFail('subjectType must be user or team.', 400, 'bad_request');
+    const subject = String(p.subject || '').trim();
+    const person = p.subjectType === 'user' ? ADMIN.people.find(x => x.handle === subject || x.slackId === subject) : null;
+    const team = p.subjectType === 'team' ? ADMIN.teams.find(t => t.name === subject || t.id === subject) : null;
+    if (!person && !team) return mockFail('Unknown ' + (p.subjectType === 'team' ? 'team' : 'person') + ': ' + subject + '.', 404, 'not_found');
+    const key = person ? person.handle : team.name;
+    if (mockFleet().some(g => g.subjectType === p.subjectType && g.subject === key))
+      return mockFail(key + ' already has read-only access to every server.', 409, 'conflict');
+    if (!String(p.reason || '').trim()) return mockFail('Write a reason.', 400, 'reason_required');
+    const row = { id: mockId('fg'), subjectType: p.subjectType, subject: key, subjectName: person ? person.name : team.name, tier: 'RO',
+      autoApprove: !!p.autoApprove, reason: String(p.reason).trim(), expiresAt: p.expiresAt || null, createdAt: isoNow(), syncedFrom: null };
+    ADMIN.fleet = [row, ...ADMIN.fleet];
+    mockAudit('Granted RO on every server', row.subjectName + (row.autoApprove ? ' · reads auto-approved' : ''), 'grant');
+    return { id: row.id, waiverId: row.autoApprove ? mockId('fw') : null, subjectName: row.subjectName, tier: 'RO', autoApprove: row.autoApprove };
+  }, 260),
+  adminRevokeFleetGrant: (id) => mockDelay(() => {
+    if (!mockUser() || mockUser().role !== 'super') return mockFail('Super-admin access required.', 403, 'forbidden');
+    const r = mockFleet().find(g => g.id === id);
+    if (!r) return mockFail('No such grant.', 404, 'not_found');
+    if (r.syncedFrom) return mockFail('This grant comes from ' + r.syncedFrom + '. Change it there.', 409, 'mirrored');
+    ADMIN.fleet = ADMIN.fleet.filter(g => g.id !== id);
+    mockAudit('Revoked RO on every server', r.subjectName + (r.autoApprove ? ' · and its waiver' : ''), 'reject');
+    return null;
+  }, 220),
+  adminSetSuperAdminOnly: (conn, on) => mockDelay(() => {
+    if (!mockUser() || mockUser().role !== 'super') return mockFail('Super-admin access required.', 403, 'forbidden');
+    const row = connRegistry().find(c => c.id === conn || c.name === conn);
+    if (!row) return mockFail('Unknown connection.', 404, 'not_found');
+    const changed = !!row.superAdminOnly !== !!on;
+    row.superAdminOnly = !!on;
+    if (changed) mockAudit(on ? 'Made connection super-admin only' : 'Opened connection to fleet grants', row.name, on ? 'reject' : 'grant');
+    return { connectionId: row.id, superAdminOnly: row.superAdminOnly, changed };
+  }, 220),
   adminConnectionOwners: (conn) => mockDelay(() => {
     const row = connRegistry().find(c => c.id === conn);
     if (!row) return mockFail('Unknown connection.', 404, 'not_found');

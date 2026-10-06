@@ -948,7 +948,7 @@ function Sidebar({ modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode
         {mode === 'scheduled' && (scheduled || []).map(s => (
           <div key={s.id} className="qh-saved" onClick={() => onOpenScheduled(s)} title="Open this query in a new tab">
             <div className="qh-saved-name">{s.name}</div>
-            <div className="qh-saved-meta"><span className="qh-sched-chip"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>{s.when}</span><span>{s.conn} · {s.db}</span>{s.runOn && <span className="qh-ranon" title={qhSchedRunOnLine(s.runOn, s.replicaName)}>{'on ' + (s.runOn === 'primary' ? 'primary' : 'replica')}</span>}</div>
+            <div className="qh-saved-meta"><span className="qh-sched-chip"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>{s.when}</span><span>{s.conn} · {s.db}</span>{s.runOn && s.runOn !== 'auto' && <span className="qh-ranon" title={qhSchedRunOnLine(s.runOn, s.replicaName)}>{'on ' + (s.runOn === 'primary' ? 'primary' : 'replica')}</span>}</div>
             <button className="qh-row-del" onClick={(e) => { e.stopPropagation(); onCancelScheduled(s.id); }} title="Cancel schedule" aria-label="Cancel schedule">{ICN_TRASH}</button>
           </div>
         ))}

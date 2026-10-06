@@ -58,6 +58,9 @@ function mount(View, stExtra) {
   const win = dom.window;
   win.React = React;
   win.ReactDOM = require_('react-dom');
+  // The Every server block reads its own list (design 2026-10-06 (c)). An empty
+  // one is all these tests need: they are about the per-connection grant form.
+  win.qhApi = { adminFleetGrants: () => Promise.resolve({ grants: [] }) };
   loadInto(win, 'qh-data.jsx', 'qh-modal.jsx', 'qh-panels.jsx', 'qh-admin-data.jsx',
            'qh-admin-access.jsx', 'qh-admin-person.jsx');
   const rec = { eff: [], teamEff: [], saved: [], added: [] };
