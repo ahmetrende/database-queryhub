@@ -491,7 +491,7 @@ _ADMIN_COLS = (
         "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of, "
     "       (SELECT p.alias FROM target_servers p "
     "         WHERE p.id = target_servers.replica_of) AS replica_of_alias, "
-    "       deleted_at, deleted_reason "
+    "       deleted_at, deleted_reason, super_admin_only "
     "FROM target_servers"
 )
 
@@ -536,6 +536,7 @@ def _admin_row(row: dict) -> dict:
         # The instance behind it no longer exists (migration 139). Such a row
         # stays for history and can never be enabled.
         "deleted_at": row.get("deleted_at"),
+        "super_admin_only": bool(row.get("super_admin_only")),
         "deleted_reason": row.get("deleted_reason"),
         "credentials": {
             mode: {

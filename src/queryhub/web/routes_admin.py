@@ -676,6 +676,8 @@ def _connection_entry(row: dict, databases: list[str]) -> dict:
         "deleted": row.get("deleted_at") is not None,
         "deletedAt": mapping.iso(row.get("deleted_at")),
         "deletedReason": row.get("deleted_reason"),
+        # Migration 141: fleet-wide rights stop here, except a super-admin's.
+        "superAdminOnly": bool(row.get("super_admin_only")),
         "credentials": row["credentials"],
         "databases": [{"id": d, "name": d} for d in databases],
     }
@@ -2018,6 +2020,194 @@ def _write_team_waivers(cur, team: dict, tid: int, tier: str, plan: list[dict],
                       "expires_at": expires_at.isoformat() if expires_at else None})
         written.append({"id": f"ag:{wid}", "database": item["database"]})
     return {"tier": tier, "written": written, "skipped": skipped}
+
+
+# ---- grants on every server (fleet-wide) ---------------------------------------
+# One row that reaches every server, for a person or a team. It goes straight to
+# `access_grant` with `all_targets`: the legacy grant tables cannot say "every
+# server", so this needs access_model_v2. Read-only only: a write on every
+# server is a decision a person makes per server. A super-admin-only target
+# (migration 141) stays outside it, by the access model, not by this route.
+
+
+class FleetGrantIn(BaseModel):
+    subjectType: str = "user"
+    subject: str
+    tier: str = "ro"
+    autoApprove: bool = False
+    reason: str | None = None
+    expiresAt: str | None = None
+
+
+class SuperAdminOnlyIn(BaseModel):
+    on: bool
+
+
+def _require_super(uid: str, what: str) -> None:
+    if not admins.is_super_admin(uid):
+        raise deps._error(403, "forbidden", f"Only a super-admin can {what}.")
+
+
+def _caller_principal_sql() -> str:
+    return ("(SELECT p.id FROM principal p "
+            "   JOIN principal_identity i ON i.principal_id = p.id "
+            "  WHERE i.provider = 'slack' AND i.external_id = %s "
+            "    AND NOT i.is_deleted LIMIT 1)")
+
+
+@router.get("/grants/fleet")
+def admin_fleet_grants(claims: dict = Depends(deps.current_user)):
+    """Every live row that reaches every server: grants and waivers.
+
+    `syncedFrom` names the legacy table a mirrored row comes from. Such a row
+    cannot be revoked here, because the mirror writes it again."""
+    admin.require_admin(claims, "access")
+    rows = db.fetch_all(
+        "SELECT g.id, g.team_id, g.tier, g.auto_approve, g.reason, g.mirrored_from, "
+        "       g.valid_until, g.created_at, p.display_name AS person, "
+        "       (SELECT i.external_id FROM principal_identity i "
+        "         WHERE i.principal_id = p.id AND i.provider = 'slack' "
+        "           AND NOT i.is_deleted LIMIT 1) AS slack_id, "
+        "       t.name AS team_name, t.display_name AS team_display "
+        "  FROM access_grant g "
+        "  LEFT JOIN principal p ON p.id = g.principal_id "
+        "  LEFT JOIN team t ON t.id = g.team_id "
+        " WHERE g.all_targets AND g.revoked_at IS NULL AND NOT g.is_deleted "
+        "   AND (g.valid_until IS NULL OR g.valid_until > NOW()) "
+        " ORDER BY g.auto_approve, COALESCE(t.display_name, p.display_name), g.tier")
+    return {"grants": [{
+        "id": r["id"],
+        "subjectType": "team" if r["team_id"] else "user",
+        "subject": r["team_name"] if r["team_id"] else r["slack_id"],
+        "subjectName": (r["team_display"] or r["team_name"]) if r["team_id"] else r["person"],
+        "tier": (r["tier"] or "").upper(),
+        "autoApprove": bool(r["auto_approve"]),
+        "reason": r["reason"],
+        "expiresAt": mapping.iso(r["valid_until"]),
+        "createdAt": mapping.iso(r["created_at"]),
+        "syncedFrom": r["mirrored_from"],
+    } for r in rows]}
+
+
+@router.post("/grants/fleet", status_code=201)
+def admin_add_fleet_grant(body: FleetGrantIn,
+                          claims: dict = Depends(deps.current_user)):
+    """Give a person or a team RO on every server, and optionally let their
+    reads skip review there too, in one transaction."""
+    uid = admin.require_admin(claims, "access")
+    _require_super(uid, "give access to every server")
+    if not teams_mod.use_v2():
+        raise deps._error(409, "conflict",
+                          "A grant on every server needs access_model_v2.")
+    if (body.tier or "ro").lower() != "ro":
+        raise deps._error(400, "bad_request",
+                          "A grant on every server can only be RO. "
+                          "Grant RW or DDL on one connection.")
+    stype = (body.subjectType or "user").lower()
+    if stype not in ("user", "team"):
+        raise deps._error(400, "bad_request", "subjectType must be user or team.")
+    valid_until = None
+    if body.expiresAt:
+        try:
+            valid_until = datetime.fromisoformat(body.expiresAt.replace("Z", "+00:00"))
+        except ValueError:
+            raise deps._error(400, "bad_request", "expiresAt must be an ISO-8601 timestamp.")
+        if valid_until.tzinfo is None:
+            valid_until = valid_until.replace(tzinfo=timezone.utc)
+        if valid_until <= datetime.now(timezone.utc):
+            raise deps._error(400, "bad_request",
+                              "expiresAt is in the past. That grant would never apply.")
+    reason = (body.reason or "").strip() or None
+    with db.transaction() as cur:
+        if stype == "team":
+            team = _resolve_team(body.subject)
+            if team is None:
+                raise deps._error(404, "not_found", "Unknown team.")
+            pid, team_id, name = None, team["id"], team["name"]
+        else:
+            cur.execute("SELECT p.id, p.display_name FROM principal p "
+                        "  JOIN principal_identity i ON i.principal_id = p.id "
+                        " WHERE i.external_id = %s AND NOT i.is_deleted "
+                        "   AND NOT p.is_deleted LIMIT 1", (body.subject,))
+            who = cur.fetchone()
+            if who is None:
+                raise deps._error(404, "not_found", "Unknown person.")
+            pid, team_id, name = who["id"], None, who["display_name"]
+        ids: dict[str, int | None] = {"grant": None, "waiver": None}
+        for kind, auto in (("grant", False), ("waiver", True)):
+            if auto and not body.autoApprove:
+                continue
+            cur.execute(
+                "INSERT INTO access_grant (principal_id, team_id, target_id, all_targets, "
+                "  database_name, all_databases, tier, auto_approve, merge_with_team, "
+                "  valid_until, reason, created_by) "
+                "VALUES (%s, %s, NULL, TRUE, NULL, TRUE, 'ro', %s, FALSE, %s, %s, "
+                + _caller_principal_sql() + ") ON CONFLICT DO NOTHING RETURNING id",
+                (pid, team_id, auto, valid_until, reason, uid))
+            got = cur.fetchone()
+            ids[kind] = got["id"] if got else None
+        if ids["grant"] is None and ids["waiver"] is None:
+            raise deps._error(409, "conflict", f"{name} already has RO on every server.")
+        audit.log_in(cur, None, uid, claims.get("name"), "fleet_grant_added",
+                     {"subjectType": stype, "subject": body.subject, "name": name,
+                      "tier": "ro", "grantId": ids["grant"], "waiverId": ids["waiver"],
+                      "expiresAt": body.expiresAt, "reason": reason})
+    return {"id": ids["grant"], "waiverId": ids["waiver"], "subjectName": name,
+            "tier": "RO", "autoApprove": ids["waiver"] is not None}
+
+
+@router.delete("/grants/fleet/{gid}", status_code=204)
+def admin_revoke_fleet_grant(gid: int, claims: dict = Depends(deps.current_user)):
+    """Revoke one fleet-wide row. Revoking a GRANT also revokes the same
+    subject's fleet-wide waivers written here: a waiver on access that is gone
+    decides nothing, and a stale row only misleads the next reader."""
+    uid = admin.require_admin(claims, "access")
+    _require_super(uid, "revoke access on every server")
+    with db.transaction() as cur:
+        cur.execute("SELECT id, principal_id, team_id, auto_approve, mirrored_from "
+                    "  FROM access_grant WHERE id = %s AND all_targets "
+                    "   AND revoked_at IS NULL AND NOT is_deleted FOR UPDATE", (gid,))
+        row = cur.fetchone()
+        if row is None:
+            raise deps._error(404, "not_found", "No live grant on every server has that id.")
+        if row["mirrored_from"]:
+            raise deps._error(409, "conflict",
+                              f"This row mirrors the legacy {row['mirrored_from']} table. "
+                              "Change it there, or the mirror writes it again.")
+        ids = [gid]
+        if not row["auto_approve"]:
+            cur.execute("SELECT id FROM access_grant WHERE all_targets AND auto_approve "
+                        "   AND revoked_at IS NULL AND NOT is_deleted AND mirrored_from IS NULL "
+                        "   AND principal_id IS NOT DISTINCT FROM %s "
+                        "   AND team_id IS NOT DISTINCT FROM %s",
+                        (row["principal_id"], row["team_id"]))
+            ids += [r["id"] for r in cur.fetchall()]
+        cur.execute("UPDATE access_grant SET revoked_at = NOW(), revoked_by = "
+                    + _caller_principal_sql() + " WHERE id = ANY(%s)", (uid, ids))
+        audit.log_in(cur, None, uid, claims.get("name"), "fleet_grant_revoked",
+                     {"ids": ids})
+    return
+
+
+@router.put("/connections/{conn}/super-admin-only")
+def admin_set_super_admin_only(conn: str, body: SuperAdminOnlyIn,
+                               claims: dict = Depends(deps.current_user)):
+    """Switch migration 141's flag on one connection. With it on, fleet-wide
+    grants, fleet-wide waivers and non-super admins stop at this connection;
+    only a super-admin, or a grant that names it, reaches it."""
+    uid = admin.require_admin(claims, "access")
+    _require_super(uid, "change who reaches this connection")
+    row = _require_target_row(conn)
+    with db.transaction() as cur:
+        cur.execute("UPDATE target_servers SET super_admin_only = %s, updated_at = NOW() "
+                    " WHERE id = %s AND super_admin_only IS DISTINCT FROM %s RETURNING id",
+                    (body.on, row["id"], body.on))
+        changed = cur.fetchone() is not None
+        if changed:
+            audit.log_in(cur, None, uid, claims.get("name"), "target_super_admin_only_set",
+                         {"target": row["alias"], "targetId": row["id"],
+                          "superAdminOnly": body.on})
+    return {"connectionId": row["alias"], "superAdminOnly": body.on, "changed": changed}
 
 
 @router.delete("/grants/{gid}", status_code=204)

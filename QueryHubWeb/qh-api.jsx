@@ -306,6 +306,11 @@ const qhApi = {
   // Owner teams (CODE 2026-10-05 (g)). The owning team's lead approves the
   // requests sent to the connection, so a change here also changes who approves.
   adminConnectionOwners:(conn)  => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/owners'),
+  // Grants on every server, and the super-admin-only switch (CODE 2026-10-06 (c)).
+  adminFleetGrants:()           => qhFetch('/admin/grants/fleet'),
+  adminAddFleetGrant:(b)        => qhFetch('/admin/grants/fleet', { method: 'POST', body: JSON.stringify(b) }),
+  adminRevokeFleetGrant:(id)    => qhFetch('/admin/grants/fleet/' + encodeURIComponent(id), { method: 'DELETE' }),
+  adminSetSuperAdminOnly:(conn, on) => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/super-admin-only', { method: 'PUT', body: JSON.stringify({ on: !!on }) }),
   adminAddConnectionOwner:(conn, teamId) => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/owners', { method: 'POST', body: JSON.stringify({ teamId }) }),
   adminRemoveConnectionOwner:(conn, teamId) => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/owners/' + encodeURIComponent(teamId), { method: 'DELETE' }),
   // Several connections, all or nothing (design 2026-09-23). A dry run writes
