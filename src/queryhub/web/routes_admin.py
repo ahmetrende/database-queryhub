@@ -4911,11 +4911,16 @@ def admin_add_mask_exemption(body: MaskExemptionIn,
          schema_matters, f["schema_name"],
          f["table_name"], f["column_name"]))
     if dupe:
+        # "Replace" opens this form with the old row's reach, and an operator
+        # who only wanted to change a setting met this refusal with no way
+        # on (2026-10-06). The settings change in place, so say where.
         raise deps._error(
             409, "conflict",
             f"Exemption #{dupe['id']} already covers exactly this"
-            + ("." if dupe["enabled"] else ", but it is disabled. Enable it "
-                                           "instead of adding a second one."))
+            + (f". To change its settings, open #{dupe['id']} and select "
+               "Edit. A new exemption is only for a different reach."
+               if dupe["enabled"] else
+               ", but it is disabled. Enable it instead of adding a second one."))
 
     # NOT suppressing app.auth_dm_suppress: the migration-122 trigger is what
     # tells the other admins a protection just came off.

@@ -377,3 +377,13 @@ def test_a_statement_that_will_not_parse_is_skipped_not_counted(monkeypatch):
     got = _stats(monkeypatch, [_req("SELECT * FROM orders"),
                                _req("!! not sql at all")])
     assert got == {"total": 1, "joined": 0}
+
+
+def test_a_duplicate_names_the_way_to_change_a_setting():
+    """"Replace" opens the add form with the old reach. An operator who only
+    wanted to change a setting (survives a join) met a bare refusal there, so
+    the refusal says that the settings change in place, with Edit."""
+    import inspect
+    src = inspect.getsource(routes_admin.admin_add_mask_exemption)
+    assert "To change its settings, open #" in src
+    assert "A new exemption is only for a different reach." in src
