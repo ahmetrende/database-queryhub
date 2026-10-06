@@ -5,6 +5,8 @@ strings, history rows, env labels) are unit-testable without a DB.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import json
 
 import logging
@@ -222,7 +224,8 @@ def scheduled_entry(row: dict, alias_of: "callable") -> dict:
     }
 
 
-def _scheduled_run_on(stored: str | None, alias_of: "callable") -> dict:
+def _scheduled_run_on(stored: str | None,
+                      alias_of: "Callable[[int], str | None]") -> dict:
     """`requests.run_on` as `{runOn, replicaName}`: 'auto' | 'primary' | 'replica'."""
     if stored == "primary":
         return {"runOn": "primary", "replicaName": None}
