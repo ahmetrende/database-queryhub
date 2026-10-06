@@ -1751,6 +1751,18 @@ def _auto_outcome(outcomes: list[tuple[str, dict | None]]) -> dict | None:
     }
 
 
+def _refuse_flagged_unless_super(uid: str, tid: int) -> None:
+    """Only a super-admin gives access on a super-admin-only target.
+
+    Migration 141: on a flagged target, fleet-wide rights stop and only a grant
+    that names the target counts. Such a grant is a deliberate exception, so an
+    admin who is not a super-admin cannot write one, for anybody, themselves
+    included."""
+    if access_model.target_is_super_admin_only(tid) and not admins.is_super_admin(uid):
+        raise deps._error(403, "forbidden",
+                          "Only a super-admin can give access to this connection.")
+
+
 @router.post("/grants", status_code=201)
 def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user)):
     uid = admin.require_admin(claims, "access")
@@ -1774,6 +1786,7 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
             "Refused: that connection is the bot's own control-plane database. "
             "Access to it would allow tampering with the audit log and the "
             "admin list.")
+    _refuse_flagged_unless_super(uid, tid)
     dbs = _grant_databases(body)
     # The waiver's tier is checked before either branch writes, like the date.
     auto_tier = None
@@ -3646,6 +3659,7 @@ def admin_create_auto_grant(body: AutoGrantIn,
     tid = _target_id_of(body.connectionId)
     if tid is None:
         raise deps._error(404, "not_found", "Unknown connection.")
+    _refuse_flagged_unless_super(uid, tid)
     # `*` (the form's own default for "every database") is not a wildcard the
     # matcher understands — it compares a non-NULL scope for equality, so the
     # literal star produced a grant that never fired and never complained.
@@ -3848,6 +3862,10 @@ def admin_bulk_create_auto_grants(body: BulkAutoGrantIn,
         tid = _target_id_of(t.connectionId)
         if tid is None:
             refused.append({"target": label, **sent, "reason": "Unknown connection."})
+            continue
+        if access_model.target_is_super_admin_only(tid) and not admins.is_super_admin(uid):
+            refused.append({"target": label, **sent,
+                            "reason": "Only a super-admin can give access to this connection."})
             continue
         db_scope = auto_approve.normalise_scope(t.databaseId)
         try:

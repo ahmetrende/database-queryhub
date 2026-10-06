@@ -224,11 +224,20 @@ def waiver_applies(target, waiver: dict | None) -> bool:
       That only reads can skip review there is `decision`'s to enforce; this
       answers for the waiver, not for the request.
 
+    - On a super-admin-only target (migration 141) a fleet-wide waiver does
+      not apply. A waiver that names the target does.
+
     No target or no waiver means no. A super-admin's own submission is a
     separate rule, decided by the caller.
     """
     if target is None or not waiver:
         return False
+    # A fleet-wide waiver stops at a super-admin-only target (migration 141),
+    # as a fleet-wide grant does. A waiver that names the target still applies.
+    if waiver.get("target_server_id") is None and getattr(target, "id", None) is not None:
+        from . import access
+        if access.target_is_super_admin_only(target.id):
+            return False
     if engines.auto_approve_allowed(target):
         return True
     if not engines.archive_rule_applies(target):

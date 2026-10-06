@@ -125,6 +125,24 @@ def no_real_database(monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
+def no_super_admin_only_targets(monkeypatch, request):
+    """Unit tests run with no target flagged super-admin-only (migration 141).
+
+    The flag lives in target_servers, and a unit test has no database: the read
+    would hit `no_real_database` in every test that resolves access or writes a
+    grant. The rule itself is SQL, so it runs against a real database in
+    tests/test_integration_super_admin_only.py.
+    """
+    if request.node.get_closest_marker("integration"):
+        yield
+        return
+    from queryhub import access
+    monkeypatch.setattr(access, "target_is_super_admin_only", lambda tid: False)
+    monkeypatch.setattr(access, "super_admin_only_ids", lambda ids: set())
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _logging_state_does_not_leak():
     """Restore global logging state after every test.
 

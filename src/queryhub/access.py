@@ -138,6 +138,38 @@ def _approver_of(r: dict, target_id: int) -> bool:
     return r["role"] == "approver" and r["scope_target_id"] == target_id
 
 
+# ---------------------------------------------------------------------------
+# super-admin-only targets (migration 141)
+# ---------------------------------------------------------------------------
+# Some servers hold the control plane itself. A fleet-wide grant, a fleet-wide
+# waiver and a scoped admin role reach every target by definition. On a flagged
+# target, a principal who is not a super-admin counts only the grants that NAME
+# the target: those are deliberate exceptions, and they keep working.
+
+
+def target_is_super_admin_only(target_id: int) -> bool:
+    row = db.fetch_one("SELECT super_admin_only FROM target_servers WHERE id = %s",
+                       (target_id,))
+    # `.get`: a missing column fails in the SELECT itself, so this reads
+    # False only for a row that does not carry the flag at all.
+    return bool(row and row.get("super_admin_only"))
+
+
+def super_admin_only_ids(target_ids) -> set[int]:
+    """The flagged targets among `target_ids`, in one read."""
+    ids = list(dict.fromkeys(int(t) for t in target_ids))
+    if not ids:
+        return set()
+    return {r.get("id") for r in db.fetch_all(
+        "SELECT id FROM target_servers WHERE id = ANY(%s) AND super_admin_only",
+        (ids,)) if r.get("id") is not None}
+
+
+def explicit_only(principal_id: str, target_id: int) -> bool:
+    """Whether only grants that name `target_id` count for this principal."""
+    return target_is_super_admin_only(target_id) and not is_super_admin(principal_id)
+
+
 def approves_target(principal_id: str, target_id: int) -> bool:
     """Whether this principal holds a live approver role scoped to this target.
 
@@ -187,7 +219,9 @@ def archive_role(principal_id: str, target_id: int) -> str | None:
 # filtering on time: `resolve` needs to tell an EXPIRED row from an ABSENT one
 # (rule 2), which a WHERE clause would erase.
 
-def _covering(principal_id: str, target_id: int, database_name: str | None):
+def _covering(principal_id: str, target_id: int, database_name: str | None,
+              explicit: bool = False):
+    """`explicit` drops the fleet-wide rows: see `explicit_only`."""
     return db.fetch_all(
         f"WITH {_ME} "
         "SELECT (g.principal_id IS NOT NULL) AS mine, g.tier, t.rank, "
@@ -198,14 +232,15 @@ def _covering(principal_id: str, target_id: int, database_name: str | None):
         "  FROM access_grant g "
         "  JOIN tier t ON t.name = g.tier "
         " WHERE NOT g.is_deleted AND g.revoked_at IS NULL "
-        "   AND (g.all_targets OR g.target_id = %(tid)s) "
+        "   AND ((g.all_targets AND NOT %(explicit)s) OR g.target_id = %(tid)s) "
         # The cast is required, not cosmetic: a bare parameter compared only
         # to NULL leaves Postgres unable to infer its type.
         "   AND (%(db)s::text IS NULL OR g.all_databases "
         "        OR g.database_name = %(db)s::text) "
         "   AND (g.principal_id IN (SELECT id FROM me) "
         "        OR g.team_id IN (SELECT team_id FROM my_teams))",
-        {"pid": principal_id, "tid": target_id, "db": database_name})
+        {"pid": principal_id, "tid": target_id, "db": database_name,
+         "explicit": explicit})
 
 
 def _live(rows):
@@ -359,11 +394,12 @@ def resolve(principal_id: str, target_id: int,
     decided per SERVER (`own_standing`), so this answers what `resolve_target`
     lists: a database is reachable here exactly when it is listed there.
     """
-    if is_admin(principal_id):
+    explicit = explicit_only(principal_id, target_id)
+    if not explicit and is_admin(principal_id):
         return {"tier": "ddl", "auto_tier": _admin_auto(principal_id, target_id,
                                                         database_name),
                 "source": "admin", "unrestricted": True, "db_role": None}
-    server = _covering(principal_id, target_id, None)
+    server = _covering(principal_id, target_id, None, explicit)
     return _decide(_on_database(server, database_name), server)
 
 
@@ -400,11 +436,12 @@ def resolve_target(principal_id: str, target_id: int) -> dict | None:
     is the highest tier across the databases named, which is not the tier on
     any one of them.
     """
-    if is_admin(principal_id):
+    explicit = explicit_only(principal_id, target_id)
+    if not explicit and is_admin(principal_id):
         return {"tier": "ddl", "auto_tier": _admin_auto(principal_id, target_id, None),
                 "source": "admin", "unrestricted": True, "db_role": None,
                 "databases": None}
-    rows = _covering(principal_id, target_id, None)
+    rows = _covering(principal_id, target_id, None, explicit)
     out = _decide(rows)
     if out is None:
         return None
@@ -436,9 +473,19 @@ def resolve_many(principal_id: str,
     if not ids:
         return {}
     if is_admin(principal_id):
-        return {tid: {"tier": "ddl", "auto_tier": None, "source": "admin",
-                      "unrestricted": True, "db_role": None, "databases": None}
-                for tid in ids}
+        # The flag first: most lists hold no flagged target, and then the
+        # super-admin question is never asked.
+        held = super_admin_only_ids(ids)
+        if held and is_super_admin(principal_id):
+            held = set()
+        out_admin = {tid: {"tier": "ddl", "auto_tier": None, "source": "admin",
+                           "unrestricted": True, "db_role": None, "databases": None}
+                     for tid in ids if tid not in held}
+        # A flagged target answers from the grants that name it, one by one:
+        # there are a handful of them, and the rule stays in one place.
+        for tid in held:
+            out_admin[tid] = resolve_target(principal_id, tid)
+        return out_admin
 
     rows = db.fetch_all(
         f"WITH {_ME} "
@@ -449,7 +496,8 @@ def resolve_many(principal_id: str,
         "       (g.valid_from > NOW()) AS not_started "
         "  FROM access_grant g "
         "  JOIN tier t ON t.name = g.tier "
-        "  JOIN target_servers ts ON (g.all_targets OR g.target_id = ts.id) "
+        "  JOIN target_servers ts "
+        "    ON ((g.all_targets AND NOT ts.super_admin_only) OR g.target_id = ts.id) "
         " WHERE NOT g.is_deleted AND g.revoked_at IS NULL "
         "   AND ts.id = ANY(%(ids)s) "
         "   AND (g.principal_id IN (SELECT id FROM me) "
@@ -508,6 +556,18 @@ def can_use_database(principal_id: str, target_id: int,
 # ---------------------------------------------------------------------------
 
 
+def _without_flagged(principal_id: str, rows: list[TargetServer]) -> list[TargetServer]:
+    """An admin's catalog minus the flagged targets they cannot use.
+
+    A super-admin keeps every row. Another admin keeps a flagged target only
+    when a grant names it, as `resolve_target` decides."""
+    held = super_admin_only_ids([t.id for t in rows])
+    if not held or is_super_admin(principal_id):
+        return rows
+    return [t for t in rows
+            if t.id not in held or resolve_target(principal_id, t.id) is not None]
+
+
 def visible_targets(principal_id: str) -> list[TargetServer]:
     """The catalog this principal may pick from.
 
@@ -518,9 +578,9 @@ def visible_targets(principal_id: str) -> list[TargetServer]:
     replica: it serves its primary under the primary's name (replicas.py).
     """
     if is_admin(principal_id):
-        return [_row_to_target(r) for r in db.fetch_all(
+        return _without_flagged(principal_id, [_row_to_target(r) for r in db.fetch_all(
             f"SELECT {_TARGET_COLUMNS} FROM target_servers "
-            " WHERE replica_of IS NULL ORDER BY enabled DESC, alias")]
+            " WHERE replica_of IS NULL ORDER BY enabled DESC, alias")])
 
     return [_row_to_target(r) for r in db.fetch_all(
         f"WITH {_ME} "
@@ -532,7 +592,7 @@ def visible_targets(principal_id: str) -> list[TargetServer]:
         "      AND NOT g.auto_approve "
         "      AND g.valid_from <= NOW() "
         "      AND (g.valid_until IS NULL OR g.valid_until > NOW()) "
-        "      AND (g.all_targets OR g.target_id = ts.id) "
+        "      AND ((g.all_targets AND NOT ts.super_admin_only) OR g.target_id = ts.id) "
         "      AND (g.principal_id IN (SELECT id FROM me) "
         "           OR g.team_id IN (SELECT team_id FROM my_teams))) "
         " ORDER BY ts.alias",
@@ -672,11 +732,11 @@ def search_visible_targets(principal_id: str, prefix: str,
     """
     like = f"%{prefix}%"
     if is_admin(principal_id):
-        return [_row_to_target(r) for r in db.fetch_all(
+        return _without_flagged(principal_id, [_row_to_target(r) for r in db.fetch_all(
             f"SELECT {_TARGET_COLUMNS} FROM target_servers "
             " WHERE replica_of IS NULL AND alias ILIKE %(like)s "
             " ORDER BY enabled DESC, alias LIMIT %(lim)s",
-            {"like": like, "lim": limit})]
+            {"like": like, "lim": limit})])
 
     return [_row_to_target(r) for r in db.fetch_all(
         f"WITH {_ME} "
@@ -689,7 +749,7 @@ def search_visible_targets(principal_id: str, prefix: str,
         "      AND NOT g.auto_approve "
         "      AND g.valid_from <= NOW() "
         "      AND (g.valid_until IS NULL OR g.valid_until > NOW()) "
-        "      AND (g.all_targets OR g.target_id = ts.id) "
+        "      AND ((g.all_targets AND NOT ts.super_admin_only) OR g.target_id = ts.id) "
         "      AND (g.principal_id IN (SELECT id FROM me) "
         "           OR g.team_id IN (SELECT team_id FROM my_teams))) "
         " ORDER BY ts.alias LIMIT %(lim)s",
@@ -761,9 +821,19 @@ def resolve_databases(principal_id: str, scopes) -> dict:
     pairs = list(dict.fromkeys((int(t), d) for t, d in scopes))
     if not pairs:
         return {}
+    out: dict = {}
     if is_admin(principal_id):
-        return {p: ({"tier": "ddl", "auto_tier": None, "source": "admin",
-                     "unrestricted": True, "db_role": None}, None) for p in pairs}
+        held = super_admin_only_ids([t for t, _ in pairs])
+        if held and is_super_admin(principal_id):
+            held = set()
+        out = {p: ({"tier": "ddl", "auto_tier": None, "source": "admin",
+                    "unrestricted": True, "db_role": None}, None)
+               for p in pairs if p[0] not in held}
+        # A flagged target goes through the rows below, which keep only the
+        # grants that name it.
+        pairs = [p for p in pairs if p[0] in held]
+        if not pairs:
+            return out
     ids = sorted({t for t, _ in pairs})
     rows = db.fetch_all(
         f"WITH {_ME} "
@@ -775,7 +845,8 @@ def resolve_databases(principal_id: str, scopes) -> dict:
         "       (g.valid_from > NOW()) AS not_started "
         "  FROM access_grant g "
         "  JOIN tier t ON t.name = g.tier "
-        "  JOIN target_servers ts ON (g.all_targets OR g.target_id = ts.id) "
+        "  JOIN target_servers ts "
+        "    ON ((g.all_targets AND NOT ts.super_admin_only) OR g.target_id = ts.id) "
         " WHERE NOT g.is_deleted AND g.revoked_at IS NULL "
         "   AND ts.id = ANY(%(ids)s) "
         "   AND (g.principal_id IN (SELECT id FROM me) "
@@ -784,9 +855,10 @@ def resolve_databases(principal_id: str, scopes) -> dict:
     by_target: dict[int, list] = {tid: [] for tid in ids}
     for r in rows:
         by_target[r["target_id"]].append(r)
-    return {(tid, dbn): _decide_with_row(_on_database(by_target[tid], dbn),
-                                         by_target[tid])
-            for tid, dbn in pairs}
+    out.update({(tid, dbn): _decide_with_row(_on_database(by_target[tid], dbn),
+                                             by_target[tid])
+                for tid, dbn in pairs})
+    return out
 
 
 def legacy_shape(resolved: dict | None) -> dict | None:

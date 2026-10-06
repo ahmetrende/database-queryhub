@@ -162,7 +162,7 @@ def _g(mine, auto=False, merge=False, tier="rw", rank=2):
 @pytest.fixture
 def covering(monkeypatch):
     state = {"rows": [], "admin": False}
-    monkeypatch.setattr(access, "_covering", lambda pid, tid, dbn: state["rows"])
+    monkeypatch.setattr(access, "_covering", lambda pid, tid, dbn, explicit=False: state["rows"])
     monkeypatch.setattr(access, "is_admin", lambda pid: state["admin"])
     return state
 
@@ -212,7 +212,7 @@ def test_an_own_grant_on_another_database_keeps_the_team_waiver_out(monkeypatch)
     own_orders = {**_g(True), "database_name": "orders"}
     team_waiver = {**_g(False, auto=True, tier="ro", rank=1), "database_name": "ledger"}
     rows = [own_ledger, own_orders, team_waiver]
-    monkeypatch.setattr(access, "_covering", lambda pid, tid, dbn: [
+    monkeypatch.setattr(access, "_covering", lambda pid, tid, dbn, explicit=False: [
         r for r in rows if dbn is None or r["all_databases"] or r["database_name"] == dbn])
     monkeypatch.setattr(access, "is_admin", lambda pid: False)
     assert access.resolve(UID, 53, "ledger") is not None       # their own row

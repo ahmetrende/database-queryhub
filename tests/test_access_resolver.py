@@ -196,7 +196,9 @@ def test_the_list_and_the_tier_authority_never_disagree(monkeypatch):
     public functions, over every shape `_shapes` builds."""
     state = {}
     monkeypatch.setattr(access, "is_admin", lambda pid: False)
-    monkeypatch.setattr(access, "_covering", lambda pid, tid, dbn: [
+    # No flagged target here (migration 141 has its own integration test).
+    monkeypatch.setattr(access, "explicit_only", lambda pid, tid: False)
+    monkeypatch.setattr(access, "_covering", lambda pid, tid, dbn, explicit=False: [
         r for r in state["rows"]
         if dbn is None or r["all_databases"] or r["database_name"] == dbn])
     monkeypatch.setattr(access.db, "fetch_all", lambda sql, params=None: [

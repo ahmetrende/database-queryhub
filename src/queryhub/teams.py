@@ -64,6 +64,26 @@ def _is_unrestricted(principal_id: str) -> bool:
     return admins.is_admin(principal_id) or requesters.bypasses_team_grants(principal_id)
 
 
+def _unrestricted_on(principal_id: str, target_id: int) -> bool:
+    """`_is_unrestricted` for one target, in the legacy model.
+
+    On a super-admin-only target (migration 141) only a super-admin keeps the
+    see-everything grant. An admin or a bypass requester falls through to the
+    grants that name the target, as in `access.explicit_only`."""
+    if not _is_unrestricted(principal_id):
+        return False
+    return not (access.target_is_super_admin_only(target_id)
+                and not admins.is_super_admin(principal_id))
+
+
+def _keep_usable(principal_id: str, rows: list[TargetServer]) -> list[TargetServer]:
+    """A see-everything list minus the flagged targets this person cannot use."""
+    held = access.super_admin_only_ids([t.id for t in rows])
+    if not held or admins.is_super_admin(principal_id):
+        return rows
+    return [t for t in rows if t.id not in held or can_use_target(principal_id, t.id)]
+
+
 def list_targets_for_user(principal_id: str) -> list[TargetServer]:
     """Targets the user is allowed to query:
         - admin:  every row in target_servers (enabled + disabled), so the
@@ -80,7 +100,7 @@ def list_targets_for_user(principal_id: str) -> list[TargetServer]:
             "       COALESCE(engine, 'postgres') AS engine "
             "FROM target_servers WHERE replica_of IS NULL ORDER BY enabled DESC, alias"
         )
-        return [_row_to_target(r) for r in rows]
+        return _keep_usable(principal_id, [_row_to_target(r) for r in rows])
 
     if requesters.bypasses_team_grants(principal_id):
         rows = db.fetch_all(
@@ -88,7 +108,7 @@ def list_targets_for_user(principal_id: str) -> list[TargetServer]:
             "       COALESCE(engine, 'postgres') AS engine "
             "FROM target_servers WHERE enabled = TRUE AND replica_of IS NULL ORDER BY alias"
         )
-        return [_row_to_target(r) for r in rows]
+        return _keep_usable(principal_id, [_row_to_target(r) for r in rows])
 
     rows = db.fetch_all(
         "SELECT DISTINCT ts.id, ts.alias, ts.host, ts.port, ts.default_database, "
@@ -161,7 +181,7 @@ def can_use_target(principal_id: str, target_id: int) -> bool:
     on it, OR has a user_target_grants row on it."""
     if use_v2():
         return access.can_use_target(principal_id, target_id)
-    if _is_unrestricted(principal_id):
+    if _unrestricted_on(principal_id, target_id):
         return True
     row = db.fetch_one(
         "SELECT 1 WHERE EXISTS ("
@@ -320,7 +340,7 @@ def effective_grant_for_user(
     if use_v2():
         return access.legacy_shape(
             access.resolve_target(principal_id, target_id))
-    if _is_unrestricted(principal_id):
+    if _unrestricted_on(principal_id, target_id):
         return {"mode": "ddl", "allowed_databases": None, "source": "admin_or_bypass"}
 
     # 1. user-level override
@@ -402,8 +422,14 @@ def effective_grants_for_user(
     if not ids:
         return {}
     if _is_unrestricted(principal_id):
-        return {tid: {"mode": "ddl", "allowed_databases": None,
-                      "source": "admin_or_bypass"} for tid in ids}
+        held = access.super_admin_only_ids(ids)
+        if held and admins.is_super_admin(principal_id):
+            held = set()
+        out_all = {tid: {"mode": "ddl", "allowed_databases": None,
+                         "source": "admin_or_bypass"} for tid in ids if tid not in held}
+        for tid in held:
+            out_all[tid] = effective_grant_for_user(principal_id, tid)
+        return out_all
 
     # The user overrides, expiry INCLUDED as a flag rather than filtered: an
     # expired override must return None rather than falling through to the team
@@ -486,7 +512,7 @@ def effective_mode_for_database(
     if use_v2():
         got = access.resolve(principal_id, target_id, database_name)
         return got["tier"] if got else None
-    if _is_unrestricted(principal_id):
+    if _unrestricted_on(principal_id, target_id):
         return "ddl"
 
     # user_target_grants overrides team grants entirely (its db list is the
