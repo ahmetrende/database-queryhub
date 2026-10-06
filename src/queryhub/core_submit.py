@@ -62,8 +62,9 @@ def kill_switch_on() -> bool:
 def kill_switch_message() -> str:
     return cfg.get_setting(
         "kill_switch_message",
-        ":construction: QueryHub is temporarily disabled. Try again later, or "
-        "contact the DBA team.",
+        # The same words as the web prototype (design round 2026-10-06), so the
+        # server and the screen say one thing.
+        "The kill switch is on. No query can run.",
     )
 
 
@@ -448,8 +449,8 @@ def validate_submission(
     if not justification and needs_justification(required_mode, auto_approve_exempt):
         return Rejection(
             "justification",
-            f"Justification is required for {required_mode.upper()} queries."
-            if required_mode != "ro" else "Justification is required.")
+            f"Write a justification for {required_mode.upper()} queries."
+            if required_mode != "ro" else "Write a justification.")
 
     # Pre-flight EXPLAIN: parse + plan against the target without executing.
     # RO ONLY — see pre_flight.py for why RW/DDL are never EXPLAIN'd here.

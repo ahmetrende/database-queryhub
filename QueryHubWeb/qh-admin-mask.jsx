@@ -120,7 +120,7 @@ function MxFlags({ e, norms }) {
     {e.audience !== n.audience && (e.audience === 'super'
       ? <span className="qh-mxchip is-aud" title="Only super-admins see it unmasked. Everyone else sees the mask.">super only</span>
       : <span className="qh-mxchip" title="Everyone who can read the table sees it unmasked">everyone</span>)}
-    {!e.enabled && <span className="qh-mxchip is-off" title="Disabled. This column is masked again. QueryHub keeps the record.">off</span>}
+    {!e.enabled && <span className="qh-mxchip is-off" title="Disabled. QueryHub masks this column again and keeps the record.">off</span>}
     {e.missing && <span className="qh-mxchip is-gone" title="Still enforced, but that table or column is not in the catalog any more">matches nothing</span>}
   </>;
 }
@@ -218,16 +218,17 @@ function MxOptions({ f, set, norms, joinStats, table, fleet }) {
 
 // ---------- Editing one in place ----------
 // Reach is absent from this form on purpose, and the line says so with the
-// action that does change it.
+// action that does change it. The three settings are open from the start
+// (CODE 2026-10-06): behind a "Change" link they read as optional, and an
+// operator who wanted "survives joins" took Replace instead and hit a 409.
 function MxEdit({ e, st, norms, onDone, onReplace }) {
   const [f, setF] = useMx({ strength: e.strength || 'soft', survivesJoin: !!e.survivesJoin, audience: e.audience || 'everyone', reason: e.reason || '' });
-  const [more, setMore] = useMx(false);
   const [busy, setBusy] = useMx(false);
   const [err, setErr] = useMx(null);
   const set = (patch) => { setF(x => ({ ...x, ...patch })); setErr(null); };
   const dirty = f.strength !== (e.strength || 'soft') || f.survivesJoin !== !!e.survivesJoin
     || f.audience !== (e.audience || 'everyone') || f.reason.trim() !== (e.reason || '');
-  const why = !f.reason.trim() ? 'A reason is required.' : !dirty ? 'Change a field first.' : null;
+  const why = !f.reason.trim() ? 'Write a reason.' : !dirty ? 'Change a field first.' : null;
   const save = () => {
     if (busy || why) return;
     setBusy(true);
@@ -237,13 +238,11 @@ function MxEdit({ e, st, norms, onDone, onReplace }) {
   };
   return (
     <div className="qh-mxeditbox">
-      <div className="qh-mxeditwhat"><MxReach e={e} /><span className="qh-mxfixed">Where it reaches is fixed — <button className="qh-linkbtn" onClick={() => onReplace(e)}>replace it</button> to change that.</span></div>
+      <div className="qh-mxeditwhat"><MxReach e={e} /><span className="qh-mxfixed">Change the settings here. To change where it reaches, <button className="qh-linkbtn" onClick={() => onReplace(e)}>replace it</button>.</span></div>
       <div className="qh-mxfield"><span className="qh-mxlab">Why</span>
         <textarea className="qh-input qh-mxreason-in" rows={2} value={f.reason} onChange={x => set({ reason: x.target.value })} /></div>
-      <button type="button" className="qh-mxsum" onClick={() => setMore(m => !m)}>
-        <span className="qh-mxsum-t">{mxSummary(f)}</span><span className="qh-linkbtn">{more ? 'Done' : 'Change'}</span>
-      </button>
-      {more && <MxOptions f={f} set={set} norms={norms} />}
+      <div className="qh-mxfield"><span className="qh-mxlab">Settings</span>
+        <MxOptions f={f} set={set} norms={norms} /></div>
       {err && <div className="qh-roleform-err">{err}</div>}
       <div className="qh-mxacts">
         <button className="qh-btn qh-btn-sm" onClick={onDone}>Cancel</button>
@@ -395,15 +394,22 @@ function MxCombo({ value, options, onPick, placeholder, disabled, clearOnPick, w
 // One column, one width, three numbered sections. The rung is an explicit CHOICE
 // and never the result of leaving a field blank — still the single most
 // important thing about this form.
+// Replace mode (`seed.replaceOf`, CODE 2026-10-06): the form opens on the
+// original's reach. While the reach is still the original's, Save writes the
+// settings onto that row (PATCH) — a new row there is a 409 duplicate. Once the
+// reach moves, Save writes the new row(s) and then disables the original, so a
+// replace leaves one live row, not two.
+function mxRef(id) { return /^\d+$/.test(String(id)) ? '#' + id : String(id); }
 function MxForm({ st, seed, norms, onDone }) {
   const conns = (st.connections || []).filter(c => c.enabled !== false);
   const n = norms || { strength: 'soft', survivesJoin: false, audience: 'everyone' };
+  const orig = (seed && seed.replaceOf) || null;
   const [f, setF] = useMx(() => ({
     connectionId: (seed && seed.connectionId) || '', databaseId: (seed && seed.databaseId) || '',
     scope: (seed && seed.scope) || 'column', schema: (seed && seed.schema) || '', table: (seed && seed.table) || '', column: '',
     columns: (seed && seed.column) ? [seed.column] : [],
     strength: (seed && seed.strength) || n.strength, survivesJoin: seed && seed.survivesJoin != null ? !!seed.survivesJoin : !!n.survivesJoin,
-    audience: n.audience || 'everyone', reason: '', confirmed: false, typed: '',
+    audience: (orig && orig.audience) || n.audience || 'everyone', reason: (orig && orig.reason) || '', confirmed: false, typed: '',
   }));
   const focus = seed && seed.focus;
   const [more, setMore] = useMx(false);
@@ -460,11 +466,19 @@ function MxForm({ st, seed, norms, onDone }) {
           : (f.scope === 'table' || f.scope === 'column') && !f.table ? 'a table'
             : f.scope === 'column' && !picked.length ? 'at least one column' : null;
   const readyAll = !missing;
+  // Same place as the original, rung and every path field.
+  const samePlace = !!orig && f.scope === orig.scope && (f.connectionId || null) === (orig.connectionId || null)
+    && (f.databaseId || null) === (orig.databaseId || null) && (f.schema || null) === (orig.schema || null)
+    && (f.table || null) === (orig.table || null);
+  const sameReach = samePlace && (f.scope !== 'column' || (picked.length === 1 && picked[0] === orig.column));
+  // The original's column plus others: that column is a duplicate and the rest are new.
+  const mixed = samePlace && f.scope === 'column' && picked.length > 1 && picked.indexOf(orig.column) >= 0;
   const why = missing ? 'Pick ' + missing + '.'
     : colGone ? 'Pick columns that are in the catalog.'
-      : needsConfirm && !f.confirmed ? 'Tick the confirmation above.'
-        : !typedOk ? 'Type “' + FLEET_PHRASE + '” to confirm.'
-          : !f.reason.trim() ? 'A reason is required.' : null;
+      : mixed ? 'Remove ' + orig.column + ', or pick only ' + orig.column + '. ' + mxRef(orig.id) + ' covers it.'
+        : !sameReach && needsConfirm && !f.confirmed ? 'Tick the confirmation above.'
+          : !sameReach && !typedOk ? 'Type “' + FLEET_PHRASE + '” to confirm.'
+            : !f.reason.trim() ? 'Write a reason.' : null;
 
   const preview = { connectionId: f.connectionId, databaseId: f.databaseId, scope: f.scope, schema: f.schema, table: f.table, column: picked[0] || f.column };
   const runPreview = () => {
@@ -477,6 +491,12 @@ function MxForm({ st, seed, norms, onDone }) {
     if (why || busy) return;
     setBusy(true); setErr(null);
     const settings = { strength: f.strength, survivesJoin: f.survivesJoin, audience: f.audience, reason: f.reason.trim() };
+    if (sameReach) {
+      st.updateMaskExemption(orig.id, settings)
+        .then(() => { setBusy(false); onDone(); })
+        .catch(e => { setBusy(false); setErr({ msg: (e && e.message) || 'Could not save the settings.', code: e && e.code }); });
+      return;
+    }
     const bodies = f.scope === 'column'
       ? picked.map(c => ({ ...preview, column: c, ...settings }))
       : [{ ...preview, ...settings }];
@@ -486,12 +506,18 @@ function MxForm({ st, seed, norms, onDone }) {
       const done = i > 0 ? ' The first ' + i + ' were written.' : '';
       throw { message: ((e && e.message) || 'Could not add the exemption.') + (f.scope === 'column' && picked.length > 1 ? ' Stopped at ' + b.column + '.' + done : ''), code: e && e.code };
     })), Promise.resolve())
+      // A real replace disables the original only AFTER every new row landed.
+      // If that last call fails, the new rows stay and the error says so.
+      .then(() => orig && orig.enabled !== false && st.retireMaskExemption(orig.id).catch(e => {
+        throw { message: 'QueryHub wrote the new exemption, but did not disable ' + mxRef(orig.id) + '. ' + ((e && e.message) || '') + ' Disable it by hand.', code: e && e.code };
+      }))
       .then(() => { setBusy(false); onDone(); })
       .catch(e => { setBusy(false); setErr({ msg: (e && e.message) || 'Could not add the exemption.', code: e && e.code }); });
   };
 
   // The button says the consequence, in the words of the rung.
-  const saveLabel = !readyAll ? 'Add exemption'
+  const saveLabel = !readyAll ? (orig ? 'Replace' : 'Add exemption')
+    : sameReach ? 'Save these settings on ' + mxRef(orig.id)
     : f.scope === 'fleet' ? 'Turn masking off across the whole fleet'
       : f.scope === 'server' ? 'Turn masking off for all of ' + (conn ? conn.name : '')
         : f.scope === 'database' ? 'Turn masking off for ' + (db ? db.name : '')
@@ -521,6 +547,9 @@ function MxForm({ st, seed, norms, onDone }) {
 
   return (
     <div className="qh-mxform">
+      {orig && <div className="qh-mxnote">{sameReach
+        ? <>Replacing {mxRef(orig.id)}. The target is the same, so Save changes the settings on {mxRef(orig.id)}. Change the target to write a new exemption.</>
+        : <>Replacing {mxRef(orig.id)}. Save writes the new exemption, then disables {mxRef(orig.id)}.</>}</div>}
       <MxStep n="1" t="Target" />
       <div className="qh-mxscope">
         <div className="qh-seg qh-seg-sm">
@@ -572,7 +601,7 @@ function MxForm({ st, seed, norms, onDone }) {
       {note && <div className={'qh-mxnote' + (note.bad ? ' is-bad' : '')}>{note.t}</div>}
 
       {/* The reach, said once, and the confirmation for the rungs that need one. */}
-      {readyAll && !colGone && (
+      {readyAll && !colGone && !sameReach && (
         <div className={'qh-mxreach' + (wide ? ' is-wide' : '')}>
           {wide && <MxIcon.warn />}
           <div>
@@ -594,10 +623,12 @@ function MxForm({ st, seed, norms, onDone }) {
                 placeholder="e.g. Holds a wallet address, not a postal one." />
 
       <MxStep n="3" t="Settings" />
+      {orig ? <MxOptions f={f} set={set} norms={n} fleet={isFleet} table={f.table} joinStats={prev && prev.joinStats ? { ...prev.joinStats, days: prev.days } : null} /> : <>
       <button type="button" className="qh-mxsum" onClick={() => setMore(m => !m)} aria-expanded={more}>
-        <span className="qh-mxsum-t">{mxSummary(f)}</span><span className="qh-linkbtn">{more ? 'Done' : 'Change'}</span>
+        <span className="qh-mxsum-t">{mxSummary(f)}</span><span className="qh-linkbtn">{more ? 'Done' : 'Change settings'}</span>
       </button>
       {more && <MxOptions f={f} set={set} norms={n} fleet={isFleet} table={f.table} joinStats={prev && prev.joinStats ? { ...prev.joinStats, days: prev.days } : null} />}
+      </>}
 
       {prev && (
         <div className="qh-mxprev">
@@ -741,11 +772,12 @@ function MaskingView({ st, user }) {
   const startFromFilter = () => start(fServer && fDb ? { connectionId: fServer, databaseId: fDb, scope: 'column', focus: 'schema' }
     : fServer ? { connectionId: fServer, scope: 'column', focus: 'database' } : null);
   const remove = (e) => {
-    if (!window.confirm('Remove this exemption? ' + (e.column ? e.table + '.' + e.column : e.connectionName) + ' goes back to being masked, and the reason on the row goes with it. Turning it off keeps the record.')) return;
+    if (!window.confirm('Remove this exemption? QueryHub masks ' + (e.column ? e.table + '.' + e.column : e.connectionName) + ' again, and the reason goes with the row. To keep the record, disable it.')) return;
     st.removeMaskExemption(e.id);
   };
-  // Replace = the same target, pre-filled: a new row with its own reason.
-  const replace = (e) => start({ connectionId: e.connectionId, databaseId: e.databaseId, scope: e.scope, schema: e.schema, table: e.table, column: e.column, strength: e.strength, survivesJoin: e.survivesJoin });
+  // Replace = the same target, pre-filled, with the original attached: Save
+  // patches it while the reach is unchanged, and disables it after a new reach.
+  const replace = (e) => start({ connectionId: e.connectionId, databaseId: e.databaseId, scope: e.scope, schema: e.schema, table: e.table, column: e.column, strength: e.strength, survivesJoin: e.survivesJoin, replaceOf: e });
   const addHere = (e) => start({ connectionId: e.connectionId, databaseId: e.databaseId, scope: 'column', schema: e.schema, table: e.table, strength: e.strength, survivesJoin: e.survivesJoin, focus: 'columns' });
   const addInGroup = (g) => start(g.seed.scope === 'server'
     ? { connectionId: g.seed.connectionId, scope: 'column', focus: 'database' }

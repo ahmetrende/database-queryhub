@@ -308,7 +308,7 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
                 <TierBadge tier={p.tier} sm />
                 <ExpiryChip iso={p.expiresAt} />
               </div>))}</div>
-            <div className="qh-exp-note">Saving here writes one tier for the whole connection, which would raise the lower databases. This connection is left exactly as it is — change it from Grants, one row at a time.</div>
+            <div className="qh-exp-note">Saving here writes one tier for the whole connection, which would raise the lower databases. QueryHub does not change this connection here. Change it in Grants, one row at a time.</div>
           </div>
         ) : (
           <div key={i} className={'qh-accrow' + (rowFlag(r, i) ? ' is-bad' : '')}>
@@ -677,7 +677,7 @@ function AutoView({ st, user }) {
                 : <button className="qh-linkbtn qh-autosub-add" onClick={() => { setAdding(s.key); setEditId(null); }}><AIcon.plus />Add targets for {s.name}</button>}
             </div>
           ))}
-          {subjects.length === 0 && <div className="qh-conn-empty">{q.trim() ? 'No exemption matches your filter.' : 'Nobody is auto-approved. Every query is looked at by a DBA.'}</div>}
+          {subjects.length === 0 && <div className="qh-conn-empty">{q.trim() ? 'No exemption matches your filter.' : 'Nobody is auto-approved. A DBA reviews every query.'}</div>}
         </div>
       ) : (
       <div className="qh-tablewrap">
@@ -853,8 +853,8 @@ function AutoBulkForm({ st, actor, lockType, lockUser, lockName, existing, onDon
           if (r && !m[r.k]) m[r.k] = x.reason; });
         setRefused(m); setBusy(false);
         setErr(list.length
-          ? 'Nothing was created: ' + list.length + ' of ' + rows.length + ' target' + (rows.length === 1 ? ' was' : 's were') + ' refused. Fix or remove ' + (list.length === 1 ? 'it' : 'them') + ', then save again.'
-          : ((e && e.message) || 'Nothing was created.'));
+          ? 'QueryHub created nothing. The server refused ' + list.length + ' of ' + rows.length + ' target' + (rows.length === 1 ? '' : 's') + '. Correct or remove ' + (list.length === 1 ? 'it' : 'them') + ', then save again.'
+          : ((e && e.message) || 'QueryHub created nothing.'));
       });
   };
   const does = useTier === 'RO' ? 'reads' : 'reads and writes';
@@ -1146,7 +1146,7 @@ function TeamsView({ st, user }) {
                   <div className="qh-teamcard-acts">
                     <button className="qh-rowbtn" onClick={() => { setAccessId(t.id); setEditId(null); setAdding(false); }}><AIcon.edit />Edit access</button>
                     <button className="qh-rowbtn" onClick={() => { setEditId(t.id); setAccessId(null); setAdding(false); }}><AIcon.edit />Edit team</button>
-                    <button className="qh-revoke" onClick={() => { if (window.confirm('Delete team “' + t.name + '”? The members stay. Only the team is deleted.')) st.removeTeam(t.id, actor); }}>Delete</button>
+                    <button className="qh-revoke" onClick={() => { if (window.confirm('Delete team “' + t.name + '”? The members stay. QueryHub deletes only the team.')) st.removeTeam(t.id, actor); }}>Delete</button>
                   </div>
                 </div>
               );
@@ -1206,8 +1206,8 @@ const QH_CONN_ENGINES = [
 const QH_RO_ENGINES = ['clickhouse', 'athena'];
 const QH_CRED_TIERS = [
   ['ro', 'Read-only', 'Used for every SELECT, the schema snapshot and the connection test.'],
-  ['rw', 'Read/Write', 'Optional. Without it, write queries on this target are refused.'],
-  ['ddl', 'Schema (DDL)', 'Optional. Without it, schema changes on this target are refused.'],
+  ['rw', 'Read/Write', 'Optional. Without it, QueryHub refuses write queries on this target.'],
+  ['ddl', 'Schema (DDL)', 'Optional. Without it, QueryHub refuses schema changes on this target.'],
 ];
 
 // One tier's username + password. The password box is always empty on open,
@@ -1479,7 +1479,7 @@ function ConnectionForm({ st, init, mode, onDone }) {
   const sub = mode === 'create'
     ? 'Registers a target server. It starts disabled — set credentials, test it, then enable it deliberately.'
     : mode === 'rotate'
-      ? 'Passwords are stored encrypted and never sent back to this screen. Leave a box blank to keep the current value.'
+      ? 'QueryHub stores passwords encrypted and never sends them back to this screen. Leave a box blank to keep the current value.'
       : 'Changing the alias also changes how grants and admin scopes name this connection.';
 
   return (
@@ -1675,10 +1675,10 @@ function ConnectionsView({ st, user }) {
     st.bulkConnections({ ...req, dryRun: true })
       .then(() => st.bulkConnections({ ...req, dryRun: false }))
       .then(() => { setBulkBusy(false); setSel([]); setBulk(null); })
-      .catch(e => { setBulkBusy(false); setRefused({ body, list: (e && e.refused) || [], msg: (e && e.message) || 'Nothing was changed.' }); });
+      .catch(e => { setBulkBusy(false); setRefused({ body, list: (e && e.refused) || [], msg: (e && e.message) || 'QueryHub changed nothing.' }); });
   };
   const bulkDisable = () => {
-    if (!window.confirm('Disable ' + selRows.length + ' connection' + (selRows.length === 1 ? '' : 's') + '? Developers lose access to them until they are enabled again. Running queries are unaffected.')) return;
+    if (!window.confirm('Disable ' + selRows.length + ' connection' + (selRows.length === 1 ? '' : 's') + '? Developers lose access to them until you enable them again. Running queries continue.')) return;
     runBulk({ enabled: false });
   };
   const bulkCredSave = () => {
@@ -1714,8 +1714,8 @@ function ConnectionsView({ st, user }) {
     // Disabling pulls a target out of every picker mid-flight, so it asks
     // first; enabling is the reversible direction and does not.
     if (c.enabled && !window.confirm(c.replicaOf
-      ? 'Take “' + c.name + '” out of rotation? Read-only queries on ' + c.replicaOf + ' run on the primary until it is enabled again. Nobody loses access.'
-      : 'Disable “' + c.name + '”? Developers lose access to it until it is enabled again. Running queries are unaffected.')) return;
+      ? 'Take “' + c.name + '” out of rotation? Read-only queries on ' + c.replicaOf + ' run on the primary until you enable it again. Nobody loses access.'
+      : 'Disable “' + c.name + '”? Developers lose access to it until you enable it again. Running queries continue.')) return;
     st.setConnectionEnabled(c.id, !c.enabled);
   };
   const removeConnection = (c) => {
@@ -1824,7 +1824,7 @@ function ConnectionsView({ st, user }) {
               </div>
               {refused && (
                 <div className="qh-connbulk-refused" role="alert">
-                  <div className="qh-connbulk-refused-h">{refused.list.length ? 'Nothing was changed — ' + refused.list.length + ' of ' + nSel + ' would have been refused:' : refused.msg}</div>
+                  <div className="qh-connbulk-refused-h">{refused.list.length ? 'QueryHub changed nothing. The server would refuse ' + refused.list.length + ' of ' + nSel + ':' : refused.msg}</div>
                   {refused.list.map(x => <div key={x.connection} className="qh-connbulk-refused-row"><b className="qh-mono">{x.connection}</b> — {x.reason}</div>)}
                   {refused.list.length > 0 && (
                     <div className="qh-connbulk-acts">

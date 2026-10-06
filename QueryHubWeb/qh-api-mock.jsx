@@ -1601,7 +1601,7 @@ function statusOf(rec) {
     push(rec.stopped === 'withdrawn' ? 'info' : 'err',
       rec.stopped === 'withdrawn'
         ? 'Withdrawn by you — the request left the DBA queue without running.'
-        : 'Stopped on the database — the statement was cancelled mid-run.');
+        : 'Stopped on the database. The database cancelled the statement during the run.');
     aud('you', rec.stopped === 'withdrawn' ? 'Withdrew request' : 'Stopped running query');
     return { status: 'failed', runMs: null, messages: msg, audit };
   }
@@ -1652,8 +1652,12 @@ function statusOf(rec) {
   const reps = mockReplicasOf(rec.conn);
   const primaryName = (connRegistry().find(c => c.id === rec.conn) || {}).name || rec.conn;
   let ranOn;
-  const forcedRep = rec.runOn === 'replica' ? (reps.find(x => x.id === rec.replicaId) || null) : null;
-  if (rec.runOn === 'replica' && !forcedRep) {
+  // CODE 2026-10-05 (e) §5.4: the stored choice is applied at RUN time, and only
+  // while the requester is still a super-admin. Otherwise the run takes the
+  // automatic route and the server logs a warning (no Messages line).
+  const chosen = rec.runOn && mockUser() && mockUser().role === 'super' ? rec.runOn : null;
+  const forcedRep = chosen === 'replica' ? (reps.find(x => x.id === rec.replicaId) || null) : null;
+  if (chosen === 'replica' && !forcedRep) {
     push('err', 'That replica left rotation before the run — nothing ran.');
     return { status: 'failed', runMs: null, messages: msg, audit, ranOn: null };
   }
@@ -1666,7 +1670,7 @@ function statusOf(rec) {
       return { status: 'failed', runMs: null, messages: msg, audit, ranOn: null };
     }
     ranOn = { kind: 'replica', name: r.name, forced: true, lagSeconds: h.lagSeconds };
-  } else if (rec.runOn === 'primary') {
+  } else if (chosen === 'primary') {
     ranOn = { kind: 'primary', name: primaryName, forced: true, lagSeconds: null };
   } else {
     const hr = rec.tier === 'RO' ? reps.find(r => mockReplicaHealth(r.id).healthy) : null;
@@ -2006,7 +2010,7 @@ const qhApi = {
 
   // ---- submit / track / results ----
   submit: (body) => mockDelay(() => {
-    if (ADMIN.kill.enabled) return mockFail('Kill switch is engaged — query execution is paused.', 503, 'kill_switch');
+    if (ADMIN.kill.enabled) return mockFail('The kill switch is on. No query can run.', 503, 'kill_switch');
     if (QH_MOCK_REDACTED.test(body.sql || '')) return mockFail(QH_MOCK_REDACTED_MSG, 422, 'validation');
     // A lapsed grant is its OWN code with the date as a field — not the same 403
     // as "you were never allowed here" (CODE brief 2026-08-21 (b)). The prose
@@ -2063,12 +2067,14 @@ const qhApi = {
     const v = verdictFor(body.sql, body.connectionId, body.databaseId);
     if ((body.schedule ? v.requiresJustificationWhenReviewed : v.requiresJustification)
         && !String(body.justification || '').trim()) {
-      return mockFail('Justification is required for ' + v.tier + ' queries.', 400, 'justification_required');
+      return mockFail('Write a justification for ' + v.tier + ' queries.', 400, 'justification_required');
     }
     const rec = newRequest(body);
     if (rec.scheduledFor) {
       MOCK.scheduled = [{ id: rec.id, name: body.name || 'Scheduled query', sql: body.sql, conn: rec.conn, db: rec.db,
-        tier: rec.tier, when: rec.scheduledFor, status: 'scheduled' }, ...MOCK.scheduled];
+        tier: rec.tier, when: rec.scheduledFor, status: 'scheduled',
+        // Where it will run (CODE 2026-10-05 (e) §5.4), as stored on the request.
+        runOn: rec.runOn, replicaName: rec.runOn === 'replica' ? ((mockReplicasOf(rec.conn).find(x => x.id === rec.replicaId) || {}).name || null) : null }, ...MOCK.scheduled];
     }
     return { id: rec.id, status: statusOf(rec).status };
   }, 300),
@@ -2089,7 +2095,7 @@ const qhApi = {
     // makes a scheduled request need a reason.
     const needs = (body.items || []).some(it => verdictFor(it.sql, it.connectionId, it.databaseId).requiresJustificationWhenReviewed);
     if (needs && !String(body.justification || '').trim()) {
-      return mockFail('Justification is required for this bundle.', 400, 'justification_required');
+      return mockFail('Write a justification for this bundle.', 400, 'justification_required');
     }
     const bundleId = mockId('bnd');
     return { bundleId, items: (body.items || []).map(it => {
@@ -2132,7 +2138,7 @@ const qhApi = {
     }
     if (st === 'running') {
       rec.stopped = 'terminated';
-      return { outcome: 'terminated', message: 'Cancel signalled to the database — the statement was stopped.' };
+      return { outcome: 'terminated', message: 'QueryHub sent a cancel to the database. The database stopped the statement.' };
     }
     return { outcome: 'not_running', message: 'Nothing to stop — this request already finished.' };
   }, 260),
@@ -2283,9 +2289,9 @@ const qhApi = {
     // people, and a list there would silently grant to the first one.
     const many = (b.subjects || []).filter(Boolean);
     if (many.length) {
-      if (b.subjectType === 'team') return mockFail('A team grant takes one subject — a team is already a set of people. Nothing was written.', 400, 'bad_request');
+      if (b.subjectType === 'team') return mockFail('A team grant takes one subject — a team is already a set of people. QueryHub wrote nothing.', 400, 'bad_request');
       const bad = many.find(s => !/^[A-Za-z0-9._@-]{3,}$/.test(String(s)));
-      if (bad) return mockFail(bad + ' is not a principal id (expected a Slack user id or local:<username>). Nothing was written.', 400, 'bad_request');
+      if (bad) return mockFail(bad + ' is not a principal id (expected a Slack user id or local:<username>). QueryHub wrote nothing.', 400, 'bad_request');
     }
     const dbs = (b.databases && b.databases.length) ? b.databases : (b.databaseId ? [b.databaseId] : ['*']);
     // Auto-approve with the grant (CODE 2026-09-30 §3). Checked before any
@@ -2434,7 +2440,7 @@ const qhApi = {
       else if (ADMIN.auto.some(a => a.user === user && (a.connectionId || null) === (t.connectionId || null) && (a.databaseId || null) === t.databaseId)) no(t, 'Already exempt here.');
       seen[k] = 1;
     });
-    if (refused.length) return mockFail(refused.length + ' of ' + targets.length + ' refused. Nothing was written.', 409, 'refused', { refused });
+    if (refused.length) return mockFail(refused.length + ' of ' + targets.length + ' refused. QueryHub wrote nothing.', 409, 'refused', { refused });
     if (b.dryRun) return { dryRun: true, applied: 0, ids: [], targets };
     const exp = b.expiresAt || (b.expiresInMinutes ? isoIn(60000 * b.expiresInMinutes) : null);
     const person = type === 'user' ? ADMIN.people.find(p => p.handle === user || p.id === user) : null;
@@ -2489,7 +2495,7 @@ const qhApi = {
     if (String(id).indexOf('mirror:') === 0) return mockFail('This role mirrors the admins table — change it in Admin scopes.', 409, 'mirrored');
     const r = ADMIN.roles.find(x => x.id === id);
     if (!r) return mockFail('No such active role.', 404, 'not_found');
-    if (r.source === 'synced') return mockFail('This role is kept by a sync — change it at its source.', 409, 'synced');
+    if (r.source === 'synced') return mockFail('A sync controls this role. Change it at its source.', 409, 'synced');
     if (b.subject && b.subject !== r.subject) return mockFail('A role cannot move to another person — revoke it and create one for them.', 400, 'subject_immutable');
     // A field that is SENT is set; a field left out is kept (CODE 2026-09-23 §4).
     // A bare null cannot say both "not editing" and "widen", so widening and
@@ -2555,7 +2561,7 @@ const qhApi = {
     const dupe = ADMIN.roles.find(r => r.subject === (known.handle || known.admin || b.subject) && r.role === b.role
       && (r.scopeTeamId || null) === (team ? team.id : null) && (r.scopeTargetId || null) === (conn ? conn.id : null));
     if (dupe) {
-      return mockFail('This person already holds ' + b.role + ' over that scope (role ' + dupe.id + ', already exists and is unchanged). Revoke it first if you meant to change its ceiling or expiry.', 409, 'duplicate', { roleId: dupe.id });
+      return mockFail('This person already holds ' + b.role + ' over that scope (role ' + dupe.id + '). QueryHub did not change it. To change its ceiling or expiry, revoke it first.', 409, 'duplicate', { roleId: dupe.id });
     }
     const row = {
       id: mockId('r'), subject: known.handle || known.admin || b.subject, name: mockRoleName(b.subject),
@@ -2743,7 +2749,7 @@ const qhApi = {
         refused.push({ connection: c.name, status: 409, reason: ro.placeholder ? 'its read-only credential is still the import placeholder' : 'it has no read-only credential' });
       } else rows.push(c);
     });
-    if (refused.length) return mockFail(refused.length + ' of ' + names.length + ' refused — nothing was changed.', 409, 'refused', { refused });
+    if (refused.length) return mockFail(refused.length + ' of ' + names.length + ' refused. QueryHub changed nothing.', 409, 'refused', { refused });
     const results = rows.map(c => ({ connection: c.name, enabled: b.enabled != null ? !!b.enabled : c.enabled !== false, credentials: Object.keys(creds) }));
     if (b.dryRun) return { dryRun: true, applied: 0, results };
     rows.forEach(c => {
@@ -3070,7 +3076,7 @@ const qhApi = {
     if (['column', 'table', 'schema', 'database', 'server', 'fleet'].indexOf(b.scope) < 0) return mockFail('Unknown scope.', 400, 'bad_scope');
     // The reason is not a note field — it is what an auditor reads when asking
     // why a column stopped being protected, so the server requires it too.
-    if (!b.reason || !String(b.reason).trim()) return mockFail('An exemption needs a reason — it is the only record of why this data stopped being protected.', 400, 'reason_required');
+    if (!b.reason || !String(b.reason).trim()) return mockFail('Write a reason. It is the only record of why QueryHub stopped masking this data.', 400, 'reason_required');
     const reg = connRegistry();
     // Fleet-wide carries no connection — that IS its reach. Checked against the
     // SCOPE so a missing connectionId on any other rung is still a 404 rather
@@ -3084,7 +3090,7 @@ const qhApi = {
     const same = (x) => x.connectionId === b.connectionId && (x.databaseId || null) === (b.databaseId || null)
       && (x.schema || null) === (b.schema || null) && (x.table || null) === (b.table || null) && (x.column || null) === (b.column || null);
     const dupe = ADMIN.mask.find(same);
-    if (dupe) return mockFail('That target is already exempt (' + dupe.id + ')' + (dupe.enabled ? '' : ', currently disabled') + '.', 409, 'duplicate', { exemptionId: dupe.id });
+    if (dupe) return mockFail('Exemption ' + dupe.id + ' already covers exactly this' + (dupe.enabled ? '' : ' (disabled)') + '. To change its settings, open ' + dupe.id + ' and select Edit. A new exemption is only for a different reach.', 409, 'duplicate', { exemptionId: dupe.id });
     const row = { id: mockId('mx'), connectionId: b.scope === 'fleet' ? null : b.connectionId, databaseId: b.databaseId || null,
       schema: b.schema || null, table: b.table || null, column: b.column || null,
       scope: b.scope, strength: b.strength === 'full' ? 'full' : 'soft', survivesJoin: !!b.survivesJoin,
@@ -3126,12 +3132,12 @@ const qhApi = {
     const p = patch || {};
     const reach = ['scope', 'connectionId', 'databaseId', 'schema', 'table', 'column'].filter(k => p[k] !== undefined);
     if (reach.length)
-      return mockFail('Where an exemption reaches cannot be edited — turn this one off and write a new one. Sent: ' + reach.join(', ') + '.', 400, 'reach_immutable');
+      return mockFail('You cannot edit where an exemption reaches. Use Replace: it writes a new exemption and disables this one. Sent: ' + reach.join(', ') + '.', 400, 'reach_immutable');
     const allowed = ['strength', 'survivesJoin', 'audience', 'reason', 'enabled'];
     const extra = Object.keys(p).filter(k => allowed.indexOf(k) < 0);
     if (extra.length) return mockFail('Unknown field' + (extra.length > 1 ? 's' : '') + ': ' + extra.join(', ') + '.', 400, 'forbid');
     if (p.reason !== undefined && !String(p.reason).trim())
-      return mockFail('An exemption needs a reason — it is the only record of why this data stopped being protected.', 400, 'reason_required');
+      return mockFail('Write a reason. It is the only record of why QueryHub stopped masking this data.', 400, 'reason_required');
     const next = {
       strength: p.strength !== undefined ? (p.strength === 'full' ? 'full' : 'soft') : r.strength,
       survivesJoin: p.survivesJoin !== undefined ? !!p.survivesJoin : r.survivesJoin,

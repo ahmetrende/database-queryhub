@@ -278,7 +278,7 @@ function ManualRunsBlock({ st }) {
             </div>
             <pre className="qh-mrun-sql" dangerouslySetInnerHTML={{ __html: qhHighlight(it.sql || '') }} />
             {it.refusal && <div className="qh-mrun-line">The database refused the bot: <span className="qh-mono">{it.refusal}</span></div>}
-            {hidden && <div className="qh-mrun-line is-warn">The password was hidden when this was stored. Agree it with {who.split(' ')[0]} before you run it.</div>}
+            {hidden && <div className="qh-mrun-line is-warn">QueryHub hid the password when it stored this. Agree it with {who.split(' ')[0]} before you run it.</div>}
             {it.reason && <div className="qh-mrun-reason">“{it.reason}”</div>}
             {typing && <input className="qh-input qh-input-sm qh-mrun-why" autoFocus placeholder="Why it could not be run (required)" value={why}
               onChange={e => { setWhy(e.target.value); setErr(null); }}

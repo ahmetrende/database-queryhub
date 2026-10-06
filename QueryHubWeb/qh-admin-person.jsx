@@ -87,7 +87,7 @@ function BulkGrantPanel({ st, actor, onDone }) {
       .then(() => onDone())
       // The refusal names the id it choked on and nothing was written, so the
       // picker stays open with the list intact — one thing to fix, in place.
-      .catch(e => { setErr((e && e.message) || 'Nothing was written.'); setBusy(false); });
+      .catch(e => { setErr((e && e.message) || 'QueryHub wrote nothing.'); setBusy(false); });
   };
   return (
     <div className="qh-bulk">

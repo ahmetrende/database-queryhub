@@ -1076,7 +1076,7 @@ function App() {
         const c2 = conns.find(c => c.id === cur.conn);
         const d2 = c2 && c2.databases.find(d => d.id === cur.db);
         patch(id, { status: null,
-          messages: [{ kind: 'info', text: 'Confirmation needed — nothing has run.', time: nowTime() }] });
+          messages: [{ kind: 'info', text: 'Confirm to continue. Nothing ran.', time: nowTime() }] });
         setConfirmRun({ id, runAtISO: runAtISO || null, sqlOverride: sqlOverride || null, reasons,
           target: (c2 ? c2.name : cur.conn) + ' / ' + (d2 ? d2.name : cur.db),
           env: c2 ? c2.env : null, tier: qhClassify(sqlOverride || cur.sql).tier, scheduled: !!runAtISO });
@@ -1090,7 +1090,7 @@ function App() {
       // re-sent with confirmed:true.
       if (e && e.code === 'access_expired') {
         patch(id, { status: null, expired: { on: e.expiredOn || null, message: e.message || null, conn: cur.conn, db: cur.db },
-          messages: [{ kind: 'err', text: e.message || 'Your access to this target has expired.', time: nowTime() }] });
+          messages: [{ kind: 'err', text: e.message || 'Your access to this target ended.', time: nowTime() }] });
         return;
       }
       patch(id, { status: null,
@@ -1174,7 +1174,7 @@ function App() {
   const confirmRunCancel = () => {
     const c = confirmRun; if (!c) return;
     setConfirmRun(null);
-    patch(c.id, { messages: [{ kind: 'info', text: 'Not sent — you cancelled the confirmation. Your SQL is untouched.', time: nowTime() }] });
+    patch(c.id, { messages: [{ kind: 'info', text: 'Not sent. You cancelled the confirmation. Your SQL did not change.', time: nowTime() }] });
   };
 
   const selGet = React.useRef(null);
@@ -1195,7 +1195,7 @@ function App() {
     const tgt = qhRunTarget(curSel(), tab.sql);
     if (tgt.kind === 'comments') { pushToast(QH_ONLY_COMMENTS); return; }
     if (tgt.kind === 'selection') { runSelection(tgt.sql); return; }
-    if (killed) { pushToast('Kill switch is engaged — query execution is paused.'); return; }
+    if (killed) { pushToast('The kill switch is on. No query can run.'); return; }
     if (!tab.sql.trim() || busy || !tab.conn) return;
     if (redactedIn(tab.sql).length) { revealRedacted(); return; }
     if (tierExceedsGrant) { pushToast(classify.tier + ' exceeds your ' + dbTier + ' grant on this database.'); return; }
@@ -1214,7 +1214,7 @@ function App() {
     if (tgt.kind !== 'selection') return;
     const t = tgt.sql;
     if (redactedIn(t).length) { revealRedacted(); return; }
-    if (killed) { pushToast('Kill switch is engaged — query execution is paused.'); return; }
+    if (killed) { pushToast('The kill switch is on. No query can run.'); return; }
     if (needWhy && !why.trim()) { demandWhy(); return; }
     submitToServer(activeId, null, t);
   };
@@ -1223,7 +1223,7 @@ function App() {
   // is patched to pending, then tracked by the request id the bundle returns
   // (items come back in submit order).
   const submitBatch = (ids, bundleWhy) => {
-    if (killed) { pushToast('Kill switch is engaged — query execution is paused.'); return; }
+    if (killed) { pushToast('The kill switch is on. No query can run.'); return; }
     const valid = ids.filter(id => { const x = tabs.find(t => t.id === id); return x && x.sql.trim() && x.conn; });
     if (!valid.length) return;
     const hid = valid.map(id => tabs.find(t => t.id === id)).filter(x => redactedIn(x.sql).length);
@@ -1262,7 +1262,9 @@ function App() {
     // The scheduled query now lives in `requests`; pull it into the panel once
     // the submit has landed.
     setTimeout(refreshScheduled, 800);
-    pushToast('Query scheduled for ' + when + ' — see the Scheduled panel.');
+    const ro = effRunOn(tab);
+    pushToast('Query scheduled for ' + when + ' — see the Scheduled panel.'
+      + (ro ? ' It runs on ' + (ro.mode === 'primary' ? 'the primary' : ro.name) + ' if you are still a super-admin then.' : ''));
   };
   const cancelScheduled = (id) => {
     qhApi.cancelScheduledSrv(id).then(refreshScheduled).catch(() => {});
@@ -2095,7 +2097,7 @@ function ActionBar({ redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyEr
       <button className={'qh-btn qh-btn-primary qh-run' + (autoApprove ? '' : ' is-approval') + (busy ? ' is-waiting' : '')}
         data-kbd={QH_KBD.run}
         onClick={() => onPrimary()} disabled={!hasSql || busy || tierExceedsGrant || killed || runOnConflict}
-        title={runOnConflict ? 'This tab is set to run on ' + runOn.name + ', and a replica runs read-only statements only. Switch Runs on to Auto or Primary, or make the statement read-only.' : undefined}>
+        title={runOnConflict ? 'This tab runs on ' + runOn.name + ', and a replica runs read-only statements only. Switch Runs on to Auto or Primary, or make the statement read-only.' : undefined}>
         {busy && <span className="qh-spin light" />}
         {!busy && autoApprove && <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M7 5v14l11-7z"/></svg>}
         {!busy && !autoApprove && <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>}
@@ -2168,7 +2170,7 @@ function ActionBar({ redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyEr
           {/* Said before Run, not after a 422 (CODE 2026-09-23 §5). */}
           {redacted > 0 && (
             <span className="qh-redact-chip" role="button" tabIndex={0} onClick={onRevealRedacted} onKeyDown={(e) => { if (e.key === 'Enter') onRevealRedacted(); }}
-              title="QueryHub never stores a password. This one was hidden when the statement was saved — type it in again before running.">
+              title="QueryHub never stores a password. QueryHub hid this one when you saved the statement. Type it again before you run.">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></svg>
               Password hidden — type it again
             </span>
@@ -2225,6 +2227,7 @@ function ActionBar({ redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyEr
           <div className="qh-ctx-backdrop" onClick={() => setSchedOpen(false)} onContextMenu={(e) => { e.preventDefault(); setSchedOpen(false); }} />
           <div className="qh-sched-pop" style={{ position: 'fixed', top: schedPos.top, right: schedPos.right, zIndex: 91 }} onClick={(e) => e.stopPropagation()}>
             <div className="qh-sched-title">Schedule this query</div>
+            {runOn && <div className="qh-sched-note">{qhSchedRunOnLine(runOn.mode, runOn.name)}</div>}
             {/* A schedule can create the requirement on its own: the grant that
                 would auto-approve this now may be gone at the run time. */}
             {whyNeedSched && (
@@ -2268,7 +2271,7 @@ function ConfirmRunModal({ reasons, target, env, tier, scheduled, onConfirm, onC
       <div className="qh-modal-head">
         <div>
           <div className="qh-modal-title">{reasons.length > 1 ? 'Confirm before these run' : 'Confirm before this runs'}</div>
-          <div className="qh-modal-sub">Nothing has run yet — {scheduled ? 'the schedule is not set' : 'the database has not been touched'}. Read what this does, then confirm.</div>
+          <div className="qh-modal-sub">Nothing ran — {scheduled ? 'QueryHub did not set the schedule' : 'the database did not change'}. Read what this does, then confirm.</div>
         </div>
       </div>
       <div className="qh-modal-body">

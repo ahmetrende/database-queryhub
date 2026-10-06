@@ -1562,7 +1562,8 @@ def _write_xlsx(p: Path, statement: int, out_path: str) -> None:
 def scheduled_list(claims: dict = Depends(deps.current_user)):
     deps.require_whitelisted(claims)
     rows = db.fetch_all(
-        "SELECT id, query, target_server_id, database_name, scheduled_for, created_at "
+        "SELECT id, query, target_server_id, database_name, scheduled_for, created_at, "
+        "       run_on "
         "FROM requests WHERE requester_slack_id = %s AND status = 'scheduled' "
         "  AND scheduled_for > NOW() ORDER BY scheduled_for",
         (claims["sub"],))

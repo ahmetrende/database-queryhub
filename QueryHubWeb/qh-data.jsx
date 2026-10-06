@@ -732,9 +732,9 @@ function qhSliceRows(cols, offset, limit, total) {
 // query because its target went away would be the worse half of this bug.
 const QH_CONN_STATE = {
   no_access: { word: 'no access', why: 'Your grant on this target is gone.', can: 'request' },
-  retired: { word: 'retired', why: 'This target has been retired.', can: 'repoint' },
+  retired: { word: 'retired', why: 'This target is retired.', can: 'repoint' },
   gone: { word: 'deleted', why: 'This target no longer exists.', can: 'repoint' },
-  none: { word: 'no target', why: 'This query was saved without a target.', can: 'repoint' },
+  none: { word: 'no target', why: 'This query has no target.', can: 'repoint' },
   // Not one of the server's values: the fallback for a tab whose alias is simply
   // absent from the payload. It states the fact and does not invent the reason.
   unknown: { word: 'unavailable', why: 'This target is not in your list of targets.', can: 'request' },

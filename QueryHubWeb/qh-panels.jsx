@@ -21,6 +21,13 @@ function qhRanOnLine(r) {
   return 'Ran on ' + (r.name || 'a replica')
     + (lag === 'caught up' ? ', caught up with the primary' : lag ? ', ' + lag + ' the primary' : '') + ' (chosen).';
 }
+// A scheduled run keeps the tab's choice, and the server applies it at run time
+// only while the requester is still a super-admin (CODE 2026-10-05 (e) §5.4).
+function qhSchedRunOnLine(runOn, name) {
+  if (!runOn || runOn === 'auto') return null;
+  const where = runOn === 'primary' ? 'the primary' : (name || 'the chosen replica');
+  return 'Runs on ' + where + ' if you are still a super-admin at the run time. If not, QueryHub picks the node.';
+}
 // One replica's health, as the Runs on menu prints it under the name.
 function qhReplicaHealth(h) {
   if (!h) return null;
@@ -941,7 +948,7 @@ function Sidebar({ modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode
         {mode === 'scheduled' && (scheduled || []).map(s => (
           <div key={s.id} className="qh-saved" onClick={() => onOpenScheduled(s)} title="Open this query in a new tab">
             <div className="qh-saved-name">{s.name}</div>
-            <div className="qh-saved-meta"><span className="qh-sched-chip"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>{s.when}</span><span>{s.conn} · {s.db}</span></div>
+            <div className="qh-saved-meta"><span className="qh-sched-chip"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>{s.when}</span><span>{s.conn} · {s.db}</span>{s.runOn && <span className="qh-ranon" title={qhSchedRunOnLine(s.runOn, s.replicaName)}>{'on ' + (s.runOn === 'primary' ? 'primary' : 'replica')}</span>}</div>
             <button className="qh-row-del" onClick={(e) => { e.stopPropagation(); onCancelScheduled(s.id); }} title="Cancel schedule" aria-label="Cancel schedule">{ICN_TRASH}</button>
           </div>
         ))}
@@ -1050,7 +1057,7 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
           <div className="qh-modal-title">{free ? 'Ask for a new endpoint' : 'Request access to a database'}</div>
           <div className="qh-modal-sub">{free
             ? 'For a server QueryHub does not have yet. This one arrives as free text and an admin resolves it by hand, so name it exactly.'
-            : 'Goes to the DBA team in Slack for review. You’ll get a DM when it is granted.'}</div>
+            : 'Goes to the DBA team in Slack for review. You get a DM when a DBA grants it.'}</div>
         </div>
         <button className="qh-icon-btn" onClick={onClose} aria-label="Close">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -2039,4 +2046,4 @@ const DBIcons = {
   calendar: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>,
 };
 
-Object.assign(window, { Sidebar, ResultsPanel, ResultsView, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhReplicaHealth, qhLagText });
+Object.assign(window, { Sidebar, ResultsPanel, ResultsView, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText });

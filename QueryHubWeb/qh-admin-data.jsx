@@ -284,7 +284,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
   // 409 = somebody else decided it first: re-read the list so the card goes.
   const decideAutoRequest = (id, approve) => qhApi.adminDecideAutoRequest(id, { approve: !!approve })
     .then(() => { loadAutoReqs(); loadAuto(); loadAudit();
-      pushToast && pushToast(approve ? 'Auto-approve granted. The requester was notified in Slack.' : 'Request declined. The requester was notified in Slack.'); })
+      pushToast && pushToast(approve ? 'Auto-approve granted. QueryHub told the requester in Slack.' : 'Request declined. QueryHub told the requester in Slack.'); })
     .catch(e => { if (e && e.status === 409) loadAutoReqs(); fail(e, 'Decision failed.'); });
   // A DDL the bot handed to a DBA (CODE 2026-09-23 §5). Marking one failed
   // needs a reason, so — like addRole — a refusal is RETURNED for the form to
@@ -373,7 +373,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const addMaskExemption = (b) => qhApi.adminAddMaskExemption(b)
     .then(res => { loadMask(); loadAudit(); pushToast && pushToast('Exemption added.'); return res; });
   const setMaskExemptionEnabled = (id, enabled) => qhApi.adminSetMaskExemption(id, enabled)
-    .then(() => { loadMask(); loadAudit(); pushToast && pushToast(enabled ? 'Exemption enabled again.' : 'Exemption disabled. That column is masked again.'); })
+    .then(() => { loadMask(); loadAudit(); pushToast && pushToast(enabled ? 'Exemption enabled again.' : 'Exemption disabled. QueryHub masks that column again.'); })
     .catch(e => fail(e, 'Could not change the exemption.'));
   const removeMaskExemption = (id) => qhApi.adminDelMaskExemption(id)
     .then(() => { loadMask(); loadAudit(); pushToast && pushToast('Exemption removed.'); })
@@ -388,6 +388,11 @@ function useAdminState(pushToast, active, isAdminViewer) {
       pushToast && pushToast(res && res.changed === false ? 'Nothing to change.' : 'Exemption updated.');
       return res;
     });
+  // The second half of a real Replace (CODE 2026-10-06): the new row is written,
+  // so the original goes off. PATCH enabled=false, not DELETE — the record stays.
+  // Rejects to the caller, which names the row that is still on.
+  const retireMaskExemption = (id) => qhApi.adminUpdateMaskExemption(id, { enabled: false })
+    .then(res => { loadMask(); loadAudit(); pushToast && pushToast('Exemption replaced. QueryHub disabled the old row.'); return res; });
   const maskCatalog = (connectionId, databaseId) => qhApi.adminMaskCatalog(connectionId, databaseId);
   const maskPreview = (b) => qhApi.adminMaskPreview(b);
 
@@ -415,8 +420,8 @@ function useAdminState(pushToast, active, isAdminViewer) {
     qhApi.adminDecideEndpoint(id, !!ok)
       .then(() => { loadEndpointReqs(); loadGrants(); loadAudit();
         pushToast && pushToast(ok
-          ? 'Provisioned — RO grant created and the requester was notified in Slack.'
-          : 'Request rejected. The requester was notified in Slack.'); })
+          ? 'Provisioned. QueryHub created the RO grant and told the requester in Slack.'
+          : 'Request rejected. QueryHub told the requester in Slack.'); })
       .catch(e => fail(e, 'Decision failed.'));
   };
 
@@ -433,7 +438,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
     const untouched = new Set((opts && opts.untouched) || []);
     const tierOf = {};
     const clash = (targets || []).find(t => { const k = t.connectionId; if (tierOf[k] && tierOf[k] !== t.tier) return true; tierOf[k] = t.tier; return false; });
-    if (clash) { pushToast && pushToast('Nothing saved: ' + clash.connectionId + ' is listed at two tiers. One tier per connection here.'); return; }
+    if (clash) { pushToast && pushToast('Nothing saved: ' + clash.connectionId + ' has two tiers in the list. Use one tier for each connection.'); return; }
     const byConn = new Map();
     (targets || []).filter(t => !untouched.has(t.connectionId)).forEach(t => {
       const dbs = (t.databases && t.databases.length) ? t.databases : ['*'];
@@ -573,7 +578,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
     reloadGrants: loadGrants,
     saveScope, removeScope, decideEndpoint, saveConfig,
     addRole, updateRole, removeRole,
-    addMaskExemption, setMaskExemptionEnabled, removeMaskExemption, updateMaskExemption, maskCatalog, maskPreview,
+    addMaskExemption, setMaskExemptionEnabled, removeMaskExemption, updateMaskExemption, retireMaskExemption, maskCatalog, maskPreview,
     addTeam, updateTeam, removeTeam, setPersonTeams,
     addConnection, updateConnection, removeConnection, setConnectionEnabled, bulkConnections,
     reloadConnections: loadConnections,

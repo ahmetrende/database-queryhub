@@ -215,7 +215,22 @@ def scheduled_entry(row: dict, alias_of: "callable") -> dict:
         "sql": sql,
         "when": iso(row.get("scheduled_for")),
         "createdAt": iso(row.get("created_at")),
+        # Where the run will go, as the tab chose it (migration 137). The server
+        # applies the choice at run time only while the requester is still a
+        # super-admin; the panel says so beside the chip (design 2026-10-06).
+        **_scheduled_run_on(row.get("run_on"), alias_of),
     }
+
+
+def _scheduled_run_on(stored: str | None, alias_of: "callable") -> dict:
+    """`requests.run_on` as `{runOn, replicaName}`: 'auto' | 'primary' | 'replica'."""
+    if stored == "primary":
+        return {"runOn": "primary", "replicaName": None}
+    if stored and str(stored).startswith("replica:"):
+        rid = str(stored).split(":", 1)[1]
+        name = alias_of(int(rid)) if rid.isdigit() else None
+        return {"runOn": "replica", "replicaName": name}
+    return {"runOn": "auto", "replicaName": None}
 
 
 # ---- GET /admin/queue -------------------------------------------------------

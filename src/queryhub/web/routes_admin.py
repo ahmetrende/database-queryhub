@@ -4748,8 +4748,8 @@ def _mask_edit_fields(body: MaskPatchIn) -> dict:
         reason = body.reason.strip()
         if not reason:
             raise deps._error(400, "reason_required",
-                              "Enter a reason. An exemption without one means "
-                              "nothing to the next person who finds it.")
+                              "Write a reason. It is the only record of why "
+                              "QueryHub stopped masking this data.")
         out["reason"] = reason
     return out
 
@@ -4837,8 +4837,8 @@ def _mask_fields(body: MaskExemptionIn) -> tuple[int | None, dict]:
     reason = (body.reason or "").strip()
     if not reason:
         raise deps._error(400, "bad_request",
-                          "Enter a reason. An exemption without one means "
-                          "nothing to the next person who finds it.")
+                          "Write a reason. It is the only record of why "
+                          "QueryHub stopped masking this data.")
 
     strength = (body.strength or "soft").lower()
     if strength not in ("soft", "full"):
