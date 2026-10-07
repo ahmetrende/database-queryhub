@@ -69,11 +69,17 @@ def test_the_refusal_is_asked_of_grants_not_hardcoded():
 
 def test_the_approve_card_names_the_refusal():
     """An admin who presses Approve and sees nothing happen will press it
-    again. The card already explains tier_conflict and no_target the same way."""
-    from queryhub.slack_app import handlers
-    src = inspect.getsource(handlers)
+    again. The card already explains tier_conflict and no_target the same way.
+
+    The words live in `access.approval_texts`, which the Slack button and the
+    QueryHub Web screen both use. The Slack handler must ask for them and keep
+    no copy of its own."""
+    from queryhub.slack_app import access, handlers
+    src = inspect.getsource(access.approval_texts)
     assert 'ag.get("reason") == "control_plane"' in src
     assert "control-plane database" in src
+    assert "access.approval_texts(" in inspect.getsource(
+        handlers.handle_access_approve)
 
 
 def test_the_slack_modal_tells_the_person_instead_of_crashing():

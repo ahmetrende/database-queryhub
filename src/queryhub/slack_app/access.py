@@ -3,15 +3,18 @@
 When `/sql` is rejected (no team grant for any target), the user is shown
 an ephemeral message with a [Request access] button. Clicking it opens a
 modal where they describe what target / database / query they want and why.
-On submit, all active admins get a DM with a copy-pasteable SQL snippet for
-granting access, plus Approve / Reject buttons.
+On submit, all active admins get a DM with the request and Approve / Reject
+buttons. Approve writes the grant, so the DM carries no SQL to run.
 
-This module owns the block-kit for that flow; persistence is in
-`access_requests.py`; the Bolt registrations live in `handlers.py`.
+This module owns the block-kit for that flow and the words of the decision.
+Persistence is in `access_requests.py`. The Bolt registrations live in
+`handlers.py`. The Slack buttons and the QueryHub Web screen both decide a
+request, and both use the decision helpers here.
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from .. import config as cfg
 from .. import targets
@@ -205,7 +208,6 @@ def admin_dm_blocks(access_request: dict, target: targets.TargetServer | None,
         target_label = f"`{requested_server}`\n_(not onboarded — free-text request)_"
     else:
         target_label = "_(target removed)_"
-    target_id_for_snippet = target.id if target else "<TARGET_ID>"
     db_label = (
         f"`{access_request['database_name']}`" if access_request["database_name"]
         else "_(default)_"
@@ -249,74 +251,21 @@ def admin_dm_blocks(access_request: dict, target: targets.TargetServer | None,
             }],
         })
 
-    # Copy-paste snippet — admin runs this in DataGrip/psql before clicking
-    # Approve. We only generate the *additive* snippet (existing-team path)
-    # because creating a NEW team is a strategic decision; admin is pointed
-    # at deploy/team_admin_templates.sql for that.
-    # The snippet has to name the tables the live model actually reads.
-    # Against the legacy ones after the pod cutover this recipe did not just
-    # do nothing: `(SELECT id FROM teams WHERE name = ...)` returns NULL from
-    # an empty table, so the admin's paste failed on a not-null column. A
-    # broken recipe on the card is worse than no recipe, because it is read as
-    # the supported way to do this.
-    from .. import teams as teams_mod
-    dbn = access_request.get("database_name")
-    if teams_mod.use_v2():
-        db_col = f"'{dbn}'" if dbn else "NULL"
-        snippet = (
-            "-- Add user to an existing team (replace TEAM_NAME with its name "
-            "or label):\n"
-            "INSERT INTO team_member (team_id, principal_id)\n"
-            "SELECT t.id, i.principal_id\n"
-            "  FROM team t, principal_identity i\n"
-            " WHERE (t.name = 'TEAM_NAME' OR t.display_name = 'TEAM_NAME')\n"
-            "   AND NOT t.is_deleted\n"
-            f"   AND i.external_id = '{requester_id}' AND i.provider = 'slack'\n"
-            "   AND NOT i.is_deleted\n"
-            "ON CONFLICT (team_id, principal_id) WHERE NOT is_deleted "
-            "DO NOTHING;\n"
-            "-- Ensure that team has the grant for this target+db:\n"
-            "INSERT INTO access_grant\n"
-            "  (team_id, target_id, all_targets, database_name, all_databases,\n"
-            "   tier, valid_from, reason)\n"
-            f"SELECT t.id, {target_id_for_snippet}, FALSE, {db_col}, "
-            f"{'FALSE' if dbn else 'TRUE'}, 'ro', now(),\n"
-            "       'granted from an access request'\n"
-            "  FROM team t\n"
-            " WHERE (t.name = 'TEAM_NAME' OR t.display_name = 'TEAM_NAME')\n"
-            "   AND NOT t.is_deleted\n"
-            "ON CONFLICT DO NOTHING;"
-        )
-    else:
-        db_arg = f"ARRAY['{dbn}']" if dbn else "NULL"
-        snippet = (
-            "-- Add user to existing team (replace TEAM_NAME):\n"
-            f"INSERT INTO team_members (team_id, slack_user_id) VALUES\n"
-            f"    ((SELECT id FROM teams WHERE name = 'TEAM_NAME'), '{requester_id}')\n"
-            f"ON CONFLICT DO NOTHING;\n"
-            "-- Ensure that team has the grant for this target+db:\n"
-            f"INSERT INTO team_target_grants (team_id, target_server_id, allowed_databases) VALUES\n"
-            f"    ((SELECT id FROM teams WHERE name = 'TEAM_NAME'), {target_id_for_snippet}, {db_arg})\n"
-            f"ON CONFLICT DO NOTHING;"
-        )
+    # The card carries no SQL. Approve writes the grant itself
+    # (`access_requests.decide`). A recipe to paste first also went stale once:
+    # after the pod cutover it named tables that were empty, and the paste
+    # failed.
     blocks.append({"type": "divider"})
     blocks.append({
         "type": "section",
         "text": {
             "type": "mrkdwn",
             "text": (
-                ":wrench: *Approve* (below) grants the requester per-user "
-                "access automatically, at the requested tier (default RO), "
-                "for the listed database. To give a *team-level* grant "
-                "instead, run the SQL below first. The automatic grant then "
-                "adds only a per-user row that is narrower or equal. For a "
-                "*new* team, see `deploy/team_admin_templates.sql`."
+                ":wrench: *Approve* gives the requester a per-user grant. "
+                "The grant uses the requested tier (default RO) and the "
+                "listed database."
             ),
         },
-    })
-    blocks.append({
-        "type": "section",
-        "text": {"type": "mrkdwn", "text": f"```{snippet}```"},
     })
 
     blocks.append({
@@ -368,6 +317,108 @@ def resolved_admin_dm_blocks(
         "elements": [{"type": "mrkdwn", "text": status_line}],
     })
     return blocks
+
+
+# ---------- what a decision says, and who hears it ----------
+
+def _until(expires_at) -> str:
+    """`2026-10-14 11:09 UTC` for a datetime or an ISO string, `""` for none."""
+    if not expires_at:
+        return ""
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def approval_texts(updated: dict, decided_by: str) -> tuple[str, str]:
+    """(status line for the admin cards, DM for the requester) after an
+    approval.
+
+    `updated` is the row `access_requests.decide` returned, with its
+    `auto_grant` summary. `decided_by` is how the decider is shown: a Slack
+    mention, or a plain name for an account that has no Slack id."""
+    ag = updated.get("auto_grant") or {}
+    if ag.get("applied"):
+        dbs = ag.get("databases")
+        db_txt = ", ".join(f"`{d}`" for d in dbs) if dbs else "_all databases_"
+        until = _until(ag.get("expires_at"))
+        grant_line = (f"\n:key: Granted automatically: *{(ag.get('mode') or 'ro').upper()}* "
+                      f"on {db_txt}" + (f", until `{until}`" if until else "") + ".")
+        requester_note = ("\n\nYou can now run `/sql` — your access is active."
+                          + (f" It lasts until `{until}`." if until else ""))
+    elif ag.get("reason") == "tier_conflict":
+        grant_line = ("\n:warning: Auto-grant skipped: an active grant at a different "
+                      f"tier (*{(ag.get('mode') or '?').upper()}*) already exists. "
+                      "To give the requested tier, change that grant manually.")
+        requester_note = "\n\nA DBA will finalize your access shortly."
+    elif ag.get("reason") == "control_plane":
+        grant_line = ("\n:no_entry: Auto-grant refused: this is the bot's own "
+                      "control-plane database. It holds the audit log and the "
+                      "grant tables. An access request cannot grant it.")
+        requester_note = ("\n\nAn access request cannot grant this "
+                          "connection.")
+    elif ag.get("reason") == "no_target":
+        grant_line = ("\n:warning: Auto-grant skipped: this server is not a "
+                      "target yet. Onboard it, then grant access manually.")
+        requester_note = "\n\nA DBA will finalize your access shortly."
+    else:
+        grant_line = ""
+        requester_note = "\n\nYou can now run `/sql`."
+    status_line = f":white_check_mark: Approved by {decided_by}" + grant_line
+    requester_dm = (
+        f":white_check_mark: *Access request `#{updated['id']}` approved* by "
+        f"{decided_by}.\n" + access_context_md(updated) + requester_note
+    )
+    return status_line, requester_dm
+
+
+def rejection_texts(updated: dict, decided_by: str, reason: str) -> tuple[str, str]:
+    """(status line for the admin cards, DM for the requester) after a
+    rejection."""
+    status_line = f":x: Rejected by {decided_by} — {reason}"
+    requester_dm = (
+        f":x: *Access request `#{updated['id']}` rejected* by {decided_by}\n"
+        + access_context_md(updated) + f"\n*Reason:* {reason}"
+    )
+    return status_line, requester_dm
+
+
+def update_admin_cards(client, access_request_id: int, target,
+                       status_line: str) -> None:
+    """Replace the buttons on every admin's copy of the card with
+    `status_line`, so nobody presses Approve on a request that is decided."""
+    from .. import access_requests
+    from . import notifications
+
+    req = access_requests.get(access_request_id)
+    if req is None:
+        return
+    blocks = resolved_admin_dm_blocks(req, target, status_line)
+    for r in access_requests.list_admin_dms(access_request_id):
+        try:
+            notifications._update(
+                client,
+                channel=r["channel_id"],
+                ts=r["message_ts"],
+                blocks=blocks,
+                text=status_line,
+            )
+        except Exception:
+            log.exception(
+                "Failed to update admin DM for access request %s (channel=%s ts=%s)",
+                access_request_id, r["channel_id"], r["message_ts"],
+            )
+
+
+def announce_decision(client, updated: dict, target, status_line: str,
+                      requester_dm: str) -> None:
+    """After a decision: retire every admin's card, then tell the requester."""
+    from . import notifications
+
+    update_admin_cards(client, updated["id"], target, status_line)
+    notifications.dm_requester(client, updated["requester_slack_id"], requester_dm)
 
 
 # ---------- reject reason modal ----------

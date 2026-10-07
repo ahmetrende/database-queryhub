@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 from .. import config as cfg, origins
 from .. import query_safety
+from ..access_requests import requested_tier_of
 from ..auto_approve import AUTO_DECIDED_BY
 
 log = logging.getLogger(__name__)
@@ -652,10 +653,24 @@ def feedback_entry(row: dict, name_of: "callable" = None) -> dict:
     }
 
 
+#: The three states of an access request, in the words the screen filters on.
+#: The table stores `pending / approved / rejected`. The design calls them
+#: `submitted / provisioned / rejected`, and `POST /endpoint-requests` already
+#: answers `submitted`. Sending the stored word left the pending list and the
+#: sidebar count empty, so a request could not be approved on the screen.
+_ENDPOINT_STATUS = {
+    "pending": "submitted",
+    "approved": "provisioned",
+    "rejected": "rejected",
+}
+
+
 def endpoint_request_entry(row: dict, alias_of: "callable",
                            name_of: "callable" = None) -> dict:
-    """One access_requests row → admin endpoint-request shape. `tier` is
-    not stored on the row, so it is omitted."""
+    """One access_requests row → admin endpoint-request shape. `tier` is the
+    tier Provision will grant: the requested one, RO when none was stated
+    (`access_requests.requested_tier_of`, the rule `decide()` uses)."""
+    status = row.get("status")
     return {
         "id": f"er_{row['id']}",
         "requester": (lambda w: name_of(w) if name_of else w)(
@@ -664,8 +679,9 @@ def endpoint_request_entry(row: dict, alias_of: "callable",
         "server": alias_of(row.get("target_server_id"))
         or (str(row["target_server_id"]) if row.get("target_server_id") else None),
         "database": row.get("database_name"),
+        "tier": requested_tier_of(row).upper(),
         "reason": row.get("reason"),
-        "status": row.get("status"),
+        "status": _ENDPOINT_STATUS.get(status or "", status),
         "requestedAt": iso(row.get("created_at")),
     }
 

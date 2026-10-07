@@ -1609,14 +1609,16 @@ def admin_schema_refresh(conn: str, database: str | None = None,
 def admin_endpoint_requests(status: str | None = None,
                             claims: dict = Depends(deps.current_user)):
     """Access / endpoint provisioning requests (access_requests). Optional
-    ?status filter (e.g. pending)."""
+    ?status filter, in either vocabulary: the stored words (pending, approved,
+    rejected) or the screen's (submitted, provisioned, rejected)."""
     admin.require_admin(claims, "access")
     cols = ("id, requester_slack_id, requester_name, target_server_id, "
-            "database_name, reason, status, created_at")
+            "database_name, requested_tier, reason, status, created_at")
     if status:
+        stored = {"submitted": "pending", "provisioned": "approved"}.get(status, status)
         rows = db.fetch_all(
             f"SELECT {cols} FROM access_requests WHERE status = %s "
-            f"ORDER BY id DESC LIMIT 200", (status,))
+            f"ORDER BY id DESC LIMIT 200", (stored,))
     else:
         rows = db.fetch_all(
             f"SELECT {cols} FROM access_requests ORDER BY id DESC LIMIT 200")
@@ -4117,6 +4119,41 @@ class EndpointDecisionIn(BaseModel):
     note: str | None = None
 
 
+def _announce_endpoint_decision(row: dict, approved: bool, uid: str,
+                                claims: dict, note: str | None) -> None:
+    """Do here what the Slack buttons do after a decision: retire every
+    admin's card, so nobody presses Approve on a request that is decided, and
+    tell the requester.
+
+    Without it a decision made on this screen left live Approve / Reject
+    buttons in the admins' DMs, and a rejection never reached the requester,
+    although the screen says it did.
+
+    Failures are logged and swallowed. The decision is committed and answered,
+    and a Slack problem must not turn it into an error the admin has to
+    interpret."""
+    from ..slack_app import access
+    from .routes_queries import _bot_client
+
+    client = _bot_client()
+    if client is None:          # vanilla profile: no Slack, nobody to tell
+        return
+    # A Slack id renders as a mention. A local account has none, so it is named.
+    who = f"<@{uid}>" if _SLACK_ID_RE.match(uid or "") else (claims.get("name") or uid)
+    try:
+        target = (targets.get(row["target_server_id"])
+                  if row.get("target_server_id") else None)
+        if approved:
+            status_line, requester_dm = access.approval_texts(row, who)
+        else:
+            status_line, requester_dm = access.rejection_texts(
+                row, who, note or "No reason given.")
+        access.announce_decision(client, row, target, status_line, requester_dm)
+    except Exception:
+        log.exception("could not announce the decision on access request %s",
+                      row.get("id"))
+
+
 @router.post("/endpoint-requests/{req_id}/decision")
 def admin_decide_endpoint(req_id: int, body: EndpointDecisionIn,
                           claims: dict = Depends(deps.current_user)):
@@ -4125,7 +4162,8 @@ def admin_decide_endpoint(req_id: int, body: EndpointDecisionIn,
     (default ro), same transaction as the status flip, shared with the
     Slack approve button. The auth-event outbox DMs the grantee. decide()
     skips the grant (flagged in auto_grant) when the target is unknown or
-    an active grant exists at a different tier."""
+    an active grant exists at a different tier. Afterwards the admins' Slack
+    cards are retired and the requester is told, as the Slack buttons do."""
     uid = admin.require_admin(claims, "access")
     req = access_requests.get(req_id)
     if req is None:
@@ -4142,6 +4180,7 @@ def admin_decide_endpoint(req_id: int, body: EndpointDecisionIn,
         with db.transaction() as cur:
             audit.log_in(cur, None, uid, claims.get("name"), "endpoint_rejected",
                          {"request_id": req_id})
+    _announce_endpoint_decision(row, body.approve, uid, claims, body.note)
     return mapping.endpoint_request_entry(row, _alias_of)
 
 

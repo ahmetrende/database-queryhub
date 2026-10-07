@@ -12,6 +12,10 @@ auto-grant is deliberately least-privilege and conservative:
   - an existing ACTIVE grant with a DIFFERENT tier is never touched (neither
     upgraded nor downgraded) — the auto-grant is skipped and flagged so the
     admin applies the change deliberately. Same-tier grants merge databases.
+  - a revoked grant, or a grant past its end date, is dead. The approval
+    starts a fresh grant with no end date. An ACTIVE same-tier grant keeps its
+    end date: an approval never lengthens or removes a limit that an admin
+    set.
 """
 from __future__ import annotations
 
@@ -162,11 +166,14 @@ def _auto_grant(cur, row: dict, decided_by_slack_id: str,
     """Create/extend the per-user grant an approved request asks for, inside
     the caller's transaction. Returns a summary dict:
 
-        {"applied": bool, "reason": str, "mode": ..., "databases": ...}
+        {"applied": bool, "reason": str, "mode": ..., "databases": ...,
+         "expires_at": datetime | None}     # "expires_at" only when applied
 
-    Conservative by design (see module docstring): unknown target -> skip;
-    active grant at a different tier -> skip (never silently upgrade or
-    downgrade); same tier -> merge databases (None = all absorbs)."""
+    Conservative by design (see module docstring). An unknown target is
+    skipped. An active grant at a different tier is skipped: the code never
+    upgrades or downgrades one silently. A same-tier grant gets the databases
+    merged (None = all absorbs) and keeps its end date. A revoked or lapsed
+    grant is replaced by a fresh one with no end date."""
     # Refused here as a REASON, not an exception. The approve button already
     # renders "auto-grant skipped, and why", and a request created before this
     # guard existed must stay decidable -- an admin has to be able to reject
@@ -201,14 +208,21 @@ def _auto_grant(cur, row: dict, decided_by_slack_id: str,
 
     # `cur` may be a psycopg Connection or Cursor — .execute() returns a
     # cursor either way, so capture it for the fetch.
+    # The database decides "active", on its own clock, with the test the grant
+    # readers use. A grant is active when it is not revoked and has no end date
+    # or one still ahead. A grant past its end date is NOT active, even though
+    # `revoked_at` is NULL.
     res = cur.execute(
-        "SELECT mode, allowed_databases, revoked_at FROM user_target_grants "
+        "SELECT mode, allowed_databases, expires_at, "
+        "       (revoked_at IS NULL "
+        "        AND (expires_at IS NULL OR expires_at > NOW())) AS active "
+        "FROM user_target_grants "
         "WHERE slack_user_id = %s AND target_server_id = %s FOR UPDATE",
         (uid, tid),
     )
     existing = res.fetchone()
 
-    if existing is not None and existing["revoked_at"] is None:
+    if existing is not None and existing["active"]:
         if existing["mode"] != tier:
             # An active grant at another tier: changing it (either way) is a
             # security decision, not bookkeeping — leave it to the admin.
@@ -216,26 +230,39 @@ def _auto_grant(cur, row: dict, decided_by_slack_id: str,
                     "mode": existing["mode"],
                     "databases": existing["allowed_databases"]}
         dbs = _merge_databases(existing["allowed_databases"], new_dbs)
+        # The limit that is already there stays. An approval must not lengthen
+        # it, and it must not remove it.
+        expires_at = existing["expires_at"]
     else:
+        # There is no grant, or it is revoked, or it has lapsed. This approval
+        # starts a fresh grant. The old end date must not carry over. The
+        # upsert below used to leave `expires_at` alone. A person who asked
+        # again after a lapse got an approval and a "your access is active"
+        # message, and the system still refused them.
         dbs = new_dbs
+        expires_at = None
 
     cur.execute(
         "INSERT INTO user_target_grants "
-        "  (slack_user_id, target_server_id, allowed_databases, mode, granted_by) "
-        "VALUES (%s, %s, %s, %s, %s) "
+        "  (slack_user_id, target_server_id, allowed_databases, mode, "
+        "   granted_by, expires_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s) "
         "ON CONFLICT (slack_user_id, target_server_id) DO UPDATE "
         "   SET allowed_databases = EXCLUDED.allowed_databases, "
         "       mode              = EXCLUDED.mode, "
         "       granted_by        = EXCLUDED.granted_by, "
         "       granted_at        = NOW(), "
-        "       revoked_at        = NULL",
-        (uid, tid, dbs, tier, decided_by_slack_id),
+        "       revoked_at        = NULL, "
+        "       expires_at        = EXCLUDED.expires_at",
+        (uid, tid, dbs, tier, decided_by_slack_id, expires_at),
     )
     audit.log_in(cur, None, decided_by_slack_id, decided_by_name,
                  "access_request_auto_grant",
                  {"access_request_id": row["id"], "grantee": uid,
-                  "target_server_id": tid, "mode": tier, "databases": dbs})
-    return {"applied": True, "reason": "granted", "mode": tier, "databases": dbs}
+                  "target_server_id": tid, "mode": tier, "databases": dbs,
+                  "expires_at": expires_at.isoformat() if expires_at else None})
+    return {"applied": True, "reason": "granted", "mode": tier,
+            "databases": dbs, "expires_at": expires_at}
 
 
 def decide(

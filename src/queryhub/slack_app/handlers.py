@@ -2309,31 +2309,6 @@ def handle_access_request_submission(ack: Ack, body: dict, client: WebClient) ->
     )
 
 
-def _update_all_access_admin_messages(
-    client: WebClient,
-    access_request_id: int,
-    target,
-    status_line: str,
-) -> None:
-    req = access_requests.get(access_request_id)
-    if req is None:
-        return
-    blocks = access.resolved_admin_dm_blocks(req, target, status_line)
-    for r in access_requests.list_admin_dms(access_request_id):
-        try:
-            notifications._update(client,
-                channel=r["channel_id"],
-                ts=r["message_ts"],
-                blocks=blocks,
-                text=status_line,
-            )
-        except Exception:
-            log.exception(
-                "Failed to update admin DM for access request %s (channel=%s ts=%s)",
-                access_request_id, r["channel_id"], r["message_ts"],
-            )
-
-
 def handle_access_approve(ack: Ack, body: dict, client: WebClient) -> None:
     if not _guard_admin(ack, client, body):
         return
@@ -2369,43 +2344,11 @@ def handle_access_approve(ack: Ack, body: dict, client: WebClient) -> None:
         return
 
     target = targets.get(updated["target_server_id"]) if updated["target_server_id"] else None
-    # decide() auto-granted (or explains why not) — surface that on the card
-    # so the admin knows whether any manual SQL is still needed.
-    ag = updated.get("auto_grant") or {}
-    if ag.get("applied"):
-        dbs = ag.get("databases")
-        db_txt = ", ".join(f"`{d}`" for d in dbs) if dbs else "_all databases_"
-        grant_line = (f"\n:key: Granted automatically: *{(ag.get('mode') or 'ro').upper()}* "
-                      f"on {db_txt}.")
-        requester_note = "\n\nYou can now run `/sql` — your access is active."
-    elif ag.get("reason") == "tier_conflict":
-        grant_line = ("\n:warning: Auto-grant skipped: an active grant at a different "
-                      f"tier (*{(ag.get('mode') or '?').upper()}*) already exists. "
-                      "To give the requested tier, change that grant manually.")
-        requester_note = "\n\nA DBA will finalize your access shortly."
-    elif ag.get("reason") == "control_plane":
-        grant_line = ("\n:no_entry: Auto-grant refused: this is the bot's own "
-                      "control-plane database. It holds the audit log and the "
-                      "grant tables. An access request cannot grant it.")
-        requester_note = ("\n\nAn access request cannot grant this "
-                          "connection.")
-    elif ag.get("reason") == "no_target":
-        grant_line = ("\n:warning: Auto-grant skipped: this server is not a "
-                      "target yet. Onboard it, then grant access manually.")
-        requester_note = "\n\nA DBA will finalize your access shortly."
-    else:
-        grant_line = ""
-        requester_note = "\n\nYou can now run `/sql`."
-    _update_all_access_admin_messages(
-        client, access_request_id, target,
-        f":white_check_mark: Approved by <@{user['id']}>" + grant_line,
-    )
-    notifications.dm_requester(
-        client, updated["requester_slack_id"],
-        f":white_check_mark: *Access request `#{access_request_id}` approved* by <@{user['id']}>.\n"
-        + access.access_context_md(updated)
-        + requester_note,
-    )
+    # decide() auto-granted (or explains why not) — the card and the DM say
+    # which, so the admin knows whether a manual step is still needed. The
+    # words live in `access`, shared with the QueryHub Web screen.
+    status_line, requester_dm = access.approval_texts(updated, f"<@{user['id']}>")
+    access.announce_decision(client, updated, target, status_line, requester_dm)
 
 
 def handle_access_reject(ack: Ack, body: dict, client: WebClient) -> None:
@@ -2432,16 +2375,9 @@ def handle_access_reject_submission(ack: Ack, body: dict, client: WebClient) -> 
     if updated is None:
         return
     target = targets.get(updated["target_server_id"]) if updated["target_server_id"] else None
-    _update_all_access_admin_messages(
-        client, access_request_id, target,
-        f":x: Rejected by <@{user['id']}> — {reason}",
-    )
-    notifications.dm_requester(
-        client, updated["requester_slack_id"],
-        f":x: *Access request `#{access_request_id}` rejected* by <@{user['id']}>\n"
-        + access.access_context_md(updated)
-        + f"\n*Reason:* {reason}",
-    )
+    status_line, requester_dm = access.rejection_texts(
+        updated, f"<@{user['id']}>", reason)
+    access.announce_decision(client, updated, target, status_line, requester_dm)
 
 
 

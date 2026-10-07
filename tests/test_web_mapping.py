@@ -319,13 +319,44 @@ def test_auto_grant_entry_prefers_the_resolved_names():
     assert e["databaseId"] is None             # NULL = every database
 
 
-def test_endpoint_request_entry():
+def _endpoint_row(**over):
     row = {"id": 31, "requester_slack_id": "U2", "requester_name": "Lin",
            "target_server_id": 3, "database_name": "payments",
            "reason": "need read", "status": "pending", "created_at": None}
-    e = mapping.endpoint_request_entry(row, lambda tid: "prod-main")
+    row.update(over)
+    return row
+
+
+def test_endpoint_request_entry():
+    e = mapping.endpoint_request_entry(_endpoint_row(), lambda tid: "prod-main")
     assert e["id"] == "er_31" and e["requester"] == "Lin"
-    assert e["server"] == "prod-main" and e["status"] == "pending"
+    assert e["server"] == "prod-main" and e["status"] == "submitted"
+
+
+def test_endpoint_request_status_uses_the_screens_words():
+    """The table says pending / approved / rejected. The screen lists what is
+    `submitted`, and a pending request never showed up while the API sent the
+    stored word."""
+    def status(s):
+        return mapping.endpoint_request_entry(
+            _endpoint_row(status=s), lambda tid: "x")["status"]
+
+    assert status("pending") == "submitted"
+    assert status("approved") == "provisioned"
+    assert status("rejected") == "rejected"
+    assert status("something-new") == "something-new"   # unknown: not hidden
+
+
+def test_endpoint_request_tier_is_what_provision_will_grant():
+    def tier(**over):
+        return mapping.endpoint_request_entry(
+            _endpoint_row(**over), lambda tid: "x")["tier"]
+
+    assert tier() == "RO"                                # none stated
+    assert tier(requested_tier="rw") == "RW"
+    assert tier(requested_tier="ddl") == "DDL"
+    # The free-text reason never sets the tier (SEC): the badge must not either.
+    assert tier(reason="[requested tier: DDL] please") == "RO"
 
 
 # ---------------------------------------------------------------------------

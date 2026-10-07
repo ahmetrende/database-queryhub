@@ -2,6 +2,7 @@
 transaction as the status flip). These tests drive access_requests.decide()
 against a scripted fake connection — no DB."""
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -68,6 +69,12 @@ class FakeConn:
     def sql_containing(self, fragment):
         return [s for s, _ in self.executed if fragment in s]
 
+    def params_of(self, fragment):
+        """Parameters of the one statement that contains `fragment`."""
+        hits = [p for s, p in self.executed if fragment in s]
+        assert len(hits) == 1, hits
+        return hits[0]
+
 
 ROW = {
     "id": 13, "requester_slack_id": "U0EXAMPLE01", "requester_name": "Dev One",
@@ -77,6 +84,16 @@ ROW = {
     "decided_by_slack_id": "U0EXAMPLE99", "decided_by_name": "admin",
     "decision_reason": None, "created_at": None, "decided_at": None,
 }
+
+_NOW = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
+_PAST = _NOW - timedelta(days=3)
+_FUTURE = _NOW + timedelta(days=4)
+
+
+def _grant(mode="ro", dbs=None, expires_at=None, active=True):
+    """The row the SELECT in `_auto_grant` returns for an existing grant."""
+    return {"mode": mode, "allowed_databases": dbs,
+            "expires_at": expires_at, "active": active}
 
 
 @pytest.fixture
@@ -101,16 +118,16 @@ def test_approve_creates_grant_fresh(monkeypatch, audit_calls):
     _wire(monkeypatch, conn)
     out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
     ag = out["auto_grant"]
-    assert ag == {"applied": True, "reason": "granted",
-                  "mode": "ro", "databases": ["shipping_service"]}
+    assert ag == {"applied": True, "reason": "granted", "mode": "ro",
+                  "databases": ["shipping_service"], "expires_at": None}
     assert conn.sql_containing("INSERT INTO user_target_grants")
     assert conn.sql_containing("INSERT INTO requesters")     # whitelist net
     assert audit_calls and audit_calls[0][0] == "access_request_auto_grant"
+    assert audit_calls[0][1]["expires_at"] is None
 
 
 def test_approve_merges_same_tier(monkeypatch, audit_calls):
-    existing = {"mode": "ro", "allowed_databases": ["other_db"], "revoked_at": None}
-    conn = FakeConn([dict(ROW), existing])
+    conn = FakeConn([dict(ROW), _grant(dbs=["other_db"])])
     _wire(monkeypatch, conn)
     out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
     assert out["auto_grant"]["applied"] is True
@@ -120,8 +137,7 @@ def test_approve_merges_same_tier(monkeypatch, audit_calls):
 
 
 def test_approve_skips_on_tier_conflict(monkeypatch, audit_calls):
-    existing = {"mode": "rw", "allowed_databases": None, "revoked_at": None}
-    conn = FakeConn([dict(ROW), existing])
+    conn = FakeConn([dict(ROW), _grant(mode="rw")])
     _wire(monkeypatch, conn)
     out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
     ag = out["auto_grant"]
@@ -132,13 +148,14 @@ def test_approve_skips_on_tier_conflict(monkeypatch, audit_calls):
 
 
 def test_approve_revoked_grant_treated_as_fresh(monkeypatch, audit_calls):
-    existing = {"mode": "rw", "allowed_databases": ["x"], "revoked_at": "2026-01-01"}
-    conn = FakeConn([dict(ROW), existing])
+    # A revoked row is not active, whatever its tier or end date says.
+    conn = FakeConn([dict(ROW), _grant(mode="rw", dbs=["x"], active=False)])
     _wire(monkeypatch, conn)
     out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
     # revoked rw row is dead — the new ro grant replaces it at the asked tier
     assert out["auto_grant"] == {"applied": True, "reason": "granted",
-                                 "mode": "ro", "databases": ["shipping_service"]}
+                                 "mode": "ro", "databases": ["shipping_service"],
+                                 "expires_at": None}
 
 
 def test_approve_no_target_skips(monkeypatch, audit_calls):
@@ -173,3 +190,73 @@ def test_no_db_grants_whole_target(monkeypatch, audit_calls):
     out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
     assert out["auto_grant"]["applied"] is True
     assert out["auto_grant"]["databases"] is None    # all dbs on the target
+
+
+# ---- end dates: a lapsed grant is dead, an active limit stays ---------------
+#
+# The upsert used to leave `expires_at` alone. Someone whose grant had lapsed
+# asked again, was approved, was told "your access is active", and was still
+# refused: the row came back to life with its old end date in the past.
+
+
+def test_approve_after_a_lapse_starts_without_the_old_end_date(monkeypatch,
+                                                               audit_calls):
+    conn = FakeConn([dict(ROW), _grant(expires_at=_PAST, active=False)])
+    _wire(monkeypatch, conn)
+    out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
+    assert out["auto_grant"]["applied"] is True
+    assert out["auto_grant"]["expires_at"] is None
+    # (uid, target, databases, tier, granted_by, expires_at)
+    params = conn.params_of("INSERT INTO user_target_grants")
+    assert params[-1] is None
+    assert audit_calls[0][1]["expires_at"] is None
+
+
+def test_a_lapsed_grant_does_not_block_another_tier(monkeypatch, audit_calls):
+    # The lapsed row is rw, the request asks ro. A lapsed grant gives nothing,
+    # so it must not raise "an active grant at a different tier exists".
+    conn = FakeConn([dict(ROW), _grant(mode="rw", expires_at=_PAST, active=False)])
+    _wire(monkeypatch, conn)
+    out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
+    assert out["auto_grant"]["applied"] is True
+    assert out["auto_grant"]["mode"] == "ro"
+
+
+def test_a_lapsed_grant_is_replaced_not_merged(monkeypatch, audit_calls):
+    conn = FakeConn([dict(ROW), _grant(dbs=["old_db"], expires_at=_PAST,
+                                       active=False)])
+    _wire(monkeypatch, conn)
+    out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
+    assert out["auto_grant"]["databases"] == ["shipping_service"]
+
+
+def test_an_active_limit_is_kept_not_removed(monkeypatch, audit_calls):
+    # The admin gave this person one week. An approval of a second request must
+    # neither lengthen that nor drop it.
+    conn = FakeConn([dict(ROW), _grant(dbs=["other_db"], expires_at=_FUTURE)])
+    _wire(monkeypatch, conn)
+    out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
+    assert out["auto_grant"]["expires_at"] == _FUTURE
+    assert conn.params_of("INSERT INTO user_target_grants")[-1] == _FUTURE
+    assert audit_calls[0][1]["expires_at"] == _FUTURE.isoformat()
+
+
+def test_active_means_the_same_as_the_readers_say(monkeypatch, audit_calls):
+    """The test for "active" is made by the database on its own clock, with the
+    rule the grant readers use: not revoked, and no end date or one ahead."""
+    conn = FakeConn([dict(ROW), None])
+    _wire(monkeypatch, conn)
+    ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
+    select = conn.sql_containing("FROM user_target_grants")[0]
+    assert "revoked_at IS NULL" in select
+    assert "expires_at IS NULL OR expires_at > NOW()" in select
+
+
+def test_the_upsert_names_expires_at(monkeypatch, audit_calls):
+    """If `expires_at` is missing from the DO UPDATE list, a stale end date
+    survives a re-grant. That was the bug."""
+    conn = FakeConn([dict(ROW), None])
+    _wire(monkeypatch, conn)
+    ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
+    upsert = conn.sql_containing("INSERT INTO user_target_grants")[0]
+    assert "expires_at = EXCLUDED.expires_at" in upsert    # FakeConn folds spaces
