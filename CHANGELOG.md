@@ -20,6 +20,9 @@ frontend and the endpoints it calls are explicitly outside it.
 - **User-facing messages follow Simplified Technical English.** Slack, the
   web API and the MCP server give the cause first, then the fix. Only the
   words changed. No check decides differently.
+- **A column named `tier_name` is no longer masked as a person name.** The
+  `name` rule now skips a column name that has the word `tier`. Other name
+  columns stay masked.
 
 ## [1.0.34] — 2026-10-05
 

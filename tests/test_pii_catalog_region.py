@@ -42,7 +42,8 @@ GENERIC = [
                                "index", "object", "host", "server", "file",
                                "application", "program", "service", "product",
                                "category", "brand", "country", "status",
-                               "event", "display", "slot", "parameter")),
+                               "event", "display", "slot", "parameter",
+                               "tier")),
     ("addr", "address", "substring", ("ip", "mac", "host", "contract",
                                       "wallet", "check")),
     ("birth", "birthdate", "substring", ("certificate", "template", "country",
@@ -55,6 +56,7 @@ INNOCENT = [
     "display_name", "database_name", "schema_name", "host_name",
     "application_name", "program_name", "index_name", "object_name",
     "slot_name", "server_name", "brand_name", "parameter_name",
+    "tier_name",
     "ip_address", "mac_address", "contract_address", "wallet_address",
     "address_line_check", "birth_certificate_template", "birth_country",
 ]
@@ -81,6 +83,16 @@ def test_a_bare_name_column_still_matches():
     """`name` in an application table usually IS a person, and it occurs 836
     times in the measured fleet. Exclusion is about QUALIFIERS, so a name with
     no qualifier must behave exactly as it did before."""
+    assert pii._match_pii_type("name", GENERIC) == "name"
+
+
+def test_a_tier_label_is_not_a_person_name():
+    """`tier_name` holds a label such as "standard". The `name` rule masked it
+    until `tier` joined the rule's exclusions (migration 142). A column that
+    carries the word `tier` and also a person-name qualifier keeps its mask,
+    because a precise rule still catches it."""
+    assert pii._match_pii_type("tier_name", GENERIC) is None
+    assert pii._match_pii_type("tier_full_name", GENERIC) == "name"
     assert pii._match_pii_type("name", GENERIC) == "name"
 
 
@@ -182,3 +194,16 @@ def test_both_migrations_are_present_and_ordered():
     assert "ADD COLUMN IF NOT EXISTS region" in a.read_text()
     assert "ADD COLUMN IF NOT EXISTS exclude_tokens" in a.read_text()
     assert "SET enabled = FALSE" in b.read_text()
+
+
+def test_the_tier_exclusion_is_a_new_idempotent_migration():
+    """142 is a separate file, because 088 is already applied and the ledger
+    records its checksum. The guard in its WHERE clause makes a second run
+    change nothing, and it selects only the `name` token rule."""
+    import pathlib
+    mig = pathlib.Path(__file__).resolve().parent.parent / "migrations"
+    text = (mig / "142_pii_name_rule_skips_tier.sql").read_text()
+    assert "SET exclude_tokens = array_append(exclude_tokens, 'tier')" in text
+    assert "NOT ('tier' = ANY(exclude_tokens))" in text
+    assert "pattern = 'name'" in text
+    assert "match_type = 'token'" in text
