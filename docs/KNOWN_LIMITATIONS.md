@@ -39,6 +39,17 @@ what is there and what is not there yet. The forward plan is in
   primary (`pg_stat_*`, `pg_locks`, WAL functions ...) examines the SQL text.
   Because of this, it does not detect a view that wraps one of them. QueryHub
   does not route reads to SQL Server readable secondaries.
+- **Stop does not stop a running SQL Server query.** QueryHub records no
+  server session for it, so Stop reports that it could not reach the
+  database. The query runs until `query_timeout_sec` ends it.
+- **The SQL Server statement count needs `SHOWPLAN`.** Before each statement,
+  QueryHub asks the server how many statements the text holds. The logins
+  of `deploy/grant_mssql.sql` do not have the `SHOWPLAN` permission. So for
+  a statement that reads a table, the server refuses, and the statement
+  runs without the count. SQL Server also rolls back the open transaction on
+  that refusal. A write script of two or more statements then commits only
+  its last statement. When the login has `SHOWPLAN`, the count runs and the
+  script stays one transaction. The `mssql` CI job measures both cases.
 
 ## Testing & typing
 
@@ -50,9 +61,15 @@ what is there and what is not there yet. The forward plan is in
   concurrency, migration-ledger idempotency, and session rotation against real
   SQL. The CI job fails if those tests report as *skipped*. In the past, the
   tests reported as skipped and so never ran.
-- Two areas still have thin coverage. SQL Server behaviour has no live
-  coverage (no CI instance). The tests assert `SET`/`search_path`/role
-  semantics on the issued statements, not on their effect.
+- SQL Server has live tests. `tests/test_integration_mssql.py` runs against
+  a throwaway SQL Server 2022 in CI (the `mssql` job). The job fails if the
+  tests skip. They cover TLS, the tier logins of `deploy/grant_mssql.sql`,
+  the transaction of a script, the statement timeout, Stop, the server-side
+  statement count, result types, masking and error scrubbing.
+- The SQL Server tests do not cover Availability Groups, reads on a readable
+  secondary or the schema catalog.
+- The PostgreSQL tests assert `SET`/`search_path`/role semantics on the
+  issued statements, not on their effect.
 - The codebase is **not fully typed**. `mypy` blocks CI only on errors that
   are not already in a committed baseline (`scripts/mypy_baseline.txt`). Only
   the session, login-provider and credential-provider modules must pass

@@ -53,8 +53,15 @@ IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'queryhub_ddl')
 -- Keep every tier off the shell / OLE-automation / advanced-config surface.
 -- xp_cmdshell + Ole Automation Procedures should already be disabled via
 -- sp_configure; this DENY is belt-and-suspenders at the principal level.
+--
+-- Do not add CONTROL SERVER to this DENY. A DENY on CONTROL SERVER also
+-- denies each server permission that it covers, CONNECT SQL too. Then the
+-- login cannot log in. The tier model keeps CONTROL SERVER away because it
+-- never grants it. The REVOKE removes that DENY from a login that an earlier
+-- version of this script created.
+REVOKE CONTROL SERVER FROM queryhub_ro, queryhub_rw, queryhub_ddl;
 DENY ALTER ANY LOGIN, ALTER ANY SERVER ROLE, ALTER ANY CREDENTIAL,
-     ALTER ANY LINKED SERVER, CONTROL SERVER
+     ALTER ANY LINKED SERVER
   TO queryhub_ro, queryhub_rw, queryhub_ddl;
 
 /* ============================ DATABASE SCOPE (<TARGET_DB>) ================ */
