@@ -133,7 +133,8 @@ UPDATE bot_config SET value = '<new>' WHERE key = '<key>';
 | `max_rows` | `1000` | no | Max rows returned in CSV |
 | `max_schedule_days` | `7` | no | Max future days for `/sql` scheduling. Set `0` to disable scheduling |
 | `min_query_length` | `6` | no | The bot rejects queries shorter than this |
-| `pre_flight_explain` | `off` | no | Runs EXPLAIN at modal-submit time to catch typos. RO queries only: the bot skips RW/DDL automatically |
+| `pre_flight_explain` | `on` | no | Runs EXPLAIN at submit time to catch typos in a single read-only statement |
+| `pre_flight_validate_scripts` | `on` | no | Plans every statement of a write request and of a multi-statement script at submit time. Nothing runs. Needs `pre_flight_explain`. Set `off` to check one read-only statement only |
 | `query_plan_logging` | `off` | no | When pre_flight_explain AND this key are on, the bot stores the EXPLAIN plan in `requests.explain_plan` (capped at 64KB) |
 | `query_timeout_sec` | `300` | no | Per-query `statement_timeout` (5 min) |
 | `require_justification` | `false` | no | Requires the justification field for RO queries too. RW/DDL always require it |

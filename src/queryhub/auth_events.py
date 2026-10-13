@@ -658,11 +658,31 @@ def _fail(cur, ev: dict, exc: Exception) -> None:
         (str(exc)[:500], give_up, ev["id"]))
 
 
+def _poll_seconds(last: int) -> int:
+    """The poll interval, read live from bot_config. At least one second.
+
+    A failed read keeps the last good value. The read goes to the metadata
+    database. It used to sit in the `while` condition, outside the `try`, so
+    one database blip ended the thread and no DM went out for two and a half
+    days. A value of zero or less would make the loop spin, so one second is the
+    floor.
+    """
+    try:
+        return max(1, cfg.get_int("auth_event_poll_seconds", 20))
+    except Exception:  # noqa: BLE001 — the loop must survive a failed read
+        log.warning("auth_events: could not read auth_event_poll_seconds; "
+                    "keeping %ss", last, exc_info=True)
+        return last
+
+
 def poll_loop(client: WebClient, stop: threading.Event) -> None:
     """Daemon loop: drain the outbox every auth_event_poll_seconds (default
-    20s; runtime-effective). Mirrors executor.scheduler_loop's shape."""
+    20s; runtime-effective). Mirrors executor.scheduler_loop's shape. Nothing
+    in it may end the loop, so the interval is read by _poll_seconds()."""
     log.info("auth-events poller started")
-    while not stop.wait(timeout=cfg.get_int("auth_event_poll_seconds", 20)):
+    interval = 20
+    while not stop.wait(timeout=interval):
+        interval = _poll_seconds(interval)
         try:
             if not is_enabled():
                 continue

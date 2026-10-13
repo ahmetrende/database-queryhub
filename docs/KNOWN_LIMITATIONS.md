@@ -27,6 +27,11 @@ what is there and what is not there yet. The forward plan is in
   with a spec but no execution path fails closed.
 - QueryHub blocks cross-database access on purpose. A query is scoped to the
   target database that it was submitted against.
+- **Submit-time validation covers PostgreSQL only.** It plans each statement of
+  a read or write request, scripts included, and refuses a mistake before
+  approval. It does not cover DDL, batch items, SQL Server, ClickHouse or
+  Athena. Errors in those show when the request runs. It cannot see a data
+  error either, such as a value that does not fit its column.
 - **Read replicas are PostgreSQL only, and off by default**
   (`replica_routing`). A replica read can be up to `replica_max_lag_seconds`
   behind. Read-your-writes covers writes made through QueryHub only, not

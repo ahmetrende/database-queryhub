@@ -9,8 +9,52 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.35] — 2026-10-13
+
+QueryHub refuses a mistake in a write or a script when you submit it, and the
+pre-flight can no longer run a hidden second statement. An admin sets the owner
+teams of a connection, gives a person or a team read access on every server,
+and marks a server super-admin-only. A decision on the web retires the Slack
+cards. The DM poller survives a database outage. Patch bump.
+
+### Upgrading
+
+- **Run `scripts/apply_migrations.py`.** It applies 141–143. Apply 141 before
+  you restart, because the new code reads `target_servers.super_admin_only`.
+- **Restart every QueryHub process.** Each one runs its own copy of the
+  executor and the pre-flight.
+- **A new key, `pre_flight_validate_scripts`,** has the default `on`
+  (migration 143). Set it to `off` to go back to the old check. It needs no
+  restart.
+
 ### Added
 
+- **QueryHub refuses a mistake in a write or in a script when you submit it.**
+  It plans every statement and runs none. A wrong column name, a
+  missing table or a syntax error that PostgreSQL rejects now stops the
+  request before an approver sees it. The message names the statement.
+  Set `pre_flight_validate_scripts` to `off` to go back to the old check.
+- **An admin sets the owner teams of a connection.** `GET/POST/DELETE
+  /admin/connections/{conn}/owners` manage the hand-made owners. QueryHub
+  refuses a synced owner and names the sync. The lead of each
+  owner team approves requests to that connection from any requester, up to
+  the fleet's ceiling (RO today). Each change writes an audit row
+  (`target_owner_added`, `target_owner_removed`) and runs the lead-approver
+  reconcile for that one target. The Connections screen has an Owners dialog,
+  and the picker names each team's lead.
+- **A person or a team can get read access on every server, and a server can
+  be super-admin-only** (migration 141).
+  - `GET/POST/DELETE /admin/grants/fleet` manage one `all_targets` row per
+    subject, RO only, with an optional fleet-wide waiver in the same
+    transaction. A write needs a super-admin and `access_model_v2`. QueryHub
+    refuses a mirrored row and names its source.
+  - `PUT /admin/connections/{conn}/super-admin-only` marks a server. On a
+    marked server, fleet-wide grants, fleet-wide waivers and the admin shortcut
+    count for no one but a super-admin. A grant or a waiver that names the
+    server still counts. Only a super-admin can write one.
+- **An access request can be approved on the web.** The Connections screen
+  lists pending requests with the tier that Provision grants. A decision there
+  retires the admin cards in Slack and tells the requester.
 - **A super-admin can add a reason to a run that needs no approval.** The
   web shows "Add a reason" where no reason is asked for. The audit log keeps
   the reason with the request.
@@ -23,6 +67,42 @@ frontend and the endpoints it calls are explicitly outside it.
 - **A column named `tier_name` is no longer masked as a person name.** The
   `name` rule now skips a column name that has the word `tier`. Other name
   columns stay masked.
+- **The masking Edit box shows its three settings at once.** Replace with the
+  same reach saves on the original row. A real replace writes the new row,
+  then disables the old one. A refused duplicate says how to change its
+  settings.
+- **The access-request card has no SQL recipe.** Approve writes the per-user
+  grant, so the admin does not run SQL first. The card keeps the attempted
+  query of the requester.
+- **The Scheduled panel says where a run goes.** `GET /scheduled` sends
+  `runOn` and `replicaName`.
+- **The screens use Simplified Technical English.** The admin screens,
+  sign-in, home and panels carry design's copy. Masking says Disable and
+  Enable.
+- **Athena connections show the AWS Architecture icon.**
+  `THIRD_PARTY_NOTICES.md` names Amazon as the owner of the mark.
+
+### Fixed
+
+- **A comment in front of a write no longer hides its row estimate.** A
+  request that started with `-- ...` or `/* ... */` got no "~N rows affected"
+  line, because the check read the comment as the first word. QueryHub also
+  refused an `EXPLAIN` with a comment in front as a syntax error. Both work now.
+- **Approving again after a lapse restores access.** The approval kept the old
+  end date. An active grant of the same tier keeps the end date it has.
+- **The DM poller survives a database outage.** The loop read its interval in
+  the `while` condition, outside the `try`. One outage ended the thread, and
+  no DM went out until a restart. A failed read now keeps the last good
+  interval, and the interval is at least one second.
+
+### Security
+
+- **The pre-flight `EXPLAIN` cannot run a hidden second statement.** QueryHub
+  now sends it with the extended protocol, and PostgreSQL itself refuses a
+  text that holds more than one statement. A tail such as `ROLLBACK; DELETE ...`
+  could leave the read-only transaction when the statement split and the
+  server disagreed. Measured on PostgreSQL 18: the tail deleted the row. Now the
+  server refuses it, and QueryHub logs a warning.
 
 ## [1.0.34] — 2026-10-05
 

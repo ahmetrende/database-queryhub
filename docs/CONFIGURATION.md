@@ -119,7 +119,8 @@ default instead of stopping the process.
 
 | Key | Default | What it does |
 |---|---|---|
-| `pre_flight_explain` | `on` | Run EXPLAIN at submit time for a cost/risk hint. |
+| `pre_flight_explain` | `on` | Run EXPLAIN at submit time. It refuses a mistake in a single read-only statement and adds a cost/risk hint. |
+| `pre_flight_validate_scripts` | `on` | At submit time, plan every statement of a write request and of a multi-statement script with EXPLAIN, in one read-only transaction. Nothing runs. QueryHub refuses a mistake before an approver sees it. Needs `pre_flight_explain` on. PostgreSQL only. Set `off` to check one read-only statement only. |
 | `explain_inline_plan` | `on` | Deliver a lone `EXPLAIN` as an inline code block. Either way, the app also stores the plan as a one-column result file, so a non-Slack client has something to read. |
 | `explain_max_chars` | `11000` | Truncate the inline code block to this many characters (a Slack message limit). The stored file keeps the whole plan. |
 | `allow_explain_analyze` | `off` | Permit `EXPLAIN (ANALYZE)`, which actually executes the query. |

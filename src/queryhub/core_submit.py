@@ -505,13 +505,35 @@ def validate_submission(
                     }]
                 else:
                     explain_plan = plan
-    elif pre_flight.is_enabled() and required_mode == "rw":
-        try:
-            risk_summary = pre_flight.explain_write_estimate(
-                target.id, database, required_mode, query,
-            )
-        except Exception:
-            log.exception("write-estimate failed; continuing without hint")
+
+    # Whole-request validation, for what explain() does not cover: every RW
+    # request, and any script with more than one statement. It plans each
+    # statement and runs none, so a wrong column or a syntax error is refused
+    # here and not after an approver has spent time on the request. Switch it
+    # off at runtime with bot_config pre_flight_validate_scripts = off. RW then
+    # goes back to the affected-rows hint alone.
+    main_count = sum(1 for s in safety.statements if s.kind != "set")
+    if (pre_flight.is_enabled() and required_mode in ("ro", "rw")
+            and (required_mode == "rw" or main_count > 1)):
+        if pre_flight.script_validation_enabled():
+            try:
+                ok, err, hint = pre_flight.validate_statements(
+                    target.id, database, required_mode, safety.statements)
+            except Exception:
+                log.exception("pre-flight validation crashed; continuing without it")
+                ok, err, hint = True, None, None
+            if not ok:
+                return Rejection(
+                    "query", f"Query failed validation: {err}"[:3000])
+            if hint:
+                risk_summary = hint
+        elif required_mode == "rw":
+            try:
+                risk_summary = pre_flight.explain_write_estimate(
+                    target.id, database, required_mode, query,
+                )
+            except Exception:
+                log.exception("write-estimate failed; continuing without hint")
 
     # Optional scheduling: both date and time must be supplied together.
     # Picker values are wall-clock in the user's local timezone (from the

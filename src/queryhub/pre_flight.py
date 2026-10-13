@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 import psycopg
 import sqlglot
@@ -58,15 +59,35 @@ _NON_EXPLAINABLE_LEADING = {
 }
 
 
+#: A line comment or a block comment, with the white space before it.
+_LEADING_NOISE = re.compile(r"\s*(?:--[^\n]*(?:\n|$)|/\*.*?\*/)", re.DOTALL)
+
+
+def _leading_word(query: str) -> str:
+    """First keyword of a statement, upper-case. White space and comments in
+    front of it do not count: `-- why\nUPDATE ...` starts with UPDATE.
+
+    Reading `split()[0]` gave `--` for such a statement. A write with a comment
+    in front never got its affected-rows estimate, and an EXPLAIN with one was
+    wrapped in a second EXPLAIN and refused as a syntax error."""
+    text = query or ""
+    while True:
+        match = _LEADING_NOISE.match(text)
+        if not match or match.end() == 0:
+            break
+        text = text[match.end():]
+    head = text.strip().split(None, 1)
+    return head[0].upper().strip("(") if head else ""
+
+
 def is_explainable(query: str) -> bool:
     """True if Postgres can EXPLAIN this statement. SELECT / WITH / INSERT
     / UPDATE / DELETE / MERGE / VALUES / TABLE plan fine; most DDL does
     not. CREATE TABLE AS / CREATE MATERIALIZED VIEW AS are explainable
     but we keep CREATE out of the allow-set to stay conservative."""
-    head = (query or "").strip().split(None, 1)
-    if not head:
+    leading = _leading_word(query)
+    if not leading:
         return False
-    leading = head[0].upper().strip("(")
     return leading not in _NON_EXPLAINABLE_LEADING and leading != "CREATE"
 
 
@@ -200,7 +221,9 @@ def explain(
             # EXPLAIN would resolve a name differently from the run that the
             # admin then approves.
             cur.execute("SET LOCAL search_path = pg_catalog, public")
-            cur.execute(explain_sql)
+            # prepare=True sends the text with the extended protocol, where the
+            # SERVER refuses more than one statement. See the note "Why every EXPLAIN here" below.
+            cur.execute(explain_sql, prepare=True)
             row = cur.fetchone()
             plan = row[0] if row else None
             return True, None, plan
@@ -272,8 +295,8 @@ def explain_write_estimate(
             return None
     except Exception:
         return None
-    head = (query or "").strip().split(None, 1)
-    if not head or head[0].upper().strip("(") not in _WRITE_LEADING:
+    verb = _leading_word(query)
+    if verb not in _WRITE_LEADING:
         return None
 
     target = targets.get(target_id)
@@ -302,7 +325,7 @@ def explain_write_estimate(
             # Same order as the executor (pg_catalog first) — see the note on
             # the read path above.
             cur.execute("SET LOCAL search_path = pg_catalog, public")
-            cur.execute(explain_sql)
+            cur.execute(explain_sql, prepare=True)  # see "Why every EXPLAIN here"
             row = cur.fetchone()
             plan = row[0] if row else None
     except psycopg.Error as e:
@@ -312,10 +335,14 @@ def explain_write_estimate(
                     target.alias, database, e)
         return None
 
+    return _write_estimate_text(verb, plan)
+
+
+def _write_estimate_text(verb: str, plan: list | None) -> str | None:
+    """The one-line "~N rows affected" hint for a planned write, or None."""
     rows = _affected_rows(plan)
     if rows is None:
         return None
-    verb = head[0].upper().strip("(")
     return f":pencil2: Estimate: ~{_fmt_int(rows)} rows affected ({verb.title()})"
 
 
@@ -336,6 +363,195 @@ def _affected_rows(plan: list | None) -> int | None:
         if child_rows:
             rows = child_rows
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Whole-request validation: plan EVERY statement, run none.
+# ---------------------------------------------------------------------------
+#
+# `explain()` plans one read-only statement and skips the rest.
+# `explain_write_estimate()` plans one write but throws its errors away. So a
+# typo in an UPDATE, or in the third SELECT of a script, went to an approver,
+# was approved, and the requester met the error only when it ran. Over 90 days
+# 65 requests failed after approval with a typo-class error. 40 were
+# multi-statement RO, 11 were RW, and in 61 of the 65 the same person ran a
+# corrected query on the same target within a day.
+#
+# `validate_statements()` closes that gap: one connection, one READ ONLY
+# transaction, one EXPLAIN per statement. EXPLAIN without ANALYZE plans a
+# statement and never executes it, and the transaction is read-only on top of
+# that, so a statement that slipped past the planner still cannot write.
+
+# Why every EXPLAIN here is sent with `prepare=True`.
+#
+# psycopg sends a text without parameters with the SIMPLE query protocol, and the
+# server then runs every statement in it. A READ ONLY transaction does not stop a
+# tail such as `ROLLBACK; DELETE ...`, `COMMIT; DELETE ...` or `END; DELETE ...`:
+# the tail ends the transaction, and the DELETE runs in a new, writable one. That
+# is how an EXPLAIN in front of a multi-statement payload once ran its tail
+# before approval (13c53ff). Measured on PostgreSQL 18: the row was deleted.
+#
+# The EXTENDED protocol parses one statement per message, and the server refuses a
+# text with more than one ("cannot insert multiple commands into a prepared
+# statement"). So a hidden tail cannot run, even if the statement split that fed
+# this module disagreed with PostgreSQL about where a statement ends. The same
+# five tails, sent this way, all stay out.
+
+#: SQLSTATE classes that mean "this request is wrong". 42 = syntax error or
+#: access rule violation (unknown column, table or function, bad grouping,
+#: ambiguous name, wrong type). 22 = data exception raised while planning a
+#: literal, such as `'abc'::int`.
+_BLOCKING_SQLSTATE_CLASSES = ("42", "22")
+#: Feature not supported: the statement can never run as written.
+_BLOCKING_SQLSTATES = frozenset({"0A000"})
+#: The one class-42 code that is not a mistake in the request. The executor can
+#: run a request under a team role (`SET LOCAL ROLE`), and that role can hold
+#: other privileges than the login planned with here. A privilege complaint from
+#: the login proves nothing about the run, and an editor cannot fix it. It fails
+#: open.
+_NOT_BLOCKING_SQLSTATES = frozenset({"42501"})
+
+#: Time for the whole validation, connect included. The Slack modal must ack
+#: within 3 s, so a slow target costs the check, never the submission.
+_VALIDATE_BUDGET_S = 2.0
+#: Below this much budget left, stop planning and let the request through.
+_MIN_STATEMENT_MS = 150
+
+
+def script_validation_enabled() -> bool:
+    """Runtime kill switch for validate_statements(). On by default."""
+    return _truthy(cfg.get_setting("pre_flight_validate_scripts", "on"))
+
+
+def _leading_is_explainable(leading: str) -> bool:
+    """Same rule as is_explainable(), on a classified leading word."""
+    return leading not in _NON_EXPLAINABLE_LEADING and leading != "CREATE"
+
+
+def validate_statements(
+    target_id: int,
+    database: str,
+    mode: str,
+    statements: list,
+    *,
+    budget_s: float = _VALIDATE_BUDGET_S,
+) -> tuple[bool, str | None, str | None]:
+    """Plan every statement of a request. Returns (ok, error, hint).
+
+      ok=False, error=str  → a statement is wrong; `error` is safe to show.
+      ok=True,  hint=str   → one data-modifying statement: the same
+                             "~N rows affected" line explain_write_estimate gives.
+      ok=True,  hint=None  → nothing wrong found, or nothing checkable.
+
+    `statements` are the StatementInfo items from query_safety.analyze: the
+    split the executor will run. SET statements are skipped. They cannot
+    change what a name resolves to, and a `statement_timeout = 0` among them
+    would remove the cap this function relies on. Checking stops at the first
+    DDL statement, because a schema change can alter what later statements
+    resolve to.
+
+    Fails OPEN on every environment problem: an unreachable target, a
+    timeout, a lock wait, an unexpected SQLSTATE, a spent budget. A missing
+    check must never block a submission. The one exception is a database that
+    does not exist, which is the requester's mistake and is surfaced.
+
+    RO and RW only, and only for engines with a PostgreSQL-style EXPLAIN.
+    """
+    if mode not in ("ro", "rw"):
+        return True, None, None
+
+    main = [s for s in statements if getattr(s, "kind", "") != "set"]
+    plannable: list[tuple[int, str, str]] = []  # (position, leading word, sql)
+    for position, stmt in enumerate(main, start=1):
+        if stmt.kind == "ddl":
+            break
+        leading = (stmt.leading or "").upper()
+        if _leading_is_explainable(leading) and (stmt.rewritten or "").strip():
+            plannable.append((position, leading, stmt.rewritten))
+    if not plannable:
+        return True, None, None
+
+    target = targets.get(target_id)
+    if target is None or not engines.spec(target.engine).supports_explain:
+        return True, None, None
+    try:
+        db_user, password = targets.get_credentials(target_id, mode)
+    except LookupError:
+        # No credential for this tier. The submit path has its own checks and
+        # the executor says so at run time.
+        return True, None, None
+
+    started = time.monotonic()
+    current = plannable[0][0]
+    first_plan = None
+    try:
+        with psycopg.connect(
+            host=target.host,
+            port=target.port,
+            dbname=database,
+            user=db_user,
+            password=password,
+            connect_timeout=2,
+            **cfg.target_ssl_kwargs(target.host),
+            application_name=f"dba-slack-bot:validate target={target.alias}"[:63],
+            # A planned write takes a brief row-exclusive lock on its table.
+            # Do not queue behind DDL for longer than a second, and do not hold
+            # an idle transaction open if this process stalls.
+            options="-c lock_timeout=1000 -c idle_in_transaction_session_timeout=3000",
+        ) as conn, conn.cursor() as cur:
+            # Nothing here may write, whatever the statement says.
+            cur.execute("SET TRANSACTION READ ONLY")
+            # Same order as the executor (pg_catalog first): see explain().
+            cur.execute("SET LOCAL search_path = pg_catalog, public")
+            for index, (position, _leading, sql) in enumerate(plannable):
+                left_ms = int((budget_s - (time.monotonic() - started)) * 1000)
+                if left_ms < _MIN_STATEMENT_MS:
+                    log.info(
+                        "pre-flight validation out of time after %d of %d "
+                        "statements (target=%s); letting the request through",
+                        index, len(plannable), target.alias)
+                    break
+                current = position
+                cur.execute(f"SET LOCAL statement_timeout = {min(left_ms, 2000)}")
+                cur.execute(
+                    "EXPLAIN (FORMAT JSON, ANALYZE OFF, COSTS ON, BUFFERS OFF) "
+                    + sql, prepare=True)  # see "Why every EXPLAIN here"
+                row = cur.fetchone()
+                if index == 0:
+                    first_plan = row[0] if row else None
+    except psycopg.OperationalError as e:
+        # Network, auth, timeout, lock wait: fail open. A database that does
+        # not exist is not one of those; see explain() for the story.
+        if _is_missing_database(e):
+            return False, errors.scrub(e), None
+        log.warning(
+            "pre-flight validation fail-open on operational error "
+            "(target=%s db=%s mode=%s): %s", target.alias, database, mode, e)
+        return True, None, None
+    except psycopg.Error as e:
+        state = getattr(e, "sqlstate", None) or ""
+        if "multiple commands" in str(e):
+            # One statement of the request holds more than one command for
+            # PostgreSQL. The statement split disagreed with the server.
+            log.warning(
+                "pre-flight: a statement holds more than one command "
+                "(target=%s db=%s mode=%s); refused", target.alias, database, mode)
+        blocking = (state[:2] in _BLOCKING_SQLSTATE_CLASSES
+                    or state in _BLOCKING_SQLSTATES)
+        if blocking and state not in _NOT_BLOCKING_SQLSTATES:
+            where = f"Statement {current} of {len(main)}: " if len(main) > 1 else ""
+            return False, where + errors.scrub(e), None
+        log.warning(
+            "pre-flight validation fail-open on sqlstate %r "
+            "(target=%s db=%s mode=%s): %s",
+            state, target.alias, database, mode, e)
+        return True, None, None
+
+    hint = None
+    if (mode == "rw" and len(main) == 1 and plannable[0][1] in _WRITE_LEADING
+            and first_plan is not None):
+        hint = _write_estimate_text(plannable[0][1], first_plan)
+    return True, None, hint
 
 
 # ---------------------------------------------------------------------------

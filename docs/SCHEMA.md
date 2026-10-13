@@ -298,7 +298,8 @@ Current keys:
 | `max_schedule_days` | `7` | Max days into the future that a /sql query can be scheduled. 0 = scheduling disabled. |
 | `kill_switch` | `off` | When `on`, the bot rejects new `/sql` invocations and shows `kill_switch_message`. In-flight requests are unaffected. |
 | `kill_switch_message` | (text) | Message shown to users when the kill switch is on. |
-| `pre_flight_explain` | `on` | When `on`, the bot runs `EXPLAIN` with RO credentials before approval. This shows plan-time errors and (when `query_plan_logging=on`) captures the plan. RO queries only. |
+| `pre_flight_explain` | `on` | When `on`, the bot runs `EXPLAIN` before approval. This shows plan-time errors and (when `query_plan_logging=on`) captures the plan. It plans a single read-only statement with RO credentials. Writes and scripts follow `pre_flight_validate_scripts`. |
+| `pre_flight_validate_scripts` | `on` | When `on`, the bot plans every statement of a write request and of a multi-statement script before approval. Nothing runs. A wrong column or a syntax error is refused at submit. Migration 143. |
 | `query_plan_logging` | `off` | When `on`, the bot stores the EXPLAIN (FORMAT JSON) output in `requests.explain_plan` (jsonb). |
 | `max_open_requests_per_user` | `5` | Per-user concurrency cap. It counts non-terminal requests. The bot rejects new submissions over the cap. |
 | `set_allowed_params` | (csv list) | Comma-separated allowlist of GUC names that the user can set with a `SET LOCAL` prelude (e.g. `work_mem,statement_timeout`). The bot rejects all other names. |
