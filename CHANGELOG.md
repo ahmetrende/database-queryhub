@@ -9,6 +9,15 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.36] — 2026-10-14
+
+Cancel now stops a running write or schema change. An error message no longer
+shows a value that the database read from a row. A sweep on real servers closed
+the phrasings that the first version missed. Every web response carries an
+`X-Request-ID`. A state change and its audit row commit together. Both services
+warn about pending migrations. The `mssql` CI job tests SQL Server live and found
+three defects. This release fixes one. Two stay open. Patch bump.
+
 ### Upgrading
 
 - **Apply the migrations before you restart, as before.** From now on, the web
@@ -17,6 +26,9 @@ frontend and the endpoints it calls are explicitly outside it.
   migration.
 - **Restart every QueryHub process.** The cancel path, the audit writes and the
   web app changed.
+- **The text log format of the web process changed.** Each line now has `[id]`
+  before the message, and `[-]` outside a request. Update a log parser that
+  matches the old format. A JSON line gets a `trace_id` field inside a request.
 
 ### Added
 
