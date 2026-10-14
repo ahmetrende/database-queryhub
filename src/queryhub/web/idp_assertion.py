@@ -4,9 +4,10 @@ The panel is a BFF: the browser never reaches this service, so a proxied
 request carries no cookie. It carries instead a 60-second Ed25519 JWT naming
 the VERIFIED corporate address of the human behind it.
 
-That address is resolved the same way an OIDC login resolves one, through
-`requesters.principal_by_email` (both people tables, one answer or none), so
-this is a third way to prove an existing identity and never a new
+This service resolves that address the same way as an OIDC login: by the rule
+of `requesters.principal_by_email` (both people tables, one answer or none).
+This path calls `requesters.match_email`, which also says why there is no
+answer. So this is a third way to prove an existing identity and never a new
 authorization subject. The assertion says
 who, and nothing about what; authority is read from this service's own tables
 afterwards, unchanged.
@@ -45,6 +46,22 @@ class AssertionError_(Exception):
     def __init__(self, code: str, detail: str = ""):
         super().__init__(detail or code)
         self.code = code
+
+
+# Refusals about the PERSON, not about the panel or the seam. The 401 body
+# carries these codes, and the panel shows them to the person, so each has a
+# message that says what to do. verify() raises them only after the signature,
+# the request binding and the jti pass: a forged token gets the generic
+# answer. Every other code is a seam failure, and the 401 body stays generic.
+# The log line names it.
+PERSON_MESSAGES = {
+    "not_onboarded":
+        "Refused: QueryHub has no account for this address. Ask an admin to add you.",
+    "bad_domain":
+        "Refused: this address is outside the allowed domain.",
+    "ambiguous_address":
+        "Refused: two QueryHub accounts share this address. Ask an admin to fix it.",
+}
 
 
 def canonical_string(method: str, path: str, body: bytes) -> str:
@@ -190,12 +207,19 @@ def verify(token: str, method: str, path: str, body: bytes) -> Principal:
     if not email.endswith("@" + domain):
         raise AssertionError_("bad_domain", "Address is outside the allowed domain.")
 
-    row = requesters.principal_by_email(email)
+    match = requesters.match_email(email)
+    if match.ambiguous:
+        # Two different people hold rows with this address. Picking either
+        # would hand one person the other's grants, so refusing is the only
+        # safe answer. It has its own code because the fix is different: an
+        # admin fixes the rows that GET /admin/people/duplicate-addresses
+        # lists. An OIDC login still says not_onboarded for it.
+        raise AssertionError_("ambiguous_address",
+                              "Two QueryHub accounts share that address.")
+    row = match.row
     if row is None:
         # Deliberately not "unknown user": the address may be perfectly well
-        # known to the company and simply have no QueryHub standing. Ambiguity
-        # (two rows, one address) also lands here, because by_email returns
-        # None for it, and refusing is the only safe answer.
+        # known to the company and simply have no QueryHub standing.
         raise AssertionError_("not_onboarded",
                               "No QueryHub account is registered to that address.")
     return Principal(row["slack_user_id"], row.get("name"))

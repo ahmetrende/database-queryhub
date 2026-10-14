@@ -1016,10 +1016,14 @@ insert prunes the expired rows, so there is no sweep job.
 
 ### `notification_outbox`
 
-One row per pending request and the admins notified about it (migration
+One row per event for a portal and the people to tell about it (migration
 102): `event_type`, `request_id`, `recipients`, `payload`, `processed_at`. The
 bot writes these rows next to the Slack DMs, never instead of them. It writes
-them only while `idp_outbox_enabled` is on (migration 136).
+them only while `idp_outbox_enabled` is on (migration 136). AUTH.md §1.3
+lists the event types and their payload keys.
+
+`request_id` is the id of a SQL request (`requests.id`). It is NULL for the
+events about access requests and window requests, which have their own ids.
 
 Two routes gated to the sync principal read and acknowledge the rows. So a
 portal can render an approvals queue without owning an admins table of its

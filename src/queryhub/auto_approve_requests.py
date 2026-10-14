@@ -3,12 +3,16 @@
 Mirrors `access_requests.py`: a small CRUD surface over the
 `auto_approve_requests` table. The Slack UI lives in
 `slack_app/ro_window.py`; the Bolt registrations in `slack_app/handlers.py`.
+
+This module imports `slack_app` in one place only: `_dm_admins`, which runs
+only for a caller that has a Slack client. The web routes use this module
+also when Slack is off or when the `slack_app` package is not there.
 """
 from __future__ import annotations
 
 import logging
 
-from . import audit, db
+from . import audit, db, idp_outbox, window_options
 
 log = logging.getLogger(__name__)
 
@@ -120,8 +124,8 @@ _TIER_RANK = {"ro": 1, "rw": 2, "ddl": 3}
 
 
 def valid_window(minutes: int) -> bool:
-    from .slack_app import ro_window
-    return ro_window.is_valid_window(minutes) or minutes in {d * 1440 for d in DAY_WINDOWS}
+    return (window_options.is_valid_window(minutes)
+            or minutes in {d * 1440 for d in DAY_WINDOWS})
 
 
 def submit_window(*, principal_id: str, name: str | None, target_id: int,
@@ -207,14 +211,38 @@ def submit_window(*, principal_id: str, name: str | None, target_id: int,
 
 def notify_admins(client, row: dict, alias: str) -> int:
     """DM every active admin the approve / reject card. Returns how many were
-    reached; zero means nobody can decide it."""
+    reached. Zero means nobody can decide it.
+
+    It also writes the IdP panel's `queryhub.window_request_pending` row while
+    `idp_outbox_enabled` is on. That row names the admins that the DMs go to,
+    and it does not need Slack. With no client, the function still writes the
+    row and returns 0. It then does not import `slack_app`."""
     from . import admins
+    outbox_on = idp_outbox.enabled()
+    if client is None and not outbox_on:
+        return 0
+    # One list for the DMs and for the outbox row, so that both name the same
+    # admins. The row goes first: it must not depend on Slack delivery.
+    admins_told = admins.list_active()
+    if outbox_on:
+        idp_outbox.window_request_pending(row, alias, admins_told)
+    if client is None:
+        return 0
+    return _dm_admins(client, row, alias, admins_told)
+
+
+def _dm_admins(client, row: dict, alias: str, admins_told: list[dict]) -> int:
+    """The Slack half of `notify_admins`: send the approve / reject card to
+    each admin in `admins_told`. Returns the number of admins that it reached.
+
+    Only a caller with a Slack client gets here. So this is the one place in
+    this module that imports `slack_app`."""
     from .slack_app import notifications, ro_window
     blocks = ro_window.admin_dm_blocks(row, alias)
     fallback = (f"{(row.get('max_tier') or 'ro').upper()} auto-approve window request "
                 f"from <@{row['requester_slack_id']}> for {alias} (#{row['id']})")
     reached = 0
-    for a in admins.list_active():
+    for a in admins_told:
         try:
             opened = client.conversations_open(users=a["slack_user_id"])
             notifications._post(client, channel=opened["channel"]["id"],
@@ -254,6 +282,10 @@ def decide_window(request_id: int, *, approve: bool, actor_id: str,
     scope as a query approval, because the waiver hands out exactly that. Two
     admins deciding at once: the second finds the request already decided.
     Returns {status, request, grant_id?, alias}.
+
+    Because both surfaces decide through here, this is the one place that
+    writes the IdP panel's `queryhub.window_request_decided` row, after the
+    commit.
     """
     import json
     from . import admins, auto_approve, targets
@@ -280,6 +312,8 @@ def decide_window(request_id: int, *, approve: bool, actor_id: str,
                          "auto_approve_window_rejected",
                          {"request_id": request_id,
                           "user": decided["requester_slack_id"]})
+        _tell_the_panel(req, approved=False, alias=alias,
+                        actor_id=actor_id, actor_name=actor_name)
         return {"status": "rejected", "request": req, "alias": alias}
     if not admins.can_approve(actor_id, {"required_tier": req["max_tier"],
                                          "target_server_id": req["target_server_id"],
@@ -319,7 +353,18 @@ def decide_window(request_id: int, *, approve: bool, actor_id: str,
                     "database_name": req["database_name"],
                     "max_tier": req["max_tier"], "window_minutes": req["window_minutes"]})))
         conn.commit()
+    _tell_the_panel(req, approved=True, alias=alias,
+                    actor_id=actor_id, actor_name=actor_name)
     return {"status": "approved", "request": req, "grant_id": grant_id, "alias": alias}
+
+
+def _tell_the_panel(req: dict, *, approved: bool, alias: str, actor_id: str,
+                    actor_name: str | None) -> None:
+    """The IdP panel's copy of a committed window decision. It is best effort:
+    `idp_outbox` logs a failure and never raises it."""
+    if idp_outbox.enabled():
+        idp_outbox.window_request_decided(req, approved=approved, alias=alias,
+                                          decider_name=actor_name or actor_id)
 
 
 def list_pending(limit: int = 200) -> list[dict]:

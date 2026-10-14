@@ -61,6 +61,39 @@ def test_no_address_is_no_answer(monkeypatch, email):
     assert requesters.principal_by_email(email) is None
 
 
+def test_an_address_with_no_row_is_no_answer(monkeypatch):
+    _tables(monkeypatch, [], [])
+    assert requesters.principal_by_email("a@example.com") is None
+
+
+# match_email (PLA-1409): the same rule, plus the reason when nobody matches.
+# principal_by_email must keep its old answer for every case: the row, or None
+# for "nobody" and "two people" alike.
+
+@pytest.mark.parametrize("req,adm,row_uid,ambiguous", [
+    ([], [], None, False),
+    (["U0EXAMPLE001"], [], "U0EXAMPLE001", False),
+    ([], ["U0EXAMPLE002"], "U0EXAMPLE002", False),
+    (["U0EXAMPLE001"], ["U0EXAMPLE001"], "U0EXAMPLE001", False),   # one person, two tables
+    (["U0EXAMPLE001"], ["U0EXAMPLE002"], None, True),
+    (["U0EXAMPLE001", "U0EXAMPLE003"], [], None, True),
+    ([], ["U0EXAMPLE002", "U0EXAMPLE004"], None, True),
+])
+def test_match_email_tells_nobody_from_two_people(monkeypatch, req, adm, row_uid, ambiguous):
+    _tables(monkeypatch, [_row(u) for u in req], [_row(u) for u in adm])
+    match = requesters.match_email("a@example.com")
+    assert match.ambiguous is ambiguous
+    assert (match.row or {}).get("slack_user_id") == row_uid
+    assert requesters.principal_by_email("a@example.com") is match.row
+
+
+@pytest.mark.parametrize("email", ["", "   ", None])
+def test_match_email_without_an_address_reads_nothing(monkeypatch, email):
+    monkeypatch.setattr(requesters.db, "fetch_all",
+                        lambda *a, **k: pytest.fail("an empty address reached the DB"))
+    assert requesters.match_email(email) == (None, False)
+
+
 def test_the_address_is_normalised_before_the_lookup(monkeypatch):
     seen = []
     monkeypatch.setattr(requesters.db, "fetch_all",
@@ -74,4 +107,12 @@ def test_every_external_sign_in_and_the_sync_resolve_through_it():
     for mod in (auth_providers, idp_assertion, routes_admin):
         src = inspect.getsource(mod)
         assert "by_email(email) or" not in src, mod.__name__
-        assert "requesters.principal_by_email(email)" in src, mod.__name__
+    # The OIDC sign-ins and the sync keep the old answer: one row, or None.
+    for mod in (auth_providers, routes_admin):
+        assert "requesters.principal_by_email(email)" in inspect.getsource(mod), \
+            mod.__name__
+    # The assertion also needs the reason (PLA-1409: ambiguous_address). It
+    # asks match_email, which is the same rule: principal_by_email is its row.
+    assert "requesters.match_email(email)" in inspect.getsource(idp_assertion)
+    assert "return match_email(email).row" in \
+        inspect.getsource(requesters.principal_by_email)

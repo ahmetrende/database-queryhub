@@ -93,6 +93,22 @@ In the vanilla profile every Slack send is a no-op, and the web UI is the
 only delivery path. (`ENV.slack_enabled` is simply
 `bool(slack_bot_token)`.)
 
+The IdP panel calls the access-request and window-request routes and their
+decision routes. These routes do not need `slack_app/`. They work when Slack
+is off, and also when Python cannot import the package. Each route writes its
+outbox row first. It imports `slack_app` only in the branch that has a Slack
+client. The parts that do not need Slack are in these places:
+
+- `window_options.py`: the window lengths and their labels.
+  `slack_app/ro_window.py` re-exports them for the Slack code.
+- `access_requests.notify_admins`: the admin list and the outbox row of a new
+  access request. `slack_app/access.py` (`dm_admins`) sends the DMs.
+- `auto_approve_requests.notify_admins`: the same for a window request. Its
+  `_dm_admins` sends the DMs.
+
+`tests/test_panel_routes_without_slack_app.py` makes each `slack_app` module
+unimportable. Then it calls each of these routes.
+
 ### 4. Target credentials — `secrets_providers.py`
 `SecretsProvider` is a `Protocol` with one method,
 `get_credentials(row, mode) -> (user, password)`. `LocalVaultProvider`

@@ -9,6 +9,32 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+### Added
+
+- **Four outbox events for the IdP portal.** QueryHub writes
+  `queryhub.access_request_pending`, `queryhub.access_request_decided`,
+  `queryhub.window_request_pending` and `queryhub.window_request_decided` to
+  `notification_outbox`, next to the Slack DMs. The rows serve the time when
+  Slack is off. `docs/AUTH.md` §1.3 lists their payload keys. The setting
+  `idp_outbox_enabled` (default off) gates every row. Add a template for each
+  event in the portal before you turn the setting on.
+- **The IdP portal can tell a person why QueryHub refused them.** A refused
+  identity assertion now names its cause in `error.code` when the cause is the
+  person: `not_onboarded` (no account), `bad_domain` (an address outside
+  `web_allowed_email_domain`) or `ambiguous_address` (two accounts share the
+  address). Every other refusal keeps the generic body.
+- **`GET /api/admin/people/duplicate-addresses`.** A super-admin can list the
+  addresses that two different people share, with the rows that hold them. Such
+  an address blocks a sign-in. The endpoint changes nothing.
+
+### Changed
+
+- **The access-request and window-request routes of the portal no longer need
+  `slack_app`.** They work when Slack is off, and also when Python cannot import
+  the package. The window lengths and their labels moved to
+  `window_options.py`. Each route imports `slack_app` only in the branch that
+  has a Slack client. The Slack messages do not change.
+
 ## [1.0.36] — 2026-10-14
 
 Cancel now stops a running write or schema change. An error message no longer

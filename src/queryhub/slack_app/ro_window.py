@@ -13,6 +13,11 @@ from __future__ import annotations
 
 import json
 
+# The window lengths and their labels are in `window_options`. That module has
+# no Slack import, so the web routes and the IdP outbox can use them without
+# Slack. The Slack code and the tests keep these names from here.
+from ..window_options import WINDOW_OPTIONS, is_valid_window, window_label
+
 # Action / callback IDs (distinct from the /sql modal + access flow)
 ACTION_OPEN = "act_open_ro_window"          # banner button → opens request modal
 MODAL_CALLBACK = "ro_window_request_modal"   # the justification modal
@@ -26,29 +31,6 @@ B_TARGET = "blk_ro_window_target"
 A_TARGET = "act_ro_window_target"
 B_WINDOW = "blk_ro_window_window"
 A_WINDOW = "act_ro_window_window"
-
-# Selectable window durations (minutes, label). Default is the first that
-# matches bot_config.ro_window_minutes (falls back to 60 = 1 hour).
-WINDOW_OPTIONS: list[tuple[int, str]] = [
-    (60, "1 hour"),
-    (180, "3 hours"),
-    (480, "8 hours"),
-]
-_VALID_WINDOW_MINUTES = frozenset(m for m, _ in WINDOW_OPTIONS)
-
-
-def window_label(minutes: int) -> str:
-    """How a window reads to a person: "8h" for the Slack windows, "7 days"
-    for the web's longer ones -- 10080 minutes read as a unit, not a number."""
-    minutes = int(minutes or 0)
-    if minutes and minutes % 1440 == 0:
-        d = minutes // 1440
-        return f"{d} day" + ("" if d == 1 else "s")
-    return f"{minutes // 60}h" if minutes % 60 == 0 else f"{minutes} min"
-
-
-def is_valid_window(minutes: int) -> bool:
-    return minutes in _VALID_WINDOW_MINUTES
 
 
 def _scope_label(target_alias: str, database_name: str | None) -> str:

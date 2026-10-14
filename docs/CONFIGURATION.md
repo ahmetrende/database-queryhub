@@ -33,7 +33,7 @@ They are inert in the vanilla (web-only) profile.
 | `web_local_login_max_failures` | `5` | Failed local-login attempts (per username and per IP) that the app tolerates inside the window, before a 429 lockout. |
 | `web_local_login_window_minutes` | `15` | Sliding window for the failure counter. The lock ends as the failures leave the window. |
 | `web_slack_team_id` | `""` | The Slack workspace (team id, `T…`) that a Slack sign-in must come from. Empty = the bot's own workspace, found with `auth.test`. If the app can establish neither, it refuses the sign-in. So an install that runs Slack sign-in without the bot must set this key. **(Slack)** |
-| `web_allowed_email_domain` | `""` | If set, restrict Slack SSO and external-OIDC logins to this email domain (e.g. `example.com`). Empty = no domain gate. |
+| `web_allowed_email_domain` | `""` | One email domain, such as `example.com`. It is not a list. QueryHub accepts a Slack SSO or external-OIDC login only for an address in this domain. Empty = no domain gate for those logins. The identity assertion from a trusted portal (AUTH.md §1.2) also reads this key. For the assertion, the key is **required** and fails closed: while the key is empty, QueryHub refuses every assertion with `no_domain`. |
 | `auth_session_retention_days` | `7` | The app deletes expired/revoked login sessions (`web_sessions`) after this many days. Nothing deleted them before, so the table grew with every sign-in. |
 | `auth_outbox_retention_days` | `14` | The app deletes processed authorization-change outbox rows after this many days. |
 | `idp_assertion_enabled` | `off` | Accept identity assertions from a trusted portal (AUTH.md §1.2). Every `idp_*` setting below is inert while this is off. |
@@ -42,7 +42,7 @@ They are inert in the vanilla (web-only) profile.
 | `idp_sync_principal` | `""` | The one principal allowed to call the reconcile and the notification outbox routes, through an assertion. Empty = nobody. |
 | `idp_sync_max_disable` | `5` | The most requesters that one portal sync may disable before a super-admin must approve it (AUTH.md §1.2). A run over the limit changes nothing and answers 409. It also sends every super-admin an approve / reject card. `0` = every disabling run needs approval. |
 | `idp_clock_skew_seconds` | `10` | Clock disagreement that the app tolerates between the portal and this host, on an assertion's `iat` and `exp` (0-60). |
-| `idp_outbox_enabled` | `off` | Write a `notification_outbox` row for the portal on each pending submission. Keep it off until the portal polls the outbox. |
+| `idp_outbox_enabled` | `off` | Write `notification_outbox` rows for the portal (AUTH.md §1.3): one per pending SQL request, and one per new or decided access or window request. Keep it off until the portal polls the outbox and has a template for each event. |
 | `idp_outbox_retention_days` | `7` | The daily cleanup deletes `notification_outbox` rows older than this, processed or not. |
 | `web_refresh_grace_seconds` | `30` | How long a just-rotated refresh token still works. With it, the app does not treat two tabs that refresh at once as token theft. 0 = strict single-use. |
 | `control_plane_target_ids` | *(auto)* | Comma-separated target ids that reach the bot's own metadata DB. Nobody can ever grant them. Empty = detect them from the configured BOT_DB_* connection. |

@@ -72,6 +72,12 @@ def current_user(conn: HTTPConnection) -> dict:
             )
         except idp_assertion.AssertionError_ as e:
             log.warning("idp assertion refused: %s", e.code)
+            # A refusal about the person (no account, outside the domain, an
+            # address that two people share) names its code, so the panel can
+            # tell the person what to do. A seam failure stays generic.
+            person = idp_assertion.PERSON_MESSAGES.get(e.code)
+            if person is not None:
+                raise _error(401, e.code, person) from e
             raise _error(401, "unauthenticated",
                          "Refused: the identity assertion is not valid.") from e
         # No `sid`: a proxied request has no server-side session to revoke.

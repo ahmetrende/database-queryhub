@@ -101,8 +101,12 @@ def web(core, monkeypatch):
     from queryhub.web import routes_requests as rr
     st = {"notified": [], "client": object()}
     monkeypatch.setattr(targets, "by_alias", lambda a: T if a == "prod-ledger" else None)
+    # The route calls notify_admins also with no client, because the IdP
+    # outbox row needs no Slack. Its contract then: it DMs nobody and
+    # returns 0. tests/test_idp_outbox_events.py drives the real function.
     monkeypatch.setattr(aar, "notify_admins",
-                        lambda client, row, alias: st["notified"].append(alias) or 2)
+                        lambda client, row, alias:
+                        (st["notified"].append(alias) or 2) if client is not None else 0)
     import queryhub.web.routes_queries as rq
     monkeypatch.setattr(rq, "_bot_client", lambda: st["client"])
     st["rr"] = rr

@@ -203,9 +203,11 @@ def endpoint_request(body: EndpointRequestIn,
     # the DBA and web approval worked, but the requester was told "no admins are
     # available to review it right now" on the default zero-dependency profile
     # the README recommends. 503 is only honest when nobody can act on it.
+    #
+    # `notify_admins` imports slack_app only when it has a Slack client to send
+    # with. So this route works when Slack is off, and also without slack_app.
     from .. import admins as admins_mod
-    from ..slack_app import access
-    ts = access.fan_out_admin_dms(_bot_client(), row, t, requested_server=server)
+    ts = access_requests.notify_admins(_bot_client(), row, t, requested_server=server)
     if not admins_mod.list_active():
         raise deps._error(503, "server_error",
                           "QueryHub saved your request, but no active admin "
@@ -227,10 +229,9 @@ class WindowRequestIn(BaseModel):
 
 
 def _window_options() -> list[dict]:
-    from .. import auto_approve_requests
-    from ..slack_app import ro_window
-    return ([{"minutes": m, "label": lbl} for m, lbl in ro_window.WINDOW_OPTIONS]
-            + [{"minutes": d * 1440, "label": ro_window.window_label(d * 1440), "days": d}
+    from .. import auto_approve_requests, window_options
+    return ([{"minutes": m, "label": lbl} for m, lbl in window_options.WINDOW_OPTIONS]
+            + [{"minutes": d * 1440, "label": window_options.window_label(d * 1440), "days": d}
                for d in auto_approve_requests.DAY_WINDOWS])
 
 
@@ -289,8 +290,9 @@ def create_window_request(body: WindowRequestIn,
     except auto_approve_requests.WindowRequestRefused as e:
         raise deps._error(e.status, "window_refused", e.message, field=e.field)
     from .routes_queries import _bot_client
-    client = _bot_client()
-    reached = auto_approve_requests.notify_admins(client, row, t.alias) if client else 0
+    # Called also with no Slack client: the IdP panel's outbox row does not
+    # need Slack. With no client, notify_admins DMs nobody and returns 0.
+    reached = auto_approve_requests.notify_admins(_bot_client(), row, t.alias)
     return {"id": row["id"], "status": row["status"], "connectionId": t.alias,
             "databaseId": row["database_name"], "tier": (row["max_tier"] or "ro").upper(),
             "windowMinutes": row["window_minutes"], "days": _days(row["window_minutes"]),

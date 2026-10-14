@@ -2328,6 +2328,31 @@ def admin_people(claims: dict = Depends(deps.current_user)):
     } for r in rows]}
 
 
+@router.get("/people/duplicate-addresses")
+def admin_duplicate_addresses(claims: dict = Depends(deps.current_user)):
+    """Every address that two or more DIFFERENT people share (PLA-1409).
+
+    A sign-in with such an address resolves to nobody: the IdP assertion
+    refuses it as `ambiguous_address`, and an OIDC login as `not_onboarded`.
+    `GET /people` carries no addresses, so this list is how an admin finds
+    the rows to fix. Read-only. It applies the rule of
+    `requesters.match_email`, so it lists exactly the addresses that the
+    assertion refuses as ambiguous. One person with a row in both tables is
+    not a duplicate.
+    """
+    admin.require_admin(claims, "access")
+    groups = requesters.duplicate_addresses()
+    return {"duplicates": [{
+        "email": g["email"],
+        "accounts": [{
+            "table": r["source"],
+            "principal": r["slack_user_id"],
+            "name": r["name"] or "",
+            "enabled": bool(r["enabled"]),
+        } for r in g["rows"]],
+    } for g in groups], "total": len(groups)}
+
+
 def _teams_payload() -> list[dict]:
     """Every team with its members, from whichever model is authoritative.
 
@@ -3937,7 +3962,7 @@ def admin_window_requests(claims: dict = Depends(deps.current_user)):
     """
     uid = admin.require_admin(claims, "review")
     from .. import auto_approve_requests as aar
-    from ..slack_app import ro_window
+    from .. import window_options
     out = []
     for r in aar.list_pending():
         if not admins.can_approve(uid, {"required_tier": r["max_tier"],
@@ -3950,7 +3975,7 @@ def admin_window_requests(claims: dict = Depends(deps.current_user)):
             "requesterName": r["requester_name"], "connectionId": r["alias"],
             "databaseId": r["database_name"], "tier": (r["max_tier"] or "ro").upper(),
             "days": m // 1440 if m and m % 1440 == 0 else None,
-            "windowMinutes": m, "windowLabel": ro_window.window_label(m),
+            "windowMinutes": m, "windowLabel": window_options.window_label(m),
             "reason": r["reason"], "requestedAt": mapping.iso(r["created_at"]),
             "status": r["status"]})
     return {"requests": out}
@@ -3962,10 +3987,11 @@ def admin_decide_window_request(request_id: int, body: WindowDecisionIn,
     """Approve or decline one window request from the web. The rules, the
     transaction and the audit row are the Slack card's own
     (`auto_approve_requests.decide_window`); the window starts at this decision.
-    The requester is told in Slack either way."""
+    The requester is told in Slack either way. Without a Slack client, the
+    route does not import slack_app."""
     uid = admin.require_admin(claims, "review")
     from .. import auto_approve_requests as aar
-    from ..slack_app import ro_window
+    from .. import window_options
     try:
         out = aar.decide_window(request_id, approve=body.approve, actor_id=uid,
                                 actor_name=claims.get("name"))
@@ -3975,7 +4001,7 @@ def admin_decide_window_request(request_id: int, body: WindowDecisionIn,
     client = _bot_client()
     if client is not None:
         from ..slack_app import notifications
-        req, win = out["request"], ro_window.window_label(out["request"]["window_minutes"])
+        req, win = out["request"], window_options.window_label(out["request"]["window_minutes"])
         text = (f":zap: Your *{req['max_tier'].upper()}* auto-approve window on "
                 f"`{out['alias']}` is active for the next {win}. Matching queries "
                 "skip approval and dispatch immediately."
@@ -4131,13 +4157,16 @@ def _announce_endpoint_decision(row: dict, approved: bool, uid: str,
 
     Failures are logged and swallowed. The decision is committed and answered,
     and a Slack problem must not turn it into an error the admin has to
-    interpret."""
-    from ..slack_app import access
+    interpret.
+
+    The function imports slack_app only after the client check. So without
+    Slack, or without the slack_app package, the decision route answers."""
     from .routes_queries import _bot_client
 
     client = _bot_client()
     if client is None:          # vanilla profile: no Slack, nobody to tell
         return
+    from ..slack_app import access
     # A Slack id renders as a mention. A local account has none, so it is named.
     who = f"<@{uid}>" if _SLACK_ID_RE.match(uid or "") else (claims.get("name") or uid)
     try:

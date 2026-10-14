@@ -50,8 +50,7 @@ def wired(monkeypatch):
         import queryhub.admins as admins_mod
         monkeypatch.setattr(admins_mod, "is_admin", lambda u: False)
         monkeypatch.setattr(admins_mod, "list_active", lambda: [{"id": "UA"}])
-        from queryhub.slack_app import access
-        monkeypatch.setattr(access, "fan_out_admin_dms",
+        monkeypatch.setattr(rr.access_requests, "notify_admins",
                             lambda *a, **k: "1787.000")
         return state
     return _wire

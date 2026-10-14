@@ -16,12 +16,17 @@ auto-grant is deliberately least-privilege and conservative:
     starts a fresh grant with no end date. An ACTIVE same-tier grant keeps its
     end date: an approval never lengthens or removes a limit that an admin
     set.
+
+`notify_admins` tells the admins about a new request. It imports `slack_app`
+only when Slack is on and a client exists. So the web route works when Slack
+is off, and also when the `slack_app` package is not there.
 """
 from __future__ import annotations
 
 import psycopg
 
-from . import audit, db
+from . import audit, db, idp_outbox
+from . import config as cfg
 
 _TIER_RANK = {"ro": 0, "rw": 1, "ddl": 2}
 
@@ -278,7 +283,11 @@ def decide(
     On APPROVE the per-user grant is auto-created from the request in the
     same transaction (see _auto_grant); the returned row carries the summary
     under "auto_grant". The auth-event outbox trigger on user_target_grants
-    DMs the requester about the new access on its own."""
+    DMs the requester about the new access on its own.
+
+    The Slack buttons and the web screen both decide through here. So this
+    is the one place that writes the IdP panel's
+    `queryhub.access_request_decided` row, after the commit."""
     if new_status not in ("approved", "rejected"):
         raise ValueError(f"invalid status: {new_status}")
     with db.transaction() as conn:
@@ -301,7 +310,52 @@ def decide(
         if new_status == "approved":
             row["auto_grant"] = _auto_grant(conn, row, decided_by_slack_id,
                                             decided_by_name)
-        return row
+    # Outside the transaction: the decision commits first, and a lost outbox
+    # row can never undo it.
+    if idp_outbox.enabled():
+        idp_outbox.access_request_decided(row)
+    return row
+
+
+def notify_admins(client, new_row: dict, target,
+                  requested_server: str | None = None) -> str | None:
+    """Tell every active admin about a new access request, and return the ts
+    of the first DM that Slack delivered. Return None when no DM went out: no
+    active admins, or no Slack transport.
+
+    The web "Request new endpoint" route calls this function. The Slack
+    blocked-query flow calls it through `slack_app.access.fan_out_admin_dms`.
+
+    While `idp_outbox_enabled` is on, it writes the IdP panel's
+    `queryhub.access_request_pending` row. That row does not need Slack, and it
+    names the admins that the DMs go to. `slack_app.access.dm_admins` sends the
+    DMs. This function imports `slack_app` only when Slack is on and a client
+    exists.
+
+    Callers must read None as "not notified", never as "not saved"."""
+    from . import admins
+
+    slack_on = bool(cfg.ENV.slack_enabled and client is not None)
+    outbox_on = idp_outbox.enabled()
+    # Vanilla (no-Slack) profile: there is no client to send with, so stop
+    # before the DM loop. This guard was missing once. `client` is None in the
+    # vanilla profile, so `conversations_open` raised AttributeError. The
+    # per-admin `except Exception` hid it once per admin, and the function
+    # returned None. The web caller then answered 503 for a request that it
+    # saved. The senders in `slack_app/notifications.py` stop the same way.
+    if not slack_on and not outbox_on:
+        return None
+
+    # One list for the DMs and for the outbox row, so that both name the same
+    # admins. The row goes first: it must not depend on Slack delivery.
+    admins_told = admins.list_active()
+    if outbox_on:
+        idp_outbox.access_request_pending(new_row, target, admins_told)
+    if not slack_on:
+        return None
+    from .slack_app import access
+    return access.dm_admins(client, new_row, target, admins_told,
+                            requested_server=requested_server)
 
 
 def record_admin_dm(

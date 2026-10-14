@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from .. import config as cfg
 from .. import targets
 
 log = logging.getLogger(__name__)
@@ -448,25 +447,27 @@ def build_reject_modal(access_request_id: int) -> dict:
 
 def fan_out_admin_dms(client, new_row: dict, target,
                       requested_server: str | None = None) -> str | None:
-    """DM every active admin about a new access request, recording each
-    DM for lockstep updates on decision. Shared by the Slack blocked-
-    query flow and the web "Request new endpoint" endpoint. Returns the
-    first delivered message ts (None if nothing delivered — e.g. no active
-    admins, or no Slack transport configured).
+    """DM every active admin about a new access request. The Slack
+    blocked-query flow calls this name.
+
+    `access_requests.notify_admins` does the work: the IdP outbox row, then
+    `dm_admins` when Slack is on. The web route calls that function directly,
+    because it must work without the `slack_app` package.
 
     Callers must read None as "not notified", never as "not saved"."""
-    from .. import access_requests, admins
-    from . import notifications
+    from .. import access_requests
+    return access_requests.notify_admins(client, new_row, target,
+                                         requested_server=requested_server)
 
-    # Vanilla (no-Slack) profile: there is no client to send with, so stop
-    # before touching it. Every structural sibling already opens this way
-    # (notify_admins, notify_admins_import, notify_admins_bundle); this one
-    # did not. `client` is None in the vanilla profile, so conversations_open
-    # below raised AttributeError, the per-admin `except Exception` swallowed
-    # it once per admin, and the function returned None — which the web caller
-    # turned into a 503 for a request that had in fact been saved.
-    if not cfg.ENV.slack_enabled or client is None:
-        return None
+
+def dm_admins(client, new_row: dict, target, admins_told: list[dict],
+              requested_server: str | None = None) -> str | None:
+    """The Slack half of `access_requests.notify_admins`: DM each admin in
+    `admins_told` the request card, and record each DM for lockstep updates
+    on decision. Returns the first delivered message ts, or None if Slack
+    delivered nothing."""
+    from .. import access_requests
+    from . import notifications
 
     blocks = admin_dm_blocks(new_row, target, requested_server=requested_server)
     alias = target.alias if target else "an unlisted server"
@@ -476,7 +477,7 @@ def fan_out_admin_dms(client, new_row: dict, target,
     )
     overrides = notifications.display_overrides()
     first_ts: str | None = None
-    for adm in admins.list_active():
+    for adm in admins_told:
         admin_id = adm["slack_user_id"]
         try:
             opened = client.conversations_open(users=admin_id)

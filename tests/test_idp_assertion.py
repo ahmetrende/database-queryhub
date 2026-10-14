@@ -16,6 +16,8 @@ import jwt as pyjwt
 
 from queryhub.web import idp_assertion
 
+_Match = idp_assertion.requesters.EmailMatch
+
 
 def _keypair():
     priv = ed25519.Ed25519PrivateKey.generate()
@@ -53,9 +55,12 @@ def configured(monkeypatch):
     monkeypatch.setattr(
         idp_assertion, "_claim_jti",
         lambda jti, exp: False if jti in seen else (seen.add(jti) or True))
+    # The assertion resolves through match_email, the rule of
+    # principal_by_email that also says WHY an address resolves to nobody.
     monkeypatch.setattr(
-        idp_assertion.requesters, "principal_by_email",
-        lambda e: {"slack_user_id": "U123"} if e == "dev@example.com" else None)
+        idp_assertion.requesters, "match_email",
+        lambda e: _Match({"slack_user_id": "U123"} if e == "dev@example.com" else None,
+                         False))
     return priv
 
 
@@ -75,15 +80,16 @@ def test_valid_assertion_resolves_to_the_row_principal(configured):
 def test_admin_only_address_resolves_too(configured, monkeypatch):
     """A DBA who only ever approves has no requesters row. The OIDC path
     consults admins for exactly this reason, and so must this one."""
-    # The resolver reads the admins table as well (principal_by_email).
-    monkeypatch.setattr(idp_assertion.requesters, "principal_by_email",
-                        lambda e: {"slack_user_id": "UADMIN"})
+    # The resolver reads the admins table as well (match_email).
+    monkeypatch.setattr(idp_assertion.requesters, "match_email",
+                        lambda e: _Match({"slack_user_id": "UADMIN"}, False))
     tok = _token(configured, bh=idp_assertion.body_hash("GET", "/api/queue", b""))
     assert idp_assertion.verify(tok, "GET", "/api/queue", b"").id == "UADMIN"
 
 
 def test_unknown_address_is_refused_not_onboarded(configured, monkeypatch):
-    monkeypatch.setattr(idp_assertion.requesters, "principal_by_email", lambda e: None)
+    monkeypatch.setattr(idp_assertion.requesters, "match_email",
+                        lambda e: _Match(None, False))
     tok = _token(configured, sub="stranger@example.com",
                  bh=idp_assertion.body_hash("GET", "/api/queue", b""))
     with pytest.raises(idp_assertion.AssertionError_) as e:
@@ -301,3 +307,96 @@ def test_an_empty_domain_setting_refuses_every_assertion(configured, monkeypatch
     with pytest.raises(idp_assertion.AssertionError_) as e:
         idp_assertion.verify(tok, "GET", "/api/admin/queue", b"")
     assert e.value.code == "no_domain"
+
+
+# ---------------------------------------------------------------------------
+# The domain key (PLA-1409, item 1). CONFIGURATION.md says that the key is
+# REQUIRED here and fails closed. These pin each sentence of that row.
+# ---------------------------------------------------------------------------
+
+def _refusal_code(priv, sub="dev@example.com"):
+    tok = _token(priv, sub=sub, bh=_BH)
+    with pytest.raises(idp_assertion.AssertionError_) as e:
+        idp_assertion.verify(tok, "GET", "/api/admin/queue", b"")
+    return e.value.code
+
+
+def test_a_blank_domain_setting_counts_as_empty(configured, monkeypatch):
+    _with_setting(monkeypatch, "web_allowed_email_domain", "   ")
+    assert _refusal_code(configured) == "no_domain"
+
+
+def test_a_missing_domain_row_refuses_every_assertion(configured, monkeypatch):
+    """With no row, the documented default (empty) applies, and it refuses."""
+    real = idp_assertion.cfg.get_setting
+    monkeypatch.setattr(
+        idp_assertion.cfg, "get_setting",
+        lambda k, d=None: d if k == "web_allowed_email_domain" else real(k, d))
+    assert _refusal_code(configured) == "no_domain"
+
+
+@pytest.mark.parametrize("sub", [
+    "dev@evilexample.com",          # the domain as the tail of another name
+    "dev@mail.example.com",         # a subdomain is a different domain
+    "dev@example.com.evil.test",    # the domain inside a longer one
+])
+def test_the_domain_gate_matches_the_whole_domain(configured, sub):
+    assert _refusal_code(configured, sub) == "bad_domain"
+
+
+def test_the_domain_setting_ignores_case_and_outer_spaces(configured, monkeypatch):
+    _with_setting(monkeypatch, "web_allowed_email_domain", "  Example.COM ")
+    tok = _token(configured, sub="Dev@Example.com", bh=_BH)
+    assert idp_assertion.verify(tok, "GET", "/api/admin/queue", b"").id == "U123"
+
+
+def test_the_domain_setting_holds_one_domain_not_a_list(configured, monkeypatch):
+    """The key takes one domain. A list matches no address, so every
+    assertion fails closed with bad_domain."""
+    _with_setting(monkeypatch, "web_allowed_email_domain", "example.com,other.test")
+    assert _refusal_code(configured) == "bad_domain"
+
+
+# ---------------------------------------------------------------------------
+# An address that resolves to nobody: no row, or rows of two people
+# (PLA-1409, item 4b). The REAL match_email runs here, over two tables in
+# memory, so the rule itself is under test and not a stub of it.
+# ---------------------------------------------------------------------------
+
+_REAL_MATCH_EMAIL = idp_assertion.requesters.match_email
+
+
+def _people(monkeypatch, req, adm):
+    def fetch_all(sql, params=None):
+        rows = req if "FROM requesters" in sql else adm
+        return [r for r in rows if r["email"] == params[0]]
+    monkeypatch.setattr(idp_assertion.requesters, "match_email", _REAL_MATCH_EMAIL)
+    monkeypatch.setattr(idp_assertion.requesters.db, "fetch_all", fetch_all)
+
+
+def _person(uid):
+    return {"slack_user_id": uid, "email": "dev@example.com", "name": uid,
+            "enabled": True}
+
+
+def test_a_requester_and_another_persons_admin_row_is_ambiguous(configured, monkeypatch):
+    _people(monkeypatch, [_person("U0REQ00001")], [_person("U0ADM00001")])
+    assert _refusal_code(configured) == "ambiguous_address"
+
+
+def test_two_requesters_on_one_address_is_ambiguous(configured, monkeypatch):
+    _people(monkeypatch, [_person("U0REQ00001"), _person("U0REQ00002")], [])
+    assert _refusal_code(configured) == "ambiguous_address"
+
+
+def test_no_row_is_not_onboarded_and_not_ambiguous(configured, monkeypatch):
+    _people(monkeypatch, [], [])
+    assert _refusal_code(configured) == "not_onboarded"
+
+
+def test_one_person_in_both_tables_is_not_ambiguous(configured, monkeypatch):
+    """A DBA who also runs queries has a row in each table. That is one
+    person, and the assertion resolves to them."""
+    _people(monkeypatch, [_person("U0BOTH0001")], [_person("U0BOTH0001")])
+    tok = _token(configured, bh=_BH)
+    assert idp_assertion.verify(tok, "GET", "/api/admin/queue", b"").id == "U0BOTH0001"

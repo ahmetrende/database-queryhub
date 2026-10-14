@@ -13,6 +13,8 @@ Emails are populated lazily by `profile_sync.maybe_backfill_email`.
 """
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from . import admins, db
 
 
@@ -108,6 +110,50 @@ def by_email(email: str) -> dict | None:
     return rows[0]
 
 
+class EmailMatch(NamedTuple):
+    """What one address resolves to across BOTH people tables.
+
+    `row` is the one principal's row, or None. `ambiguous` tells the two kinds
+    of None apart: True when rows of two or more DIFFERENT principals share
+    the address, False when no row has it. Each needs a different fix: an
+    admin adds an unknown person, and fixes the rows of a shared address.
+    """
+
+    row: dict | None
+    ambiguous: bool
+
+
+def _resolve(req: list[dict], adm: list[dict]) -> EmailMatch:
+    """The rule, applied to the rows that share one address: answer only when
+    every row is the same principal. The requester row wins when there is one,
+    since it carries `enabled` for the entry gate."""
+    principals = {r["slack_user_id"] for r in req + adm}
+    if len(principals) > 1:
+        return EmailMatch(None, True)
+    if not principals:
+        return EmailMatch(None, False)
+    return EmailMatch((req or adm)[0], False)
+
+
+def match_email(email: str) -> EmailMatch:
+    """`principal_by_email`, with the reason when there is no answer.
+
+    The IdP assertion uses it, so that the person learns which fix they need.
+    `principal_by_email` returns this function's `row`, so the two cannot
+    disagree about who an address belongs to.
+    """
+    e = (email or "").strip().lower()
+    if not e:
+        return EmailMatch(None, False)
+    req = db.fetch_all(
+        "SELECT slack_user_id, email, name, enabled "
+        "FROM requesters WHERE lower(btrim(email)) = %s", (e,))
+    adm = db.fetch_all(
+        "SELECT slack_user_id, email, name, enabled "
+        "FROM admins WHERE lower(btrim(email)) = %s", (e,))
+    return _resolve(req, adm)
+
+
 def principal_by_email(email: str) -> dict | None:
     """The one principal an address belongs to, across BOTH people tables.
 
@@ -118,20 +164,52 @@ def principal_by_email(email: str) -> dict | None:
     different principals. This reads both tables and answers only when every
     match is the same principal. The requester row is returned when there is
     one, since it carries `enabled` for the entry gate. Every external sign-in
-    (OIDC, the IdP assertion) and the principal sync resolve through here.
+    (OIDC) and the principal sync resolve through here.
+
+    None means "no row" and "two people" alike. `match_email` holds the rule
+    and tells the two apart. The IdP assertion calls it directly.
     """
-    e = (email or "").strip().lower()
-    if not e:
-        return None
-    req = db.fetch_all(
-        "SELECT slack_user_id, email, name, enabled "
-        "FROM requesters WHERE lower(btrim(email)) = %s", (e,))
-    adm = db.fetch_all(
-        "SELECT slack_user_id, email, name, enabled "
-        "FROM admins WHERE lower(btrim(email)) = %s", (e,))
-    if len({r["slack_user_id"] for r in req + adm}) != 1:
-        return None
-    return (req or adm)[0]
+    return match_email(email).row
+
+
+def duplicate_addresses() -> list[dict]:
+    """Every address for which `match_email` answers `ambiguous`, with the
+    rows that share it.
+
+    The IdP assertion refuses such an address with `ambiguous_address`, and an
+    external sign-in refuses it as `not_onboarded`. Neither tells an admin
+    which rows to fix, and `GET /admin/people` carries no addresses.
+
+    The key is the one the lookup compares, `lower(btrim(email))`, and the
+    rule is the same `_resolve`. So one principal with a row in each table is
+    not a duplicate, and a row with no address is never one. Each entry is
+    `{"email", "rows"}`, and each row carries `source` (the table),
+    `slack_user_id`, `name` and `enabled`.
+    """
+    rows = db.fetch_all(
+        "SELECT lower(btrim(email)) AS address, 'requesters' AS source, "
+        "       slack_user_id, name, enabled "
+        "  FROM requesters WHERE lower(btrim(email)) <> '' "
+        "UNION ALL "
+        "SELECT lower(btrim(email)), 'admins', slack_user_id, name, enabled "
+        "  FROM admins WHERE lower(btrim(email)) <> ''")
+    by_address: dict[str, list[dict]] = {}
+    for r in rows:
+        if r["address"]:        # the SQL leaves out rows with no address, too
+            by_address.setdefault(r["address"], []).append(r)
+    out: list[dict] = []
+    for address in sorted(by_address):
+        # The lookup normalises its input with Python's strip().lower(). A key
+        # that changes under that normalisation is one that no lookup reaches,
+        # so it never causes the refusal.
+        if address != address.strip().lower():
+            continue
+        group = sorted(by_address[address], key=lambda r: r["slack_user_id"])
+        req = [r for r in group if r["source"] == "requesters"]
+        adm = [r for r in group if r["source"] == "admins"]
+        if _resolve(req, adm).ambiguous:
+            out.append({"email": address, "rows": req + adm})
+    return out
 
 
 def list_enabled_ids() -> set[str]:

@@ -118,14 +118,68 @@ It also checks the request and the address:
 
 - It checks that the assertion is bound to THIS request: the method, the
   path with its query string, and the body. So nobody can replay an
-  assertion minted for one call against another call.
+  assertion minted for one call against another call. The signed path is
+  the decoded path (Go `u.Path`). The query string stays raw (Go
+  `u.RawQuery`).
 - It refuses a reused `jti` through the `idp_assertion_jti` ledger. The
   ledger keeps each `jti` until its token's expiry plus the skew.
 - It applies the `web_allowed_email_domain` gate. Unlike the OIDC
-  providers, it refuses every assertion while that setting is empty.
+  providers, it refuses every assertion while that setting is empty
+  (`no_domain`).
 - It resolves the asserted address to an existing `requesters` or `admins`
   row and proceeds as that principal. It refuses an unknown address and
-  never creates a row for it.
+  never creates a row for it. It also refuses an address that rows of two
+  different people share (`ambiguous_address`).
+
+**Refusals.** QueryHub answers a refused assertion with `401`. Three
+refusals concern the person, not the portal. For these, `error.code` names
+the cause, and `error.message` tells the person what to do:
+
+| `error.code` | Cause | `error.message` |
+| --- | --- | --- |
+| `not_onboarded` | No `requesters` or `admins` row has the address. | Refused: QueryHub has no account for this address. Ask an admin to add you. |
+| `bad_domain` | The address is outside `web_allowed_email_domain`. | Refused: this address is outside the allowed domain. |
+| `ambiguous_address` | Rows of two or more different people have the address. | Refused: two QueryHub accounts share this address. Ask an admin to fix it. |
+
+QueryHub sends these codes only after the signature, the request binding
+and the `jti` pass. So a forged token cannot find out whether an address
+has an account. Every other refusal is a seam failure, a fault of the
+portal, the keys or the configuration: `expired`, `clock_ahead`,
+`too_long_lived`, `bad_signature`, `bad_audience`, `bad_issuer`,
+`unknown_kid`, `body_mismatch`, `replayed`, `malformed`, `disabled` and
+`no_domain`. For each of these, `error.code` is `unauthenticated` and
+`error.message` is "Refused: the identity assertion is not valid." Only the
+log line `idp assertion refused: <code>` names the cause.
+
+**Shared addresses.** `GET /api/admin/people/duplicate-addresses` lists
+every address that gives `ambiguous_address`, with the rows that share it.
+Only a super-admin can read it (the `access` gate), and it changes nothing.
+It also answers a browser session, so it works while the assertion path is
+off. `GET /api/admin/people` carries no addresses, so the portal cannot
+find the duplicates without this list.
+
+```json
+{"duplicates": [
+   {"email": "shared@example.com",
+    "accounts": [
+      {"table": "requesters", "principal": "U0EXAMPLE01",
+       "name": "Example Requester", "enabled": true},
+      {"table": "admins", "principal": "U0EXAMPLE02",
+       "name": "", "enabled": false}]}],
+ "total": 1}
+```
+
+- `email` is the address in lowercase, without outer spaces. `table` is
+  `requesters` or `admins`. `name` is an empty string when the row has no
+  name. `total` is the number of addresses.
+- One person with a row in each table is not a duplicate. A row with no
+  address is never a duplicate.
+- An OIDC login refuses the same addresses, as `not_onboarded`.
+- The list is usually empty. While `access_model_mirror` is on, the
+  database refuses a second principal with the same address. It does not
+  refuse two addresses that differ only in outer spaces. It also does not
+  refuse an admin row whose address differs from the requester row of the
+  same person.
 
 For a request that carries the header, the assertion is the ONLY judge.
 After `current_user` refuses an assertion, it never uses the cookie
@@ -169,10 +223,10 @@ through an assertion. Admin rights are neither needed nor enough.
     held. Without Slack there is no card. Raise `idp_sync_max_disable` for
     one run instead.
 - `GET /api/admin/notifications/outbox` and
-  `POST /api/admin/notifications/outbox/{id}/processed` — the pending-request
+  `POST /api/admin/notifications/outbox/{id}/processed` — the notification
   feed and its acknowledgement. QueryHub writes rows only while
   `idp_outbox_enabled = on`. The daily cleanup deletes them after
-  `idp_outbox_retention_days`.
+  `idp_outbox_retention_days`. §1.3 lists the events.
 
 Create the sync account as a **disabled** `requesters` row with no
 grants. Give it the portal's sync address as its email. Then:
@@ -184,6 +238,48 @@ grants. Give it the portal's sync address as its email. Then:
 It needs no admin row. Under the access model, an admin role is
 fleet-wide. So an admin row would give the portal's cron key approval
 authority that it has no use for.
+
+### 1.3 Outbox events for the portal
+
+QueryHub writes a row next to the Slack messages, and the Slack messages
+do not change. It also writes the row when Slack is off. Each event has
+these fields:
+
+- `recipients`: work emails. QueryHub stores Slack ids and finds each email
+  when the portal reads the feed.
+- `payload`: strings only, because the portal decodes it as a map of
+  strings. An empty value is `""`, never null.
+- `requestId` at the top level: the id of the SQL request, for
+  `queryhub.request_pending` only. It is null for the other events. Their
+  payload `requestId` is the id of the access request or the window request.
+
+| `eventType` | QueryHub writes it when | Recipients | Payload keys |
+| --- | --- | --- | --- |
+| `queryhub.request_pending` | A SQL request waits for approval. | The approvers that the Slack fan-out DMs. | `requestId`, `requesterName`, `target`, `tier`, `justification` |
+| `queryhub.access_request_pending` | A person asks for access to a database. | The admins that the Slack fan-out DMs. | `requestId`, `requesterName`, `target`, `database`, `tier`, `reason` |
+| `queryhub.access_request_decided` | An admin approves or rejects an access request. | The requester. | `requestId`, `decision`, `target`, `database`, `tier`, `deciderName`, `note`, `grantApplied` |
+| `queryhub.window_request_pending` | A person asks for an auto-approve window. | The admins that the Slack fan-out DMs. | `requestId`, `requesterName`, `target`, `database`, `tier`, `reason`, `windowLabel` |
+| `queryhub.window_request_decided` | An admin approves or rejects a window request. | The requester. | `requestId`, `decision`, `target`, `database`, `tier`, `deciderName`, `note`, `windowLabel` |
+
+The values:
+
+- `tier` is `ro`, `rw` or `ddl`, in lower case.
+- `decision` is `approved` or `rejected`.
+- `target` is the connection alias. For a server that QueryHub does not have
+  yet, it is the name that the requester typed.
+- `database` is `""` when the request names no database. On an access
+  request, that means every database.
+- `grantApplied` is `true` only when the approval wrote the grant. An
+  approval can skip the grant, for example on a tier conflict. Then the
+  requester has no access yet.
+- `note` is the reason for the decision. A window decision has no reason,
+  so its `note` is always `""`.
+- `windowLabel` is the length of the window, for example `8h` or `7 days`.
+
+The portal must have a template for each event type before you set
+`idp_outbox_enabled = on`. The feed lists the oldest unacknowledged rows
+first. A row that the portal does not acknowledge stays in front of the
+newer rows.
 
 ## 2. Login flow (one-time identity)
 
