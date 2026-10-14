@@ -42,6 +42,11 @@ frontend and the endpoints it calls are explicitly outside it.
   environment variable that the code reads, and every local link in the docs. The
   reference now lists six keys and six variables that it missed.
 
+### Changed
+
+- **SQL Server errors show the message itself.** The driver tuple and the
+  SQLSTATE prefix no longer appear in front of it.
+
 ### Fixed
 
 - **Cancel stops a running write or DDL request.** The signal used the RO login,
@@ -72,6 +77,15 @@ frontend and the endpoints it calls are explicitly outside it.
   on 200 KB of one character, so a large cell could block an executor thread
   while it was cast. `scrub()` reads at most 8000 characters in the hiding
   step and 1000 in the content detectors.
+- **A sweep on real servers closed the phrasings that the first version
+  missed.** It ran 642 failing statements on PostgreSQL 17 and SQL Server 2022,
+  with a sentinel value in every column type. Of them, 187 still showed the
+  value: 138 of 398 on PostgreSQL and 49 of 244 on SQL Server. A cast to
+  `regclass` or a call of `current_setting()` with a column puts a value where a
+  name goes, so a name that is not in the requester's SQL is hidden too. A typo
+  that the requester wrote stays visible. All the cases now pass.
+  `docs/COMPLIANCE.md` lists what stays: the free text of `RAISE`, `ASSERT`,
+  `THROW` and `RAISERROR`.
 
 ## [1.0.35] — 2026-10-13
 

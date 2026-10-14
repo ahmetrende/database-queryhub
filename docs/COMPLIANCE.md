@@ -121,6 +121,14 @@ replaces such a value with `[hidden]` and keeps the rest of the message. It find
 the value by the words of the message, so a name, an address or a salary is
 covered too. A value that the requester typed in the SQL stays visible.
 
+A message such as `relation "x" does not exist` names an identifier. A cast to
+`regclass` or a call to `current_setting()` with a column as the argument puts a
+value in that place. So QueryHub hides the name when it is not in the SQL, and
+keeps it when it is. A name from the body of a function that the query called
+is not in the SQL, so it is hidden too. A message that a trigger or a function
+on the target raises itself is free text, and QueryHub does not hide a value in
+it.
+
 **Be clear about what this is.** It is *accidental-exposure mitigation*, not a
 data boundary:
 
