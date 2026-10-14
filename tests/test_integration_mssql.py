@@ -589,9 +589,10 @@ def test_sql_server_types_reach_the_result_file_and_pii_is_masked(server, monkey
     assert aliased.pii_masked == {"name"}
 
 
-def test_a_server_error_reaches_the_requester_scrubbed_and_masked(server, monkeypatch):
+def test_a_server_error_reaches_the_requester_scrubbed_and_the_value_hidden(
+        server, monkeypatch):
     """A unique-key error quotes the duplicate value. `errors.scrub` drops the
-    driver prefix and masks the value, as it does for a result."""
+    driver prefix and hides the value, because the server read it from a row."""
     import pyodbc
     with pytest.raises(pyodbc.IntegrityError) as caught:
         _execute(server,
@@ -603,5 +604,5 @@ def test_a_server_error_reaches_the_requester_scrubbed_and_masked(server, monkey
     shown = _shown(caught.value)
     assert "Cannot insert duplicate key in object 'dbo.people'" in shown
     assert "jordan.ray@example.com" not in shown
-    assert "(j***@example.com)" in shown
+    assert "The duplicate key value is [hidden]" in shown
     assert "[Microsoft]" not in shown and "[SQL Server]" not in shown
