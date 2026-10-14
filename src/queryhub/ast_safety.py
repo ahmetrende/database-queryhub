@@ -142,9 +142,9 @@ def is_enabled(engine: str = "postgres") -> bool:
 # Ending or cancelling a server session: DataGrip's "Terminate", SSMS's "Kill
 # process". Refused like the rest of _DANGEROUS_FUNCS, except for a
 # super-admin (operator request, 2026-09-26), for whom query_safety asks first
-# and runs the statement as the elevated role. The read-only login could not
-# signal another role's backend anyway; pg_signal_backend comes with the
-# elevated role.
+# and runs the statement as the elevated role. A tier login can signal only
+# the sessions of its own login, unless it holds pg_signal_backend. The
+# elevated role can signal other sessions.
 SESSION_CONTROL_FUNCS = frozenset({"pg_terminate_backend", "pg_cancel_backend"})
 
 

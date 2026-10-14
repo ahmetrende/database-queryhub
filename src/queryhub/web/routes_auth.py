@@ -21,7 +21,7 @@ import os
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from .. import audit
+from .. import audit, db
 from .. import config as cfg
 from . import auth_providers, deps, sessions
 
@@ -316,7 +316,15 @@ async def auth_local_change_password(
     if login_throttle.retry_after_seconds(tkey):
         raise deps._error(429, "rate_limited",
                           "Too many attempts. Try again shortly.")
-    err = local_users.change_password(username, current, new)
+    # One transaction: the new password, the revoked sessions and the audit
+    # row commit together, or none of them does. They were three commits, so a
+    # failure between them left a changed password with no audit row.
+    with db.transaction() as cur:
+        err = local_users.change_password_in(cur, username, current, new)
+        if not err:
+            n = sessions.revoke_user_in(cur, claims["sub"], "local password changed")
+            audit.log_in(cur, None, claims["sub"], claims.get("name"),
+                         "local_password_changed", {"sessions_revoked": n})
     if err == "bad_credentials":
         login_throttle.record_failure(tkey)
         raise deps._error(401, "bad_credentials",
@@ -329,9 +337,6 @@ async def auth_local_change_password(
         raise deps._error(400, "same_password",
                           "New password must differ from the current one.")
     login_throttle.clear(tkey)
-    n = sessions.revoke_user(claims["sub"], "local password changed")
-    audit.log(None, claims["sub"], claims.get("name"),
-              "local_password_changed", {"sessions_revoked": n})
     resp = JSONResponse({"ok": True, "reauth": True})
     resp.delete_cookie(deps.SESSION_COOKIE, path="/")
     resp.delete_cookie(deps.REFRESH_COOKIE, path="/api/auth")

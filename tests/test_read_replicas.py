@@ -400,26 +400,28 @@ def test_an_unrouted_read_connects_to_the_primary(run_env):
 
 def test_a_cancel_reaches_the_replica_with_the_primarys_login(monkeypatch):
     row = {"backend_pid": 4242, "engine_execution_id": None, "target_server_id": 7,
-           "executed_target_id": 99, "database_name": "ledger", "st": "executing"}
+           "executed_target_id": 99, "executed_tier": "ro", "database_name": "ledger",
+           "st": "executing"}
     monkeypatch.setattr(cancellation.db, "fetch_one", lambda sql, p=None: row)
     replica = type("T", (), {"id": 99, "host": "replica.example.test", "port": 5433,
                              "username": "placeholder", "engine": "postgres"})()
     monkeypatch.setattr(cancellation.targets, "get",
                         lambda tid: PRIMARY if tid == 7 else replica)
-    monkeypatch.setattr(cancellation.targets, "get_password",
-                        lambda tid: "primary-pw" if tid == 7 else "sentinel")
+    monkeypatch.setattr(cancellation.targets, "get_credentials",
+                        lambda tid, mode: (("reader", "primary-pw") if tid == 7
+                                           else ("placeholder", "sentinel")))
     monkeypatch.setattr(cancellation.cfg, "target_ssl_kwargs", lambda host=None: {})
     monkeypatch.setattr(cancellation.cfg, "get_int", lambda k, d=None: 1)
     seen = []
 
-    def connect(dsn, **kw):
-        seen.append(dsn)
+    def connect(*a, **kw):
+        seen.append(kw)
         raise psycopg.OperationalError("stop here")
     monkeypatch.setattr(psycopg, "connect", connect)
     monkeypatch.setattr(cancellation.log, "exception", lambda *a, **k: None)
     cancellation.stop_backend(1)
-    assert seen and "host=replica.example.test port=5433" in seen[0]
-    assert "user=reader" in seen[0] and "password=primary-pw" in seen[0]
+    assert seen and (seen[0]["host"], seen[0]["port"]) == ("replica.example.test", 5433)
+    assert (seen[0]["user"], seen[0]["password"]) == ("reader", "primary-pw")
 
 
 # --- one name everywhere -------------------------------------------------------------

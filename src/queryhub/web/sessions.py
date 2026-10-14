@@ -291,10 +291,18 @@ def revoke_session(session_id: int, reason: str) -> None:
 def revoke_user(principal_id: str, reason: str) -> int:
     """Instant kill switch for one user's web access (all sessions)."""
     with db.transaction() as cur:
-        cur.execute(
-            "UPDATE web_sessions SET revoked_at = NOW(), revoked_reason = %s "
-            "WHERE slack_user_id = %s AND revoked_at IS NULL",
-            (reason, principal_id),
-        )
-        revoked: int = cur.rowcount
-        return revoked
+        return revoke_user_in(cur, principal_id, reason)
+
+
+def revoke_user_in(cur: Any, principal_id: str, reason: str) -> int:
+    """`revoke_user` on the caller's cursor. The revocation commits in the
+    caller's transaction, together with its audit row. Returns how many
+    sessions it revoked."""
+    cur.execute(
+        "UPDATE web_sessions SET revoked_at = NOW(), revoked_reason = %s "
+        "WHERE slack_user_id = %s AND revoked_at IS NULL",
+        (reason, principal_id),
+    )
+    # db.transaction() yields an untyped cursor. rowcount is an int.
+    revoked: int = cur.rowcount
+    return revoked

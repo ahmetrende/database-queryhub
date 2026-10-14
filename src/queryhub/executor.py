@@ -512,7 +512,8 @@ def _fall_back_to_primary(request: dict, route, error: BaseException,
                     " WHERE id = %s", (request["id"],))
         audit.log_in(cur, request["id"], None, None, "replica_fallback",
                      {"replica": route.alias,
-                      "error": errors.scrub(f"{type(error).__name__}: {error}")})
+                      "error": errors.scrub(f"{type(error).__name__}: {error}",
+                                            query=request.get("query"))})
     return None
 
 
@@ -531,9 +532,10 @@ def _fail_on_chosen_replica(client: WebClient, request: dict, route,
         except OSError:
             pass
     csv_paths.clear()
+    said = errors.scrub(error, query=request.get("query"))
     _fail(client, request,
           f"The chosen read replica `{route.alias}` failed this query: "
-          f"{errors.scrub(error)}. QueryHub did not run it on the primary "
+          f"{said}. QueryHub did not run it on the primary "
           f"instead. To run it there, submit it again with Auto or Primary.")
 
 
@@ -1062,7 +1064,7 @@ def _run(request: dict, client: WebClient) -> None:
             except OSError:
                 pass
         timeout_sec = cfg.get_int("query_timeout_sec", 300)
-        scrubbed = errors.scrub(e)
+        scrubbed = errors.scrub(e, query=request.get("query"))
         msg = (
             f"Query exceeded the {_fmt_duration(timeout_sec)} statement "
             f"timeout ({timeout_sec}s, `bot_config.query_timeout_sec`) "
@@ -1087,11 +1089,12 @@ def _run(request: dict, client: WebClient) -> None:
             except OSError:
                 pass
         if mode == "ddl":
-            _escalate_to_dba(client, request, errors.scrub(e))
+            _escalate_to_dba(client, request,
+                             errors.scrub(e, query=request.get("query")))
         else:
             # Non-DDL perm errors are genuine failures (RO/RW shouldn't
             # hit owner-required ops). Surface as fail.
-            _fail(client, request, errors.scrub(e))
+            _fail(client, request, errors.scrub(e, query=request.get("query")))
     except Exception as e:  # noqa: BLE001 — surface any exec error back to the user
         log.exception("Request %s failed during execution", request_id)
         # Ordering guard: a completion transaction commits 'completed' BEFORE
@@ -1117,7 +1120,8 @@ def _run(request: dict, client: WebClient) -> None:
                     audit.log_in(_gc, request_id, "SYSTEM", "delivery guard",
                                  "delivery_failed",
                                  {"after_status": _cur["status"],
-                                  "error": errors.scrub(f"{type(e).__name__}: {e}")})
+                                  "error": errors.scrub(f"{type(e).__name__}: {e}",
+                                                        query=request.get("query"))})
             except Exception:
                 log.exception("Request %s: delivery_failed audit failed",
                               request_id)
@@ -1133,7 +1137,8 @@ def _run(request: dict, client: WebClient) -> None:
                         "failed — marking completed with a warning, not failed.",
                         request_id)
             _complete_with_delivery_warning(
-                client, request, errors.scrub(f"{type(e).__name__}: {e}"))
+                client, request,
+                errors.scrub(f"{type(e).__name__}: {e}", query=request.get("query")))
             return
         for p in csv_paths_to_cleanup:
             try:
@@ -1141,9 +1146,10 @@ def _run(request: dict, client: WebClient) -> None:
             except OSError:
                 pass
         if isinstance(e, psycopg.Error):
-            user_msg = errors.scrub(e)
+            user_msg = errors.scrub(e, query=request.get("query"))
         else:
-            user_msg = errors.scrub(f"{type(e).__name__}: {e}")
+            user_msg = errors.scrub(f"{type(e).__name__}: {e}",
+                                    query=request.get("query"))
         # Connection-timeout-flavoured OperationalError: surface the
         # connect_timeout value so the user knows the bar (separate from
         # statement_timeout — connect_timeout is a hardcoded 15s here).
@@ -3024,11 +3030,12 @@ def _import_run(imp: dict, client: WebClient) -> None:
     except psycopg.errors.InsufficientPrivilege as e:
         _import_fail(client, imp,
                      f"The DDL role lacks privilege for this import: "
-                     f"{errors.scrub(e)}")
+                     f"{errors.scrub(e, requester_data=True)}")
     except Exception as e:  # noqa: BLE001
         log.exception("CSV import %s failed", import_id)
-        msg = errors.scrub(e) if isinstance(e, psycopg.Error)\
-            else errors.scrub(f"{type(e).__name__}: {e}")
+        # The values in an import error come from the requester's own CSV.
+        msg = errors.scrub(e, requester_data=True) if isinstance(e, psycopg.Error)\
+            else errors.scrub(f"{type(e).__name__}: {e}", requester_data=True)
         _import_fail(client, imp, msg)
 
 

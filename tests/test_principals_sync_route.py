@@ -15,6 +15,8 @@ A run that would disable more than `idp_sync_max_disable` requesters is held
 whole (idp_sync_guard.py): the guard's own states are pinned in
 test_idp_sync_guard.py, and here only what the route does with each verdict.
 """
+from contextlib import contextmanager
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -23,6 +25,13 @@ from queryhub.web import app as web_app
 from queryhub.web import deps, routes_admin
 
 SYNC = "U_SYNC_ACCOUNT"
+
+
+@contextmanager
+def _transaction():
+    """No database here. The writes go through stubs that ignore the cursor.
+    tests/test_audit_atomic_state_changes.py checks the transaction itself."""
+    yield object()
 
 
 @pytest.fixture
@@ -34,6 +43,7 @@ def app_client(monkeypatch):
                         lambda k, d=None: SYNC if k == "idp_sync_principal" else d)
     # Role holders come from the access model's tables; no database here.
     monkeypatch.setattr(routes_admin.access_model, "role_holder_ids", lambda: set())
+    monkeypatch.setattr(routes_admin.db, "transaction", _transaction)
     app = web_app.create_app()
     return app, TestClient(app)
 
@@ -62,12 +72,12 @@ def _people(monkeypatch, *, live, by_email, admins_active=(), role_holders=()):
     monkeypatch.setattr(routes_admin.access_model, "role_holder_ids",
                         lambda: set(role_holders))
     writes = {"enable": [], "disable": [], "audit": []}
-    monkeypatch.setattr(routes_admin.requesters, "enable",
-                        lambda pid: writes["enable"].append(pid))
-    monkeypatch.setattr(routes_admin.requesters, "disable",
-                        lambda pid: writes["disable"].append(pid))
-    monkeypatch.setattr(routes_admin.audit, "log",
-                        lambda *a, **k: writes["audit"].append((a, k)))
+    monkeypatch.setattr(routes_admin.requesters, "enable_in",
+                        lambda cur, pid: writes["enable"].append(pid))
+    monkeypatch.setattr(routes_admin.requesters, "disable_in",
+                        lambda cur, pid: writes["disable"].append(pid))
+    monkeypatch.setattr(routes_admin.audit, "log_in",
+                        lambda cur, *a, **k: writes["audit"].append((a, k)))
     return writes
 
 
@@ -161,12 +171,12 @@ def test_reconcile_enables_and_disables_known_addresses(app_client, monkeypatch)
         routes_admin.requesters, "principal_by_email",
         lambda e: {"slack_user_id": "U_NEW"} if e == "new@example.com" else None)
     enabled, disabled = [], []
-    monkeypatch.setattr(routes_admin.requesters, "enable",
-                        lambda pid: enabled.append(pid))
-    monkeypatch.setattr(routes_admin.requesters, "disable",
-                        lambda pid: disabled.append(pid))
+    monkeypatch.setattr(routes_admin.requesters, "enable_in",
+                        lambda cur, pid: enabled.append(pid))
+    monkeypatch.setattr(routes_admin.requesters, "disable_in",
+                        lambda cur, pid: disabled.append(pid))
     monkeypatch.setattr(routes_admin.admins, "list_active", lambda: [])
-    monkeypatch.setattr(routes_admin.audit, "log", lambda *a, **k: None)
+    monkeypatch.setattr(routes_admin.audit, "log_in", lambda cur, *a, **k: None)
 
     r = client.post("/api/admin/principals/sync",
                     json={"emails": ["new@example.com"], "admin_emails": []})
@@ -184,12 +194,12 @@ def test_an_unknown_address_is_reported_never_created(app_client, monkeypatch):
     monkeypatch.setattr(
         routes_admin.requesters, "principal_by_email",
         lambda e: {"slack_user_id": "U_KEEP"} if e == "keep@example.com" else None)
-    monkeypatch.setattr(routes_admin.requesters, "enable", lambda pid: None)
+    monkeypatch.setattr(routes_admin.requesters, "enable_in", lambda cur, pid: None)
     monkeypatch.setattr(
-        routes_admin.requesters, "disable",
-        lambda pid: pytest.fail("nothing should be disabled here"))
+        routes_admin.requesters, "disable_in",
+        lambda cur, pid: pytest.fail("nothing should be disabled here"))
     monkeypatch.setattr(routes_admin.admins, "list_active", lambda: [])
-    monkeypatch.setattr(routes_admin.audit, "log", lambda *a, **k: None)
+    monkeypatch.setattr(routes_admin.audit, "log_in", lambda cur, *a, **k: None)
 
     r = client.post("/api/admin/principals/sync",
                     json={"emails": ["keep@example.com", "stranger@example.com"],
@@ -227,12 +237,12 @@ def test_the_sync_never_writes_to_the_admins_table(app_client, monkeypatch):
     monkeypatch.setattr(
         routes_admin.requesters, "principal_by_email",
         lambda e: {"slack_user_id": "U_KEEP"} if e == "keep@example.com" else None)
-    monkeypatch.setattr(routes_admin.requesters, "enable", lambda pid: None)
-    monkeypatch.setattr(routes_admin.requesters, "disable", lambda pid: None)
+    monkeypatch.setattr(routes_admin.requesters, "enable_in", lambda cur, pid: None)
+    monkeypatch.setattr(routes_admin.requesters, "disable_in", lambda cur, pid: None)
     monkeypatch.setattr(
         routes_admin.admins, "list_active",
         lambda: [{"slack_user_id": "U_OLD_ADMIN", "source": "permanent"}])
-    monkeypatch.setattr(routes_admin.audit, "log", lambda *a, **k: None)
+    monkeypatch.setattr(routes_admin.audit, "log_in", lambda cur, *a, **k: None)
     for forbidden in ("add", "disable"):
         monkeypatch.setattr(
             routes_admin.admins, forbidden,
@@ -256,12 +266,12 @@ def test_admin_drift_is_reported_for_a_human_to_act_on(app_client, monkeypatch):
         lambda e: ({"slack_user_id": "U_KEEP"} if e == "keep@example.com"
                    else {"slack_user_id": "U_WANTS"} if e == "wants@example.com"
                    else None))
-    monkeypatch.setattr(routes_admin.requesters, "enable", lambda pid: None)
-    monkeypatch.setattr(routes_admin.requesters, "disable", lambda pid: None)
+    monkeypatch.setattr(routes_admin.requesters, "enable_in", lambda cur, pid: None)
+    monkeypatch.setattr(routes_admin.requesters, "disable_in", lambda cur, pid: None)
     monkeypatch.setattr(
         routes_admin.admins, "list_active",
         lambda: [{"slack_user_id": "U_STALE", "source": "permanent"}])
-    monkeypatch.setattr(routes_admin.audit, "log", lambda *a, **k: None)
+    monkeypatch.setattr(routes_admin.audit, "log_in", lambda cur, *a, **k: None)
 
     r = client.post("/api/admin/principals/sync",
                     json={"emails": ["keep@example.com"],
@@ -281,12 +291,12 @@ def test_every_reconcile_writes_an_audit_row(app_client, monkeypatch):
     monkeypatch.setattr(
         routes_admin.requesters, "principal_by_email",
         lambda e: {"slack_user_id": "U_NEW"} if e == "new@example.com" else None)
-    monkeypatch.setattr(routes_admin.requesters, "enable", lambda pid: None)
-    monkeypatch.setattr(routes_admin.requesters, "disable", lambda pid: None)
+    monkeypatch.setattr(routes_admin.requesters, "enable_in", lambda cur, pid: None)
+    monkeypatch.setattr(routes_admin.requesters, "disable_in", lambda cur, pid: None)
     monkeypatch.setattr(routes_admin.admins, "list_active", lambda: [])
     rows = []
-    monkeypatch.setattr(routes_admin.audit, "log",
-                        lambda *a, **k: rows.append((a, k)))
+    monkeypatch.setattr(routes_admin.audit, "log_in",
+                        lambda cur, *a, **k: rows.append((a, k)))
 
     r = client.post("/api/admin/principals/sync",
                     json={"emails": ["new@example.com"], "admin_emails": []})

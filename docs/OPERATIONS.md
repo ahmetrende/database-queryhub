@@ -198,6 +198,31 @@ Files stay idempotent even with the ledger (`CREATE TABLE IF NOT EXISTS`, `ADD C
 NOT EXISTS`, `ON CONFLICT DO NOTHING`). Never edit an applied file. The ledger
 refuses a changed checksum, so put each change in a new file.
 
+### Pending migrations at startup and in `/readyz`
+
+At startup, both services compare the migration files with the ledger. While
+a file is not in the ledger:
+
+- Each service logs one CRITICAL line and starts as usual:
+  `2 migrations pending: 144_a.sql, 145_b.sql. Apply them with: python scripts/apply_migrations.py`
+- The web app's `/readyz` answers 503 with `"detail": "2 migrations pending"`.
+  It keeps each verdict for 30 seconds. After you apply the files, it is
+  ready again within 30 seconds, with no restart.
+
+The web app reads the file list once, at start. Files that a later `git pull`
+adds do not make the running process unready.
+
+Sometimes the check cannot know. Then it logs nothing above debug, and
+`/readyz` stays ready:
+
+- The install has no migrations directory. The check looks next to the
+  package in a source checkout, then in `./migrations` under the working
+  directory (the container image). A wheel ships no migrations.
+- The database has no `schema_migrations` table.
+- The service login cannot read the ledger. That is true after the role split
+  ([section 28](#28-splitting-the-metadata-database-roles)). Run
+  `apply_migrations.py --dry-run` as the migrator to see what is pending.
+
 ---
 
 ## 5. Targets — add / disable / rotate
@@ -1011,7 +1036,8 @@ It leaks most easily in four places:
 - **The connection list and the audit log.** Both are dense with aliases by
   design. Crop or redact them before you paste.
 - **Error text.** `errors.py` scrubs libpq messages before a user sees
-  them, but the unscrubbed original is in the service log.
+  them, but the unscrubbed original is in the service log. With PII masking on,
+  it also hides a value that the engine read from a row.
 - **Result files.** A CSV or XLSX under `QH_RESULTS_DIR` is real data
   until the retention job deletes it (`results_ttl_hours`).
 - **A fork of this repository.** If you commit your own `bot_config`
@@ -1662,7 +1688,7 @@ than a 500 at the exact moment something is already wrong.
 object per line:
 
 ```json
-{"timestamp":"2026-07-25T15:26:01+00:00","level":"INFO","logger":"queryhub.executor","message":"executing request 4242 on target demo-primary","request_id":4242,"tier":"ro"}
+{"timestamp":"2026-07-25T15:26:01+00:00","level":"INFO","logger":"queryhub.executor","message":"executing request 4242 on target demo-primary","tier":"ro"}
 ```
 
 `timestamp` is RFC 3339 in **UTC**, regardless of `web_display_timezone`.
@@ -1678,6 +1704,33 @@ common case. JSON is worse for that. Each process reads this setting and
 
 ```bash
 sudo systemctl restart queryhub queryhub-web
+```
+
+### Request ids (`X-Request-ID`)
+
+The web app gives each HTTP request a new id of 32 hex characters, in the
+`X-Request-ID` response header. The server makes the id. It ignores an
+`X-Request-ID` header from the client, so a caller cannot choose the id of
+their log lines. This id is an HTTP trace id, not a QueryHub request number.
+
+An unhandled error (500) also puts the id in the body:
+
+```json
+{"error": {"code": "server_error", "message": "Internal error.", "traceId": "9f86d081884c4e8b9f2a3c1d5e6f7a80"}}
+```
+
+Each web log line that a request makes carries the same id. In text format the
+id comes before the message. A line from outside a request shows `[-]`:
+
+```text
+2026-10-13 09:12:44,512 ERROR queryhub.web.app [9f86d081884c4e8b9f2a3c1d5e6f7a80]: unhandled error on GET /api/history (trace id 9f86d081884c4e8b9f2a3c1d5e6f7a80)
+```
+
+In JSON format the line has a `trace_id` field. The Slack bot's lines do not
+change. To find the lines of a user report, search for the id:
+
+```bash
+sudo journalctl -u queryhub-web --since "1 day ago" --no-pager | grep 9f86d081884c4e8b9f2a3c1d5e6f7a80
 ```
 
 ---
@@ -1698,10 +1751,11 @@ is the runbook.
 QueryHub refuses each of these for everyone else, as before:
 - **End or cancel a session.** `SELECT pg_terminate_backend(pid)` or
   `pg_cancel_backend(pid)`, alone or over `pg_stat_activity`. QueryHub asks
-  first. Then it runs the statement at the ddl tier, as the elevated role,
-  because the read-only login cannot signal another role's backend. On a
-  cluster without the role (no `super_ddl_role`), the DDL login runs it, and
-  the server may refuse.
+  first. Then it runs the statement at the ddl tier, as the elevated role. A
+  login can signal a session only with the privileges of the login of that
+  session, or with `pg_signal_backend`. The `deploy/` grant scripts give
+  `pg_signal_backend` to no QueryHub login. On a cluster without the role
+  (no `super_ddl_role`), the DDL login runs it, and the server may refuse.
 - **Run a mixed script.** A SELECT, an UPDATE and a SELECT go as one request,
   at the script's highest tier, in one transaction.
 - **Set `search_path`.** `SET search_path = app, public` before the query.
@@ -1927,7 +1981,11 @@ by the replica's own id. So an exemption written against a replica's
 connection row never applies.
 
 **Cancel and lockout.** A cancel signals the backend on the server that runs
-the query (`executed_target_id`), with the primary's login.
+the query (`executed_target_id`). It connects with the primary's login for the
+tier that the query runs at (`executed_tier`). The RO login cannot signal a
+session of the RW or DDL login, unless it holds `pg_signal_backend`. If
+QueryHub cannot read the credential of that tier, it uses the RO login. Then
+the server can refuse the signal, and the cancel reports `failed`.
 `scripts/breakglass_lockout.py` ends QueryHub sessions on replicas too. It
 writes no role change there: the NOLOGIN reaches a replica through replication.
 The script processes the replicas after the primaries.

@@ -21,6 +21,13 @@ The safety property that matters: a pid is reused once a backend exits, so
 signalling a pid recorded minutes ago could hit an unrelated session on a
 production database. Every signal is therefore preceded by a check that the pid
 is still running THIS request's query, on the connection the request names.
+
+The signal goes out with the login the query runs as. PostgreSQL lets a session
+cancel or end another backend only when it has the privileges of that backend's
+login role, or holds `pg_signal_backend`. `SET ROLE` does not change the login
+that a backend belongs to. Measured on PostgreSQL 18 with non-superuser roles:
+the RO login got "permission denied to cancel query" on a query that ran as the
+RW login, and that query ran to its end. The RW login stopped it.
 """
 from __future__ import annotations
 
@@ -159,6 +166,42 @@ def _stop_clickhouse(request_id: int, target, query_id: str | None) -> str:
     return CancelOutcome.CANCELLED
 
 
+# The credential tiers, lowest first. The same names as targets.get_credentials.
+_TIERS = ("ro", "rw", "ddl")
+
+
+def _signal_login(request_id: int, target_id: int,
+                  tier: str | None) -> tuple[str, str] | None:
+    """The (username, password) to signal with: the login the query runs as.
+
+    `tier` is `requests.executed_tier`, which the executor writes when it
+    claims the row. A missing or unknown value counts as RO, the lowest tier.
+    When the credential of the tier is not available, this uses the RO login.
+    It can stop a read, but not a write or DDL. This never uses a tier above
+    the tier of the request. None means that no credential is available.
+    """
+    want = tier if tier in _TIERS else "ro"
+    for mode in dict.fromkeys((want, "ro")):
+        try:
+            user, password = targets.get_credentials(target_id, mode)
+        except Exception as e:  # LookupError, or any secrets-provider error
+            # The type only. The text of a provider error can name the secret.
+            log.warning("cancel: request %s: cannot read the %s credential "
+                        "(%s)", request_id, mode, type(e).__name__)
+            continue
+        if not password or password == targets.SENTINEL_PASSWORD:
+            log.warning("cancel: request %s: the %s credential is not set",
+                        request_id, mode)
+            continue
+        if mode != want:
+            log.warning("cancel: request %s runs at the %s tier, but the "
+                        "signal uses the %s login. The server refuses it "
+                        "unless that login holds pg_signal_backend.",
+                        request_id, want, mode)
+        return user, password
+    return None
+
+
 def stop_backend(request_id: int) -> str:
     """Signal the target backend running `request_id`. Returns a CancelOutcome.
 
@@ -168,7 +211,8 @@ def stop_backend(request_id: int) -> str:
     """
     row = db.fetch_one(
         "SELECT backend_pid, engine_execution_id, target_server_id, "
-        "       executed_target_id, database_name, status::text AS st "
+        "       executed_target_id, executed_tier, database_name, "
+        "       status::text AS st "
         "  FROM requests WHERE id = %s", (request_id,))
     if not row:
         return CancelOutcome.FAILED
@@ -201,10 +245,13 @@ def stop_backend(request_id: int) -> str:
         # a replica has the primary's roles and no credential of its own.
         where = (targets.get(row["executed_target_id"])
                  if row.get("executed_target_id") else None) or target
+        # The login of the tier the query runs at. The RO login cannot
+        # signal a backend that runs as the RW or DDL login.
+        login = _signal_login(request_id, target.id, row.get("executed_tier"))
+        if login is None:
+            return CancelOutcome.FAILED
+        user, password = login
         import psycopg
-        dsn = (f"host={where.host} port={where.port} "
-               f"dbname={row['database_name']} user={target.username} "
-               f"password={targets.get_password(target.id)}")
         conn_kwargs = dict(cfg.target_ssl_kwargs(where.host))
         # autocommit, and it matters. `pg_stat_activity`'s backend-status data is
         # cached for the duration of a TRANSACTION, so polling it inside one
@@ -213,8 +260,14 @@ def stop_backend(request_id: int) -> str:
         # escalation always fired and every cancel became a terminate. Outside a
         # transaction each read is fresh. `pg_stat_clear_snapshot()` below is the
         # belt to this braces.
-        with psycopg.connect(dsn, connect_timeout=10, autocommit=True,
-                             **conn_kwargs) as conn:
+        #
+        # Keyword arguments, not a conninfo string that we build. A space in
+        # a password breaks the parse of such a string, and the parse error
+        # can quote part of the password into the log.
+        with psycopg.connect(host=where.host, port=where.port,
+                             dbname=row["database_name"], user=user,
+                             password=password, connect_timeout=10,
+                             autocommit=True, **conn_kwargs) as conn:
             with conn.cursor() as cur:
                 if not _matches_this_request(cur, pid, request_id):
                     # Either it finished on its own, or the pid now belongs to

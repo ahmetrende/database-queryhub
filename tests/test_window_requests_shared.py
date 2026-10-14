@@ -9,6 +9,8 @@ every admin in Slack.
 """
 from types import SimpleNamespace
 
+import contextlib
+
 import pytest
 from fastapi import HTTPException
 
@@ -201,9 +203,28 @@ def decision(monkeypatch):
     monkeypatch.setattr(admins, "is_admin", lambda pid: st["admin"])
     monkeypatch.setattr(admins, "can_approve", lambda pid, req: st["scope"])
     monkeypatch.setattr(aar, "get", lambda rid: st["req"])
-    monkeypatch.setattr(aar, "decide", lambda rid, **k: st["decided"])
+    monkeypatch.setattr(aar, "decide_in", lambda cur, rid, **k: st["decided"])
     monkeypatch.setattr(targets, "get", lambda tid: T)
     monkeypatch.setattr(dbm, "execute", lambda sql, params=None: st["sql"].append(sql))
+    st["tx"] = []        # "begin", then "commit" or "rollback", per transaction
+    st["audit"] = []     # the params of every audit insert
+
+    class TxCur:
+        def execute(self, sql, params=None):
+            st["sql"].append(sql)
+            if "INSERT INTO audit_log" in sql:
+                st["audit"].append(params)
+
+    @contextlib.contextmanager
+    def transaction():
+        st["tx"].append("begin")
+        try:
+            yield TxCur()
+        except BaseException:
+            st["tx"].append("rollback")
+            raise
+        st["tx"].append("commit")
+    monkeypatch.setattr(dbm, "transaction", transaction)
 
     class Cur:
         rowcount = 1
@@ -248,7 +269,29 @@ def test_a_second_decision_finds_it_decided(decision):
 def test_declining_is_recorded(decision):
     out = aar.decide_window(7, approve=False, actor_id="U0EXAMPLE001", actor_name="Admin")
     assert out["status"] == "rejected"
-    assert any("auto_approve_window_rejected" in q for q in decision["sql"])
+    assert [p[3] for p in decision["audit"]] == ["auto_approve_window_rejected"]
+
+
+def test_declining_commits_the_decision_and_its_audit_row_together(decision):
+    aar.decide_window(7, approve=False, actor_id="U0EXAMPLE001", actor_name="Admin")
+    assert decision["tx"] == ["begin", "commit"]
+
+
+def test_a_failing_audit_insert_undoes_the_decline(decision, monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("audit insert failed")
+    monkeypatch.setattr(aar.audit, "log_in", boom)
+    with pytest.raises(RuntimeError):
+        aar.decide_window(7, approve=False, actor_id="U0EXAMPLE001", actor_name="Admin")
+    assert decision["tx"] == ["begin", "rollback"]
+
+
+def test_declining_a_request_that_was_decided_writes_no_audit_row(decision):
+    decision["decided"] = None
+    with pytest.raises(aar.WindowDecisionRefused) as e:
+        aar.decide_window(7, approve=False, actor_id="U0EXAMPLE001", actor_name="Admin")
+    assert e.value.status == 409
+    assert decision["audit"] == [] and "commit" not in decision["tx"]
 
 
 def test_the_slack_card_and_the_web_screen_share_the_decision():

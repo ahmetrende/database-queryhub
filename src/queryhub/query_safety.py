@@ -725,9 +725,10 @@ def analyze(sql: str, engine: str = "postgres",
         # Ending or cancelling a server session (pg_terminate_backend,
         # pg_cancel_backend) comes before all of that. ast_safety refuses it for
         # everyone else. For a super-admin it asks first and runs at the top
-        # tier: the read-only login cannot signal another role's backend, the
-        # elevated role the ddl tier assumes can (pg_signal_backend). EXPLAIN
-        # keeps its own strict inner check.
+        # tier. A login can signal a session only with the privileges of the
+        # login of that session, or with pg_signal_backend. The elevated role
+        # that the ddl tier assumes can. EXPLAIN keeps its own strict inner
+        # check.
         ends = (sorted(_ast_module().session_control_calls(stmt.value, engine))
                 if unrestricted and spec.name == "postgres" and upper != "EXPLAIN"
                 else [])

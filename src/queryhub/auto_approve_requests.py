@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from . import db
+from . import audit, db
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +62,31 @@ def get(request_id: int) -> dict | None:
     )
 
 
+_DECIDE_SQL = (
+    "UPDATE auto_approve_requests "
+    "   SET status = %s, decided_by_slack_id = %s, decided_by_name = %s, "
+    "       granted_id = %s, decided_at = NOW() "
+    " WHERE id = %s AND status = 'pending' "
+    "RETURNING id, requester_slack_id, target_server_id, database_name, "
+    "          max_tier, window_minutes, status")
+
+
+def decide_in(
+    cur,
+    request_id: int,
+    *,
+    status: str,
+    decided_by_slack_id: str,
+    decided_by_name: str | None,
+    granted_id: int | None = None,
+) -> dict | None:
+    """`decide` on the caller's cursor. The decision commits in the caller's
+    transaction, together with its audit row."""
+    cur.execute(_DECIDE_SQL, (status, decided_by_slack_id, decided_by_name,
+                              granted_id, request_id))
+    return cur.fetchone()
+
+
 def decide(
     request_id: int,
     *,
@@ -73,15 +98,10 @@ def decide(
     """Move a pending request to approved/rejected. Only acts on a still
     -pending row (so two admins can't both decide it). Returns the updated
     row, or None if it was already decided."""
-    return db.fetch_one(
-        "UPDATE auto_approve_requests "
-        "   SET status = %s, decided_by_slack_id = %s, decided_by_name = %s, "
-        "       granted_id = %s, decided_at = NOW() "
-        " WHERE id = %s AND status = 'pending' "
-        "RETURNING id, requester_slack_id, target_server_id, database_name, "
-        "          max_tier, window_minutes, status",
-        (status, decided_by_slack_id, decided_by_name, granted_id, request_id),
-    )
+    with db.transaction() as cur:
+        return decide_in(cur, request_id, status=status,
+                         decided_by_slack_id=decided_by_slack_id,
+                         decided_by_name=decided_by_name, granted_id=granted_id)
 
 
 class WindowRequestRefused(Exception):
@@ -247,15 +267,19 @@ def decide_window(request_id: int, *, approve: bool, actor_id: str,
     t = targets.get(req["target_server_id"])
     alias = t.alias if t else f"target #{req['target_server_id']}"
     if not approve:
-        decided = decide(request_id, status="rejected", decided_by_slack_id=actor_id,
-                         decided_by_name=actor_name)
-        if decided is None:
-            raise WindowDecisionRefused("Already decided.")
-        db.execute(
-            "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
-            "VALUES (%s, %s, 'auto_approve_window_rejected', %s::jsonb)",
-            (actor_id, actor_name, json.dumps({"request_id": request_id,
-                                               "user": decided["requester_slack_id"]})))
+        # One transaction: the decision and its audit row commit together, as
+        # they do on the approve path below. They were two commits, so a failure
+        # between them left a rejected request with no audit row.
+        with db.transaction() as cur:
+            decided = decide_in(cur, request_id, status="rejected",
+                                decided_by_slack_id=actor_id,
+                                decided_by_name=actor_name)
+            if decided is None:
+                raise WindowDecisionRefused("Already decided.")
+            audit.log_in(cur, None, actor_id, actor_name,
+                         "auto_approve_window_rejected",
+                         {"request_id": request_id,
+                          "user": decided["requester_slack_id"]})
         return {"status": "rejected", "request": req, "alias": alias}
     if not admins.can_approve(actor_id, {"required_tier": req["max_tier"],
                                          "target_server_id": req["target_server_id"],

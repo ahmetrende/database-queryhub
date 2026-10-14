@@ -16,6 +16,7 @@ distinct principal.
 from __future__ import annotations
 
 import functools
+from collections.abc import Callable
 
 from . import db, passwords
 
@@ -50,13 +51,18 @@ def _dummy_hash() -> str:
     return passwords.hash_password("qh-local-enumeration-guard")
 
 
+_GET_SQL = (
+    "SELECT username, password_hash, display_name, email, enabled, "
+    "       must_change_pw, created_at, last_login_at "
+    "FROM local_users WHERE username = %s")
+
+_SET_PASSWORD_SQL = (
+    "UPDATE local_users SET password_hash = %s, must_change_pw = %s "
+    "WHERE username = %s")
+
+
 def get(username: str) -> dict | None:
-    return db.fetch_one(
-        "SELECT username, password_hash, display_name, email, enabled, "
-        "       must_change_pw, created_at, last_login_at "
-        "FROM local_users WHERE username = %s",
-        (normalize_username(username),),
-    )
+    return db.fetch_one(_GET_SQL, (normalize_username(username),))
 
 
 def verify_login(username: str, password: str) -> dict | None:
@@ -87,11 +93,8 @@ def create(username: str, password_hash: str, *,
 
 def set_password(username: str, password_hash: str, *,
                  must_change_pw: bool = False) -> None:
-    db.execute(
-        "UPDATE local_users SET password_hash = %s, must_change_pw = %s "
-        "WHERE username = %s",
-        (password_hash, must_change_pw, normalize_username(username)),
-    )
+    db.execute(_SET_PASSWORD_SQL,
+               (password_hash, must_change_pw, normalize_username(username)))
 
 
 MIN_PASSWORD_LEN = 8
@@ -103,17 +106,42 @@ def change_password(username: str, current_password: str,
     stored hash, then store the new one (clearing must_change_pw). Returns an
     error code string on failure, or "" on success. Never reveals more than
     needed. The KDF work happens here; callers should throttle."""
+    def write(name: str, new_hash: str) -> None:
+        set_password(name, new_hash, must_change_pw=False)
+
+    return _change_password(get, write, username, current_password, new_password)
+
+
+def change_password_in(cur, username: str, current_password: str,
+                       new_password: str) -> str:
+    """`change_password` on the caller's cursor, with the same checks and the
+    same error codes. It reads and writes the row in the caller's transaction,
+    so the new password commits together with the caller's audit row."""
+    def read(name: str) -> dict | None:
+        cur.execute(_GET_SQL, (normalize_username(name),))
+        return cur.fetchone()
+
+    def write(name: str, new_hash: str) -> None:
+        cur.execute(_SET_PASSWORD_SQL, (new_hash, False, normalize_username(name)))
+
+    return _change_password(read, write, username, current_password, new_password)
+
+
+def _change_password(read: Callable[[str], dict | None],
+                     write: Callable[[str, str], None], username: str,
+                     current_password: str, new_password: str) -> str:
+    """The checks of a password change, in order. `read` gets the row and
+    `write` stores the new hash, so both entry points share one set of rules."""
     if len(new_password or "") < MIN_PASSWORD_LEN:
         return "weak_password"
     if new_password == current_password:
         return "same_password"
-    row = get(username)
+    row = read(username)
     if row is None or not row["enabled"]:
         return "bad_credentials"
     if not passwords.verify_password(current_password or "", row["password_hash"]):
         return "bad_credentials"
-    set_password(username, passwords.hash_password(new_password),
-                 must_change_pw=False)
+    write(username, passwords.hash_password(new_password))
     return ""
 
 

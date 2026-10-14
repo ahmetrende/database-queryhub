@@ -141,6 +141,10 @@ def list_enabled_ids() -> set[str]:
     return {r["slack_user_id"] for r in rows}
 
 
+_ENABLE_SQL = "UPDATE requesters SET enabled = TRUE WHERE slack_user_id = %s"
+_DISABLE_SQL = "UPDATE requesters SET enabled = FALSE WHERE slack_user_id = %s"
+
+
 def enable(principal_id: str) -> None:
     """Re-enable an existing row.
 
@@ -149,12 +153,22 @@ def enable(principal_id: str) -> None:
     not have one to offer. An address with no row is reported back for a human
     to onboard rather than turned into a half-formed row here.
     """
-    db.execute("UPDATE requesters SET enabled = TRUE WHERE slack_user_id = %s",
-               (principal_id,))
+    db.execute(_ENABLE_SQL, (principal_id,))
+
+
+def enable_in(cur, principal_id: str) -> None:
+    """`enable` on the caller's cursor. The change commits in the caller's
+    transaction, together with its audit row."""
+    cur.execute(_ENABLE_SQL, (principal_id,))
 
 
 def disable(principal_id: str) -> None:
     """Revoke the entry gate for a principal. The row stays, so the person
     still reads as themselves rather than as an unknown address."""
-    db.execute("UPDATE requesters SET enabled = FALSE WHERE slack_user_id = %s",
-               (principal_id,))
+    db.execute(_DISABLE_SQL, (principal_id,))
+
+
+def disable_in(cur, principal_id: str) -> None:
+    """`disable` on the caller's cursor. The change commits in the caller's
+    transaction, together with its audit row."""
+    cur.execute(_DISABLE_SQL, (principal_id,))

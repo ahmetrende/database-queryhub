@@ -1573,15 +1573,19 @@ def scheduled_list(claims: dict = Depends(deps.current_user)):
 @router.delete("/scheduled/{request_id}", status_code=204)
 def scheduled_cancel(request_id: int, claims: dict = Depends(deps.current_user)):
     deps.require_whitelisted(claims)
-    row = db.fetch_one(
-        "UPDATE requests SET status = 'cancelled', decided_at = NOW(), "
-        "  decision_reason = 'cancelled by requester (scheduled)' "
-        "WHERE id = %s AND requester_slack_id = %s AND status = 'scheduled' "
-        "RETURNING id", (request_id, claims["sub"]))
+    # The cancel and its audit row commit together, as in the Slack handler.
+    with db.transaction() as cur:
+        cur.execute(
+            "UPDATE requests SET status = 'cancelled', decided_at = NOW(), "
+            "  decision_reason = 'cancelled by requester (scheduled)' "
+            "WHERE id = %s AND requester_slack_id = %s AND status = 'scheduled' "
+            "RETURNING id", (request_id, claims["sub"]))
+        row = cur.fetchone()
+        if row is not None:
+            audit_mod.log_in(cur, request_id, claims["sub"], claims.get("name"),
+                             "cancelled", {"by": "requester", "phase": "scheduled"})
     if row is None:
         raise deps._error(404, "not_found", "No such scheduled query.")
-    audit_mod.log(request_id, claims["sub"], claims.get("name"),
-                  "cancelled", {"by": "requester", "phase": "scheduled"})
 
 
 # ---- live status stream (WebSocket) ------------------------------------------

@@ -6316,17 +6316,22 @@ def principals_sync(body: PrincipalSyncIn,
                           state=verdict.state, limit=verdict.limit,
                           would_disable=verdict.count)
 
-    for pid in enabled_ids:
-        requesters.enable(pid)
-    for pid in disabled_ids:
-        requesters.disable(pid)
-
     details: dict[str, object] = {
         "enabled": enabled_ids, "disabled": disabled_ids, "kept": kept,
         "unresolved": unresolved, "admin_drift": drift}
     if verdict.state == "approved":
         details["approved_hold"] = verdict.hold_id
-    audit.log(None, uid, "idp-sync", "idp_principal_sync", details)
+    # One transaction: every enable, every disable and the audit row commit
+    # together, or none of them does. Each write used to commit on its own, so
+    # a crash part way left some people changed and no audit row. The
+    # auth-event triggers queue their DMs in this transaction too, so a
+    # rollback sends no DM.
+    with db.transaction() as cur:
+        for pid in enabled_ids:
+            requesters.enable_in(cur, pid)
+        for pid in disabled_ids:
+            requesters.disable_in(cur, pid)
+        audit.log_in(cur, None, uid, "idp-sync", "idp_principal_sync", details)
 
     log.info("layer-A reconcile: +%d/-%d requesters, %d kept, %d unresolved, "
              "drift %s", len(enabled_ids), len(disabled_ids), len(kept),

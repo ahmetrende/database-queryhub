@@ -34,10 +34,12 @@ def log(
     action: str,
     details: dict | None = None,
 ) -> None:
-    """Standalone audit insert. Prefer `log_in(cur, ...)` when paired
-    with a state-changing UPDATE — the standalone form runs in its own
-    transaction and can leave state out of sync if the audit insert
-    fails."""
+    """Standalone audit insert. It commits in its own transaction.
+
+    Use it only for an event that changes no state. A row that records a state
+    change goes through `log_in(cur, ...)`, inside the transaction of the
+    change, so that the change and the row commit together.
+    tests/test_audit_discipline.py lists the actions that may use this form."""
     db.execute(_INSERT_SQL, _params(request_id, actor_slack_id, actor_name, action, details))
 
 

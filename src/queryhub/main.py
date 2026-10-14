@@ -10,7 +10,7 @@ import threading
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from . import auth_events, db, executor, lifecycle, targets
+from . import auth_events, db, executor, lifecycle, migration_state, targets
 from .config import ENV
 from .slack_app import handlers, notifications
 
@@ -52,6 +52,9 @@ def main() -> int:
 
     db.init_pool()
     targets.log_tls_posture()
+    # Code that runs ahead of its migrations fails on the first query that
+    # needs a new table or column. Say so now. It never stops the start.
+    migration_state.warn_if_pending()
 
     # Sweep lease-expired 'executing' rows (orphaned from a dead process — a
     # query can't survive its connection dying) to failed. Lease-gated so a

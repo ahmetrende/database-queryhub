@@ -9,6 +9,70 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+### Upgrading
+
+- **Apply the migrations before you restart, as before.** From now on, the web
+  process answers `/readyz` with 503 while a migration file is missing from the
+  ledger. Both services log a CRITICAL line at start. This release adds no
+  migration.
+- **Restart every QueryHub process.** The cancel path, the audit writes and the
+  web app changed.
+
+### Added
+
+- **Every web response carries an `X-Request-ID`.** The server makes the id and
+  ignores one that the client sends. An unhandled 500 also holds it as
+  `error.traceId`. Each log line of a web request carries it as `trace_id` in
+  JSON, or as `[id]` in text. A user report that quotes the id leads to its log
+  lines.
+- **Startup guards.** Both services log a CRITICAL line when migrations are
+  pending. The web app logs one when its base URL is `http://` and the host is
+  not loopback. `/readyz` answers 503 while migrations are pending. A check
+  stays silent when it cannot know: no migrations directory, no ledger, or a
+  login that cannot read the ledger.
+- **Live SQL Server tests in CI.** The `mssql` job runs
+  `tests/test_integration_mssql.py` against a throwaway SQL Server 2022 and fails
+  if the tests skip. It found three defects. The Fixed section below covers the first. The
+  other two are open and written in `docs/KNOWN_LIMITATIONS.md`: the login of
+  `deploy/grant_mssql.sql` has no `SHOWPLAN`, so a script of several writes
+  commits only its last statement, and Stop cannot reach a running SQL Server
+  query.
+- **A test fails when a setting has no documentation.**
+  `tests/test_config_docs_sync.py` checks every `bot_config` key and every
+  environment variable that the code reads, and every local link in the docs. The
+  reference now lists six keys and six variables that it missed.
+
+### Fixed
+
+- **Cancel stops a running write or DDL request.** The signal used the RO login,
+  and PostgreSQL refuses it for a backend that runs as another login. The
+  request ran until `query_timeout_sec`. The signal now uses the login of the
+  tier that the request runs at, and never a higher one. The runaway watchdog
+  stops long writes too. Each cancel opens one more session for that login, so a
+  login at its connection limit makes the cancel fail.
+- **A state change and its audit row commit together.** A password change, an
+  IdP sync, the cancel of a scheduled query and the decline of a window request
+  were two commits. A failure between them left a change with no audit row, or
+  half of an IdP sync. Each now runs in one transaction. `tests/test_audit_discipline.py`
+  fails on a new standalone audit row for a state change.
+- **`deploy/grant_mssql.sql` no longer denies `CONTROL SERVER`.** That denial
+  also denied `CONNECT SQL`, so its logins could not log in. The script now
+  revokes it from a login that an older version made.
+
+### Security
+
+- **An error message no longer shows a value that the database read from a
+  row.** `SELECT full_name::int FROM customers WHERE id = 1` failed with that
+  name in the message, and the result file would have masked it. While PII
+  masking is on, `[hidden]` replaces the value. A value that the requester typed
+  in the SQL stays visible, and a CSV import shows every value. The list covers
+  PostgreSQL, SQL Server, ClickHouse and Athena. Masking still does not stop
+  inference with a predicate and a row count (`docs/COMPLIANCE.md`, section 4).
+- **The error scrubber has a time limit.** The content detectors took 38 seconds
+  on 200 KB of one character, so a large cell could block an executor thread
+  while it was cast. `scrub()` reads at most 8000 characters in the hiding
+  step and 1000 in the content detectors.
+
 ## [1.0.35] — 2026-10-13
 
 QueryHub refuses a mistake in a write or a script when you submit it, and the

@@ -35,6 +35,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from queryhub import db  # noqa: E402
 from queryhub import metadata_roles  # noqa: E402
+# The services' startup check (pending migrations) uses the same file discovery
+# and version names, so the two cannot disagree about what is pending.
+from queryhub import migration_state  # noqa: E402
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
@@ -115,13 +118,13 @@ def main(argv: list[str] | None = None) -> int:
     dry_run = "--dry-run" in argv
     baseline = "--baseline" in argv
 
-    files = sorted(MIGRATIONS_DIR.glob("*.sql"))
+    files = migration_state.migration_files(MIGRATIONS_DIR)
     if not files:
         print("No migration files found.")
         return 1
 
-    entries = [(f.name, _checksum(f.read_text())) for f in files]
-    by_name = {f.name: f for f in files}
+    entries = [(migration_state.version_of(f), _checksum(f.read_text())) for f in files]
+    by_name = {migration_state.version_of(f): f for f in files}
 
     migrator = _migrator()
     # One connection for the whole run so the advisory lock (session-scoped,

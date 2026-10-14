@@ -167,9 +167,11 @@ jobs:
         # skip themselves when QH_RUN_INTEGRATION is absent, so without the
         # check a dropped env var would turn the whole job into a green no-op —
         # which is how they came to never run in the first place.
+        # The SQL Server tests are integration tests too, but they need a SQL
+        # Server, so the `mssql` job runs them and this job leaves them out.
         run: |
           set -o pipefail
-          pytest -m "integration and not split_roles" -rs | tee /tmp/integration.log
+          pytest -m "integration and not split_roles and not mssql" -rs | tee /tmp/integration.log
           if grep -q "skipped" /tmp/integration.log; then
             echo "::error::integration tests skipped — they must run in this job"
             exit 1
@@ -213,12 +215,88 @@ jobs:
           BOT_DB_MIGRATOR_USER: qh_migrator
           BOT_DB_MIGRATOR_PASSWORD: migrator
           BOT_DB_OWNER_ROLE: qh_owner
+          # tests/test_integration_cancel_tiers.py makes throwaway target
+          # logins. The runtime login cannot make roles, so the test uses this
+          # superuser. The first pass uses its superuser control login.
+          QH_TARGET_ADMIN_DSN: "host=localhost port=5432 dbname=queryhub_test user=postgres password=postgres"
           MASTER_KEY_PATH: /tmp/ci-master.key
         run: |
           set -o pipefail
-          pytest -m integration -rs | tee /tmp/integration-split.log
+          pytest -m "integration and not mssql" -rs | tee /tmp/integration-split.log
           if grep -q "skipped" /tmp/integration-split.log; then
             echo "::error::integration tests skipped in the split pass"
+            exit 1
+          fi
+
+  # The SQL Server code had mock tests only, so a driver, TLS or transaction
+  # bug could show up only on a real server. This job runs
+  # tests/test_integration_mssql.py against a throwaway SQL Server 2022. It
+  # needs no metadata database: the tests give fixed answers to the three
+  # metadata reads that the SQL Server path makes.
+  mssql:
+    runs-on: ubuntu-latest
+    # Any job that hangs is a bug, and the default is six hours.
+    timeout-minutes: 20
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_PID: Developer
+          # A throwaway password for a throwaway container. It is not a secret.
+          MSSQL_SA_PASSWORD: QueryHub-CI-Sa1
+        ports:
+          - 1433:1433
+        # Without a health check the job races the server's first login. The
+        # check runs inside the container, which ships sqlcmd.
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P QueryHub-CI-Sa1 -Q 'SELECT 1' -b -o /dev/null"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      QH_RUN_MSSQL: "1"
+      QH_MSSQL_HOST: 127.0.0.1
+      QH_MSSQL_PORT: "1433"
+      QH_MSSQL_SA_PASSWORD: QueryHub-CI-Sa1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install the Microsoft ODBC Driver 18 for SQL Server
+        # The runner image can have the driver, or Microsoft's apt source, or
+        # neither. A second source entry for the same repository breaks
+        # `apt-get update`, so the step adds one only when none exists.
+        run: |
+          if odbcinst -q -d -n "ODBC Driver 18 for SQL Server" >/dev/null 2>&1; then
+            echo "ODBC Driver 18 for SQL Server is already installed"
+          else
+            if ! grep -rqs "packages.microsoft.com" /etc/apt/sources.list /etc/apt/sources.list.d; then
+              curl -fsSL "https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb" \
+                -o /tmp/packages-microsoft-prod.deb
+              sudo dpkg -i /tmp/packages-microsoft-prod.deb
+            fi
+            sudo apt-get update
+            sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
+          fi
+          odbcinst -q -d
+      - name: Install
+        # The full profile, as in the other test jobs. `-m mssql` selects
+        # tests but still imports every test module, and some of them import
+        # the Slack SDK.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,slack,mssql]"
+      - name: SQL Server tests
+        # The same rule as the integration job: these tests skip themselves
+        # without QH_RUN_MSSQL, so a skip here means the job proved nothing.
+        run: |
+          set -o pipefail
+          pytest -m mssql -rs | tee /tmp/mssql.log
+          if grep -q "skipped" /tmp/mssql.log; then
+            echo "::error::SQL Server tests skipped — they must run in this job"
             exit 1
           fi
 

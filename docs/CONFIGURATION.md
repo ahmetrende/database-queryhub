@@ -79,6 +79,10 @@ needs the database connection that they configure:
 | `WEB_BASE_URL` | *(unset)* | Per-process override for `web_base_url`, for a second instance on the same database. |
 | `LOG_LEVEL` | `INFO` | Root log level. The app reads it once at process start, so a change needs a restart. |
 | `LOG_FORMAT` | `text` | `json` emits one JSON object per line for a log pipeline: `timestamp`/`level`/`logger`/`message`, plus any `extra=` fields and a single-line `exception`. `text` stays human-readable for `journalctl`. The app also reads it once at start. |
+| `WEB_BIND` | `0.0.0.0` | Address that the web process (`python -m queryhub.web`) listens on. |
+| `WEB_PORT` | `8080` | Port that the web process listens on. |
+| `WEB_SSL_CERTFILE`, `WEB_SSL_KEYFILE` | *(unset)* | Certificate and key for the TLS of the web process itself. While they are unset, it serves plain HTTP. `scripts/install.sh` sets them when it generates a certificate. |
+| `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` | *(unset)* | Credentials of the Slack app for "Sign in with Slack" on the web process. Set them only in the environment of the web process. The Slack bot process removes them at startup, because Bolt switches to OAuth mode when it sees them and the bot then fails to authorize. |
 
 An invalid or out-of-range pool value logs a warning, and the app uses the
 default instead of stopping the process.
@@ -86,6 +90,9 @@ default instead of stopping the process.
 | `web_result_to_slack` | `false` | Also deliver a web-submitted query's result to Slack. **(Slack)** |
 | `web_repo_slug` | `""` | `owner/repo` to turn changelog commit SHAs into GitHub links. Empty = plain SHAs. |
 | `web_changelog_path` | `""` | Path to an external changelog JSON that feeds the in-app What's-new page. |
+| `web_max_tables_per_db` | `2000` | Maximum tables that one database adds to the `/connections` payload. Beyond this, the app truncates the list and flags it. Raise it if a database really has more. |
+| `draft_request_max_open` | `50` | Maximum reserved but unsubmitted draft requests per user. At the cap, the app removes the oldest drafts of that user instead of refusing a new query tab. |
+| `draft_request_ttl_hours` | `24` | Remove a draft request (the id that an opened query tab reserves) when nobody submitted it within this many hours. `0` disables the cleanup. |
 
 
 > **Adding a key.** Seed it in a migration with its code default and a
@@ -103,6 +110,8 @@ default instead of stopping the process.
 | `kill_switch_message` | _(notice)_ | Message shown while the kill switch is on. |
 | `query_timeout_sec` | `300` | Statement timeout for an executing query. |
 | `execution_lease_sec` | `900` | How long a claimed execution lease lasts before the app considers it stale. |
+| `execution_runaway_sec` | `420` | Wall-clock seconds after which an `executing` request counts as a runaway. The watchdog cancels its backend. If the cancel does not land, it terminates the backend and fails the request. This limit is separate from `execution_lease_sec`, which tracks process liveness. A backend that blocks while it writes to a slow client honours neither `statement_timeout` nor a cancel. `0` disables the watchdog. |
+| `cancel_escalate_sec` | `5` | Seconds to wait for `pg_cancel_backend` to take effect. After that, the app escalates to `pg_terminate_backend`. A backend that blocks in `Client/ClientWrite` never processes a cancel, so without the escalation a cancel would do nothing. |
 | `max_rows` | `1000` | Row cap on a delivered result set (Slack path). |
 | `super_admin_max_rows` | `0` | Row-cap **floor** for super-admins, applied as `max(derived, this)`. `0` = inert. It can never lower anyone's cap. |
 | `super_admin_max_mb` | `0` | Size-cap **floor** in MB for super-admins. The app applies it after `csv_size_mb_ceiling`, which it outranks. `0` = inert. The key exists because the size cap is otherwise *derived* from the row cap (`csv_size_mb × rows / max_rows`, trimmed by the ceiling). So bytes were not expressible on their own, and a ceiling only ever trims. |
@@ -144,6 +153,7 @@ default instead of stopping the process.
 | `ro_burst_window_min` | `10` | The RO-burst detection window (minutes). |
 | `ro_window_minutes` | `60` | Length of a granted read-only auto-approve window. |
 | `auto_approve_feed_channel` | `""` | Slack channel that receives an auto-approve FYI feed. **(Slack)** |
+| `access_model_v2` | `off` | Resolve authorization from the nine-table model instead of the team tables. Turn it on only when the access snapshot comparison is empty. |
 
 ## Batch, scheduling & CSV import
 

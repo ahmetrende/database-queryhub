@@ -243,7 +243,7 @@ def explain(
         # an auth failure is OUR bad credential and still fails open,
         # because telling a requester about it helps nobody.
         if _is_missing_database(e):
-            return False, errors.scrub(e), None
+            return False, errors.scrub(e, query=query), None
         log.warning(
             "pre-flight EXPLAIN fail-open on operational error "
             "(target=%s db=%s mode=%s): %s",
@@ -252,8 +252,9 @@ def explain(
         return True, None, None
     except psycopg.Error as e:
         # Real SQL-level error: syntax / permission / missing-relation /
-        # invalid type. Surface it.
-        return False, errors.scrub(e), None
+        # invalid type. Surface it. The requester wrote every value in the
+        # message, so `query` lets scrub() keep them.
+        return False, errors.scrub(e, query=query), None
 
 
 # Leading keywords whose affected-row count an admin wants before
@@ -483,6 +484,7 @@ def validate_statements(
 
     started = time.monotonic()
     current = plannable[0][0]
+    current_sql = plannable[0][2]
     first_plan = None
     try:
         with psycopg.connect(
@@ -512,6 +514,7 @@ def validate_statements(
                         index, len(plannable), target.alias)
                     break
                 current = position
+                current_sql = sql
                 cur.execute(f"SET LOCAL statement_timeout = {min(left_ms, 2000)}")
                 cur.execute(
                     "EXPLAIN (FORMAT JSON, ANALYZE OFF, COSTS ON, BUFFERS OFF) "
@@ -523,7 +526,7 @@ def validate_statements(
         # Network, auth, timeout, lock wait: fail open. A database that does
         # not exist is not one of those; see explain() for the story.
         if _is_missing_database(e):
-            return False, errors.scrub(e), None
+            return False, errors.scrub(e, query=current_sql), None
         log.warning(
             "pre-flight validation fail-open on operational error "
             "(target=%s db=%s mode=%s): %s", target.alias, database, mode, e)
@@ -540,7 +543,7 @@ def validate_statements(
                     or state in _BLOCKING_SQLSTATES)
         if blocking and state not in _NOT_BLOCKING_SQLSTATES:
             where = f"Statement {current} of {len(main)}: " if len(main) > 1 else ""
-            return False, where + errors.scrub(e), None
+            return False, where + errors.scrub(e, query=current_sql), None
         log.warning(
             "pre-flight validation fail-open on sqlstate %r "
             "(target=%s db=%s mode=%s): %s",

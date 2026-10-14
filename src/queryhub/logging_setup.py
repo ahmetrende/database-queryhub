@@ -117,10 +117,15 @@ class RedactingFormatter(logging.Formatter):
         return redact(self._inner.format(record))
 
 
-def configure(level: str | None = None, fmt: str | None = None) -> None:
+def configure(level: str | None = None, fmt: str | None = None, *,
+              request_ids: bool = False) -> None:
     """Install the root handler. Idempotent-ish: `force=True` replaces any
     handler already installed, so a second call (or a library that configured
     logging on import) cannot leave two handlers duplicating every line.
+
+    `request_ids=True` is for the web process. Then each line from an HTTP
+    request carries the id of that request (web/request_id.py). JSON gets a
+    `trace_id` field, and text gets `[id]` before the message.
     """
     level = level or os.environ.get("LOG_LEVEL", "INFO")
     fmt = (fmt or os.environ.get("LOG_FORMAT", "text")).strip().lower()
@@ -128,8 +133,15 @@ def configure(level: str | None = None, fmt: str | None = None) -> None:
     handler = logging.StreamHandler()
     if fmt in ("json", "structured"):
         handler.setFormatter(RedactingFormatter(JsonFormatter()))
+    elif request_ids:
+        from .web.request_id import LOG_FORMAT
+        handler.setFormatter(RedactingFormatter(logging.Formatter(
+            LOG_FORMAT, defaults={"trace_id": "-"})))
     else:
         handler.setFormatter(RedactingFormatter(logging.Formatter(TEXT_FORMAT)))
+    if request_ids:
+        from .web.request_id import LogFilter
+        handler.addFilter(LogFilter())
 
     logging.basicConfig(level=level, handlers=[handler], force=True)
 

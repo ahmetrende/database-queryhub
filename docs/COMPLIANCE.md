@@ -114,6 +114,13 @@ layers:
    detectable shape, such as a name or an address. It matches on the result
    column name.
 
+The error path follows the same rule. Some engines put a value from a row into
+an error message. For example, `SELECT full_name::int FROM customers WHERE id = 1`
+fails with that name in the message. While `pii_masking_enabled` is on, QueryHub
+replaces such a value with `[hidden]` and keeps the rest of the message. It finds
+the value by the words of the message, so a name, an address or a salary is
+covered too. A value that the requester typed in the SQL stays visible.
+
 **Be clear about what this is.** It is *accidental-exposure mitigation*, not a
 data boundary:
 
@@ -124,6 +131,9 @@ data boundary:
 - Layer 2 matches the **output** column name. QueryHub resolves lineage through
   derived tables, CTEs and set operations, so an alias does not defeat it. But a
   column that the catalog does not know stays unmasked.
+- It does not stop inference. A reader can learn a masked value with a predicate
+  such as `WHERE full_name LIKE 'A%'` and a row count. Masking lowers accidental
+  exposure. It does not stop a determined reader.
 - Nothing here replaces column privileges, row-level security, or masking views
   on the target database. The database enforces those. QueryHub enforces this,
   and QueryHub is not the only way into your data.

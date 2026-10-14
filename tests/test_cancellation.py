@@ -57,13 +57,21 @@ class FakeTargetCursor:
 
 @pytest.fixture
 def wired(monkeypatch):
-    """Wire cancellation.py to fakes: a request row, a target, and a cursor."""
+    """Wire cancellation.py to fakes: a request row, a target, and a cursor.
+
+    `creds` holds one login per tier. Set a tier to an exception to make
+    QueryHub unable to read it. `cred_calls` records each credential read,
+    and `connect` records the arguments of the control connection.
+    """
     box = {
         "row": {"backend_pid": 4242, "target_server_id": 33,
+                "executed_target_id": None, "executed_tier": "ro",
                 "database_name": "appdb", "st": "executing",
                 "query": "select id, email from users"},
         "cursor": FakeTargetCursor(),
         "updates": [], "audits": [],
+        "creds": {t: (f"login_{t}", f"secret-{t}") for t in ("ro", "rw", "ddl")},
+        "cred_calls": [], "connect": None, "ssl_hosts": [],
     }
 
     def fake_fetch_one(sql, params=None):
@@ -94,15 +102,28 @@ def wired(monkeypatch):
                         box["audits"].append(action))
     monkeypatch.setattr(cancellation.targets, "get",
                         lambda tid: type("T", (), {
-                            "id": tid, "host": "db.example.test", "port": 5432,
-                            "username": "reader"})())
-    monkeypatch.setattr(cancellation.targets, "get_password", lambda tid: "pw")
-    monkeypatch.setattr(cancellation.cfg, "target_ssl_kwargs", lambda host=None: {})
+                            "id": tid, "port": 5432, "username": "login_ro",
+                            "host": ("replica.example.test" if tid == 34
+                                     else "db.example.test")})())
+
+    def fake_get_credentials(tid, mode):
+        box["cred_calls"].append((tid, mode))
+        got = box["creds"][mode]
+        if isinstance(got, BaseException):
+            raise got
+        return got
+
+    monkeypatch.setattr(cancellation.targets, "get_credentials",
+                        fake_get_credentials)
+    monkeypatch.setattr(cancellation.cfg, "target_ssl_kwargs",
+                        lambda host=None: box["ssl_hosts"].append(host) or {})
     monkeypatch.setattr(cancellation.cfg, "get_int",
                         lambda k, d=None: 1 if k == "cancel_escalate_sec" else (d or 0))
 
     @contextlib.contextmanager
     def fake_connect(*a, **k):
+        box["connect"] = {"args": a, **k}
+
         class Conn:
             def cursor(self):
                 @contextlib.contextmanager
@@ -180,6 +201,89 @@ def test_an_unreachable_target_reports_failure_not_success(wired, monkeypatch):
 
     monkeypatch.setattr(psycopg, "connect", boom)
     assert cancellation.stop_backend(1) == CancelOutcome.FAILED
+
+
+# ------------------------------------------------------ which login signals
+#
+# PostgreSQL lets a session cancel another backend only when it has the
+# privileges of that backend's login role, or holds pg_signal_backend. The RO
+# login used to signal every request, so a write or DDL could not be stopped:
+# "permission denied to cancel query", and the query ran until its timeout.
+# tests/test_integration_cancel_tiers.py shows the same against a real server.
+
+
+@pytest.mark.parametrize("tier", ["ro", "rw", "ddl"])
+def test_the_signal_uses_the_login_the_query_runs_as(wired, tier):
+    wired["row"] = dict(wired["row"], executed_tier=tier)
+    wired["cursor"] = FakeTargetCursor(alive_for_probes=1)
+    assert cancellation.stop_backend(1) == CancelOutcome.CANCELLED
+    assert wired["cred_calls"] == [(33, tier)]
+    conn = wired["connect"]
+    assert (conn["user"], conn["password"]) == (f"login_{tier}", f"secret-{tier}")
+    # The safeguards that were there before the change.
+    assert conn["autocommit"] is True
+    assert conn["host"] == "db.example.test"
+    assert wired["ssl_hosts"] == ["db.example.test"]
+
+
+def test_the_password_is_not_put_into_a_conninfo_string(wired):
+    """A space in a password breaks the parse of a conninfo string, and the
+    parse error can quote part of the password into the log."""
+    wired["cursor"] = FakeTargetCursor(alive_for_probes=1)
+    cancellation.stop_backend(1)
+    assert wired["connect"]["args"] == ()
+
+
+def test_a_replica_run_is_signalled_there_with_the_primarys_login(wired):
+    """A replica has the primary's roles and no credential of its own."""
+    wired["row"] = dict(wired["row"], executed_target_id=34)
+    wired["cursor"] = FakeTargetCursor(alive_for_probes=1)
+    assert cancellation.stop_backend(1) == CancelOutcome.CANCELLED
+    assert wired["cred_calls"] == [(33, "ro")]
+    assert wired["connect"]["host"] == "replica.example.test"
+    assert wired["ssl_hosts"] == ["replica.example.test"]
+
+
+@pytest.mark.parametrize("failure", [
+    LookupError("target 33 has no local credentials for mode=rw"),
+    RuntimeError("secret prod-main-secret is not the expected JSON"),
+    "unset",
+])
+def test_an_unreadable_tier_credential_falls_back_to_the_ro_login(
+        wired, caplog, failure):
+    """The old behaviour, as a last resort: the RO login still stops a read,
+    and the outcome is still a CancelOutcome. The log says so without a
+    secret, and without the provider's text, which can name the secret."""
+    from queryhub import targets
+    wired["row"] = dict(wired["row"], executed_tier="rw")
+    wired["creds"]["rw"] = (("login_rw", targets.SENTINEL_PASSWORD)
+                            if failure == "unset" else failure)
+    wired["cursor"] = FakeTargetCursor(alive_for_probes=1)
+    with caplog.at_level("WARNING", logger=cancellation.log.name):
+        assert cancellation.stop_backend(1) == CancelOutcome.CANCELLED
+    assert wired["cred_calls"] == [(33, "rw"), (33, "ro")]
+    assert wired["connect"]["user"] == "login_ro"
+    assert "pg_signal_backend" in caplog.text
+    for leak in ("secret-", "prod-main-secret", targets.SENTINEL_PASSWORD):
+        assert leak not in caplog.text
+
+
+@pytest.mark.parametrize("tier, tried", [
+    ("ro", ["ro"]),
+    ("rw", ["rw", "ro"]),
+    ("ddl", ["ddl", "ro"]),
+    (None, ["ro"]),            # a row from before migration 074
+    ("superuser", ["ro"]),     # not a tier: read as the lowest one
+])
+def test_a_tier_above_the_requests_own_is_never_tried(wired, tier, tried):
+    """When no credential is available, the answer is FAILED, and the cancel
+    opens no connection."""
+    wired["row"] = dict(wired["row"], executed_tier=tier)
+    wired["creds"] = {t: LookupError(t) for t in ("ro", "rw", "ddl")}
+    assert cancellation.stop_backend(1) == CancelOutcome.FAILED
+    assert [mode for _, mode in wired["cred_calls"]] == tried
+    assert wired["connect"] is None
+    assert wired["cursor"].signals == []
 
 
 # ------------------------------------------------------------- the audit trail

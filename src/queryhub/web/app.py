@@ -12,9 +12,10 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
-from .. import db
+from .. import db, migration_state
 from .. import config as cfg
-from . import build_info, deps, routes_auth, routes_avatar
+from . import (build_info, deps, request_id, routes_auth, routes_avatar,
+               startup_checks)
 # base_url and the cookie helpers live with the auth routes now; the startup
 # log and /api/me still read base_url, so it is imported rather than copied.
 from .routes_auth import _must_change_password, base_url
@@ -56,8 +57,11 @@ def create_app() -> FastAPI:
             # and stops the scheduler threads.
             await run_in_threadpool(_shutdown)
 
-    app = FastAPI(title="QueryHub Web", docs_url=None, redoc_url=None,
-                  openapi_url=None, lifespan=_lifespan)
+    # TracedFastAPI: every response, the unhandled-500 one too, carries an
+    # X-Request-ID header (web/request_id.py).
+    app = request_id.TracedFastAPI(title="QueryHub Web", docs_url=None,
+                                   redoc_url=None, openapi_url=None,
+                                   lifespan=_lifespan)
 
     @app.middleware("http")
     async def _cache_body_for_assertion(request: Request, call_next):
@@ -154,12 +158,17 @@ def create_app() -> FastAPI:
             log.info("QueryHub Web API started (base_url=%s, build=%s sha=%s%s)",
                      base_url(), _b.get("version", "?"), _b.get("sha", "?"),
                      f" image={_b['image']}" if _b.get("image") else "")
+            startup_checks.warn_if_plain_http()
             from .. import access, targets
             access.warn_if_access_model_v2()
             targets.log_tls_posture()
         except Exception:
             log.warning("QueryHub Web API started (build/base_url unavailable)",
                         exc_info=True)
+        # Code that runs ahead of its migrations fails on the first query
+        # that needs a new table or column. Say so now. It never raises, and
+        # it skips a pool that failed at boot.
+        migration_state.warn_if_pending()
 
         # Transport-independent worker. The scheduler loop, orphan
         # reconciler, and crash-recovery of 'approved' requests normally live
@@ -235,9 +244,15 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception):
-        log.exception("unhandled error on %s %s", request.method, request.url.path)
-        return JSONResponse(status_code=500, content={
-            "error": {"code": "server_error", "message": "Internal error."}})
+        # The id goes in the log line, the X-Request-ID header and the body.
+        # A user who quotes it lets the operator find this traceback.
+        rid = request_id.current()
+        log.exception("unhandled error on %s %s (trace id %s)",
+                      request.method, request.url.path, rid)
+        error = {"code": "server_error", "message": "Internal error."}
+        if rid:
+            error["traceId"] = rid
+        return JSONResponse(status_code=500, content={"error": error})
 
     from fastapi import HTTPException
     from fastapi.exceptions import RequestValidationError
@@ -286,6 +301,11 @@ def create_app() -> FastAPI:
     def healthz():
         return {"status": "ok"}
 
+    # Also unready while migrations are pending. The check keeps each verdict
+    # for 30 seconds, so a probe every few seconds does not read the ledger
+    # each time. An unknown verdict counts as ready (migration_state.py).
+    migrations = migration_state.PendingCheck(ttl_seconds=30)
+
     @app.get("/readyz")
     def readyz():
         try:
@@ -294,6 +314,10 @@ def create_app() -> FastAPI:
             log.warning("readiness probe: control DB unreachable", exc_info=True)
             return JSONResponse(status_code=503, content={"status": "unready",
                                 "detail": "control database unreachable"})
+        names = migrations.get()
+        if names:
+            return JSONResponse(status_code=503, content={
+                "status": "unready", "detail": f"{len(names)} migrations pending"})
         return {"status": "ready"}
 
     # ---- operational metrics -------------------------------------------

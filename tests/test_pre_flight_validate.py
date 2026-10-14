@@ -211,6 +211,32 @@ def test_an_unreachable_target_fails_open(target_db):
         1, "ledger", "ro", _stmts("SELECT 1; SELECT 2")) == (True, None, None)
 
 
+def test_a_literal_the_requester_typed_stays_in_the_refusal(target_db, monkeypatch):
+    # With PII masking on, scrub() hides a value the database read from its own
+    # data. A literal in the requester's own SQL is not one: they need it to find
+    # the bad value.
+    monkeypatch.setattr("queryhub.pii.is_enabled", lambda: True)
+    monkeypatch.setattr("queryhub.pii.mask_value", lambda value, found: value)
+    target_db["on_explain"] = _fail_on(1, pgerr.InvalidTextRepresentation(
+        'invalid input syntax for type integer: "abc"'))
+    ok, err, _ = pf.validate_statements(
+        1, "ledger", "ro", _stmts("SELECT id FROM t WHERE id = 'abc'"))
+    assert ok is False
+    assert err == 'Invalid input syntax for type integer: "abc"'
+
+
+def test_a_value_that_is_not_in_the_statement_is_hidden_in_the_refusal(
+        target_db, monkeypatch):
+    monkeypatch.setattr("queryhub.pii.is_enabled", lambda: True)
+    monkeypatch.setattr("queryhub.pii.mask_value", lambda value, found: value)
+    target_db["on_explain"] = _fail_on(2, pgerr.InvalidTextRepresentation(
+        'invalid input syntax for type integer: "Jordan Ray"'))
+    ok, err, _ = pf.validate_statements(
+        1, "ledger", "ro", _stmts("SELECT 1; SELECT full_name::int FROM customers"))
+    assert ok is False
+    assert err == "Statement 2 of 2: Invalid input syntax for type integer: [hidden]"
+
+
 def test_a_database_that_does_not_exist_is_refused(target_db):
     target_db["connect_error"] = psycopg.OperationalError(
         'connection failed: FATAL:  database "nova" does not exist')

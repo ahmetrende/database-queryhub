@@ -25,9 +25,12 @@ def tr_masking(monkeypatch):
 
 
 def test_quoted_value_in_error_is_masked(tr_masking):
+    # The database echoed a value from its own data. The whole value goes. The
+    # old result kept five of the eleven digits (`100******46`).
     out = errors.scrub('ERROR:  invalid input syntax for type integer: "10000000146"')
     assert "10000000146" not in out
-    assert "100******46" in out
+    assert "100******46" not in out
+    assert out == "Invalid input syntax for type integer: [hidden]"
 
 
 def test_email_in_error_is_masked(tr_masking):

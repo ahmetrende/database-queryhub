@@ -10,7 +10,10 @@ execution failure) so the same scrubbing rules apply everywhere.
 """
 from __future__ import annotations
 
+import logging
 import re
+
+log = logging.getLogger(__name__)
 
 # Patterns that carry connection / role detail. Matched on the *scrubbed*
 # message, not the raw exception, so each substitution is whitespace-safe.
@@ -45,13 +48,119 @@ _CONN_DETAIL_PATTERNS = [
 ]
 
 
-def scrub(raw: str | Exception) -> str:
+_HIDDEN = "[hidden]"
+
+# The caller sees at most 500 characters. A database can echo a value of a
+# megabyte, and some detectors are slower than linear on a long run of one
+# character (200 KB of "x" took 38 seconds). So the code caps the work. The hiding
+# step reads at most _WORK_LIMIT characters. The content detectors read at most
+# _DETECTOR_LIMIT characters of the rest.
+_WORK_LIMIT = 8_000
+_DETECTOR_LIMIT = 1_000
+
+# Messages that echo a VALUE the database read, not a name. Every pattern has
+# the named group `v`, the echoed value, and may have `pre` and `suf`, the
+# words around it. The words stay, so the requester still learns the kind of
+# error and the type. Only `v` goes.
+#
+# A cast such as `SELECT full_name::int FROM customers WHERE id = 1` fails with
+# the value of that row in the message. The result file would have masked the
+# same column. Content detectors catch an e-mail or an IBAN. They cannot catch
+# a name, an address or a salary, so the code matches these phrasings by their words.
+#
+# Each phrasing is here because an engine writes it. A message that names an
+# identifier (`relation "orders" does not exist`) is not here: a requester
+# cannot fix a query without that name.
+_DATA_ECHO_PATTERNS = [
+    # PostgreSQL. The value is the last thing on the line.
+    re.compile(r'(?P<pre>\binvalid input syntax for\b[^:]{1,80}:\s*)"(?P<v>.*?)"?$',
+               re.IGNORECASE),
+    re.compile(r'(?P<pre>\binvalid input value for enum\b[^:]{1,80}:\s*)"(?P<v>.*?)"?$',
+               re.IGNORECASE),
+    re.compile(r'(?P<pre>\bdate/time field value out of range:\s*)"(?P<v>.*?)"?$',
+               re.IGNORECASE),
+    re.compile(r'(?P<pre>\bmalformed array literal:\s*)"(?P<v>.*?)"?$', re.IGNORECASE),
+    re.compile(r'(?P<pre>\bunrecognized time zone name:\s*)"(?P<v>.*?)"?$', re.IGNORECASE),
+    re.compile(r'(?P<pre>\binvalid hexadecimal digit:\s*)"(?P<v>.*?)"?$', re.IGNORECASE),
+    re.compile(r'(?P<pre>\binvalid byte sequence for encoding\s+"[^"]*":\s*)(?P<v>.+)$',
+               re.IGNORECASE),
+    # The value sits in the middle of the sentence. A message that a driver or the
+    # work limit cut short has no closing quote. Then the rest of the text is the
+    # value, and it is hidden to the end. SQL Server cuts a message at 2047
+    # characters, so a long text cell loses its closing quote this way.
+    re.compile(r'(?P<pre>\bvalue\s+)"(?P<v>[^"]*)(?:"(?P<suf>\s+is out of range\b)|$)',
+               re.IGNORECASE),
+    # The float form has no `value` before the quote, so it needs its closing
+    # quote. Without that rule the closing quote of any name would start a value.
+    re.compile(r'(?P<pre>(?:^|\s))"(?P<v>[^"]*)"(?P<suf>\s+is out of range for type\b)',
+               re.IGNORECASE),
+    re.compile(r'(?P<pre>\binvalid value\s+)"(?P<v>[^"]*)(?:"(?P<suf>\s+for\s+")|$)',
+               re.IGNORECASE),
+    re.compile(r'(?P<pre>\btime zone\s+)"(?P<v>[^"]*)(?:"(?P<suf>\s+not recognized\b)|$)',
+               re.IGNORECASE),
+    # psycopg, when it cannot build a Python value from a column.
+    re.compile(r"(?P<pre>\b(?:timestamp|date|time) too (?:large|small)\b[^:]{0,60}:\s*)"
+               r"'(?P<v>.*?)'?$", re.IGNORECASE),
+    # SQL Server.
+    re.compile(r"(?P<pre>\bConversion failed when converting the \w+ value\s+)"
+               r"'(?P<v>.*?)(?:'(?P<suf>\s+to data type\b)|$)", re.IGNORECASE),
+    re.compile(r"(?P<pre>\bThe conversion of the \w+ value\s+)"
+               r"'(?P<v>.*?)(?:'(?P<suf>\s+overflowed\b)|$)", re.IGNORECASE),
+    re.compile(r"(?P<pre>\bThe duplicate key value is\s*)\((?P<v>.*?)"
+               r"(?:\)(?P<suf>(?=\.(?:\s|\(|$)|$))|$)", re.IGNORECASE),
+    re.compile(r"(?P<pre>\bTruncated value:\s*)'(?P<v>.*?)(?:'(?P<suf>(?=\.|\s|$))|$)",
+               re.IGNORECASE),
+    # ClickHouse.
+    re.compile(r"(?P<pre>\bCannot parse string\s+)'(?P<v>.*?)(?:'(?P<suf>\s+as\b)|$)",
+               re.IGNORECASE),
+    re.compile(r"(?P<pre>\bCannot convert string\s+)'(?P<v>.*?)(?:'(?P<suf>\s+to type\b)|$)",
+               re.IGNORECASE),
+    re.compile(r"(?P<pre>\bbefore:\s*)'(?P<v>.*?)'?$", re.IGNORECASE),
+    re.compile(r"(?P<pre>\b(?:Unknown element|Unexpected value)\s+)"
+               r"'(?P<v>.*?)(?:'(?P<suf>\s+(?:for|in)\b)|$)", re.IGNORECASE),
+    # Athena (Trino).
+    re.compile(r"(?P<pre>\bCannot cast (?:\w+ )?)'(?P<v>.*?)(?:'(?P<suf>\s+to\b)|$)",
+               re.IGNORECASE),
+    re.compile(r"(?P<pre>\bValue cannot be cast to \w+:\s*)(?P<v>.+)$", re.IGNORECASE),
+]
+
+
+def _hide_data_values(msg: str, query: str | None) -> str:
+    """Replace each value a database echoed from its own data with `[hidden]`.
+
+    A value that appears in `query` stays. The requester typed it, so showing it
+    tells them nothing new, and it is how they find the bad literal in a long
+    IN list. Whitespace counts as one space on both sides, because the message
+    is already collapsed.
+    """
+    typed = " ".join(query.split()) if query else ""
+
+    def _swap(m: re.Match[str]) -> str:
+        value = " ".join(m.group("v").split())
+        if not value or (typed and value in typed):
+            return m.group(0)
+        groups = m.groupdict()
+        return f"{groups.get('pre') or ''}{_HIDDEN}{groups.get('suf') or ''}"
+
+    for pat in _DATA_ECHO_PATTERNS:
+        msg = pat.sub(_swap, msg)
+    return msg
+
+
+def scrub(raw: str | Exception, *, query: str | None = None,
+          requester_data: bool = False) -> str:
     """Return a Slack-modal- and DM-safe error message (plain text, ≤500
     chars, no mrkdwn). Strips libpq's verbose error envelope to its first
     informative line, drops the LINE/DETAIL/HINT trailers (which often
     point at our EXPLAIN wrapper rather than the user's query), removes
     connection-metadata patterns (host=..., for user "...", RDS hostnames),
-    capitalizes the first letter, and caps length."""
+    capitalizes the first letter, and caps length.
+
+    With PII masking on, it also hides a value that the database read from its
+    own data and put in the message (see `_DATA_ECHO_PATTERNS`). Pass the SQL
+    the requester wrote as `query`: a value found in it stays visible. Pass
+    `requester_data=True` where the values came from the requester's own upload,
+    such as a CSV import, and nothing is hidden."""
     text = str(raw).strip()
     msg = ""
     # 1. Prefer an explicit ERROR: / FATAL: line if present.
@@ -103,15 +212,29 @@ def scrub(raw: str | Exception) -> str:
     #   invalid input syntax for type integer: "12345678901"
     #   value too long for type character varying(8): "jane@example.com"
     # DETAIL/HINT (where a unique violation puts the key) is dropped above, but
-    # the primary message carries values too. Run the same content detectors
-    # here, so masking is a property of everything we return — not only of
-    # result files.
+    # the primary message carries values too. Two steps, so masking is a
+    # property of everything we return, not only of result files:
+    #   1. Hide a value the database echoed from its own data. The words of the
+    #      message find it, so it works for a name, an address or a salary.
+    #   2. Run the content detectors over the rest (e-mail, IBAN, card).
+    # Each step has its own guard: a failure in one must not skip the other, and
+    # neither may break error reporting.
     try:
         from . import pii
-        if pii.is_enabled():
-            msg = str(pii.mask_value(msg, set()))
-    except Exception:      # masking must never break error reporting
-        pass
+        masking = pii.is_enabled()
+    except Exception:
+        masking = False
+    if masking:
+        msg = msg[:_WORK_LIMIT]
+        if not requester_data:
+            try:
+                msg = _hide_data_values(msg, query)
+            except Exception:
+                log.warning("errors: hiding echoed values failed", exc_info=True)
+        try:
+            msg = str(pii.mask_value(msg[:_DETECTOR_LIMIT], set()))
+        except Exception:
+            pass
 
     if msg and msg[0].islower():
         msg = msg[0].upper() + msg[1:]

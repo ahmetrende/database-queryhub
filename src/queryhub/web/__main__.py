@@ -12,9 +12,10 @@ from .app import create_app
 
 
 def main() -> None:
-    # Same configuration as the bot process (LOG_LEVEL + LOG_FORMAT).
+    # Same configuration as the bot process (LOG_LEVEL + LOG_FORMAT). Also,
+    # each line from an HTTP request carries the X-Request-ID of that request.
     from ..logging_setup import configure
-    configure()
+    configure(request_ids=True)
     # Optional TLS (dev: self-signed localhost cert — Slack OIDC requires
     # an https redirect URI, so the tunnel terminates TLS here). Passed as
     # explicit str|None kwargs (uvicorn accepts None = no TLS) rather than
