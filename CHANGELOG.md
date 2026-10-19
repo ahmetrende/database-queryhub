@@ -11,6 +11,13 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Added
 
+- **The audit log shows failed requests.** Rows that say a request stopped with
+  an error are no longer hidden. The screen has a "Failed requests" filter with
+  a count. A failed row says "Failed" and shows the error text in the list. The
+  rail opens with the error and a Copy button. The search endpoint takes
+  `outcomes: ["failed"]`, and each row carries `outcome`, `request.status` and
+  `request.error`. The hidden "per-request lifecycle" slice no longer holds
+  `failed`.
 - **Four outbox events for the IdP portal.** QueryHub writes
   `queryhub.access_request_pending`, `queryhub.access_request_decided`,
   `queryhub.window_request_pending` and `queryhub.window_request_decided` to
@@ -35,6 +42,12 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **The audit log list has a Details column.** Each row has columns for time,
+  kind, action, target, details, who and request. Details is one line: the
+  error, the SQL or the main facts of the event. The empty space in the middle of
+  a row is gone. The column names stay in view while you scroll. The up and down
+  arrow keys move through rows, and Escape closes the rail. A narrow list drops
+  Details, but a failed row keeps its error on a second line.
 - **The access-request and window-request routes of the portal no longer need
   `slack_app`.** They work when Slack is off, and also when Python cannot import
   the package. The window lengths and their labels moved to
@@ -43,6 +56,15 @@ frontend and the endpoints it calls are explicitly outside it.
 - **The connection lists show "SQL Server" and "Amazon Athena".** They showed the
   raw ids `mssql` and `athena`. The label table now has one entry for each of
   the four engines that the database accepts. The engine icons did not change.
+
+### Fixed
+
+- **A SELECT that calls `setval` or `nextval` now needs the write tier.** Such a
+  statement changes a sequence, but it ran as a read with the read-only login.
+  The server refused it with "Permission denied for sequence". Where the
+  read-only login holds sequence privileges, it would have used up values with
+  no write review. `currval` and `lastval` stay reads. The rule applies to
+  PostgreSQL only.
 
 ## [1.0.36] — 2026-10-14
 

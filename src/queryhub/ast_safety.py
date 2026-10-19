@@ -162,6 +162,27 @@ def session_control_calls(sql: str, engine: str = "postgres") -> set[str]:
     return found
 
 
+#: Functions that change a sequence. They read like a SELECT and they write.
+#: `nextval` consumes a value and `setval` moves the counter, so a statement
+#: that calls either is a write and needs the write tier. `currval` and `lastval`
+#: only read session state and are not listed.
+SEQUENCE_WRITE_FUNCS = frozenset({"setval", "nextval"})
+
+
+def sequence_write_calls(sql: str, engine: str = "postgres") -> set[str]:
+    """The sequence-writing functions a statement calls. Empty when it calls
+    none, or when it does not parse (check() refuses that on its own)."""
+    try:
+        statements = sqlglot.parse(sql, read=engines.spec(engine).sqlglot_dialect)
+    except Exception:
+        return set()
+    found: set[str] = set()
+    for stmt in statements:
+        if isinstance(stmt, exp.Expression):
+            found |= _function_names(stmt) & SEQUENCE_WRITE_FUNCS
+    return found
+
+
 def check(sql: str, engine: str = "postgres", unrestricted: bool = False) -> list[str]:
     """Return a list of human-facing blocker messages for the query.
     Empty list = clean. The caller appends these onto its own

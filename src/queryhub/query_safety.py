@@ -765,6 +765,19 @@ def analyze(sql: str, engine: str = "postgres",
         else:
             tier = "ro"
 
+        # A SELECT that calls `setval` or `nextval` changes a sequence. It leads
+        # with SELECT, so the leading word said `ro`, the approver saw a read,
+        # and the read-only login ran it. Requests 11826 and 11827 (2026-10-19)
+        # were `SELECT setval(...)` from a super-admin: classified `ro`, run with
+        # the read-only login, and refused by the server with "Permission denied
+        # for sequence". Where a read-only login does hold sequence privileges,
+        # the same statement would have used up values with no write review.
+        # Same operation, same tier: it is a write. EXPLAIN plans without running
+        # the call, so it keeps its own tier.
+        if (tier == "ro" and spec.name == "postgres" and upper != "EXPLAIN"
+                and _ast_module().sequence_write_calls(stmt.value, engine)):
+            tier = "rw"
+
         main_tier_set.add(tier)
         report.statements.append(StatementInfo(
             raw=stmt.value.strip().rstrip(";").strip(),

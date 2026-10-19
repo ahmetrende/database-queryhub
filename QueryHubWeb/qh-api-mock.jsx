@@ -920,6 +920,15 @@ function audDetail(ty, rnd, ctx) {
   // 60 visible rows carry no payload at all.
   return rnd() > 0.5 ? {} : { note: 'No structured payload was recorded for this action type.' };
 }
+// Actions that say a request did not finish. The server derives `outcome` from
+// the same list (mapping.AUDIT_FAILED); the mock has to agree or the Failed chip
+// would count something the real screen never shows.
+const AUD_FAILED_ACTIONS = ['failed', 'failed_manually', 'execution_orphaned', 'execution_runaway_stopped'];
+const AUD_ERRORS = ['Permission denied for sequence orders_id_seq',
+  'Permission denied for table payouts',
+  'canceling statement due to statement timeout',
+  'column "kyc_state" does not exist',
+  'Could not connect to the target: the host did not answer in 10 seconds'];
 const MOCK_AUDIT_TRAIL = (() => {
   const rnd = audRand(20260909);
   const conns = ['prod-main', 'prod-replica', 'reporting-mssql', 'svc-prod-billing', 'staging', 'svc-prod-orders'];
@@ -956,6 +965,8 @@ const MOCK_AUDIT_TRAIL = (() => {
     const bound = ty.category === 'requests' || ty.category === 'protection'
       || (ty.category === 'access' && rnd() > 0.72);
     const ctx = { conn, db, tier, requester, reqId };
+    const failed = AUD_FAILED_ACTIONS.includes(ty.action);
+    const err = failed ? AUD_ERRORS[Math.floor(rnd() * AUD_ERRORS.length)] : null;
     return { id: 'aa_' + (i + 1),
       time: isoAgo(Math.floor(rnd() * 1000 * 86400 * 92) + 1000 * 60 * 3),
       actor, action: ty.action, actionLabel: ty.label, category: ty.category, effect: ty.effect,
@@ -966,8 +977,10 @@ const MOCK_AUDIT_TRAIL = (() => {
             : ty.category === 'protection' ? conn + '/' + db + '.users.address'
               : ty.category === 'usage' ? (actor.name || actor.handle)
                 : requester + ' → ' + conn,
-      detail: audDetail(ty, rnd, ctx),
+      detail: failed ? { ...audDetail(ty, rnd, ctx), error: err } : audDetail(ty, rnd, ctx),
+      outcome: failed ? 'failed' : null,
       request: bound ? { id: reqId, requester: rq.name, requesterId: rq.handle, connection: conn, database: db, tier,
+        status: failed ? 'failed' : 'completed', error: err,
         rows: Math.floor(rnd() * 4000), durationMs: Math.floor(rnd() * 12000) + 60,
         sql: sqls[Math.floor(rnd() * sqls.length)] } : null,
       slice: null };
@@ -989,14 +1002,18 @@ const MOCK_AUDIT_TRAIL = (() => {
         actor: { kind: 'person', handle: requester, name: null, via: null }, action: a,
         actionLabel: 'Request ' + a.replace(/_/g, ' '), category: cl.category, effect: cl.effect,
         classified: cl.classified, target: requester + ' · ' + conn + '/' + db,
+        outcome: a === 'failed' ? 'failed' : null,
         // The 9,882-character payload lives here, on exactly one row: if the
         // include control ever exposes this slice the rail has to survive it.
         detail: (a === 'failed' && i === 0)
           ? { stage: a, requestId: '1741', error: AUD_LONG.repeat(14).slice(0, 9882) }
           : { stage: a },
         request: { id: String(1200 + Math.floor(rnd() * 800)), requester: rq.name, requesterId: rq.handle, connection: conn, database: db,
-          tier: tiers[Math.floor(rnd() * tiers.length)], rows: null, durationMs: null, sql: sqls[0] },
-        slice: 'lifecycle' });
+          tier: tiers[Math.floor(rnd() * tiers.length)], rows: null, durationMs: null, sql: sqls[0],
+          status: a === 'failed' ? 'failed' : null,
+          error: a === 'failed' ? AUD_ERRORS[Math.floor(rnd() * AUD_ERRORS.length)] : null },
+        // `failed` is shown by default now; the rest of the lifecycle stays hidden.
+        slice: a === 'failed' ? null : 'lifecycle' });
     }
   });
   return rows.concat(life).sort((a, b) => (a.time < b.time ? 1 : -1));
@@ -1018,6 +1035,7 @@ function audSearch(p) {
   const cats = o.categories && o.categories.length ? o.categories : null;
   const effs = o.effects && o.effects.length ? o.effects : null;
   const actors = o.actorKinds && o.actorKinds.length ? o.actorKinds : null;
+  const outs = o.outcomes && o.outcomes.length ? o.outcomes : null;
   const include = o.include || [];
   const from = o.from ? Date.parse(o.from) : null;
   const to = o.to ? Date.parse(o.to) : null;
@@ -1035,14 +1053,16 @@ function audSearch(p) {
   });
   // Facets are counted BEFORE the kind/effect/actor filter, so every chip can
   // state the count it would produce.
-  const facets = { categories: {}, effects: {}, actorKinds: {} };
+  const facets = { categories: {}, effects: {}, actorKinds: {}, outcomes: { failed: 0 } };
   timed.forEach(r => {
+    if (r.outcome === 'failed') facets.outcomes.failed += 1;
     facets.categories[r.category] = (facets.categories[r.category] || 0) + 1;
     facets.effects[r.effect] = (facets.effects[r.effect] || 0) + 1;
     facets.actorKinds[r.actor.kind] = (facets.actorKinds[r.actor.kind] || 0) + 1;
   });
   const rows = timed.filter(r => (!cats || cats.includes(r.category))
-    && (!effs || effs.includes(r.effect)) && (!actors || actors.includes(r.actor.kind)));
+    && (!effs || effs.includes(r.effect)) && (!actors || actors.includes(r.actor.kind))
+    && (!outs || (outs.includes('failed') && r.outcome === 'failed')));
   const off = o.cursor ? Number(o.cursor) : 0;
   const limit = Math.min(Number(o.limit) || 60, 300);
   const seen = {};

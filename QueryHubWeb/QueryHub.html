@@ -1315,12 +1315,14 @@
   .qh-audfilters { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 10px; }
   .qh-audfrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .qh-audfl { flex-shrink: 0; width: 42px; font-size: 11px; font-weight: 600; color: var(--fg-tertiary); }
+  .qh-audfrow.is-groups { gap: 8px 28px; }
+  .qh-audfgroup { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   /* Every chip carries its count. A filter whose size you can only learn by
      clicking it is how the old Scopes bucket stayed unexamined for months. */
   .qh-chipn { margin-left: 6px; font-size: 10.5px; font-weight: 600; color: var(--fg-tertiary); font-variant-numeric: tabular-nums; }
   .qh-chip.is-active .qh-chipn { color: var(--fg-accent); }
   .qh-chip.is-unclassified { border-style: dashed; }
-  .qh-audrange { margin-left: auto; }
+  .qh-audrange { flex-shrink: 0; }
   /* The scope line. Every number carries its denominator, so "this is
      everything" and "this is a slice" are tellable apart at a glance. */
   .qh-audscope { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 9px 12px; margin-bottom: 10px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); font-size: 12px; color: var(--fg-secondary); }
@@ -1328,12 +1330,12 @@
   .qh-audscope-l > span:not(.qh-audscope-n) { flex: 1 1 220px; min-width: 0; text-wrap: pretty; }
   .qh-chip.is-excluded { border-style: dashed; color: var(--fg-tertiary); }
   .qh-audscope-n { font-size: 15px; font-weight: 700; color: var(--fg-primary); font-variant-numeric: tabular-nums; }
-  .qh-audscope { flex-direction: column; align-items: stretch; gap: 8px; }
+  .qh-audscope { justify-content: space-between; gap: 8px 18px; }
   .qh-audscope-l { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   /* The declared exclusions, as a list. Each says what INCLUDING it would add,
      because the lifecycle slice is 2.1x the visible trail — "show everything"
      triples the list and must not read as a few more rows. */
-  .qh-audexcl { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding-top: 8px; border-top: 1px solid var(--stroke-light); }
+  .qh-audexcl { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
   .qh-audexcl-l { font-size: 11px; font-weight: 600; color: var(--fg-tertiary); }
   .qh-audexcl-b { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; background: none; border: 1px dashed var(--stroke-strong); border-radius: var(--r-full); font: inherit; font-size: 11.5px; color: var(--fg-secondary); cursor: pointer; }
   .qh-audexcl-b:hover { border-color: var(--brand-green); color: var(--fg-accent); }
@@ -1351,26 +1353,58 @@
   /* The default state's own biggest fact. Reads as a finding, not as a warning:
      nothing is wrong, this is simply how the fleet works and an auditor should
      know it before they scroll. */
-  .qh-audfinding { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 9px 12px; margin-bottom: 10px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); }
+  .qh-audfinding { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 2px 2px 10px; font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); }
   .qh-audfinding > span { flex: 1 1 260px; min-width: 0; text-wrap: pretty; }
   .qh-audfinding b { font-weight: 600; color: var(--fg-primary); }
   .qh-audsplit { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; align-items: start; }
-  .qh-audlist { min-width: 0; border: 1px solid var(--stroke-light); border-radius: var(--r-md); overflow: hidden; background: var(--bg-white); }
-  .qh-audday-h { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; padding: 6px 14px; background: var(--bg-light); border-bottom: 1px solid var(--stroke-light); font-size: 11px; font-weight: 700; color: var(--fg-secondary); }
+  /* `overflow: clip`, not `hidden`: hidden makes the list its own scroll
+     container, so the sticky column and day headers never stuck. Clip keeps the
+     rounded corners and leaves the page as the scroller. The container type lets
+     the row drop its Details column when the list is narrow (the rail holds it). */
+  .qh-audlist { --aud-cols: 66px 104px minmax(150px, 240px) minmax(110px, 200px) minmax(0, 1fr) 150px 60px;
+    min-width: 0; border: 1px solid var(--stroke-light); border-radius: var(--r-md); overflow: clip; background: var(--bg-white); container-type: inline-size; }
+  /* Column names, so the middle of the row says what it is. Sticky above the day
+     headers. Decoration for sighted readers only: the rows are buttons. */
+  .qh-audhead { position: sticky; top: 0; z-index: 3; display: grid; grid-template-columns: var(--aud-cols); gap: 12px; padding: 7px 14px; background: var(--bg-white); border-bottom: 1px solid var(--stroke-medium); font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-tertiary); }
+  .qh-audday-h { position: sticky; top: 28px; z-index: 2; display: flex; align-items: center; gap: 8px; padding: 6px 14px; background: var(--bg-light); border-bottom: 1px solid var(--stroke-light); font-size: 11px; font-weight: 700; color: var(--fg-secondary); }
   .qh-audday-n { color: var(--fg-tertiary); font-weight: 500; font-variant-numeric: tabular-nums; }
-  .qh-audrow { display: grid; grid-template-columns: 66px 96px minmax(0, 1fr) 128px 52px; gap: 12px; align-items: baseline; width: 100%; padding: 8px 14px; background: none; border: 0; border-bottom: 1px solid var(--stroke-light); font: inherit; text-align: left; cursor: pointer; }
+  .qh-audrow { display: grid; grid-template-columns: var(--aud-cols); gap: 12px; align-items: baseline; width: 100%; padding: 8px 14px; background: none; border: 0; border-bottom: 1px solid var(--stroke-light); font: inherit; text-align: left; cursor: pointer; }
   .qh-audrow:hover { background: var(--adaptive-light); }
-  .qh-audrow.is-sel { background: var(--brand-adaptive-light); }
+  /* One selection style for every row, failed or not: a red outline read as an
+     error on a row the reader had only picked. */
+  .qh-audrow.is-sel { background: var(--brand-adaptive-light); box-shadow: inset 0 0 0 1.5px var(--brand-green); }
+  .qh-audrow.is-failed.is-sel { background: var(--danger-adaptive-light); }
   .qh-audtime { font-family: var(--qh-mono); font-size: 11px; color: var(--fg-tertiary); font-variant-numeric: tabular-nums; }
   /* Category is a quiet label, not a colour code: six tinted chips per screen
      would be decoration, and this list is scanned for words. Unclassified is
      the one that differs, because it is the one that should get fixed. */
-  .qh-audcat { justify-self: start; padding: 1px 7px; border-radius: var(--r-2xs); background: var(--adaptive-light); font-size: 10.5px; font-weight: 600; color: var(--fg-secondary); white-space: nowrap; }
+  .qh-audcat { justify-self: start; padding: 0; border-radius: var(--r-2xs); background: none; font-size: 11px; font-weight: 500; color: var(--fg-tertiary); white-space: nowrap; }
   .qh-audcat.is-protection { background: var(--warning-adaptive-light); color: var(--fg-warning); }
   .qh-audcat.is-unclassified { background: none; border: 1px dashed var(--stroke-strong); color: var(--fg-tertiary); }
-  .qh-audwhat { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-  .qh-audlabel { font-size: 12.5px; color: var(--fg-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .qh-audtarget { font-family: var(--qh-mono); font-size: 11px; color: var(--fg-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qh-audlabel { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 12.5px; font-weight: 500; color: var(--fg-primary); overflow: hidden; white-space: nowrap; }
+  /* Details: what happened, in one line. The error for a failure, the SQL for a
+     request, the payload facts for anything else. It takes the room the old
+     layout left empty. */
+  .qh-audsum { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fg-secondary); }
+  .qh-audsum.is-sql { font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-tertiary); }
+  .qh-audsum.is-facts { color: var(--fg-tertiary); }
+  /* Red text uses --danger-solid-medium, not --fg-danger. Measured: --fg-danger
+     (#E53D3D) on the tinted failed row is 3.61:1 light and 3.86:1 dark, under the
+     4.5:1 rule. --danger-solid-medium is 4.97:1 light (#C32A2A) and 4.98:1 dark
+     (#FF5151) on the same tint. */
+  .qh-audsum.is-error { color: var(--danger-solid-medium); }
+  /* A failed row is tinted and says so in words. No accent stripe. */
+  .qh-audrow.is-failed { background: var(--danger-adaptive-light); }
+  .qh-audrow.is-failed:hover { background: var(--danger-adaptive-medium); }
+  .qh-audrow:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--brand-green); }
+  .qh-audpill { flex-shrink: 0; padding: 0 6px; border-radius: var(--r-2xs); font-size: 10.5px; font-weight: 700; line-height: 16px; }
+  .qh-audpill.is-failed { background: var(--bg-white); border: 1px solid var(--stroke-danger); color: var(--danger-solid-medium); }
+  .qh-chip.is-fail .qh-chipn { color: var(--danger-solid-medium); }
+  .qh-chip.is-fail.is-active { background: var(--danger-adaptive-light); border-color: var(--stroke-danger); color: var(--fg-danger); }
+  .qh-audfail { margin-bottom: 14px; padding: 10px 12px; background: var(--danger-adaptive-light); border: 1px solid var(--stroke-danger); border-radius: var(--r-sm); }
+  .qh-audfail-h { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg-primary); }
+  .qh-audfail-e { margin: 8px 0 6px; font-family: var(--qh-mono); font-size: 11.5px; line-height: 1.55; color: var(--danger-solid-medium); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .qh-audtgt { min-width: 0; font-family: var(--qh-mono); font-size: 11px; color: var(--fg-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .qh-audby { font-size: 11.5px; color: var(--fg-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .qh-audactor.is-id { font-family: var(--qh-mono); font-size: 11px; color: var(--fg-tertiary); }
   .qh-audunknown { color: var(--fg-tertiary); }
@@ -1405,6 +1439,13 @@
   /* Nothing in the product removes an audit row, so the rail says so rather than
      leaving a space where a delete button would go on any other screen. */
   .qh-audimmutable { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--stroke-light); font-size: 11px; color: var(--fg-tertiary); }
+  /* A narrow list loses its Details column: the rail holds the same facts. */
+  @container (max-width: 880px) {
+    .qh-audrow, .qh-audhead { grid-template-columns: 62px 96px minmax(160px, 1fr) minmax(80px, 130px) minmax(80px, 120px) 52px; }
+    .qh-audsum, .qh-audhead span:nth-child(5) { display: none; }
+    /* A failed row keeps its error, on a second line: the error is why the row is here. */
+    .qh-audrow.is-failed .qh-audsum.is-error { display: block; grid-column: 3 / -1; grid-row: 2; }
+  }
   @media (max-width: 1180px) { .qh-audsplit { grid-template-columns: minmax(0, 1fr); } .qh-auddetail { position: static; max-height: none; } .qh-auddetail.is-idle { display: none; } }
 
   /* ---------- Masking exemptions (design 2026-09-09, re-cut 2026-09-28) ---------- */

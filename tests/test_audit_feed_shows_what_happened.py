@@ -66,9 +66,18 @@ def test_only_per_request_lifecycle_is_excluded():
     queue and history screens, and together they are nine tenths of the table.
     Anything that is not that belongs on the audit trail."""
     assert mapping.AUDIT_EXCLUDE == frozenset({
-        "submitted", "execution_started", "completed", "failed",
+        "submitted", "execution_started", "completed",
         "import_submitted", "import_execution_started", "import_completed",
         "cancel_requested", "scheduled_dispatched"})
+
+
+def test_a_request_that_did_not_finish_is_never_hidden():
+    """`failed` sat in the hidden slice once. A person who got an error could
+    not find it on the screen that exists to find things. Every action that says
+    a request did not finish is shown by default."""
+    assert mapping.AUDIT_FAILED
+    assert not (mapping.AUDIT_FAILED & mapping.AUDIT_EXCLUDE)
+    assert "failed" in mapping.AUDIT_FAILED
 
 
 def test_the_explicit_mapping_still_wins_over_a_keyword():

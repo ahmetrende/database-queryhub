@@ -84,6 +84,14 @@ const QH_AUD_ACTORS = {
   job:    { label: 'A job', hint: 'A background job or a migration' },
 };
 const QH_AUD_ACTOR_ORDER = ['person', 'auto', 'job'];
+// THE FOURTH DIMENSION: how a request ended. A request that stopped with an
+// error used to be hidden with the rest of the per-request lifecycle, so a person
+// who got `Permission denied` could not find it on the screen that exists to find
+// things. The server sends `outcome` on the row and counts it in `facets.outcomes`.
+const QH_AUD_OUTCOMES = {
+  failed: { label: 'Failed requests', hint: 'A request that stopped with an error or did not finish' },
+};
+const QH_AUD_OUTCOME_ORDER = ['failed'];
 
 const AudIcon = {
   search: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /></svg>,
@@ -99,6 +107,30 @@ function audDayLabel(iso) {
   if (d.toDateString() === t.toDateString()) return 'Today';
   if (d.toDateString() === y.toDateString()) return 'Yesterday';
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: d.getFullYear() === t.getFullYear() ? undefined : 'numeric' });
+}
+// Keys that describe the browser or the plumbing, not the event. Skipped when a
+// row has no better summary, so the middle of the list says what happened.
+const AUD_NOISE_KEYS = new Set(['user_agent', 'client_ip', 'session_id', 'grant_id', 'scheduled_for', 'origin', 'stage']);
+const audOneLine = (t, n) => { const x = String(t == null ? '' : t).replace(/\s+/g, ' ').trim(); return x.length > n ? x.slice(0, n) + '…' : x; };
+// One line that says what the row is about, read from the row and nothing else:
+// the error for a failure, the SQL for a request, the payload facts otherwise.
+// Truncated by CSS to the width the list has, so a wide screen shows more.
+function audSummary(r) {
+  const rq = r.request;
+  if (r.outcome === 'failed') {
+    const e = (rq && rq.error) || (r.detail && r.detail.error);
+    if (e) return { kind: 'error', text: audOneLine(e, 400) };
+  }
+  if (rq && rq.sql) return { kind: 'sql', text: audOneLine(rq.sql, 400) };
+  const d = r.detail || {};
+  const parts = [];
+  Object.keys(d).forEach(k => {
+    const v = d[k];
+    if (AUD_NOISE_KEYS.has(k) || v === null || v === undefined || v === '') return;
+    if (typeof v === 'object') return;
+    parts.push(k.replace(/_/g, ' ') + ' ' + audOneLine(v, 60));
+  });
+  return parts.length ? { kind: 'facts', text: parts.slice(0, 4).join(' · ') } : null;
 }
 function audTime(iso) { return new Date(iso).toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
 
@@ -170,6 +202,19 @@ function AudDetail({ row, onClose, pushToast }) {
         <button className="qh-iconbtn" onClick={onClose} aria-label="Close detail"><AudIcon.x /></button>
       </div>
       <div className="qh-auddetail-body">
+        {/* A failure is the first thing the rail says. The error is the text the
+            requester saw, so what an auditor reads here is what they were told. */}
+        {(row.outcome === 'failed' || (row.request && row.request.status === 'failed')) && (
+          <div className="qh-audfail">
+            <div className="qh-audfail-h"><span className="qh-audpill is-failed">Failed</span>
+              <span>The request stopped with an error.</span></div>
+            {((row.request && row.request.error) || d.error)
+              ? <pre className="qh-audfail-e">{(row.request && row.request.error) || d.error}</pre>
+              : <div className="qh-audhint">No error text was recorded.</div>}
+            {((row.request && row.request.error) || d.error) &&
+              <button className="qh-linkbtn" onClick={() => copy((row.request && row.request.error) || d.error, 'Error')}>Copy error</button>}
+          </div>
+        )}
         <div className="qh-audkv">
           <div><dt>When</dt><dd>{new Date(row.time).toLocaleString('en-GB', { hour12: false })}</dd></div>
           <div><dt>Actor</dt><dd><AudActor actor={row.actor} /></dd></div>
@@ -186,7 +231,7 @@ function AudDetail({ row, onClose, pushToast }) {
           {/* A machine acted under some authority, and naming it is the honest
               answer to "who approved this" when the answer is "nobody looked". */}
           {row.actor && row.actor.via && <div><dt>Authorised by</dt><dd>{row.actor.via}</dd></div>}
-          {row.target && <div><dt>Target</dt><dd>{row.target}</dd></div>}
+          {row.target && !row.request && <div><dt>Target</dt><dd>{row.target}</dd></div>}
         </div>
 
         {/* 77% of rows attach to a request — measured, and the reverse of what
@@ -204,6 +249,7 @@ function AudDetail({ row, onClose, pushToast }) {
                   : <span className="qh-audnull">—</span>)}</dd></div>
               <div><dt>Target</dt><dd>{row.request.connection}/{row.request.database}</dd></div>
               {row.request.tier && <div><dt>Tier</dt><dd><TierBadge tier={row.request.tier} sm /></dd></div>}
+              {row.request.status && <div><dt>Status</dt><dd>{row.request.status}</dd></div>}
               {row.request.rows != null && <div><dt>Rows</dt><dd>{audNum(row.request.rows)}</dd></div>}
               {row.request.durationMs != null && <div><dt>Duration</dt><dd>{qhDurMs(row.request.durationMs)}</dd></div>}
             </div>
@@ -259,6 +305,7 @@ function AuditView({ st }) {
   const [cats, setCats] = useAud([]);
   const [effs, setEffs] = useAud([]);
   const [acts, setActs] = useAud([]);
+  const [outs, setOuts] = useAud([]);
   const [include, setInclude] = useAud([]);
   const [days, setDays] = useAud(0);              // 0 = everything on the trail
   const [res, setRes] = useAud(null);
@@ -279,6 +326,7 @@ function AuditView({ st }) {
     categories: cats.length ? cats : undefined,
     effects: effs.length ? effs : undefined,
     actorKinds: acts.length ? acts : undefined,
+    outcomes: outs.length ? outs : undefined,
     from: days ? new Date(Date.now() - days * 86400000).toISOString() : undefined,
     include: include.length ? include : undefined,
     limit: 60,
@@ -290,7 +338,7 @@ function AuditView({ st }) {
     window.qhApi.adminAuditSearch(params())
       .then(r => { if (id !== reqRef.current) return; setRes(r); setRows(r.rows || []); setBusy(false); })
       .catch(() => { if (id !== reqRef.current) return; setErr(true); setBusy(false); });
-  }, [term, cats.join(','), effs.join(','), acts.join(','), days, include.join(',')]);
+  }, [term, cats.join(','), effs.join(','), acts.join(','), outs.join(','), days, include.join(',')]);
 
   const more = () => {
     if (!res || !res.cursor || busy) return;
@@ -301,14 +349,31 @@ function AuditView({ st }) {
       .catch(() => setBusy(false));
   };
 
+  // Up and Down walk the list and open each row in the rail, Escape closes it.
+  // Reading an audit trail is mostly "next, next, next" and a mouse is slow at it.
+  const listRef = useAudRef(null);
+  const onListKey = (e) => {
+    if (e.key === 'Escape' && sel) { setSel(null); return; }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const nodes = listRef.current ? Array.from(listRef.current.querySelectorAll('.qh-audrow')) : [];
+    const at = nodes.indexOf(document.activeElement);
+    if (at < 0) return;
+    const next = nodes[at + (e.key === 'ArrowDown' ? 1 : -1)];
+    if (!next) return;
+    e.preventDefault();
+    next.focus();
+    const hit = rows.find(r => String(r.id) === next.dataset.id);
+    if (hit) setSel(hit);
+  };
   const toggle = (arr, set, v) => set(arr.includes(v) ? arr.filter(x => x !== v) : arr.concat([v]));
-  const filtered = cats.length > 0 || effs.length > 0 || acts.length > 0;
+  const filtered = cats.length > 0 || effs.length > 0 || acts.length > 0 || outs.length > 0;
   const facetsC = (res && res.facets.categories) || {};
   const facetsE = (res && res.facets.effects) || {};
   const facetsA = (res && res.facets.actorKinds) || {};
+  const facetsO = (res && res.facets.outcomes) || {};
   const excl = (res && res.exclusions) || [];
   const hiddenNow = excl.filter(x => !x.included);
-  const clearAll = () => { setCats([]); setEffs([]); setActs([]); setQ(''); setTerm(''); setDays(0); };
+  const clearAll = () => { setCats([]); setEffs([]); setActs([]); setOuts([]); setQ(''); setTerm(''); setDays(0); };
   // Computed from the facets rather than hardcoded to the auto-approver: if the
   // shape of the fleet changes and jobs become the majority, the sentence
   // follows the data instead of asserting last quarter's fact.
@@ -337,6 +402,11 @@ function AuditView({ st }) {
       <div className="qh-aview-head">
         <div><div className="qh-aview-title">Audit log</div>
           <div className="qh-aview-sub">Every action the system recorded, immutable and attributed.</div></div>
+        <div className="qh-seg qh-seg-sm qh-audrange" role="group" aria-label="Time range">
+          {[[0, 'All time'], [7, '7 days'], [30, '30 days'], [90, '90 days']].map(([v, l]) => (
+            <button key={v} className={'qh-seg-opt' + (days === v ? ' is-active' : '')} onClick={() => setDays(v)}>{l}</button>
+          ))}
+        </div>
       </div>
 
       {/* Search first and full width. It reaches the whole table server-side and
@@ -379,35 +449,52 @@ function AuditView({ st }) {
             })}
           </div>
         </div>
-        <div className="qh-audfrow">
+        {/* One row for the three small dimensions instead of one row each: they
+            wrap as groups, so a narrow screen never splits a label from its chips.
+            Result comes first because "what went wrong" is the question people
+            arrive with after the search box. */}
+        <div className="qh-audfrow is-groups">
+          <div className="qh-audfgroup">
+            <span className="qh-audfl">Result</span>
+            <div className="qh-chips">
+              {QH_AUD_OUTCOME_ORDER.map(k => (
+                <button key={k} title={QH_AUD_OUTCOMES[k].hint}
+                        className={'qh-chip is-fail' + (outs.includes(k) ? ' is-active' : '')}
+                        aria-pressed={outs.includes(k)}
+                        onClick={() => toggle(outs, setOuts, k)}>
+                  {QH_AUD_OUTCOMES[k].label}<span className="qh-chipn">{audNum(facetsO[k] || 0)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* Actor is the third dimension, and on this trail it is the one that
+              turns the biggest kind into the two questions people actually ask. */}
+          <div className="qh-audfgroup">
+            <span className="qh-audfl">Who</span>
+            <div className="qh-chips">
+              {QH_AUD_ACTOR_ORDER.filter(k => (facetsA[k] || 0) > 0 || acts.includes(k)).map(k => (
+                <button key={k} title={QH_AUD_ACTORS[k].hint}
+                        className={'qh-chip' + (acts.includes(k) ? ' is-active' : '') + (k !== 'person' ? ' is-machine' : '')}
+                        onClick={() => toggle(acts, setActs, k)}>
+                  {QH_AUD_ACTORS[k].label}<span className="qh-chipn">{audNum(facetsA[k] || 0)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
           {/* The label is dropped with the chips: an "Effect" heading over nothing
               reads as a control that failed to load. */}
-          {QH_AUD_EFFECT_ORDER.some(k => (facetsE[k] || 0) > 0 || effs.includes(k)) && <span className="qh-audfl">Effect</span>}
-          <div className="qh-chips">            {QH_AUD_EFFECT_ORDER.filter(k => (facetsE[k] || 0) > 0 || effs.includes(k)).map(k => (
-              <button key={k} className={'qh-chip' + (effs.includes(k) ? ' is-active' : '')} onClick={() => toggle(effs, setEffs, k)}>
-                {QH_AUD_EFFECTS[k]}<span className="qh-chipn">{audNum(facetsE[k] || 0)}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-        {/* Actor is the third dimension, and on this trail it is the one that
-            turns the biggest kind into the two questions people actually ask. */}
-        <div className="qh-audfrow">
-          <span className="qh-audfl">Who</span>
-          <div className="qh-chips">
-            {QH_AUD_ACTOR_ORDER.filter(k => (facetsA[k] || 0) > 0 || acts.includes(k)).map(k => (
-              <button key={k} title={QH_AUD_ACTORS[k].hint}
-                      className={'qh-chip' + (acts.includes(k) ? ' is-active' : '') + (k !== 'person' ? ' is-machine' : '')}
-                      onClick={() => toggle(acts, setActs, k)}>
-                {QH_AUD_ACTORS[k].label}<span className="qh-chipn">{audNum(facetsA[k] || 0)}</span>
-              </button>
-            ))}
-          </div>
-          <div className="qh-seg qh-seg-sm qh-audrange">
-            {[[0, 'All time'], [7, '7 days'], [30, '30 days'], [90, '90 days']].map(([v, l]) => (
-              <button key={v} className={'qh-seg-opt' + (days === v ? ' is-active' : '')} onClick={() => setDays(v)}>{l}</button>
-            ))}
-          </div>
+          {QH_AUD_EFFECT_ORDER.some(k => (facetsE[k] || 0) > 0 || effs.includes(k)) && (
+            <div className="qh-audfgroup">
+              <span className="qh-audfl">Effect</span>
+              <div className="qh-chips">
+                {QH_AUD_EFFECT_ORDER.filter(k => (facetsE[k] || 0) > 0 || effs.includes(k)).map(k => (
+                  <button key={k} className={'qh-chip' + (effs.includes(k) ? ' is-active' : '')} onClick={() => toggle(effs, setEffs, k)}>
+                    {QH_AUD_EFFECTS[k]}<span className="qh-chipn">{audNum(facetsE[k] || 0)}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -474,7 +561,10 @@ function AuditView({ st }) {
       )}
 
       <div className="qh-audsplit">
-        <div className="qh-audlist">
+        <div className="qh-audlist" ref={listRef} onKeyDown={onListKey}>
+          <div className="qh-audhead" aria-hidden="true">
+            <span>Time</span><span>Kind</span><span>Action</span><span>Target</span><span>Details</span><span>Who</span><span className="qh-audreq">Request</span>
+          </div>
           {err && <div className="qh-aempty"><div>Could not load the trail.</div><button className="qh-btn qh-btn-sm" onClick={() => setDays(d => d)}>Retry</button></div>}
           {/* A search that matches nothing and a filter that matches nothing are
               different situations with different fixes, so they are different
@@ -489,7 +579,8 @@ function AuditView({ st }) {
           )}
           {!err && !busy && rows.length === 0 && !term && (
             <div className="qh-aempty">
-              <div>No rows of this kind{days ? ' in the last ' + days + ' days' : ''}.</div>
+              {/* For failures, zero is the good answer, so it is said that way. */}
+              <div>{outs.includes('failed') ? 'No failed requests' : 'No rows of this kind'}{days ? ' in the last ' + days + ' days' : ''}.</div>
               <div className="qh-audhint">The trail holds {audNum(res ? res.total : 0)} rows in total — the filter, not the data, is what is empty here.</div>
               <button className="qh-btn qh-btn-sm" onClick={clearAll}>Clear the filter</button>
             </div>
@@ -498,18 +589,31 @@ function AuditView({ st }) {
             <div key={g.k} className="qh-audday">
               <div className="qh-audday-h">{g.label}</div>
               {g.rows.map(r => (
-                <button key={r.id} className={'qh-audrow' + (sel && sel.id === r.id ? ' is-sel' : '')} onClick={() => setSel(r)}>
+                <button key={r.id} data-id={r.id}
+                        aria-current={sel && sel.id === r.id ? 'true' : undefined}
+                        className={'qh-audrow' + (sel && sel.id === r.id ? ' is-sel' : '') + (r.outcome === 'failed' ? ' is-failed' : '')}
+                        onClick={() => setSel(r)}>
                   <span className="qh-audtime">{audTime(r.time)}</span>
                   <span className={'qh-audcat is-' + r.category} title={QH_AUD_CATS[r.category].hint}>{QH_AUD_CATS[r.category].label}</span>
-                  <span className="qh-audwhat">
-                    <span className="qh-audlabel">{r.actionLabel || r.action}</span>
-                    {r.target && <span className="qh-audtarget">{r.target}</span>}
+                  <span className="qh-audlabel">
+                    {r.actionLabel || r.action}
+                    {/* Text, never colour alone: the pill says Failed. */}
+                    {r.outcome === 'failed' && !/fail/i.test(r.actionLabel || r.action) && <span className="qh-audpill is-failed">Failed</span>}
                   </span>
+                  {/* A request row names where it ran, as the rail does. The
+                      requester is already in Who, so repeating it here only
+                      pushed the part that matters off the edge. */}
+                  <span className="qh-audtgt" title={r.target || null}>{r.request && r.request.connection && r.request.connection !== '—'
+                    ? r.request.connection + (r.request.database && r.request.database !== '—' ? '/' + r.request.database : '')
+                    : (r.target || '')}</span>
+                  {(() => {
+                    const sm = audSummary(r);
+                    return <span className={'qh-audsum' + (sm ? ' is-' + sm.kind : '')} title={sm ? sm.text : null}>{sm ? sm.text : ''}</span>;
+                  })()}
                   <span className="qh-audby"><AudWho row={r} sm /></span>
                   {/* Request-bound fields appear only on rows that have them —
                       77% do. No dashes on the other 23%: an administrative row
-                      has no tier, and printing "—" five times says nothing five
-                      times. */}
+                      has no request, and printing "—" says nothing. */}
                   <span className="qh-audreq">{r.request ? '#' + r.request.id : ''}</span>
                 </button>
               ))}
@@ -529,4 +633,4 @@ function AuditView({ st }) {
   );
 }
 
-Object.assign(window, { AuditView, QH_AUD_CATS, QH_AUD_EFFECTS, QH_AUD_ACTORS });
+Object.assign(window, { AuditView, QH_AUD_CATS, QH_AUD_EFFECTS, QH_AUD_ACTORS, QH_AUD_OUTCOMES });

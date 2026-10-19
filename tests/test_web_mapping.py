@@ -450,9 +450,17 @@ def test_the_audit_row_has_as_many_cells_as_the_grid_has_tracks():
     css = (web / "QueryHub.html").read_text(encoding="utf-8")
     m = re.search(r"\.qh-audrow \{[^}]*grid-template-columns:([^;]+);", css)
     assert m, "the audit row grid definition moved"
+    declared = m.group(1).strip()
+    # The wide layout lives in one custom property, so the narrow-list rule can
+    # override the row and the column header together. Resolve it.
+    var = re.fullmatch(r"var\((--[a-z-]+)\)", declared)
+    if var:
+        v = re.search(re.escape(var.group(1)) + r":\s*([^;]+);", css)
+        assert v, f"{var.group(1)} is used by the audit row and never declared"
+        declared = v.group(1).strip()
     # Split on top-level whitespace only: `minmax(0, 1fr)` is one track.
     tracks, depth_p, cur = [], 0, ""
-    for ch in m.group(1).strip():
+    for ch in declared:
         if ch == "(":
             depth_p += 1
         elif ch == ")":

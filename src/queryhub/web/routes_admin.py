@@ -5840,7 +5840,7 @@ def admin_audit(kind: str | None = None, q: str | None = None,
 AUDIT_EXCLUSIONS = (
     {"id": "lifecycle", "category": None,
      "label": "per-request lifecycle",
-     "sub": "submitted, started, completed, failed — the queue and history "
+     "sub": "submitted, started and completed — the queue and history "
             "screens show these request by request"},
     {"id": "usage", "category": "usage",
      "label": "product usage",
@@ -5851,6 +5851,7 @@ _AUDIT_CATEGORIES = ("requests", "protection", "access", "connections",
                      "config", "usage", "unclassified")
 _AUDIT_EFFECTS = ("added", "changed", "removed", "read", "decided", "ran")
 _AUDIT_ACTOR_KINDS = ("person", "auto", "job")
+_AUDIT_OUTCOMES = ("failed",)
 _AUDIT_ACRONYMS = {"pii": "PII", "ddl": "DDL", "sql": "SQL", "ro": "RO",
                    "rw": "RW", "crm": "CRM", "dba": "DBA", "idp": "IdP",
                    "csv": "CSV"}
@@ -5874,6 +5875,7 @@ class AuditSearchIn(BaseModel):
     categories: list[str] | None = None
     effects: list[str] | None = None
     actorKinds: list[str] | None = None
+    outcomes: list[str] | None = None
     since: str | None = Field(None, alias="from")
     until: str | None = Field(None, alias="to")
     include: list[str] | None = None
@@ -5896,7 +5898,8 @@ _AUDIT_CTE = (
     "         CASE WHEN al.actor_slack_id = 'AUTO' THEN 'auto' "
     "              WHEN al.actor_slack_id IS NULL THEN 'job' "
     "              ELSE 'person' END AS actor_kind, "
-    "         (al.action = ANY(%(life)s)) AS is_life "
+    "         (al.action = ANY(%(life)s)) AS is_life, "
+    "         (al.action = ANY(%(failed)s)) AS is_failed "
     "    FROM audit_log al "
     "    JOIN names n ON n.action = al.action "
     "   WHERE {where}) "
@@ -5936,7 +5939,8 @@ def _audit_where(body: AuditSearchIn) -> tuple[str, dict]:
     range. Deliberately NOT the exclusions or the chips — those are applied as
     FILTERs on one scan, so every denominator comes from the same pass."""
     where = ["TRUE"]
-    params: dict = {"life": sorted(mapping.AUDIT_EXCLUDE)}
+    params: dict = {"life": sorted(mapping.AUDIT_EXCLUDE),
+                    "failed": sorted(mapping.AUDIT_FAILED)}
     if body.q:
         where.append(_AUDIT_SEARCH_SQL)
         params["q"] = "%" + body.q.strip() + "%"
@@ -5981,7 +5985,8 @@ def admin_audit_search(body: AuditSearchIn,
 
     bad = ([c for c in (body.categories or []) if c not in _AUDIT_CATEGORIES]
            + [e for e in (body.effects or []) if e not in _AUDIT_EFFECTS]
-           + [a for a in (body.actorKinds or []) if a not in _AUDIT_ACTOR_KINDS])
+           + [a for a in (body.actorKinds or []) if a not in _AUDIT_ACTOR_KINDS]
+           + [o for o in (body.outcomes or []) if o not in _AUDIT_OUTCOMES])
     if bad:
         raise deps._error(400, "bad_request",
                           f"Unknown filter value: {', '.join(sorted(bad))}.")
@@ -5996,9 +6001,10 @@ def admin_audit_search(body: AuditSearchIn,
     # is at most (action x actor kind x lifecycle) rows — a couple of hundred —
     # so the page below is the only other pass over the table.
     grid = db.fetch_all(
-        cte + "SELECT action, category, effect, actor_kind, is_life, "
+        cte + "SELECT action, category, effect, actor_kind, is_life, is_failed, "
               "       count(*) AS n FROM scoped "
-              " GROUP BY action, category, effect, actor_kind, is_life", params)
+              " GROUP BY action, category, effect, actor_kind, is_life, is_failed",
+        params)
 
     def in_scope(g) -> bool:
         if g["is_life"] and not show_life:
@@ -6014,11 +6020,14 @@ def admin_audit_search(body: AuditSearchIn,
             return False
         if body.actorKinds and g["actor_kind"] not in body.actorKinds:
             return False
+        if body.outcomes and not (g["is_failed"] and "failed" in body.outcomes):
+            return False
         return True
 
     facets_c = {k: 0 for k in _AUDIT_CATEGORIES}
     facets_e = {k: 0 for k in _AUDIT_EFFECTS}
     facets_a = {k: 0 for k in _AUDIT_ACTOR_KINDS}
+    facets_o = {k: 0 for k in _AUDIT_OUTCOMES}
     grand_total = matched = total = 0
     hidden = {x["id"]: 0 for x in AUDIT_EXCLUSIONS}
     types: set[str] = set()
@@ -6039,6 +6048,8 @@ def admin_audit_search(body: AuditSearchIn,
         facets_c[g["category"]] = facets_c.get(g["category"], 0) + n
         facets_e[g["effect"]] = facets_e.get(g["effect"], 0) + n
         facets_a[g["actor_kind"]] = facets_a.get(g["actor_kind"], 0) + n
+        if g["is_failed"]:
+            facets_o["failed"] += n
         types.add(g["action"])
         if g["category"] == "unclassified":
             types_unclassified.add(g["action"])
@@ -6062,18 +6073,21 @@ def admin_audit_search(body: AuditSearchIn,
     if body.actorKinds:
         page_where.append("s.actor_kind = ANY(%(acts)s)")
         pp["acts"] = list(body.actorKinds)
+    if body.outcomes:
+        page_where.append("s.is_failed")
     if body.cursor:
         page_where.append("s.id < %(cursor)s")
         pp["cursor"] = body.cursor
     pp["lim"] = body.limit
 
     rows = db.fetch_all(
-        cte + "SELECT s.id, s.category, s.effect, s.actor_kind, "
+        cte + "SELECT s.id, s.category, s.effect, s.actor_kind, s.is_failed, "
               "  al.action, al.actor_slack_id, al.actor_name, al.details, "
               "  al.created_at, al.request_id, "
               "  r.requester_slack_id, r.requester_name, "
               "  r.database_name, r.query, r.row_count, "
               "  r.required_tier, r.executed_at, r.completed_at, "
+              "  r.status AS request_status, r.error_message AS request_error, "
               "  ts.alias AS target_alias, "
               "  g.slack_user_id AS via_user, g.max_tier AS via_tier, "
               "  g.database_name AS via_db, gts.alias AS via_target "
@@ -6113,7 +6127,7 @@ def admin_audit_search(body: AuditSearchIn,
         "grandTotal": grand_total,
         "searchTotal": search_total,
         "facets": {"categories": facets_c, "effects": facets_e,
-                   "actorKinds": facets_a},
+                   "actorKinds": facets_a, "outcomes": facets_o},
         "actionTypes": {"total": len(types),
                         "unclassified": len(types_unclassified)},
         "exclusions": [
@@ -6185,6 +6199,11 @@ def _audit_row(r: dict, names: dict) -> dict:
             "rows": r.get("row_count"),
             "durationMs": dur,
             "sql": r.get("query"),
+            # How the request ended, so a failure reads on the row and in the
+            # rail without opening the raw payload. `error` is the text the
+            # requester saw, already scrubbed of values read from the database.
+            "status": r.get("request_status"),
+            "error": r.get("request_error") or None,
         }
     target = None
     if r.get("target_alias"):
@@ -6200,6 +6219,7 @@ def _audit_row(r: dict, names: dict) -> dict:
         "category": r["category"],
         "effect": r["effect"],
         "classified": r["category"] != "unclassified",
+        "outcome": "failed" if r.get("is_failed") else None,
         "target": target,
         "detail": r.get("details") if isinstance(r.get("details"), dict) else {},
         "request": req,

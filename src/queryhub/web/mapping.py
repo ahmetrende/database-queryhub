@@ -398,9 +398,19 @@ def auto_grant_entry(row: dict, alias_of: "callable") -> dict:
 #: silently absent until somebody thought to add its name here, and nobody
 #: ever did. An audit view must fail towards showing too much.
 AUDIT_EXCLUDE = frozenset({
-    "submitted", "execution_started", "completed", "failed",
+    "submitted", "execution_started", "completed",
     "import_submitted", "import_execution_started", "import_completed",
     "cancel_requested", "scheduled_dispatched",
+})
+
+#: The audit actions that say a request did not finish. `failed` used to sit in
+#: the hidden lifecycle slice above, so an error was invisible by default: a
+#: person who ran a query and got `Permission denied` could not find it on the
+#: screen that exists to find things. These rows are shown by default, and the
+#: screen can filter to them.
+AUDIT_FAILED = frozenset({
+    "failed", "failed_manually", "execution_orphaned",
+    "execution_runaway_stopped",
 })
 
 #: Keyword rules, tried in order, for actions this module has never been told

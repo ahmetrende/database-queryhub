@@ -207,7 +207,8 @@ def test_the_screen_reads_no_field_the_endpoint_omits():
     assert not top - sent, sorted(top - sent)
 
     facets = set(re.findall(r"res\.facets\.([A-Za-z]+)", SCREEN))
-    assert not facets - {"categories", "effects", "actorKinds"}, sorted(facets)
+    assert not facets - {"categories", "effects", "actorKinds", "outcomes"}, \
+        sorted(facets)
 
     action_types = set(re.findall(r"res\.actionTypes\.([A-Za-z]+)", SCREEN))
     assert not action_types - {"total", "unclassified"}, sorted(action_types)
@@ -222,6 +223,29 @@ def test_the_screen_reads_no_field_the_endpoint_omits():
     assert excl, "the exclusion list stopped reading any field"
     assert not excl - {"id", "label", "sub", "category", "included", "rows"}, \
         sorted(excl)
+
+
+def test_a_failed_request_row_carries_its_outcome_and_its_error():
+    """The list reads the error off the row, so a failure shows without opening
+    the payload. A row of any other request carries no outcome."""
+    base = {"id": 7, "created_at": None, "action": "failed", "actor_slack_id": None,
+            "actor_name": None, "details": {"error": "Permission denied"},
+            "actor_kind": "job", "category": "requests", "effect": "ran",
+            "request_id": 41, "target_alias": "alpha", "database_name": "db1",
+            "request_status": "failed", "request_error": "Permission denied",
+            "is_failed": True}
+    row = ra._audit_row(base, {})
+    assert row["outcome"] == "failed"
+    assert row["request"]["status"] == "failed"
+    assert row["request"]["error"] == "Permission denied"
+    ok = ra._audit_row({**base, "action": "completed", "is_failed": False,
+                        "request_status": "completed", "request_error": None}, {})
+    assert ok["outcome"] is None and ok["request"]["error"] is None
+
+
+def test_the_outcome_filter_only_accepts_what_the_server_can_count():
+    assert ra._AUDIT_OUTCOMES == ("failed",)
+    assert ra.AuditSearchIn(outcomes=["failed"]).outcomes == ["failed"]
 
 
 def test_the_exclusion_list_covers_the_kind_it_hides():
