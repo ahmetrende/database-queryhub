@@ -32,6 +32,24 @@ def _error(status: int, code: str, message: str,
     return HTTPException(status_code=status, detail=detail)
 
 
+PORTAL_ONLY_MESSAGE = "Refused: QueryHub opens through the portal. Sign in there."
+
+
+def own_ui_allowed(principal_id: str) -> bool:
+    """False when `web_own_ui_super_admin_only` is on and this person is not a
+    super-admin.
+
+    Judges a browser session only. A portal request carries an assertion and
+    never reaches this check. A failed read of the key or of the admin rows
+    raises, which refuses the request: this gate closes on a fault, it does
+    not open.
+    """
+    val = (cfg.get_setting("web_own_ui_super_admin_only", "off") or "").strip().lower()
+    if val not in {"on", "1", "true", "yes"}:
+        return True
+    return admins.is_super_admin(principal_id)
+
+
 def current_user(conn: HTTPConnection) -> dict:
     """AUTH.md §3 — runs on every protected route, cheap:
     token extract → signature+exp → revocation lookup. Returns the
@@ -118,6 +136,10 @@ def current_user(conn: HTTPConnection) -> dict:
         if row is None or not row.get("enabled", False):
             raise _error(401, "unauthenticated",
                          "Your account is disabled. Ask an admin to enable it.")
+    # An access token minted before an operator closed the own UI must stop
+    # working at once, not when it expires.
+    if not own_ui_allowed(claims.get("sub") or ""):
+        raise _error(403, "ui_super_admin_only", PORTAL_ONLY_MESSAGE)
     return claims
 
 

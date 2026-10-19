@@ -47,6 +47,16 @@ def test_engine_label():
     assert mapping.engine_label("postgres") == "PostgreSQL"
     assert mapping.engine_label(None) == "PostgreSQL"
     assert mapping.engine_label("clickhouse") == "ClickHouse"
+    assert mapping.engine_label("mssql") == "SQL Server"
+    assert mapping.engine_label("athena") == "Amazon Athena"
+    assert mapping.engine_label("MSSQL") == "SQL Server"
+
+
+def test_every_wired_engine_has_a_display_label():
+    """A new wired engine without a label would show its raw id in the UI."""
+    from queryhub import engines
+    for engine in engines.WIRED_ENGINES:
+        assert mapping.engine_label(engine) != engine, engine
 
 
 def test_approver_label_auto_sentinel():

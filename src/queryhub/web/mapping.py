@@ -100,8 +100,11 @@ def env_of(alias: str) -> str:
     return "production"
 
 
-_ENGINE_LABELS = {"postgres": "PostgreSQL", "clickhouse": "ClickHouse",
-                  "sqlserver": "SQL Server", "mysql": "MySQL"}
+# One label per engine id the database accepts (the `target_servers_engine_check`
+# values, which `engines.WIRED_ENGINES` mirrors). The web UI reads the engine
+# icon from this text, so each label must keep the words `qhEngineId` looks for.
+_ENGINE_LABELS = {"postgres": "PostgreSQL", "mssql": "SQL Server",
+                  "clickhouse": "ClickHouse", "athena": "Amazon Athena"}
 
 
 def engine_label(engine: str | None) -> str:

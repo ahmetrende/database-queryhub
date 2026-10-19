@@ -115,6 +115,10 @@ function LoginScreen({ onSignedIn, brand }) {
     else window.location.href = '/api/auth/' + encodeURIComponent(id) + '/start';
   };
 
+  // The server sends a refused person back here with `?auth_error=portal_only`
+  // while the own UI is closed to everyone but super-admins.
+  const portalOnly = /[?&]auth_error=portal_only(&|$)/.test(window.location.search || '');
+
   const busy = phase !== 'idle';
   const list = providers || [];
   // Every redirect provider gets its OWN button. This used to collapse them
@@ -134,6 +138,12 @@ function LoginScreen({ onSignedIn, brand }) {
 
         <h1 className="qh-login-title">Sign in to QueryHub</h1>
         <p className="qh-login-sub">Write SQL, submit it, track approvals and get the results. A read-only query with a matching grant runs at once. Every other query goes to a DBA.</p>
+
+        {portalOnly && (
+          <div className="qh-login-error" role="alert">
+            Refused: QueryHub opens through the portal. Sign in there.
+          </div>
+        )}
 
         {providers === null && (
           <div className="qh-login-loading"><span className="qh-spin" /></div>

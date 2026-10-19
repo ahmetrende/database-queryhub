@@ -342,6 +342,9 @@ current_user(request):
   2. Verify signature + exp. Expired → 401 (client silently refreshes, §4).
   3. Check the session row is alive (web_sessions: not revoked, not
      expired) — the per-request revocation lookup.
+  4. With `web_own_ui_super_admin_only` on, refuse a person who is not a
+     super-admin with 403 `ui_super_admin_only`. A portal request never
+     reaches this step. Login and refresh apply the same rule.
   → hand off to the endpoint, which does its own per-query grant checks.
 ```
 

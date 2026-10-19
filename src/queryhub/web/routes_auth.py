@@ -158,6 +158,10 @@ async def auth_local_login(request: Request):
         raise deps._error(403, "forbidden",
                           "Refused: this account is not authorized for QueryHub. "
                           "Ask the DBA team for access.")
+    if not deps.own_ui_allowed(ident.principal_id):
+        log.warning("local login rejected (own UI is super-admin only): %s",
+                    ident.principal_id)
+        raise deps._error(403, "ui_super_admin_only", deps.PORTAL_ONLY_MESSAGE)
 
     sid, refresh = sessions.create_session(
         ident.principal_id, provider=ident.provider,
@@ -242,6 +246,10 @@ def auth_callback(provider: str, request: Request,
             or requesters.is_allowed(ident.principal_id)):
         log.warning("login rejected (not whitelisted): %s", ident.principal_id)
         return RedirectResponse(f"{base_url()}/?auth_error=not_whitelisted", 302)
+    if not deps.own_ui_allowed(ident.principal_id):
+        log.warning("login rejected (own UI is super-admin only): %s",
+                    ident.principal_id)
+        return RedirectResponse(f"{base_url()}/?auth_error=portal_only", 302)
 
     # Still employed? This used to run only at refresh, which was enough while
     # every redirect login WAS a Slack login: Slack will not authenticate a
@@ -387,6 +395,9 @@ def auth_refresh(request: Request):
         sessions.revoke_session(rotated["id"], "whitelist lost at refresh")
         raise deps._error(401, "unauthenticated",
                           "Refused: you no longer have QueryHub access.")
+    if not deps.own_ui_allowed(uid):
+        sessions.revoke_session(rotated["id"], "own UI is super-admin only")
+        raise deps._error(403, "ui_super_admin_only", deps.PORTAL_ONLY_MESSAGE)
     # An admin need not be a requester, and login let them in on their admin
     # row; reading only `requesters` here dropped their name and email from
     # every token after the first refresh.

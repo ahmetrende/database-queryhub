@@ -26,6 +26,12 @@ frontend and the endpoints it calls are explicitly outside it.
 - **`GET /api/admin/people/duplicate-addresses`.** A super-admin can list the
   addresses that two different people share, with the rows that hold them. Such
   an address blocks a sign-in. The endpoint changes nothing.
+- **A switch that closes the web sign-in to everyone but super-admins.** Set
+  `web_own_ui_super_admin_only` to `on`. A person who is not a super-admin can
+  then no longer sign in with Slack, SSO or a local account. Their open sessions
+  end at once. A signed portal request and Slack are not affected. The sign-in
+  screen shows "Refused: QueryHub opens through the portal. Sign in there." The
+  default is `off`. Migration 145 adds the key.
 
 ### Changed
 
@@ -34,6 +40,9 @@ frontend and the endpoints it calls are explicitly outside it.
   the package. The window lengths and their labels moved to
   `window_options.py`. Each route imports `slack_app` only in the branch that
   has a Slack client. The Slack messages do not change.
+- **The connection lists show "SQL Server" and "Amazon Athena".** They showed the
+  raw ids `mssql` and `athena`. The label table now has one entry for each of
+  the four engines that the database accepts. The engine icons did not change.
 
 ## [1.0.36] — 2026-10-14
 

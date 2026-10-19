@@ -93,6 +93,20 @@ def test_a_bare_common_word_is_still_exempt():
         assert f'"{word}"' in SRC, word
 
 
+@upstream_only
+def test_a_team_called_dba_does_not_flood_the_scan():
+    """A team named "DBA" is a job title, and `dba` sits inside this project's
+    package, role and service names. Measured 2026-10-19: the one row made a
+    clean checkout report 2217 hits in 439 files. The exemption is on the whole
+    team name, so a compound that holds the word stays denied."""
+    import re
+    block = SRC[SRC.index("generic_words = {"):]
+    block = block[:block.index("}")]
+    assert '"dba"' in block
+    assert re.search(r"team\.lower\(\) not in placeholders \| generic_words", SRC), \
+        "the exemption must compare the whole name, not a prefix"
+
+
 # ---------------------------------------------------------------------------
 #
 # The same argument, one rung down: which CATALOGUED DATABASE NAME is worth
