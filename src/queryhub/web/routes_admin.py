@@ -1582,10 +1582,12 @@ def admin_schema_refresh(conn: str, database: str | None = None,
         # Checked against what the server actually serves, not against the
         # catalog: refreshing is precisely what you do when the catalog is
         # stale, so a database missing from it is not evidence of anything.
+        # The listing holds only the databases that the login may open.
         if database not in databases:
             raise deps._error(
                 404, "not_found",
-                f"'{conn}' has no database named '{database}'.")
+                f"'{conn}' has no database named '{database}' "
+                f"that the read-only login can open.")
         databases = [database]
     results: dict[str, dict] = {}
     total_tables = 0

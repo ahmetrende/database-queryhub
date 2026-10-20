@@ -117,9 +117,12 @@ ORDER BY n.nspname, c.relname, a.attnum
 # path), which excludes `postgres` too.
 _HIDDEN_DATABASES = ("rdsadmin", "postgres")
 
-# Databases worth snapshotting on an instance.
+# Databases worth snapshotting on an instance. `can_connect` says whether the
+# login may open each one. The listing alone does not say, and a snapshot of a
+# database that refuses the login can only fail.
 _DATABASES_SQL = """
-SELECT datname FROM pg_database
+SELECT datname, has_database_privilege(datname, 'CONNECT') AS can_connect
+FROM pg_database
 WHERE datallowconn AND NOT datistemplate
   AND datname <> ALL(%s)
 ORDER BY datname
@@ -130,7 +133,9 @@ ORDER BY datname
 
 
 def list_target_databases(target, password: str) -> list[str]:
-    """Databases on the target instance, read via its default database."""
+    """Databases on the target instance that the login may open, read via its
+    default database. The listing leaves out a database that refuses the login
+    and logs its name, so the refresh does not fail on it once an hour."""
     engine = getattr(target, "engine", None) or "postgres"
     if engine == "athena":
         # No connection and no password: the catalog is Glue, reached under
@@ -149,7 +154,12 @@ def list_target_databases(target, password: str) -> list[str]:
     with _connect(target, password, target.default_database) as conn:
         with conn.cursor() as cur:
             cur.execute(_DATABASES_SQL, (list(_HIDDEN_DATABASES),))
-            return [r[0] for r in cur.fetchall()]
+            rows = cur.fetchall()
+    closed = [name for name, can_connect in rows if not can_connect]
+    if closed:
+        log.info("%s: left out %s, the login has no CONNECT privilege",
+                 target.alias, ", ".join(closed))
+    return [name for name, can_connect in rows if can_connect]
 
 
 def _connect(target, password: str, database: str):
@@ -639,12 +649,15 @@ PRUNABLE_ENGINES = ("postgres", "mssql")
 
 
 def plan_prune(catalog_databases: list[str], live_databases: list[str]) -> list[str]:
-    """The databases the catalog holds that the server no longer lists. Pure.
+    """The databases the catalog holds that the listing no longer names. Pure.
 
-    A refresh only ever snapshots the databases that exist, and nothing removed
-    the rows of one that was dropped, so it stayed in the sidebar for good with
-    its tables: a copy named `example_db_old` sat there for two weeks after the
-    database was gone. Two guards make a wrong answer cost nothing:
+    The listing names the databases that exist and that the login may open. A
+    refresh snapshots only those. Nothing used to remove the rows of a database
+    that someone dropped, so it stayed in the sidebar with its tables: a copy
+    named `example_db_old` sat there for two weeks after the database
+    disappeared. A database that closes to the login leaves the listing in the
+    same way, and its rows go in the same way. Two guards make a wrong answer
+    cost nothing:
 
     * An empty live list proves nothing. A login that can see no database is a
       permission problem, not a server with no database, so nothing is removed.
@@ -663,9 +676,10 @@ def plan_prune(catalog_databases: list[str], live_databases: list[str]) -> list[
 
 
 def prune_databases(target, databases: list[str]) -> dict:
-    """Remove the catalog rows of databases that are gone, and write one audit
-    row. One transaction, so the audit row never says more or less than what
-    was removed. Columns follow their tables through ON DELETE CASCADE."""
+    """Remove the catalog rows of databases that are gone or closed to the
+    login, and write one audit row. One transaction keeps the audit row exact:
+    it says what the transaction removed. Columns follow their tables through
+    the foreign key's cascade."""
     if not databases:
         return {"tables": 0, "functions": 0}
     with db.transaction() as cur:
@@ -681,7 +695,8 @@ def prune_databases(target, databases: list[str]) -> dict:
                      {"target": target.alias, "targetId": target.id,
                       "databases": sorted(databases),
                       "tables": tables, "functions": functions,
-                      "why": "the server no longer lists these databases"})
+                      "why": "these databases are gone, or the login can no "
+                             "longer open them"})
     return {"tables": tables, "functions": functions}
 
 

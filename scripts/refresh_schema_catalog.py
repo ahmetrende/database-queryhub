@@ -4,8 +4,9 @@ For each target: enumerate its databases (via the default database),
 snapshot each one's system catalog into the bot DB with the RO credential.
 The read is engine-dispatched in schema_catalog (pg_catalog for Postgres,
 sys.* for SQL Server); the stored shape is identical either way.
-Unreachable targets / databases the RO role can't connect to are skipped
-and reported — one bad target must not sink the fleet run.
+An unreachable target is skipped and reported: one bad target must not sink
+the fleet run. A database that refuses the RO role is left out of the listing
+and logged, and the prune removes its old rows.
 
 A target that stops refreshing is REPORTED, not just logged. Browse, search
 and the /sql autocomplete keep serving the last good snapshot with nothing on
@@ -64,9 +65,10 @@ def _ro_password(target_id: int) -> str | None:
 
 
 def prune_vanished(target, live_databases: list[str], apply: bool = True) -> list[str]:
-    """Remove the catalog rows of databases that the server no longer lists, and
-    return their names. With `apply=False` it only reports. Never raises: a
-    failed prune must not cost the refresh that follows it."""
+    """Remove the catalog rows of databases that the listing no longer names
+    (dropped, or closed to the RO role), and return their names. With
+    `apply=False` it only reports. Never raises: a failed prune must not cost
+    the refresh that follows it."""
     if (target.engine or "postgres") not in schema_catalog.PRUNABLE_ENGINES:
         return []
     try:
@@ -74,8 +76,8 @@ def prune_vanished(target, live_databases: list[str], apply: bool = True) -> lis
             schema_catalog.list_snapshot_databases(target.id), live_databases)
         if gone and apply:
             removed = schema_catalog.prune_databases(target, gone)
-            log.info("%s: removed %s from the catalog, no longer on the server "
-                     "(%d tables, %d functions)", target.alias, ", ".join(gone),
+            log.info("%s: removed %s from the catalog, gone or closed to the "
+                     "login (%d tables, %d functions)", target.alias, ", ".join(gone),
                      removed["tables"], removed["functions"])
         return gone
     except Exception:  # noqa: BLE001 — never sink the refresh

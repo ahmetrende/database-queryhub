@@ -75,6 +75,13 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Fixed
 
+- **A database that refuses the read-only login leaves the schema browser.** The
+  hourly refresh listed every database on a server and then failed to open the
+  ones that refuse the read-only login. Each one failed once an hour, and its old
+  tables stayed in the sidebar. The refresh now lists only the databases that the
+  login may open, and it logs the ones it leaves out. The prune removes the old
+  rows of such a database, as it does for a dropped one. The admin schema refresh
+  answers 404 for it, and the message says why.
 - **A database that is gone leaves the schema browser.** The hourly refresh
   snapshots the databases that exist and never removed the rows of one that was
   dropped, so it stayed in the sidebar with its tables. The refresh now removes
