@@ -63,6 +63,26 @@ def _ro_password(target_id: int) -> str | None:
     return None if password == "PASSWORD_NOT_SET" else password
 
 
+def prune_vanished(target, live_databases: list[str], apply: bool = True) -> list[str]:
+    """Remove the catalog rows of databases that the server no longer lists, and
+    return their names. With `apply=False` it only reports. Never raises: a
+    failed prune must not cost the refresh that follows it."""
+    if (target.engine or "postgres") not in schema_catalog.PRUNABLE_ENGINES:
+        return []
+    try:
+        gone = schema_catalog.plan_prune(
+            schema_catalog.list_snapshot_databases(target.id), live_databases)
+        if gone and apply:
+            removed = schema_catalog.prune_databases(target, gone)
+            log.info("%s: removed %s from the catalog, no longer on the server "
+                     "(%d tables, %d functions)", target.alias, ", ".join(gone),
+                     removed["tables"], removed["functions"])
+        return gone
+    except Exception:  # noqa: BLE001 — never sink the refresh
+        log.exception("catalog prune failed for %s", target.alias)
+        return []
+
+
 def refresh_target(target, only_database: str | None = None) -> dict:
     """Snapshot every database on one target. Returns a per-DB summary."""
     summary: dict[str, str] = {}
@@ -78,6 +98,10 @@ def refresh_target(target, only_database: str | None = None) -> dict:
         return {"*": f"unreachable: {type(e).__name__}"}
     if only_database:
         databases = [d for d in databases if d == only_database]
+    else:
+        # The list is the whole server's answer here. A run that names one
+        # database sees a slice and cannot tell what is gone.
+        prune_vanished(target, databases)
     for database in databases:
         try:
             t0 = time.monotonic()
@@ -188,10 +212,36 @@ def refresh_archive_freshness(only_alias: str | None = None) -> int:
     return failures
 
 
+def prune_report(fleet) -> int:
+    """Dry run of the prune: list each target's live databases, plan, print.
+    Reads the servers exactly as the hourly run does, writes nothing."""
+    total = 0
+    for target in fleet:
+        if (target.engine or "postgres") not in schema_catalog.PRUNABLE_ENGINES:
+            continue
+        password = _ro_password(target.id)
+        if password is None:
+            continue
+        try:
+            live = schema_catalog.list_target_databases(target, password)
+        except Exception as e:  # noqa: BLE001
+            print(f"{target.alias}: not listed ({type(e).__name__}), nothing would be removed")
+            continue
+        gone = prune_vanished(target, live, apply=False)
+        for database in gone:
+            total += 1
+            print(f"{target.alias}: would remove {database}")
+    print(f"{total} database(s) would be removed from the catalog. Nothing was changed.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", help="only this target alias")
     parser.add_argument("--database", help="only this database")
+    parser.add_argument("--prune-report", action="store_true",
+                        help="print the catalog databases that the servers no longer "
+                             "list, per enabled target, and change nothing")
     parser.add_argument("--clickhouse-when-fresh", action="store_true",
                         help="read the ClickHouse targets that are due, if the "
                              "inventory's state for them is fresh")
@@ -223,6 +273,9 @@ def main() -> int:
             return 0
     else:
         fleet = [t for t in fleet if t.engine != "clickhouse"]
+
+    if args.prune_report:
+        return prune_report(fleet)
 
     failures = 0
     # The archives' freshness markers, first: nothing that goes wrong in the

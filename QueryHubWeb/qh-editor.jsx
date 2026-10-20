@@ -644,49 +644,22 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     if (!last) return { bottom: el.offsetTop + lh, right: 0 };
     return { bottom: last.bottom - mr.top, right: last.right - mr.left };
   };
-  // Which character a pointer is over on a wrapped line: the visual row decides
-  // first (vertical distance dominates the score), the column within it second.
-  const wrapColAt = (row, relX, relY) => {
-    const el = wrapRef.current && wrapRef.current.children[row];
-    const node = el && el.firstChild;
-    const len = (value.split('\n')[row] || '').length;
-    if (!node || !len) return 0;
-    let best = 0, bestScore = Infinity;
-    for (let c = 0; c <= len; c++) {
-      const p = wrapRect(row, c); if (!p) break;
-      const score = Math.abs(p.bottom - lh / 2 - relY) * 10000 + Math.abs(p.right - relX);
-      if (score < bestScore) { bestScore = score; best = c; }
-    }
-    return best;
-  };
-  const indexFromPoint = (ta, x, y) => {
-    const r = ta.getBoundingClientRect();
-    const relY = y - r.top - 14 + ta.scrollTop, relX = x - r.left - 16 + ta.scrollLeft;
-    const ls = value.split('\n');
-    let rr, col;
-    if (wrap && wrapRef.current && wrapRef.current.children.length === ls.length) {
-      rr = ls.length - 1;
-      for (let i = 0; i < ls.length; i++) {
-        const c = wrapRef.current.children[i];
-        if (relY < c.offsetTop + c.offsetHeight) { rr = i; break; }
-      }
-      col = wrapColAt(rr, relX, relY);
-    } else {
-      rr = Math.min(Math.max(0, Math.floor(relY / lh)), ls.length - 1);
-      col = Math.min(Math.max(0, Math.round(relX / charW)), ls[rr].length);
-    }
-    let idx = 0; for (let i = 0; i < rr; i++) idx += ls[i].length + 1;
-    return idx + col;
-  };
+  // A dropped name goes where the caret is, like a paste, not where the pointer
+  // let go. The old code turned the pointer into a character index and inserted
+  // there. A person who drags a database in from the sidebar lets go near the left
+  // edge of the editor, and the name landed at the start of the line, away from the
+  // statement being typed ("example_dbDROP database "). The caret is the
+  // place the person is writing, so it is the one place that is never a surprise.
+  // A selection is replaced, as a paste replaces it.
   const onDrop = (e) => {
     const text = e.dataTransfer.getData('text/plain');
     if (!text) return;
     e.preventDefault(); setDragOver(false);
     const ta = taRef.current;
-    const idx = indexFromPoint(ta, e.clientX, e.clientY);
-    const nv = value.slice(0, idx) + text + value.slice(idx);
-    commit(nv, 'drop', [ta.selectionStart, ta.selectionEnd], [idx + text.length, idx + text.length]);
-    requestAnimationFrame(() => { if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = idx + text.length; } });
+    const a = ta.selectionStart, b = ta.selectionEnd;
+    const at = a + text.length;
+    commit(value.slice(0, a) + text + value.slice(b), 'drop', [a, b], [at, at]);
+    requestAnimationFrame(() => { if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = at; } });
   };
   const onDragOver = (e) => {
     if (Array.from(e.dataTransfer.types || []).includes('text/plain')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; if (!dragOver) setDragOver(true); }

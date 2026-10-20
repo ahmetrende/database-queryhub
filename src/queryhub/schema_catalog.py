@@ -17,6 +17,7 @@ import re
 
 import psycopg
 
+from . import audit
 from . import config as cfg
 from . import db
 from . import engines
@@ -629,6 +630,59 @@ def snapshot_info(target_id: int, database: str):
         )
         row = cur.fetchone()
         return row["ts"] if row else None
+
+
+#: Engines whose database list is a plain and complete answer, so a database
+#: that is missing from it is gone. Athena and ClickHouse are read in their own
+#: ways and are left alone.
+PRUNABLE_ENGINES = ("postgres", "mssql")
+
+
+def plan_prune(catalog_databases: list[str], live_databases: list[str]) -> list[str]:
+    """The databases the catalog holds that the server no longer lists. Pure.
+
+    A refresh only ever snapshots the databases that exist, and nothing removed
+    the rows of one that was dropped, so it stayed in the sidebar for good with
+    its tables: a copy named `example_db_old` sat there for two weeks after the
+    database was gone. Two guards make a wrong answer cost nothing:
+
+    * An empty live list proves nothing. A login that can see no database is a
+      permission problem, not a server with no database, so nothing is removed.
+    * A plan that would remove EVERY database the catalog holds is refused. One
+      server that really lost them all is rare, and a listing that went wrong
+      without raising is not.
+    """
+    live = set(live_databases or [])
+    if not live:
+        return []
+    held = sorted(set(catalog_databases or []))
+    gone = [d for d in held if d not in live]
+    if gone and len(gone) >= len(held):
+        return []
+    return gone
+
+
+def prune_databases(target, databases: list[str]) -> dict:
+    """Remove the catalog rows of databases that are gone, and write one audit
+    row. One transaction, so the audit row never says more or less than what
+    was removed. Columns follow their tables through ON DELETE CASCADE."""
+    if not databases:
+        return {"tables": 0, "functions": 0}
+    with db.transaction() as cur:
+        cur.execute("DELETE FROM schema_tables "
+                    " WHERE target_server_id = %s AND database_name = ANY(%s)",
+                    (target.id, list(databases)))
+        tables = cur.rowcount
+        cur.execute("DELETE FROM schema_functions "
+                    " WHERE target_server_id = %s AND database_name = ANY(%s)",
+                    (target.id, list(databases)))
+        functions = cur.rowcount
+        audit.log_in(cur, None, None, None, "schema_catalog_pruned",
+                     {"target": target.alias, "targetId": target.id,
+                      "databases": sorted(databases),
+                      "tables": tables, "functions": functions,
+                      "why": "the server no longer lists these databases"})
+    return {"tables": tables, "functions": functions}
 
 
 def list_snapshot_databases(target_id: int) -> list[str]:

@@ -75,6 +75,18 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Fixed
 
+- **A database that is gone leaves the schema browser.** The hourly refresh
+  snapshots the databases that exist and never removed the rows of one that was
+  dropped, so it stayed in the sidebar with its tables. The refresh now removes
+  the catalog rows of a database that the server no longer lists, and writes one
+  `schema_catalog_pruned` audit row. It removes nothing when the listing fails or
+  comes back empty, when the plan would empty the target, or on a run that names
+  one database. It acts on PostgreSQL and SQL Server only. Run
+  `python3 scripts/refresh_schema_catalog.py --prune-report` for a dry run.
+- **A name dropped on the editor goes to the caret.** You drag a database or a
+  table from the sidebar into the editor. The name used to land where the pointer
+  let go, often at the start of the line. It now lands at the caret, as a paste
+  does, and it replaces a selection. Undo takes it back in one step.
 - **A SELECT that calls `setval` or `nextval` now needs the write tier.** Such a
   statement changes a sequence, but it ran as a read with the read-only login.
   The server refused it with "Permission denied for sequence". Where the
