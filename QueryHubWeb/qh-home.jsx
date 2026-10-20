@@ -22,13 +22,26 @@ function HomeCard({ title, count, action, children }) {
   );
 }
 
+// Rows that stand in for a list while its first load is pending. One status for
+// the card, read once; the bars are decoration.
+function HomePlaceholder() {
+  return (
+    <div className="qh-home-skel" role="status" aria-live="polite">
+      <span className="qh-skel-sr">Loading</span>
+      {[78, 60, 70].map((w, i) => <span key={i} className="qh-skel-bar" style={{ width: w + '%' }} aria-hidden="true" />)}
+    </div>
+  );
+}
+
 function HomeEmpty({ text }) {
   return <div className="qh-home-empty">{text}</div>;
 }
 
-function HomeScreen({ user, openTabs, slackEnabled, onFocusTab, onNewQuery, onSaveSession, sessions, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, saved, onLoadSaved, onDeleteSaved, onBrowse, onWhatsNew, unseenNews }) {
+function HomeScreen({ user, loading, openTabs, slackEnabled, onFocusTab, onNewQuery, onSaveSession, sessions, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, saved, onLoadSaved, onDeleteSaved, onBrowse, onWhatsNew, unseenNews }) {
   const first = (user && user.name ? qhPersonName(user.name).split(' ')[0] : 'there');
   const nonEmpty = (openTabs || []).filter(t => t.sql && t.sql.trim());
+  // A list that is empty only because its first load is still pending.
+  const wait = (list) => !!loading && (list || []).length === 0;
 
   return (
     <div className="qh-home">
@@ -62,9 +75,9 @@ function HomeScreen({ user, openTabs, slackEnabled, onFocusTab, onNewQuery, onSa
             )}
           </HomeCard>
 
-          <HomeCard title="Saved sessions" count={sessions.length}
+          <HomeCard title="Saved sessions" count={wait(sessions) ? null : sessions.length}
             action={<button className="qh-home-link" onClick={onSaveSession} disabled={!nonEmpty.length}>Save current {QH_HOME_ICN.arrow}</button>}>
-            {sessions.length === 0 ? <HomeEmpty text="No saved sessions. Save your open tabs as one named workspace to restore later — here or on another device." /> : (
+            {wait(sessions) ? <HomePlaceholder /> : sessions.length === 0 ? <HomeEmpty text="No saved sessions. Save your open tabs as one named workspace to restore later — here or on another device." /> : (
               <div className="qh-home-list">
                 {sessions.map(s => (
                   <div key={s.id} className="qh-home-row is-linky" onClick={() => onRestoreSession(s)} title="Open all tabs from this workspace">
@@ -77,8 +90,8 @@ function HomeScreen({ user, openTabs, slackEnabled, onFocusTab, onNewQuery, onSa
             )}
           </HomeCard>
 
-          <HomeCard title="Recent history" count={history.length}>
-            {history.length === 0 ? <HomeEmpty text="Your recent queries show here." /> : (
+          <HomeCard title="Recent history" count={wait(history) ? null : history.length}>
+            {wait(history) ? <HomePlaceholder /> : history.length === 0 ? <HomeEmpty text="Your recent queries show here." /> : (
               <div className="qh-home-list">
                 {history.map(h => (
                   <button key={h.id} className="qh-home-row is-hist" onClick={() => onLoadHistory(h)}>
@@ -91,8 +104,8 @@ function HomeScreen({ user, openTabs, slackEnabled, onFocusTab, onNewQuery, onSa
             )}
           </HomeCard>
 
-          <HomeCard title="Saved queries" count={saved.length}>
-            {saved.length === 0 ? <HomeEmpty text="Save queries from a tab's right-click menu to build a personal library." /> : (
+          <HomeCard title="Saved queries" count={wait(saved) ? null : saved.length}>
+            {wait(saved) ? <HomePlaceholder /> : saved.length === 0 ? <HomeEmpty text="Save queries from a tab's right-click menu to build a personal library." /> : (
               <div className="qh-home-list">
                 {saved.map(s => (
                   <div key={s.id} className="qh-home-row is-linky" onClick={() => onLoadSaved(s)} title="Open in a new tab">
@@ -105,8 +118,8 @@ function HomeScreen({ user, openTabs, slackEnabled, onFocusTab, onNewQuery, onSa
             )}
           </HomeCard>
 
-          <HomeCard title="Scheduled" count={(scheduled || []).length}>
-            {(scheduled || []).length === 0 ? <HomeEmpty text="Queries that you schedule show here until they run." /> : (
+          <HomeCard title="Scheduled" count={wait(scheduled || []) ? null : (scheduled || []).length}>
+            {wait(scheduled || []) ? <HomePlaceholder /> : (scheduled || []).length === 0 ? <HomeEmpty text="Queries that you schedule show here until they run." /> : (
               <div className="qh-home-list">
                 {scheduled.map(s => (
                   <div key={s.id} className="qh-home-row is-linky" onClick={() => onOpenScheduled(s)} title="Open this query in a new tab">

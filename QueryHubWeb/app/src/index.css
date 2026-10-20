@@ -839,6 +839,8 @@
   .qh-skel-dot { flex: none; width: 16px; height: 16px; border-radius: var(--r-xs); background: var(--stroke-medium); animation: qhpulse 1.4s ease-in-out infinite; }
   .qh-skel-bar { height: 10px; border-radius: var(--r-full); background: var(--stroke-medium); animation: qhpulse 1.4s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) { .qh-skel-dot, .qh-skel-bar { animation: none; } }
+  /* Home card placeholder: three bars in place of a list while its first load is pending. */
+  .qh-home-skel { display: flex; flex-direction: column; gap: 12px; padding: 6px 2px 4px; }
   .qh-treeview { display: flex; align-items: center; gap: 2px; padding: 2px 8px 6px 6px; }
   .qh-treeview button { position: relative; display: inline-flex; align-items: center; justify-content: center;
     width: 26px; height: 24px; border: 0; background: transparent; cursor: pointer;

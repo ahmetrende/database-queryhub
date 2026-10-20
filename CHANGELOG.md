@@ -42,6 +42,11 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **The Home cards show a loading state.** History, saved queries, saved
+  sessions and scheduled runs load after sign-in. Until they arrive, each card
+  shows grey placeholder rows with no count, not "0" and "Your recent queries
+  show here". The placeholder ends after a failed load too, and when the lists
+  are empty for real the old text and "0" appear.
 - **The web app compresses text responses with gzip.** The JSON of
   `/api/connections` was about 2 MB for a reader with many connections, and the
   JS bundle 750 KB. Both went over the network as they were, so the server list

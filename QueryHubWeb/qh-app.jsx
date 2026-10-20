@@ -222,6 +222,7 @@ function App() {
     // The server tree is the previous user's too, and sign-out does not reload.
     setConns([]);
     setConnsLoading(true);
+    setDevLoading(true);
     setUser(null);
   };
 
@@ -313,6 +314,10 @@ function App() {
   // empty during that time, and an empty list reads as "you have no servers", so
   // the sidebar shows a skeleton instead of the empty tree.
   const [connsLoading, setConnsLoading] = useState(true);
+  // True until the first load of history, saved queries, sessions and scheduled
+  // runs has settled. The Home cards read their lists as empty during that time
+  // and showed "0", which reads as "you have no history".
+  const [devLoading, setDevLoading] = useState(true);
   const [devLoadError, setDevLoadError] = useState(false);
   const [history, setHistory] = useState([]);
   const [schemaCache, setSchemaCache] = useState({});
@@ -473,6 +478,7 @@ function App() {
     if (!user) return;
     setDevLoadError(false);
     setConnsLoading(true);
+    setDevLoading(true);
     const jobs = [
       qhApi.connections().then(r => setConns(r.connections || [])).finally(() => setConnsLoading(false)),
       qhApi.history().then(r => setHistory((r.history || []).map(h => ({
@@ -505,6 +511,7 @@ function App() {
         ...s, when: s.when ? new Date(s.when).toLocaleString() : '' })))),
     ];
     Promise.allSettled(jobs).then(res => {
+      setDevLoading(false);
       if (res.some(x => x.status === 'rejected')) setDevLoadError(true);
     });
   }, [user]);
@@ -1519,7 +1526,7 @@ function App() {
           </div>
 
           {isWelcome ? (
-            <HomeScreen user={user} openTabs={queryTabsForBar} slackEnabled={slackOn}
+            <HomeScreen user={user} loading={devLoading} openTabs={queryTabsForBar} slackEnabled={slackOn}
               onFocusTab={(id) => { if (id) setActiveId(id); else newTab(); }}
               onNewQuery={newTab}
               onSaveSession={() => setSessionModal(true)}
