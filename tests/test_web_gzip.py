@@ -57,6 +57,17 @@ def _app(csv_file=None):
     def csv():
         return Response("a,b\n" * 5000, media_type="text/csv")
 
+    @app.get("/chunks")
+    def chunks():
+        # Text sent in many pieces, as a streamed answer is.
+        return StreamingResponse((f"line {i}\n".encode() * 20 for i in range(300)),
+                                 media_type="text/plain")
+
+    @app.get("/already")
+    def already():
+        return Response(b"x" * 5000, media_type="text/plain",
+                        headers={"Content-Encoding": "br"})
+
     @app.get("/stream")
     def stream():
         return StreamingResponse(iter([b"data: 1\n\n"] * 400), media_type="text/event-stream")
@@ -181,3 +192,31 @@ def test_the_same_file_served_inline_as_text_is_still_packed(tmp_path):
     r = client.get("/file", headers=GZIP)
     assert r.headers["content-encoding"] == "gzip"
     assert r.content == ("a,b\n" * 20000).encode()
+
+
+def test_text_sent_in_many_pieces_is_packed_and_reads_back_whole():
+    r = _app().get("/chunks", headers=GZIP)
+    assert r.headers["content-encoding"] == "gzip"
+    assert "content-length" not in r.headers          # the length was not known
+    assert r.content == b"".join(f"line {i}\n".encode() * 20 for i in range(300))
+
+
+def test_a_response_that_already_has_an_encoding_is_not_touched():
+    r = _app().get("/already", headers={"Accept-Encoding": "gzip"})
+    assert r.headers["content-encoding"] == "br"
+
+
+def test_a_small_text_answer_still_tells_caches_that_it_varies():
+    """Not packed, but another client may get it packed, so a cache must key on it."""
+    r = _app().get("/small", headers=GZIP)
+    assert "content-encoding" not in r.headers
+    assert "accept-encoding" in r.headers.get("vary", "").lower()
+
+
+def test_the_packed_length_header_matches_the_body_sent():
+    """Read the bytes as they cross the wire, before the client decodes them."""
+    import gzip
+    with _app().stream("GET", "/json", headers=GZIP) as r:
+        raw = b"".join(r.iter_raw())
+    assert len(raw) == int(r.headers["content-length"])
+    assert gzip.decompress(raw) == JSONResponse(BIG).body
