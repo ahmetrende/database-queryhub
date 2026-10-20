@@ -42,6 +42,17 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **The web app compresses text responses with gzip.** The JSON of
+  `/api/connections` was about 2 MB for a reader with many connections, and the
+  JS bundle 750 KB. Both went over the network as they were, so the server list
+  stayed empty for seconds on a slow link. The app now packs JSON, script, CSS,
+  HTML, SVG and CSV, which makes the connections answer about ten times smaller.
+  Spreadsheets, images, fonts and event streams are not packed again. A client
+  that does not send `Accept-Encoding: gzip` gets the plain body.
+- **The server list shows a loading state.** Before the first `/api/connections`
+  answer, the sidebar shows grey placeholder rows with the label "Loading
+  servers", not an empty tree that reads as "no servers". The placeholder stops
+  after a failed load too, and it respects reduced motion.
 - **The audit log list has a Details column.** Each row has columns for time,
   kind, action, target, details, who and request. Details is one line: the
   error, the SQL or the main facts of the event. The empty space in the middle of

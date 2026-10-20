@@ -684,7 +684,28 @@ function OriginBadge({ dest }) {
   );
 }
 
-function Sidebar({ modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
+// Rows that stand in for the server list while /connections loads. Eight rows
+// fill a laptop sidebar without suggesting a real count. Not announced one by
+// one: the group says once that servers are loading.
+function QhConnSkeleton() {
+  const widths = [62, 48, 70, 55, 66, 44, 58, 50];
+  return (
+    <div className="qh-skel" role="status" aria-live="polite">
+      {/* Text inside the region, not a label on it: content that is already
+          there when a live region appears is not always announced, and the rows
+          are aria-hidden. */}
+      <span className="qh-skel-sr">Loading servers</span>
+      {widths.map((w, i) => (
+        <div className="qh-skel-row" key={i} aria-hidden="true">
+          <span className="qh-skel-dot" />
+          <span className="qh-skel-bar" style={{ width: w + '%' }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Sidebar({ modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
   const [open, setOpen] = React.useState(() => ({ 'prod-main': true, 'prod-replica': true }));
   const [q, setQ] = React.useState('');
   const sqlFileRef = React.useRef(null);
@@ -893,7 +914,7 @@ function Sidebar({ modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode
       )}
 
       <div className="qh-side-body">
-        {mode === 'conns' && <SchemaTree conns={conns} schemaCache={schemaCache} onLoadSchema={onLoadSchema} canRefresh={canRefresh} onRefreshSchema={onRefreshSchema} rolesCache={rolesCache} onLoadRoles={onLoadRoles} active={active} open={open} setOpen={setOpen} onPickDb={onPick} onOpenTable={onOpenTable} onNewQuery={onNewQuery} isSuper={isSuper} reveal={reveal} narrow={!width || width < 330} tagFilters={tagF} onToast={onToast} />}
+        {mode === 'conns' && (connsLoading && conns.length === 0 ? <QhConnSkeleton /> : <SchemaTree conns={conns} schemaCache={schemaCache} onLoadSchema={onLoadSchema} canRefresh={canRefresh} onRefreshSchema={onRefreshSchema} rolesCache={rolesCache} onLoadRoles={onLoadRoles} active={active} open={open} setOpen={setOpen} onPickDb={onPick} onOpenTable={onOpenTable} onNewQuery={onNewQuery} isSuper={isSuper} reveal={reveal} narrow={!width || width < 330} tagFilters={tagF} onToast={onToast} />)}
 
         {mode === 'saved' && saved.length === 0 && (
           <div className="qh-side-empty">

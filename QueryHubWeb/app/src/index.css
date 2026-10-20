@@ -831,6 +831,14 @@
      you can reach, so it stays out of the way until hovered (same dark-pill
      tooltip as the sidebar's icon tabs). Choice persists across sign-outs — it
      is a UI preference, not user data. */
+  /* Server list skeleton: shown while /connections loads, so an empty tree is
+     never mistaken for "no servers". Tokens only, so it follows both themes. */
+  .qh-skel { display: flex; flex-direction: column; gap: 12px; padding: 14px 12px; }
+  .qh-skel-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  .qh-skel-row { display: flex; align-items: center; gap: 10px; height: 22px; }
+  .qh-skel-dot { flex: none; width: 16px; height: 16px; border-radius: var(--r-xs); background: var(--stroke-medium); animation: qhpulse 1.4s ease-in-out infinite; }
+  .qh-skel-bar { height: 10px; border-radius: var(--r-full); background: var(--stroke-medium); animation: qhpulse 1.4s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .qh-skel-dot, .qh-skel-bar { animation: none; } }
   .qh-treeview { display: flex; align-items: center; gap: 2px; padding: 2px 8px 6px 6px; }
   .qh-treeview button { position: relative; display: inline-flex; align-items: center; justify-content: center;
     width: 26px; height: 24px; border: 0; background: transparent; cursor: pointer;

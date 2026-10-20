@@ -14,8 +14,8 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import db, migration_state
 from .. import config as cfg
-from . import (build_info, deps, request_id, routes_auth, routes_avatar,
-               startup_checks)
+from . import (build_info, compression, deps, request_id, routes_auth,
+               routes_avatar, startup_checks)
 # base_url and the cookie helpers live with the auth routes now; the startup
 # log and /api/me still read base_url, so it is imported rather than copied.
 from .routes_auth import _must_change_password, base_url
@@ -130,6 +130,13 @@ def create_app() -> FastAPI:
                 "Strict-Transport-Security",
                 "max-age=31536000; includeSubDomains")
         return resp
+
+    # Added after the two middlewares above, so it is the outermost one and
+    # packs the final response. The first screen loads `/api/connections`, which
+    # was 2 MB of JSON, and the JS bundle: text types only, see
+    # web/compression.py. Level 5 costs little CPU and is close to level 9 in size.
+    app.add_middleware(compression.TextOnlyGZipMiddleware,
+                       minimum_size=1024, compresslevel=5)
 
     def _startup() -> None:
         # A misconfigured signing key is fatal here, before any request: the

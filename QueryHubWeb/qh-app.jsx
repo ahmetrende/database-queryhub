@@ -219,6 +219,9 @@ function App() {
     // user's SQL — and sign-out does not reload the page.
     qhUndoForget();
     liveCols.current.clear();
+    // The server tree is the previous user's too, and sign-out does not reload.
+    setConns([]);
+    setConnsLoading(true);
     setUser(null);
   };
 
@@ -306,6 +309,10 @@ function App() {
 
   // Real developer data (loaded from the API once signed in; empty until then).
   const [conns, setConns] = useState([]);
+  // True until the first /connections answer (or failure) arrives. The list is
+  // empty during that time, and an empty list reads as "you have no servers", so
+  // the sidebar shows a skeleton instead of the empty tree.
+  const [connsLoading, setConnsLoading] = useState(true);
   const [devLoadError, setDevLoadError] = useState(false);
   const [history, setHistory] = useState([]);
   const [schemaCache, setSchemaCache] = useState({});
@@ -465,8 +472,9 @@ function App() {
   const reloadDev = useCallback(() => {
     if (!user) return;
     setDevLoadError(false);
+    setConnsLoading(true);
     const jobs = [
-      qhApi.connections().then(r => setConns(r.connections || [])),
+      qhApi.connections().then(r => setConns(r.connections || [])).finally(() => setConnsLoading(false)),
       qhApi.history().then(r => setHistory((r.history || []).map(h => ({
         id: h.id, sql: h.sql, conn: h.connectionId, db: h.databaseId, tier: h.tier,
         status: h.status, rows: h.rowCount, when: qhTimeAgo(h.createdAt), approver: h.approver,
@@ -1421,7 +1429,7 @@ function App() {
   const adminWaiting = admin.queue.length + (admin.manualRuns || []).length;
   const modeEntry = (where) => isAdminUser ? <ModeEntry where={where} setView={setView} pendingCount={adminWaiting} /> : null;
   const sideEl = !t.hideSidebar && (
-    <Sidebar modeEntry={modeEntry('side')} focusSearch={sideFocus} mode={sideMode} setMode={setSideMode} conns={conns} schemaCache={schemaCache} onLoadSchema={loadSchema} rolesCache={rolesCache} onLoadRoles={loadRoles}
+    <Sidebar modeEntry={modeEntry('side')} focusSearch={sideFocus} mode={sideMode} setMode={setSideMode} conns={conns} connsLoading={connsLoading} schemaCache={schemaCache} onLoadSchema={loadSchema} rolesCache={rolesCache} onLoadRoles={loadRoles}
       canRefresh={!!(user && user.role !== 'developer')} onRefreshSchema={refreshSchema}
       onToast={pushToast}
       active={{ conn: tab.conn, db: tab.db }} onPick={pickDb}
