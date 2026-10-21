@@ -198,6 +198,8 @@ def main_run(refresh, monkeypatch):
     calls = []
     monkeypatch.setattr(mod, "refresh_archive_freshness",
                         lambda only_alias=None: calls.append(only_alias) or 0)
+    # The replica clean-up has its own tests (test_catalog_replica_clear.py).
+    monkeypatch.setattr(mod, "clear_replica_rows", lambda apply=True: [])
     fleet = [_target(1, "archive-live", enabled=True)]
     monkeypatch.setattr(mod.targets_mod, "list_enabled", lambda: fleet)
     monkeypatch.setattr(mod, "refresh_target", lambda t, only_database=None: {})

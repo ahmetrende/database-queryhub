@@ -8,6 +8,12 @@ An unreachable target is skipped and reported: one bad target must not sink
 the fleet run. A database that refuses the RO role is left out of the listing
 and logged, and the prune removes its old rows.
 
+A read replica is not read: `list_enabled` leaves it out, because a replica
+serves its primary's reads under the primary's name. A target that became a
+replica after its last snapshot would keep those rows for good. So a whole-fleet
+run also removes the catalog rows of every read replica, and writes one audit
+row per replica.
+
 A target that stops refreshing is REPORTED, not just logged. Browse, search
 and the /sql autocomplete keep serving the last good snapshot with nothing on
 screen saying it is old, so a target can sit stale for days -- an expired
@@ -82,6 +88,25 @@ def prune_vanished(target, live_databases: list[str], apply: bool = True) -> lis
         return gone
     except Exception:  # noqa: BLE001 — never sink the refresh
         log.exception("catalog prune failed for %s", target.alias)
+        return []
+
+
+def clear_replica_rows(apply: bool = True) -> list[dict]:
+    """Remove the catalog rows of read replicas, and return what each held.
+    The refresh reads `list_enabled`, which leaves a replica out on purpose, so
+    nothing else ever touches a replica's rows. With `apply=False` it only
+    reports. Never raises: a failed clean-up must not cost the refresh."""
+    try:
+        if not apply:
+            return schema_catalog.replicas_holding_catalog()
+        cleared = schema_catalog.clear_replica_catalog()
+        for replica in cleared:
+            log.info("%s: removed the catalog rows of this read replica "
+                     "(%d tables, %d functions)", replica["alias"],
+                     replica["tables"], replica["functions"])
+        return cleared
+    except Exception:  # noqa: BLE001 — never sink the refresh
+        log.exception("replica catalog clean-up failed")
         return []
 
 
@@ -237,13 +262,24 @@ def prune_report(fleet) -> int:
     return 0
 
 
+def replica_report() -> None:
+    """Dry run of the replica clean-up: print what each read replica holds."""
+    replicas = clear_replica_rows(apply=False)
+    for replica in replicas:
+        print(f"{replica['alias']}: would remove {replica['tables']} tables and "
+              f"{replica['functions']} functions (read replica)")
+    print(f"{len(replicas)} read replica(s) would lose their catalog rows. "
+          "Nothing was changed.")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", help="only this target alias")
     parser.add_argument("--database", help="only this database")
     parser.add_argument("--prune-report", action="store_true",
                         help="print the catalog databases that the servers no longer "
-                             "list, per enabled target, and change nothing")
+                             "list, per enabled target, and the read replicas that "
+                             "hold rows, and change nothing")
     parser.add_argument("--clickhouse-when-fresh", action="store_true",
                         help="read the ClickHouse targets that are due, if the "
                              "inventory's state for them is fresh")
@@ -277,7 +313,10 @@ def main() -> int:
         fleet = [t for t in fleet if t.engine != "clickhouse"]
 
     if args.prune_report:
-        return prune_report(fleet)
+        status = prune_report(fleet)
+        if not args.target:
+            replica_report()
+        return status
 
     failures = 0
     # The archives' freshness markers, first: nothing that goes wrong in the
@@ -287,6 +326,13 @@ def main() -> int:
     # --database run, which names something a marker is not.
     if not args.clickhouse_when_fresh and not args.database:
         failures += refresh_archive_freshness(only_alias=args.target)
+
+    # Read replicas next. The loop below never visits one, so nothing else would
+    # remove the rows of a target that became a replica after its last snapshot.
+    # Only a whole-fleet run does it: not a named target, not a named database,
+    # and not the every-minute ClickHouse mode. The pass never raises.
+    if not args.clickhouse_when_fresh and not args.database and not args.target:
+        clear_replica_rows()
 
     notices: list[tuple[str, str]] = []   # (alias, message)
     alert_after = cfg.get_int("schema_refresh_alert_after", 3)

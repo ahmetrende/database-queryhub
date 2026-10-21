@@ -700,6 +700,81 @@ def prune_databases(target, databases: list[str]) -> dict:
     return {"tables": tables, "functions": functions}
 
 
+def replicas_holding_catalog() -> list[dict]:
+    """The read replicas that still hold catalog rows, with how many. Read-only.
+
+    The hourly refresh reads the targets that people can pick, and a read
+    replica is not one (`targets.list_enabled`). A target that became a replica
+    after its last snapshot kept those rows for good. Nothing refreshed them and
+    nothing removed them, so search could still show them."""
+    rows = db.fetch_all(
+        "SELECT t.id, t.alias, p.alias AS primary_alias, "
+        "       (SELECT count(*) FROM schema_tables s "
+        "         WHERE s.target_server_id = t.id) AS tables, "
+        "       (SELECT count(*) FROM schema_functions f "
+        "         WHERE f.target_server_id = t.id) AS functions "
+        "  FROM target_servers t "
+        "  LEFT JOIN target_servers p ON p.id = t.replica_of "
+        " WHERE t.replica_of IS NOT NULL ORDER BY t.id")
+    return [r for r in rows if r["tables"] or r["functions"]]
+
+
+def _clear_replica(replica: dict) -> dict | None:
+    """Remove one read replica's catalog rows and write one audit row, in one
+    transaction, so the audit row says exactly what the transaction removed.
+    Returns the counts, or None when there was nothing to remove.
+
+    Both statements name `replica_of IS NOT NULL` themselves. A wrong id can
+    never remove the rows of a target that people can pick. Columns follow their
+    tables through the foreign key's cascade, so the code counts them first."""
+    rid = replica["id"]
+    with db.transaction() as cur:
+        cur.execute(
+            "SELECT count(*) AS n FROM schema_columns c "
+            "  JOIN schema_tables s ON s.id = c.table_id "
+            " WHERE s.target_server_id = %s", (rid,))
+        columns = cur.fetchone()["n"]
+        cur.execute(
+            "SELECT database_name FROM schema_tables WHERE target_server_id = %s "
+            " UNION SELECT database_name FROM schema_functions "
+            "        WHERE target_server_id = %s ORDER BY 1", (rid, rid))
+        databases = [r["database_name"] for r in cur.fetchall()]
+        cur.execute(
+            "DELETE FROM schema_tables s USING target_servers t "
+            " WHERE s.target_server_id = t.id AND t.id = %s "
+            "   AND t.replica_of IS NOT NULL", (rid,))
+        tables = cur.rowcount
+        cur.execute(
+            "DELETE FROM schema_functions f USING target_servers t "
+            " WHERE f.target_server_id = t.id AND t.id = %s "
+            "   AND t.replica_of IS NOT NULL", (rid,))
+        functions = cur.rowcount
+        if not (tables or functions):
+            return None
+        audit.log_in(cur, None, None, None, "schema_catalog_pruned",
+                     {"target": replica["alias"], "targetId": rid,
+                      "replicaOf": replica["primary_alias"],
+                      "databases": databases, "tables": tables,
+                      "columns": columns, "functions": functions,
+                      "why": "read replica: the hourly refresh skips replicas, "
+                             "so these rows could only go stale"})
+    return {"tables": tables, "columns": columns, "functions": functions}
+
+
+def clear_replica_catalog() -> list[dict]:
+    """Remove the catalog rows of every read replica that holds any. Returns
+    one dict per replica that lost rows, with its alias and the counts.
+
+    A replica is never snapshotted, so any row it holds is old by definition."""
+    cleared = []
+    for replica in replicas_holding_catalog():
+        removed = _clear_replica(replica)
+        if removed:
+            cleared.append({"id": replica["id"], "alias": replica["alias"],
+                            "primary_alias": replica["primary_alias"], **removed})
+    return cleared
+
+
 def list_snapshot_databases(target_id: int) -> list[str]:
     """Databases we hold a snapshot for on this target. Hidden databases
     (postgres/rdsadmin) are filtered defensively so a stale row from an

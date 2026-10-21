@@ -75,6 +75,13 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Fixed
 
+- **A read replica leaves the schema catalog.** The hourly refresh skips a read
+  replica, because it serves its primary's reads under the primary's name. A
+  target that became a replica after its last snapshot kept its rows, and
+  nothing removed them. Search could show them. The hourly refresh now removes
+  the catalog rows of every read replica and writes one `schema_catalog_pruned`
+  audit row for each. A run that names a target or a database does not do this.
+  Run `python3 scripts/refresh_schema_catalog.py --prune-report` for a dry run.
 - **A database that refuses the read-only login leaves the schema browser.** The
   hourly refresh listed every database on a server and then failed to open the
   ones that refuse the read-only login. Each one failed once an hour, and its old

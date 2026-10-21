@@ -233,6 +233,9 @@ def refresh(monkeypatch):
     # The hourly run also reads the Athena archives' freshness markers; that
     # pass has its own tests (test_archive_freshness_flow.py).
     monkeypatch.setattr(mod, "refresh_archive_freshness", lambda only_alias=None: 0)
+    # Nor may it touch the replicas' catalog rows here: that pass has its own
+    # tests (test_catalog_replica_clear.py).
+    monkeypatch.setattr(mod, "clear_replica_rows", lambda apply=True: [])
     return mod, ran
 
 
