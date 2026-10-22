@@ -540,6 +540,10 @@ def history(limit: int = 50, claims: dict = Depends(deps.current_user)):
     rows = db.fetch_all(
         "SELECT id, query, target_server_id, database_name, status, "
         "       row_count, created_at, decided_by_slack_id, decided_by_name, "
+        # What the approver label reads to tell a super-admin's own approval.
+        "       requester_slack_id, "
+        # The tier the submit stored: re-reading the query text misreads a script.
+        "       required_tier, "
         # What `ranOn` reads, as the status poll does.
         "       executed_at, executed_target_id, executed_tier, engine "
         # status <> 'draft': a reserved id from an open tab is not history.

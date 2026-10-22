@@ -645,10 +645,12 @@ def submit_batch(body: BatchIn, request: Request,
                 decided_name = auto_approve.decided_by_name_for(grant)
                 approve_action, approve_actor = "auto_approved", None
                 approve_details = auto_approve.audit_details(grant)
-            else:   # super-admin full access (self-authorized)
-                decided_by, decided_name = uid, f"{name} (super-admin)"
-                approve_action, approve_actor = "auto_approved_super", decided_name
-                approve_details = {"reason": "super-admin full access", "tier": p.required_mode}
+            else:   # super-admin full access: QueryHub approves under their authority
+                decided_by = auto_approve.AUTO_DECIDED_BY
+                decided_name = auto_approve.decided_by_name_for_super(name, uid)
+                approve_action, approve_actor = "auto_approved_super", None
+                approve_details = {"reason": "super-admin full access", "authority": uid,
+                                   "tier": p.required_mode}
             cur.execute(
                 "UPDATE requests SET status = %s, decided_by_slack_id = %s, "
                 " decided_by_name = %s, decision_reason = %s, decided_at = NOW() "
@@ -1092,13 +1094,13 @@ def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
         "classification": mapping.classification_of(row["query"]),
         "approver": mapping.approver_label(row.get("decided_by_slack_id"),
                                            row.get("decided_by_name"),
-                                           people.display_name),
+                                           people.display_name, claims["sub"]),
         "approvedAt": mapping.iso(row.get("decided_at")),
         "scheduledFor": mapping.iso(row.get("scheduled_for")),
         "runMs": mapping.run_ms(row),
         "rowCount": row.get("row_count"),
         "audit": mapping.audit_entries(audit_rows, claims["sub"]),
-        "messages": mapping.status_messages(row),
+        "messages": mapping.status_messages(row, audit_rows),
         # Where it ran: {kind, name, forced, lagSeconds}, null until it has.
         "ranOn": mapping.ran_on(row, audit_rows, _alias_of),
     }
@@ -1301,9 +1303,11 @@ def query_result(request_id: int, statement: int = 1,
                           f"Status: {mapping.status_to_web(row['status'])}.")
 
     if not row.get("csv_file_path"):
-        # Write/DDL — no result set; report affected rows.
+        # Write/DDL, or any statement that sent back no result set: report the
+        # count and the tier. The client words it (`qhAffectedInfo`).
         n = row.get("row_count")
-        return {"kind": "affected", "affected": n,
+        tier = row.get("executed_tier") or row.get("required_tier") or "ro"
+        return {"kind": "affected", "affected": n, "tier": str(tier).upper(),
                 "message": f"{n if n is not None else '?'} row(s) affected.",
                 "runMs": mapping.run_ms(row)}
 
@@ -1672,7 +1676,7 @@ async def query_stream(websocket: WebSocket, request_id: int):
                     "type": "status", "id": str(request_id), "status": web_status,
                     "approver": mapping.approver_label(
                         r.get("decided_by_slack_id"), r.get("decided_by_name"),
-                        people.display_name),
+                        people.display_name, uid),
                 })
 
             arows = await asyncio.to_thread(

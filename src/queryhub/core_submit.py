@@ -919,9 +919,11 @@ def create_request(
             # state directly. decided_by uses the AUTO sentinel so the
             # audit + admin queries can spot it.
             new_status = "scheduled" if prep.sched_for is not None else "approved"
-            # decided_by: grant / fingerprint auto-approvals use the AUTO
-            # sentinel; a super-admin auto-approve records the super's OWN id
-            # (they self-authorized with full access) for a precise trail.
+            # decided_by: every auto-approval uses the AUTO sentinel, super-admin
+            # access included: QueryHub approves, and nobody else does. The
+            # super-admin's id stays on the `submitted` row (the actor) and in
+            # the details of the approval row (`authority`), so the trail still
+            # shows whose authority applied.
             if aa_grant is not None:
                 decided_by_id = auto_approve.AUTO_DECIDED_BY
                 decided_name = auto_approve.decided_by_name_for(aa_grant)
@@ -929,8 +931,8 @@ def create_request(
                 decided_by_id = auto_approve.AUTO_DECIDED_BY
                 decided_name = auto_approve.decided_by_name_for_fingerprint(fp_hit["id"])
             else:
-                decided_by_id = prep.user_id
-                decided_name = f"{prep.user_name or prep.user_id} (super-admin)"
+                decided_by_id = auto_approve.AUTO_DECIDED_BY
+                decided_name = auto_approve.decided_by_name_for_super(prep.user_name, prep.user_id)
             cur.execute(
                 f"INSERT INTO requests "
                 f"({id_col}requester_slack_id, requester_name, target_server_id, database_name, "
@@ -1001,15 +1003,16 @@ def create_request(
                 }
                 approve_action = "auto_approved_fingerprint"
             else:
-                # Super-admin full access — self-authorized, every tier.
+                # Super-admin full access, every tier. QueryHub approves under
+                # the person's authority, which the details name.
                 submit_details["super_admin"] = True
                 approve_details = {
                     "reason": "super-admin full access",
+                    "authority": prep.user_id,
                     "tier": prep.required_mode,
                     "scheduled_for": str(prep.sched_for) if prep.sched_for else None,
                 }
                 approve_action = "auto_approved_super"
-                approve_actor_name = decided_name
             audit.log_in(cur, row["id"], prep.user_id, prep.user_name,
                          "submitted", submit_details)
             audit.log_in(cur, row["id"], decided_by_id, approve_actor_name,

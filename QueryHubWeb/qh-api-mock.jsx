@@ -1654,13 +1654,19 @@ function statusOf(rec) {
     return { status: 'rejected', runMs: null, messages: msg, audit };
   }
   if (el < approvedAt) {
-    push('info', 'Submitted — waiting for DBA review' + (rec.bundleId ? ' (batch ' + rec.bundleId + ')' : '') + '.');
+    push('info', 'Submitted ' + rec.tier + ' query as request #' + rec.id + ' for DBA approval' + (rec.bundleId ? ' (batch ' + rec.bundleId + ')' : '') + '.');
     aud('you', 'Submitted ' + rec.tier + ' query');
     return { status: 'pending', runMs: null, messages: msg, audit };
   }
   aud('you', 'Submitted ' + rec.tier + ' query');
-  if (rec.auto) push('ok', 'Auto-approved — read-only with a matching grant.');
-  else { push('ok', 'Approved by dba.amara.'); aud('dba.amara', 'Approved request'); }
+  // MOCK of the server's first line (mapping.status_messages): it names the request.
+  push('info', 'Submitted ' + rec.tier + ' query as request #' + rec.id + (rec.auto ? '.' : ' for DBA approval.'));
+  if (rec.auto) {
+    // MOCK of the server's wording: QueryHub approved it, so the feed never says
+    // a DBA reviewed it and never names the requester.
+    push('ok', 'Auto-approved by QueryHub: ' + (rec.tier === 'RO' ? 'auto-approve grant #12' : 'super-admin access') + '.');
+    aud('auto-approve', 'Auto approved');
+  } else { push('ok', 'Approved by dba.amara.'); aud('dba.amara', 'Approved request'); }
   // Handed to a DBA (CODE 2026-09-23 §5): the database refused the bot, so this
   // is `failed` + `awaitingDba` — no spinner and no Stop, because nothing is
   // running and nothing will until a DBA runs it by hand and closes it.
@@ -1802,7 +1808,7 @@ function resultFor(rec, n) {
     }
   }
   const r = count === 1 ? rec.result : rec.results[idx];
-  if (r.kind !== 'table') return { kind: 'affected', affected: r.affected || 0, message: r.message || '', statement: idx, statementCount: count, statements: stmtLabels(texts) };
+  if (r.kind !== 'table') return { kind: 'affected', affected: r.affected || 0, tier: r.tier, message: r.message || '', statement: idx, statementCount: count, statements: stmtLabels(texts) };
   // MOCK of the server's PII masking. Real API: rows are masked in the executor
   // before they are ever stored, and `unmasked: true` on POST /queries — a
   // super-admin capability — is what skips it. The flag belongs to the REQUEST,

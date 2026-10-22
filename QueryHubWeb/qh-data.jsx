@@ -745,7 +745,7 @@ function qhMockResult(sql, classify) {
   const clean = qhStripComments(sql).toLowerCase();
   if (classify.tier !== 'RO') {
     const n = (clean.includes('where')) ? (3 + Math.floor(Math.random()*40)) : 0;
-    return { kind: 'affected', affected: n,
+    return { kind: 'affected', affected: n, tier: classify.tier,
       message: classify.tier === 'DDL' ? 'Statement executed.' : `${n} row(s) affected.` };
   }
   const cols = qhColsFromSql(clean);
@@ -754,6 +754,24 @@ function qhMockResult(sql, classify) {
   res.slice = (offset, limit) => qhSliceRows(cols, offset, limit, total);
   return res;
 }
+
+// What a result with no grid says (2026-10-21). The statement ran and sent back
+// no result set, so the panel states that at its top left, where a grid would
+// start. A big "0 row(s) affected." in the middle read as a result, and for a
+// read it was the wrong verb: a SELECT affects nothing. The wording lives here,
+// once. The server sends the count and the tier, and the old `message` is only
+// a fallback for other clients.
+function qhAffectedInfo(result) {
+  const n = Number.isFinite(result && result.affected) ? result.affected : null;
+  const tier = String((result && result.tier) || '').toUpperCase();
+  if (n > 0) return { title: n + (n === 1 ? ' row' : ' rows') + ' affected', detail: 'The statement returned no result set.' };
+  if (tier === 'DDL') return { title: 'Statement executed', detail: 'The statement returned no result set.' };
+  if (tier === 'RW') return { title: 'No result', detail: n === 0 ? 'The statement ran. It affected 0 rows.' : 'The statement ran. The server reported no row count.' };
+  return { title: 'No result', detail: 'The statement ran. It returned no rows.' };
+}
+// Which tab shows when a run finishes. A result with no grid has nothing to look
+// at in Results, so Messages opens: it holds what the run said.
+function qhTabAfterResult(res) { return res && res.kind === 'affected' ? 'messages' : 'results'; }
 
 // ---------- Engine-aware helpers (multi-engine; added v4) ----------
 // Whether RO queries auto-approve on this target. Server sends `autoApproveRO`
@@ -1079,7 +1097,7 @@ Object.assign(window, {
   qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhConfirmReasons, qhSplitReasons,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,
-  qhClassify, qhDetectPII, qhMockResult, qhMaskValue, qhStripComments, qhSplitStatements,
+  qhClassify, qhDetectPII, qhMockResult, qhAffectedInfo, qhTabAfterResult, qhMaskValue, qhStripComments, qhSplitStatements,
   qhConnState, QH_CONN_STATE,
   qhColumnsFor, qhIndexesFor, qhViewsFor, qhSplitRelations, qhAgo, qhPersonName, qhIsHandleName, QH_ROLE_PREFIXES,
   qhRiskHints, qhExplainPlan, qhQuoteIdent, qhQuoteList, qhApproxRows, qhFmtRows,

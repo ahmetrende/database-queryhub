@@ -1866,9 +1866,10 @@ function ResultsView({ result, status, onToast, colMeta, unmasked }) {
     </div>;
   }
   if (result.kind === 'affected') {
-    return <div className="qh-affected">
-      <div className="qh-affected-num">{result.affected}</div>
-      <div className="qh-affected-msg">{result.message}</div>
+    const info = qhAffectedInfo(result);
+    return <div className="qh-noresult">
+      <div className="qh-noresult-title">{info.title}</div>
+      <div className="qh-noresult-msg">{info.detail}</div>
     </div>;
   }
 

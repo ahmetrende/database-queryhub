@@ -414,6 +414,36 @@ def fmt_until(expires_at: datetime | None) -> str:
 # tooling treats it as a non-Slack-user marker.
 AUTO_DECIDED_BY = "AUTO"
 
+# A super-admin's own submission is approved by QueryHub, under the person's
+# standing authority (core_submit's third path). Since 2026-10-22 the request
+# row names the system as the approver (the AUTO marker), and the label from
+# `decided_by_name_for_super` says whose authority applied. Before that date
+# the row recorded the person's own id and the label "<name> (super-admin)".
+# Those rows still exist, so the reader (web/mapping.py) recognises both forms.
+SUPER_ADMIN_LABEL = "(super-admin)"
+
+
+def decided_by_name_for_super(user_name: str | None, user_id: str) -> str:
+    """The label that requests.decided_by_name carries when super-admin access
+    approves a request: the system approves, and the person is named."""
+    return f"auto-approved (super-admin access, {user_name or user_id})"
+
+
+def super_decided_name(user_name: str | None, user_id: str) -> str:
+    """The label that rows written before 2026-10-22 carry for such an
+    approval. Kept so that the reader and its tests can build an old row."""
+    return f"{user_name or user_id} {SUPER_ADMIN_LABEL}"
+
+
+def is_super_decision(requester_id: str | None, decided_by_id: str | None,
+                      decided_by_name: str | None) -> bool:
+    """True for an OLD row (before 2026-10-22) that a super-admin's access
+    approved: the row names the requester as approver and carries the label. A
+    person who approves their own request by hand also has decided_by equal to
+    the requester, but that path never writes the label."""
+    return (bool(requester_id) and decided_by_id == requester_id
+            and str(decided_by_name or "").endswith(SUPER_ADMIN_LABEL))
+
 
 def decided_by_name_for(grant: dict) -> str:
     """Human-readable label written to requests.decided_by_name (and

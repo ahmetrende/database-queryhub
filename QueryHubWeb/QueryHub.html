@@ -729,9 +729,12 @@
     color: var(--fg-tertiary); font-size: 13px; }
   .qh-empty svg { color: var(--stroke-strong); margin-bottom: 4px; }
   .qh-empty-hint { font-size: 11px; font-family: var(--qh-mono); opacity: 0.7; }
-  .qh-affected { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
-  .qh-affected-num { font-size: 40px; font-weight: 700; color: var(--brand-green); font-family: var(--qh-mono); }
-  .qh-affected-msg { font-size: 13px; color: var(--fg-secondary); }
+  /* 2026-10-21: a statement with no result set says so at the top left of the
+     panel, where a grid would start. It was a big green number in the middle,
+     which read as a result. */
+  .qh-noresult { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 16px; }
+  .qh-noresult-title { font-size: 14px; font-weight: 600; color: var(--fg-primary); }
+  .qh-noresult-msg { font-size: 13px; color: var(--fg-secondary); }
 
   /* messages / audit */
   .qh-msgs, .qh-audit { padding: 10px 14px; font-family: var(--qh-mono); font-size: 12.5px; }
@@ -1631,6 +1634,94 @@
   .qh-acc-none { font-size: 12.5px; color: var(--fg-tertiary); font-style: italic; padding: 8px 2px; }
   .qh-acc-addtarget { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; height: 32px; padding: 0 12px; background: transparent; border: 1px dashed var(--stroke-strong); border-radius: var(--r-sm); font-family: inherit; font-size: 12.5px; font-weight: 600; color: var(--fg-secondary); cursor: pointer; transition: all var(--d-fast-02) var(--ease-standard); }
   .qh-acc-addtarget:hover { border-style: solid; border-color: var(--brand-green); color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  /* 2026-10-21: the access editor, redesigned (SubjectAccessEditor). It never
+     invents a row: a subject with no grants opens on an empty state, and a new
+     row starts with no connection. A row shows its connection as a mono title
+     and one sentence that says what it allows. Its field labels sit in a
+     column of their own. One action bar sticks to the bottom of the editor.
+     Running text uses --fg-secondary, not --fg-tertiary: the tertiary token
+     measures 4.27:1 on white in the default light theme, under the 4.5:1
+     floor. Every colour here is a token, so no rule needs a dark partner. */
+  .qh-acced { display: flex; flex-direction: column; gap: 12px; }
+  .qh-acced-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 32px; }
+  .qh-acced-h { font-size: 14px; color: var(--fg-secondary); }
+  .qh-acced-h b { font-size: 15px; font-weight: 600; color: var(--fg-primary); }
+  .qh-acced-list { display: flex; flex-direction: column; gap: 8px; }
+  .qh-acced-row { display: flex; flex-direction: column; gap: 12px; padding: 12px 16px; background: var(--bg-light); border: 1px solid var(--stroke-medium); border-radius: var(--r-md); }
+  .qh-acced-row.is-bad { border-color: var(--stroke-danger); }
+  .qh-acced-row.is-pending { gap: 8px; border-color: var(--stroke-accent); }
+  .qh-acced-row.is-locked { border-style: dashed; }
+  .qh-acced-row.is-removed { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 8px 8px 16px; background: transparent; border-style: dashed; }
+  .qh-acced-row.is-removed .qh-acced-title { color: var(--fg-secondary); text-decoration: line-through; }
+  .qh-acced-row.is-removed .qh-acced-undo { margin-left: auto; }
+  .qh-acced-rowhead { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .qh-acced-titlewrap { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; flex: 1; min-width: 0; }
+  .qh-acced-title { font-family: var(--qh-mono); font-size: 13px; font-weight: 600; color: var(--fg-primary); overflow-wrap: anywhere; }
+  .qh-acced-eng { font-size: 12px; color: var(--fg-secondary); }
+  .qh-acced-chip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border-radius: var(--r-full); background: var(--adaptive-strong); font-size: 11px; font-weight: 600; color: var(--fg-secondary); white-space: nowrap; }
+  .qh-acced-x { flex-shrink: 0; margin-left: auto; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--stroke-medium); border-radius: var(--r-full); background: var(--bg-white); color: var(--fg-secondary); cursor: pointer; }
+  .qh-acced-x:hover { border-color: transparent; background: var(--danger-adaptive-light); color: var(--fg-danger); }
+  .qh-acced-change + .qh-acced-x { margin-left: 0; }
+  .qh-acced-say { font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-acced-fields { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 12px 16px; align-items: start; }
+  .qh-acced-k { padding-top: 8px; font-size: 12px; font-weight: 600; color: var(--fg-secondary); }
+  .qh-acced-rowhead .qh-acced-k { padding-top: 0; }
+  .qh-acced-v { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+  .qh-acced-levels { flex-wrap: wrap; }
+  .qh-acced-levelw { font-size: 12.5px; }
+  /* The chosen level keeps the border, fill and weight of the segmented
+     control. Its text is --fg-primary, because --fg-accent measured 3.03:1 on
+     that fill in the default light theme and 4.19:1 in Warm light. */
+  .qh-acced-levels .qh-seg-opt.is-active { color: var(--fg-primary); }
+  .qh-acced-hint { font-size: 12px; line-height: 1.45; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-acced-v .qh-exp-note { flex-basis: auto; color: var(--fg-secondary); }
+  .qh-acced .qh-exppick { flex-wrap: wrap; }
+  .qh-acced .qh-dbpick-all, .qh-acced .qh-dbpick-db { height: 28px; }
+  .qh-acced-flag { display: flex; align-items: flex-start; gap: 6px; font-size: 12.5px; line-height: 1.45; color: var(--fg-primary); }
+  .qh-acced-flag svg, .qh-acced-why svg { flex-shrink: 0; margin-top: 2px; color: var(--fg-danger); }
+  .qh-acced-parts { display: flex; flex-direction: column; gap: 6px; }
+  .qh-acced-part { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .qh-acced-dbs { min-width: 160px; font-family: var(--qh-mono); font-size: 12px; color: var(--fg-primary); }
+  .qh-acced-note { font-size: 12px; line-height: 1.45; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-acced-add { align-self: flex-start; }
+  .qh-acced-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 20px; border: 1px dashed var(--stroke-strong); border-radius: var(--r-md); }
+  .qh-acced-empty-t { font-size: 14px; font-weight: 600; color: var(--fg-primary); }
+  .qh-acced-empty-s { font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); }
+  .qh-acced-empty.is-quiet { padding: 12px 16px; font-size: 12.5px; color: var(--fg-secondary); }
+  /* The connection picker (ConnPick). The list is absolute, so 60 matches do
+     not push the rows down, and it opens upward near the bottom of the screen.
+     Its z-index is above the sticky action bar's. */
+  .qh-connpick { position: relative; width: min(100%, 440px); }
+  .qh-connpick-ic { position: absolute; top: 0; left: 12px; height: 36px; display: inline-flex; align-items: center; color: var(--fg-secondary); pointer-events: none; }
+  .qh-connpick-in { height: 36px; padding-left: 34px; font-size: 13px; background: var(--bg-white); }
+  .qh-connpick-pop { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 60; max-height: 280px; overflow-y: auto; padding: 4px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); box-shadow: var(--shadow-medium); }
+  .qh-connpick-pop.is-up { top: auto; bottom: calc(100% + 4px); }
+  .qh-connpick-opt { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; width: 100%; min-height: 36px; padding: 6px 8px; background: transparent; border: 0; border-radius: var(--r-xs); font-family: inherit; text-align: left; color: var(--fg-primary); cursor: pointer; }
+  .qh-connpick-opt.is-hi { background: var(--brand-adaptive-light); }
+  .qh-connpick-opt.is-taken { cursor: not-allowed; }
+  .qh-connpick-opt.is-taken .qh-connpick-name { font-weight: 500; color: var(--fg-secondary); }
+  .qh-connpick-opt.is-taken .qh-connpick-meta { font-style: italic; }
+  .qh-connpick-opt.is-taken .qh-engine-logo, .qh-connpick-opt:has(.qh-conn-off) .qh-engine-logo { filter: grayscale(1); opacity: 0.45; }
+  .qh-connpick-name { min-width: 0; font-family: var(--qh-mono); font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+  .qh-connpick-meta { margin-left: auto; font-size: 11.5px; color: var(--fg-secondary); }
+  .qh-connpick-none { padding: 10px 8px; font-size: 12.5px; color: var(--fg-secondary); }
+  /* One action bar. `sticky` keeps it in view while the list is longer than
+     the screen. The background hides the rows that scroll under it. Chrome
+     stops a sticky box at the padding edge of the scroll area, and .qh-apad
+     has 24px of bottom padding. With bottom 0, a 24px strip of rows showed
+     under the bar (measured 2026-10-21). -24px puts the bar on the edge. */
+  .qh-acced-bar { position: sticky; bottom: -24px; z-index: 2; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin-top: 4px; padding: 12px 0; background: var(--bg-white); border-top: 1px solid var(--stroke-medium); }
+  .qh-acced-bar-say { display: flex; flex-direction: column; gap: 4px; flex: 1 1 240px; min-width: 0; font-size: 12.5px; line-height: 1.45; color: var(--fg-secondary); }
+  .qh-acced-sum { font-weight: 600; color: var(--fg-primary); }
+  .qh-acced-why { display: inline-flex; align-items: flex-start; gap: 6px; color: var(--fg-primary); }
+  .qh-acced-bar-acts { display: flex; gap: 8px; margin-left: auto; }
+  .qh-acced-x:focus-visible, .qh-acced .qh-btn:focus-visible, .qh-acced .qh-seg-opt:focus-visible,
+  .qh-acced .qh-dbpick-all:focus-visible, .qh-acced .qh-dbpick-db:focus-visible, .qh-acced .qh-select:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  @media (max-width: 760px) {
+    .qh-acced-fields { grid-template-columns: minmax(0, 1fr); row-gap: 4px; }
+    .qh-acced-k:not(:first-child) { margin-top: 8px; }
+    .qh-acced-row { padding: 12px; }
+  }
 
   /* per-team access */
   .qh-teamcard-access { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--stroke-light); }

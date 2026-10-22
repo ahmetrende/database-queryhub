@@ -34,7 +34,7 @@ except ModuleNotFoundError:  # vanilla profile: the [slack] extra isn't installe
 if TYPE_CHECKING:  # only a type hint — no runtime dependency on slack_sdk
     from slack_sdk.web import WebClient
 
-from . import access, admins, audit, cancellation, cell_format, core_submit, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, query_secrets, ratings, replicas, requesters, row_limits, stmt_guard, targets, teams
+from . import access, admins, audit, auto_approve, cancellation, cell_format, core_submit, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, query_secrets, ratings, replicas, requesters, row_limits, stmt_guard, targets, teams
 from . import config as cfg
 from .slack_app import notifications
 
@@ -94,6 +94,21 @@ def _fmt_duration(seconds: float) -> str:
     h, rem = divmod(int(round(seconds)), 3600)
     m, _ = divmod(rem, 60)
     return f"{h}h {m}m" if m else f"{h}h"
+
+
+def _approved_by(request: dict) -> str:
+    """The start of an "Approved by ..." status line.
+
+    A person is mentioned. QueryHub's own approval (a waiver, the fingerprint
+    cache or a super-admin's access) has no Slack user to mention, and a
+    mention of the AUTO marker shows as a broken user. It is named in words
+    instead. The older ':' marker keeps the label that its row carries."""
+    by = request.get("decided_by_slack_id")
+    if by == auto_approve.AUTO_DECIDED_BY:
+        return "Auto-approved by QueryHub"
+    if by and ":" not in by:
+        return f"Approved by <@{by}>"
+    return f"Approved by {request.get('decided_by_name') or 'an admin'}"
 
 
 def _fmt_approve_ts(request: dict) -> str:
@@ -2148,7 +2163,7 @@ def _complete_no_result(
 
     notifications.update_all_admin_messages(
         client, request,
-        f":white_check_mark: Approved by <@{request['decided_by_slack_id']}>{_fmt_approve_ts(request)} — "
+        f":white_check_mark: {_approved_by(request)}{_fmt_approve_ts(request)} — "
         f"executed ({rc_str} {rs} {verb}{trunc_admin}{dur}).",
     )
     if _deliver_result_to_requester(request):
@@ -2264,7 +2279,7 @@ def _complete_with_csv(
 
     notifications.update_all_admin_messages(
         client, request,
-        f":white_check_mark: Approved by <@{request['decided_by_slack_id']}>{_fmt_approve_ts(request)} — "
+        f":white_check_mark: {_approved_by(request)}{_fmt_approve_ts(request)} — "
         f"executed ({rc_str} {rs}"
         f"{', truncated to max_rows' if truncated else ''}"
         f"{dur}).",
@@ -2383,7 +2398,7 @@ def _complete_with_plan(
         )
     notifications.update_all_admin_messages(
         client, request,
-        f":white_check_mark: Approved by <@{request['decided_by_slack_id']}>{_fmt_approve_ts(request)} — "
+        f":white_check_mark: {_approved_by(request)}{_fmt_approve_ts(request)} — "
         f"executed (query plan{dur}).",
     )
     if deliver:
@@ -2515,7 +2530,7 @@ def _complete_multi(
 
     notifications.update_all_admin_messages(
         client, request,
-        f":white_check_mark: Approved by <@{request['decided_by_slack_id']}>{_fmt_approve_ts(request)} — "
+        f":white_check_mark: {_approved_by(request)}{_fmt_approve_ts(request)} — "
         f"executed {len(stmt_results)} statements ({_fmt_count(total_rows)} "
         f"rows total{dur}).",
     )
@@ -2536,13 +2551,8 @@ def _escalate_to_dba(client: WebClient, request: dict, pg_error: str) -> None:
         audit.log_in(cur, request["id"], None, None, "escalated_to_dba",
                      {"pg_error": pg_error})
 
-    # An auto-approval has no approving admin to mention -- a waiver's row
-    # carries its own label in decided_by_name instead.
-    decided_by = request.get("decided_by_slack_id")
-    who = (f"<@{decided_by}>" if decided_by and ":" not in decided_by
-           else request.get("decided_by_name") or "an admin")
     status_line = (
-        f":construction: Approved by {who}{_fmt_approve_ts(request)} — *DDL needs DBA "
+        f":construction: {_approved_by(request)}{_fmt_approve_ts(request)} — *DDL needs DBA "
         f"manual execution*. Run the query outside QueryHub with elevated "
         f"credentials. Then close the request with the buttons below.\n"
         f"_Reason: {pg_error}_"
@@ -2629,7 +2639,7 @@ def _fail(client: WebClient, request: dict, message: str) -> None:
 
     notifications.update_all_admin_messages(
         client, request,
-        f":warning: Approved by <@{request['decided_by_slack_id']}>{_fmt_approve_ts(request)} — "
+        f":warning: {_approved_by(request)}{_fmt_approve_ts(request)} — "
         # `message` is already Slack mrkdwn (it carries its own code spans /
         # italics, e.g. the `_Postgres said:_` footer). Don't wrap it in a code
         # span — that both nests backticks (garbled render) and the old 200-char
@@ -2681,7 +2691,7 @@ def _complete_with_delivery_warning(
         else:
             notifications.update_all_admin_messages(
                 client, request,
-                f":warning: Approved by <@{request['decided_by_slack_id']}>"
+                f":warning: {_approved_by(request)}"
                 f"{_fmt_approve_ts(request)} — change applied, but result "
                 f"delivery failed: {message[:2900]}")
         if _deliver_result_to_requester(request):

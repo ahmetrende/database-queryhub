@@ -999,7 +999,8 @@ function App() {
         try {
           const res = await qhApi.result(qid);
           setTabs(ts => ts.map(x => x.id === id ? { ...x, result: res } : x));
-          setResTab('results');
+          // No grid to look at: open Messages, which holds what the run said.
+          setResTab(qhTabAfterResult(res));
         } catch (e) { setResTab('messages'); }
       } else { setResTab('messages'); }
       return true;

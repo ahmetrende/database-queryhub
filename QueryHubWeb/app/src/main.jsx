@@ -26,10 +26,10 @@ import './qh-admin-person.jsx';
 // this import (and the symlink beside it) the build succeeds and the Effective
 // access screen is undefined the moment the admin panel renders it.
 import './qh-admin-effective.jsx';
-// New in the 2026-09-07 round. After qh-admin-access.jsx, which is where
-// PersonPick, ExpiryPick, expIso, expBad, connLabel and AccGroupBy come
-// from — RolesView reads all six off window and a build that loaded this
-// first would find them undefined.
+// New in the 2026-09-07 round. It loads after qh-admin-access.jsx, the source
+// of PersonPick, ExpiryPick, expIso, expBad, connLabel, AccGroupBy and (since
+// 2026-10-21) qhTierWord. RolesView reads all seven off window. A build that
+// loaded this file first would find them undefined.
 import './qh-admin-roles.jsx';
 // New in the 2026-09-09 round. Same load position as the <script> tag in
 // QueryHub.html: after qh-admin-roles.jsx, before qh-admin-insights.jsx.

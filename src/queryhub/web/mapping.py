@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from .. import config as cfg, origins
 from .. import query_safety
 from ..access_requests import requested_tier_of
-from ..auto_approve import AUTO_DECIDED_BY
+from ..auto_approve import AUTO_DECIDED_BY, is_super_decision
 
 log = logging.getLogger(__name__)
 
@@ -113,11 +113,16 @@ def engine_label(engine: str | None) -> str:
 
 def approver_label(decided_by_slack_id: str | None,
                    decided_by_name: str | None,
-                   name_of: "callable" = None) -> str | None:
+                   name_of: "callable" = None,
+                   requester_slack_id: str | None = None) -> str | None:
     """Who decided it, as a name. The auto-approver is not a person and keeps
-    its own label; everybody else goes through `name_of` when the caller has
-    one, because `decided_by_name` is a snapshot like every other."""
-    if decided_by_slack_id == AUTO_DECIDED_BY:
+    its own label. A super-admin's own submission approves itself. It records
+    the person's id for the audit trail, but nobody approved it. A caller that
+    passes the requester gets the same label for it. Everybody else goes
+    through `name_of` when the caller has one, because `decided_by_name` is a
+    snapshot like every other."""
+    if decided_by_slack_id == AUTO_DECIDED_BY or is_super_decision(
+            requester_slack_id, decided_by_slack_id, decided_by_name):
         return "auto-approve"
     if name_of:
         return name_of(decided_by_name) if decided_by_name \
@@ -164,13 +169,14 @@ def history_entry(row: dict, alias_of: "callable",
         **({"connectionState": state_of(row["target_server_id"])}
            if state_of else {}),
         "databaseId": row["database_name"],
-        "tier": query_safety.required_mode(row["query"]).upper(),
+        "tier": request_tier(row),
         "status": status_to_web(row["status"]),
         "awaitingDba": awaiting_dba(row["status"]),
         "rowCount": row.get("row_count"),
         "createdAt": iso(row.get("created_at")),
         "approver": approver_label(row.get("decided_by_slack_id"),
-                                   row.get("decided_by_name"), name_of),
+                                   row.get("decided_by_name"), name_of,
+                                   row.get("requester_slack_id")),
     }
 
 
@@ -780,10 +786,13 @@ def audit_entries(rows: list[dict], caller_id: str) -> list[dict]:
     out = []
     for r in rows:
         actor = r.get("actor_slack_id")
-        if actor == caller_id:
-            label = "you"
-        elif actor == "AUTO":
+        # Whoever the row records, the system decided. A super-admin's own id
+        # stays on the row for the trail, but "you" would read as a person
+        # approving the request.
+        if actor == "AUTO" or r.get("action") in AUTO_APPROVAL_ACTIONS:
             label = "auto-approve"
+        elif actor == caller_id:
+            label = "you"
         elif actor is None or actor == "SYSTEM":
             label = "system"
         else:
@@ -914,23 +923,90 @@ def ran_on(row: dict, audit_rows: list[dict], alias_of) -> dict | None:
     return {"kind": "primary", "name": name, "forced": False, "lagSeconds": None}
 
 
-def status_messages(row: dict) -> list[dict]:
+# The three approvals that QueryHub gives by itself, at submit time: a waiver
+# (or the archive rule), the fingerprint cache, and a super-admin's own access.
+# The submit writes one of these audit actions for each.
+AUTO_APPROVAL_ACTIONS = ("auto_approved", "auto_approved_fingerprint",
+                         "auto_approved_super")
+
+
+def _auto_basis(action: str, details: dict) -> str | None:
+    """Why QueryHub approved it, in one phrase, from the audit row's details."""
+    if action == "auto_approved_super":
+        return "super-admin access"
+    if action == "auto_approved_fingerprint":
+        n = details.get("fingerprint_match_request_id")
+        return (f"same query as request #{n}" if n is not None
+                else "same query as an earlier request")
+    basis = details.get("basis")
+    if basis:
+        # The archive rule's reason, for example "archive: admin".
+        text = str(basis)
+        return (f"archive rule ({text[len('archive: '):]})"
+                if text.startswith("archive: ") else text)
+    if details.get("grant_id") is not None:
+        return f"auto-approve grant #{details['grant_id']}"
+    return None
+
+
+def auto_approval(row: dict, audit_rows: list[dict] | None = None) -> dict | None:
+    """Whether QueryHub approved this request by itself, and why:
+    {"basis": phrase or None}. None means that a person decided, or nobody has.
+
+    The audit row that the submit wrote is the exact answer. A caller without
+    audit rows still gets two of the three paths from the request row. One is
+    the AUTO marker. The other is a super-admin's own id with the label that
+    only the submit path writes."""
+    for action in AUTO_APPROVAL_ACTIONS:
+        details = _details_of(audit_rows or [], action)
+        if details is not None:
+            return {"basis": _auto_basis(action, details)}
+    if row.get("decided_by_slack_id") == AUTO_DECIDED_BY:
+        return {"basis": None}
+    if is_super_decision(row.get("requester_slack_id"),
+                         row.get("decided_by_slack_id"),
+                         row.get("decided_by_name")):
+        return {"basis": "super-admin access"}
+    return None
+
+
+def request_tier(row: dict) -> str:
+    """The tier of a request as RO, RW or DDL: the one the submit stored.
+
+    The submit classified the whole script, statement by statement. Reading the
+    stored query text again gets a script wrong: one that starts with a `DO`
+    block reads as RO, so a DDL script was announced as "Submitted RO query".
+    A row from before the column existed falls back to the text."""
+    stored = row.get("required_tier")
+    if stored:
+        return str(stored).upper()
+    try:
+        return query_safety.required_mode(row["query"]).upper()
+    except Exception:
+        return "?"
+
+
+def status_messages(row: dict, audit_rows: list[dict] | None = None) -> list[dict]:
     """Derived, human-readable message feed {time, kind, text} the UI
-    shows under the editor. kind ∈ info | ok | err (exact strings)."""
+    shows under the editor. kind ∈ info | ok | err (exact strings).
+
+    The first line names the request, so that the number in the tab bar and the
+    number in a conversation about it are the same one.
+
+    A request that QueryHub approved by itself was never sent to a DBA, and no
+    person approved it. The feed says so, and names QueryHub as the approver."""
     def t(dt):
         # Full yyyy-MM-dd HH:mm:ss.fff (display tz) — the Messages tab renders
         # this verbatim, matching the audit feed and the design's client stamp.
         return fmt_ts_ms(dt)
 
     msgs: list[dict] = []
-    tier = None
-    try:
-        from .. import query_safety
-        tier = query_safety.required_mode(row["query"]).upper()
-    except Exception:
-        tier = "?"
+    tier = request_tier(row)
+    auto = auto_approval(row, audit_rows)
+    rid = row.get("id")
+    what = f"Submitted {tier} query" + (f" as request #{rid}" if rid is not None else "")
     msgs.append({"time": t(row.get("created_at")), "kind": "info",
-                 "text": f"Submitted {tier} query for DBA approval."})
+                 "text": what + ("." if auto else " for DBA approval.")})
     status = row.get("status")
     sf = row.get("scheduled_for")
     if sf and not row.get("executed_at"):
@@ -948,6 +1024,10 @@ def status_messages(row: dict) -> list[dict]:
         elif status == "cancelled":
             msgs.append({"time": t(row.get("decided_at")), "kind": "err",
                          "text": "Cancelled."})
+        elif auto:
+            why = f": {auto['basis']}" if auto["basis"] else ""
+            msgs.append({"time": t(row.get("decided_at")), "kind": "ok",
+                         "text": f"Auto-approved by QueryHub{why}."})
         else:
             msgs.append({"time": t(row.get("decided_at")), "kind": "ok",
                          "text": f"Approved by {approver}."})

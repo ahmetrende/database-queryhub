@@ -33,12 +33,9 @@ const QH_ROLE_DEFS = {
   admin: { label: 'Admin', what: 'Everything above, everywhere, plus reach every database.' },
 };
 const QH_ROLE_ORDER = ['approver', 'granter', 'importer', 'admin'];
-// Tier is stored as the wire value and read as a word: RO/RW/DDL is the query
-// vocabulary, but a ceiling is a sentence about permission, not a badge. Read
-// case-insensitively — the field was lowercase on the wire until 2026-09-07, and
-// a blank lookup rendered a ceiling that WAS in force as no ceiling at all.
-const QH_TIER_WORD = { RO: 'Read', RW: 'Write', DDL: 'Schema' };
-const rolTierWord = (t) => (t ? (QH_TIER_WORD[String(t).toUpperCase()] || t) : null);
+// A tier is read as a word (Read, Write, Schema) through `qhTierWord`. It lives
+// in qh-admin-access.jsx since 2026-10-21, because the access editor names its
+// levels with the same words.
 // A ceiling is only read on admin and approver rows; on a granter or an importer
 // the API refuses it outright, so the control is not offered there.
 const rolTierApplies = (role) => role === 'approver' || role === 'admin';
@@ -63,7 +60,7 @@ function RoleSentence({ r }) {
   const allTeams = r.allTeams != null ? r.allTeams : !r.scopeTeamId;
   const allTargets = r.allTargets != null ? r.allTargets : !r.scopeTargetId;
   const anyTier = r.anyTier != null ? r.anyTier : !r.maxTier;
-  const tier = anyTier ? <b>at any tier</b> : <b>up to {rolTierWord(r.maxTier)}</b>;
+  const tier = anyTier ? <b>at any tier</b> : <b>up to {qhTierWord(r.maxTier)}</b>;
   const on = allTargets ? null : (r.scopeTargetName || r.scopeTargetId);
   const team = allTeams ? null : (r.scopeTeamName || r.scopeTeamId);
   let body;
@@ -149,7 +146,7 @@ const ROL_RANK = { RO: 0, RW: 1, DDL: 2 };
 function rolChanges(a, b, teams, conns) {
   const tName = (id) => id ? ((teams.find(t => t.id === id) || {}).name || id) : 'everyone';
   const cName = (id) => id ? ((conns.find(c => c.id === id) || {}).name || id) : 'all connections';
-  const tier = (x) => x ? rolTierWord(x) + ' (' + x + ')' : 'no ceiling';
+  const tier = (x) => x ? qhTierWord(x) + ' (' + x + ')' : 'no ceiling';
   const end = (x) => x ? rolDate(x) : 'no end date';
   const out = [];
   if (a.role !== b.role) out.push(['Role', (QH_ROLE_DEFS[a.role] || {}).label, (QH_ROLE_DEFS[b.role] || {}).label, b.role === 'admin']);

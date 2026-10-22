@@ -370,7 +370,8 @@ def _patch_create(monkeypatch, st):
     monkeypatch.setattr(cs.ast_safety, "fingerprint", lambda *a, **k: "fp-1")
     monkeypatch.setattr(cs.audit, "log_in",
                         lambda cur, rid, actor, name, action, details=None:
-                        st["audit"].append((action, details)))
+                        (st["audit"].append((action, details)),
+                         st.setdefault("actors", []).append((action, actor, name))))
 
 
 def _prepared(target, user, sched_for=None):
@@ -384,12 +385,13 @@ def _prepared(target, user, sched_for=None):
 @pytest.fixture
 def create(monkeypatch, world):
     st = world
-    st.update({"prior": None, "cache_asked": 0, "sql": [], "audit": []})
+    st.update({"prior": None, "cache_asked": 0, "sql": [], "audit": [], "actors": []})
     _patch_create(monkeypatch, st)
 
     def go(target, user, sched_for=None):
         st["sql"].clear()
         st["audit"].clear()
+        st["actors"].clear()
         out = cs.create_request(_prepared(target, user, sched_for))
         assert isinstance(out, cs.Outcome), out
         insert = next((s, p) for s, p in st["sql"] if s.startswith("INSERT INTO requests"))
@@ -545,6 +547,21 @@ def test_a_super_admins_own_query_is_still_the_super_admin_rule(create, target):
     assert out.aa_grant is None and out.fp_hit is None and create["cache_asked"] == 0
     assert _actions(create) == ["submitted", "auto_approved_super"]
     assert dict(create["audit"])["auto_approved_super"]["reason"] == "super-admin full access"
+
+
+def test_a_super_admins_access_is_approved_by_the_system(create):
+    """QueryHub approves. The row names the system as the approver, the label
+    names the person whose authority applied, and the approval row says the
+    same in its details. The `submitted` row keeps the person as the actor."""
+    _out, (_sql, params) = create["go"](LEDGER, SUPER)
+    label = "auto-approved (super-admin access, Ex)"
+    assert params.count(label) == 2, "decided_by_name and decision_reason"
+    assert auto_approve.AUTO_DECIDED_BY in params
+    assert params.count(SUPER) == 1, "the person is the requester and nothing else"
+    actors = {action: (actor, name) for action, actor, name in create["actors"]}
+    assert actors["submitted"][0] == SUPER
+    assert actors["auto_approved_super"] == (auto_approve.AUTO_DECIDED_BY, None)
+    assert dict(create["audit"])["auto_approved_super"]["authority"] == SUPER
 
 
 # ---------------------------------------------------------------------------

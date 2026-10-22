@@ -2,6 +2,15 @@
 const { useState: useAcc } = React;
 
 const QH_TIERS = ['RO', 'RW', 'DDL'];
+// A tier travels as the wire value and shows as a word. RO, RW and DDL are the
+// query vocabulary, but a ceiling is a sentence about permission. The lookup
+// ignores case. The field was lowercase on the wire until 2026-09-07, and a
+// lookup that missed showed a ceiling in force as no ceiling at all.
+// Moved here from qh-admin-roles.jsx on 2026-10-21: the access editor names its
+// levels with the same words. This file loads first, so the Roles screen reads
+// both names off window.
+const QH_TIER_WORD = { RO: 'Read', RW: 'Write', DDL: 'Schema' };
+function qhTierWord(t) { return t ? (QH_TIER_WORD[String(t).toUpperCase()] || t) : null; }
 
 // Small reusable icons for this file (distinct from qh-admin.jsx AdminIcons).
 const AIcon = {
@@ -10,6 +19,8 @@ const AIcon = {
   x: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>,
   check: () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>,
   edit: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" /></svg>,
+  lock: () => <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V8a4 4 0 018 0v3" /></svg>,
+  alert: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7.5v5.5M12 16.5v.01" /></svg>,
 };
 
 function TierSelect({ value, onChange }) {
@@ -65,13 +76,12 @@ function ExpiryPick({ f, onChange }) {
   );
 }
 function ExpiryChip({ iso }) { if (!iso) return null; const ex = expiryLabel(iso); return <span className={'qh-expiry ' + ex.cls}>{ex.text}</span>; }
-function blankTarget(conns) {
-  const c = (conns || [])[0];
-  return { connectionId: c ? c.id : '', databases: ['*'], tier: 'RO', ttl: 'none', expDate: '' };
-}
 // Database multi-pick for a per-connection grant: "All databases" (['*']) or a
 // specific set. Picking a specific db drops '*'; clearing all falls back to '*'.
-function DbMultiPick({ conns, connectionId, databases, onChange }) {
+// `bare` drops the inline "Databases" label, for a form that puts its labels in
+// a column of their own (the access editor, 2026-10-21). `aria-pressed` says
+// which chips are on without the colour.
+function DbMultiPick({ conns, connectionId, databases, onChange, bare }) {
   const conn = (conns || []).find(c => c.id === connectionId) || { databases: [] };
   const all = !databases || databases.length === 0 || databases.includes('*');
   const toggleDb = (id) => {
@@ -81,11 +91,11 @@ function DbMultiPick({ conns, connectionId, databases, onChange }) {
   };
   return (
     <div className="qh-dbpick">
-      <span className="qh-dbpick-lbl">Databases</span>
-      <button type="button" className={'qh-dbpick-all' + (all ? ' is-on' : '')} onClick={() => onChange(['*'])}>All databases</button>
+      {!bare && <span className="qh-dbpick-lbl">Databases</span>}
+      <button type="button" aria-pressed={all} className={'qh-dbpick-all' + (all ? ' is-on' : '')} onClick={() => onChange(['*'])}>All databases</button>
       {conn.databases.map(d => {
         const on = !all && databases.includes(d.id);
-        return <button key={d.id} type="button" className={'qh-dbpick-db' + (on ? ' is-on' : '')} onClick={() => toggleDb(d.id)}>{d.name}</button>;
+        return <button key={d.id} type="button" aria-pressed={on} className={'qh-dbpick-db' + (on ? ' is-on' : '')} onClick={() => toggleDb(d.id)}>{d.name}</button>;
       })}
     </div>
   );
@@ -93,7 +103,9 @@ function DbMultiPick({ conns, connectionId, databases, onChange }) {
 // Connection pickers list disabled targets too — a grant can legitimately be
 // written before a target is enabled — so the label has to say which is which,
 // or a grant that silently does nothing looks like a grant that works.
-function connLabel(c) { return c.deleted ? c.name + ' (deleted)' : c.enabled === false ? c.name + ' (disabled)' : c.name; }
+// `accConnState` is that rule as a word, for a picker that shows it as a chip.
+function accConnState(c) { return c.deleted ? 'deleted' : c.enabled === false ? 'disabled' : null; }
+function connLabel(c) { const s = accConnState(c); return s ? c.name + ' (' + s + ')' : c.name; }
 // A PERSON is printed as a name (`qhPersonName`, qh-data.jsx 2026-09-17): the
 // directory's `name` is a handle wherever the profile carried none, and the
 // fallback here is the handle itself. A TEAM goes through untouched — a team id
@@ -220,115 +232,417 @@ function PersonPick({ people, value, onChange, resolve, autoFocus }) {
   );
 }
 
-// ---------- Subject-centric access editor: one subject → many targets ----------
+// ---------- Subject-centric access editor: one subject → many connections ----------
+// Redesigned 2026-10-21. The editor shows what the subject HAS, and nothing it
+// does not. It used to open a subject with no grants on a pre-filled row: the
+// first connection of the list, RO, all databases. That row read as access the
+// team had, and Save wrote it. Now an empty subject opens empty, and a new row
+// starts with no connection at all.
+
+// What each access level allows, in the statement classes `qhClassify` sorts a
+// submission into. Nothing about approval: other screens set auto-approve and
+// the approvers, and a line here cannot know them.
+const ACC_LEVEL_SAYS = {
+  RO: 'Allows reads, for example SELECT.',
+  RW: 'Allows reads and data changes, for example INSERT and UPDATE.',
+  DDL: 'Allows reads, data changes and schema changes, for example CREATE and DROP.',
+};
+// The same three levels as the start of the sentence about one row.
+const ACC_LEVEL_CAN = {
+  RO: 'Can read',
+  RW: 'Can read and change data in',
+  DDL: 'Can read, change data and change the schema in',
+};
+// "a", "a and b", "a, b and c", "a, b, c and 2 more".
+function accList(names) {
+  const n = names.length;
+  if (n > 3) return names.slice(0, 3).join(', ') + ' and ' + (n - 3) + ' more';
+  return n < 2 ? (names[0] || '') : names.slice(0, -1).join(', ') + ' and ' + names[n - 1];
+}
+// A picked day as words: "23 October", with the year when it is not this one.
+function accDayWord(ymd) {
+  const d = new Date(ymd + 'T12:00:00');
+  if (!ymd || isNaN(d.getTime())) return ymd || '';
+  const o = { day: 'numeric', month: 'long' };
+  if (d.getFullYear() !== new Date().getFullYear()) o.year = 'numeric';
+  return d.toLocaleDateString('en-GB', o);
+}
+// One row as a sentence: what, where, and until when. "All databases" also
+// reaches a database that is created later, so the sentence says so while it
+// is on. A picked day runs THROUGH that day (see `expIso`).
+function accRowSay(r, conn) {
+  const all = !r.databases || !r.databases.length || r.databases.includes('*');
+  const dbName = (id) => (((conn && conn.databases) || []).find(d => d.id === id) || { name: id }).name;
+  const ends = !r.ttl || r.ttl === 'none' ? 'Access has no end date.'
+    : r.ttl === 'date' ? (r.expDate ? 'Access stays until the end of ' + accDayWord(r.expDate) + '.' : 'Pick the last day of access.')
+    : 'Access ends in ' + r.ttl + ' days.';
+  return (ACC_LEVEL_CAN[r.tier] || 'Can use') + ' ' + (all ? 'all databases' : accList(r.databases.map(dbName)))
+    + ' on ' + ((conn && conn.name) || r.connectionId) + '.' + (all ? ' Includes databases created later.' : '') + ' ' + ends;
+}
+// The editable rows per connection, merged the way `setSubjectGrants` merges
+// them: the highest level, the union of databases, the latest end. `sigs` is
+// what the rows say, compared as written, so an untouched date never reads as
+// a change.
+function accEnd(r) {
+  if (!r.ttl || r.ttl === 'none') return Infinity;
+  if (r.ttl === 'date') return r.expDate ? new Date(r.expDate + 'T23:59:59').getTime() : 0;
+  return Date.now() + 1000 * 86400 * parseInt(r.ttl, 10);
+}
+function accMerge(rows) {
+  const m = {};
+  (rows || []).filter(r => !r.locked && !r.removed && r.connectionId).forEach(r => {
+    const dbs = (r.databases && r.databases.length) ? r.databases : ['*'];
+    const x = m[r.connectionId] || (m[r.connectionId] = { tier: r.tier, all: false, dbs: new Set(), end: -Infinity, sigs: [] });
+    x.tier = qhMaxTier(x.tier, r.tier);
+    if (dbs.includes('*')) x.all = true;
+    dbs.forEach(d => x.dbs.add(d));
+    x.end = Math.max(x.end, accEnd(r));
+    x.sigs.push([r.tier, dbs.slice().sort().join(','), r.ttl || 'none', r.ttl === 'date' ? r.expDate : ''].join('|'));
+  });
+  return m;
+}
+// What Save would change, against the rows the editor opened with. A change
+// WIDENS when it adds a connection, raises a level or adds a database. Picking
+// all databases widens, and so does a later end date or none. Anything else
+// narrows.
+function accDiff(initial, rows) {
+  const a = accMerge(initial), b = accMerge(rows);
+  const added = Object.keys(b).filter(k => !a[k]);
+  const removed = Object.keys(a).filter(k => !b[k]);
+  const changed = Object.keys(b).filter(k => a[k] && a[k].sigs.slice().sort().join(';') !== b[k].sigs.slice().sort().join(';'));
+  const wider = (x, y) => qhMaxTier(x.tier, y.tier) !== x.tier
+    || (!x.all && (y.all || [...y.dbs].some(d => !x.dbs.has(d))))
+    || y.end > x.end;
+  return { added, changed, removed, any: !!(added.length || changed.length || removed.length),
+           widens: added.length > 0 || changed.some(k => wider(a[k], b[k])) };
+}
+// The change as one line next to Save. Additions and changes are counted.
+// Removals are NAMED, because each one takes access away from somebody.
+function accSummary(d, nameOf) {
+  const parts = [], s = (n) => (n === 1 ? '' : 's');
+  if (d.added.length) parts.push('adds ' + d.added.length + ' connection' + s(d.added.length));
+  if (d.changed.length) parts.push('changes ' + d.changed.length + (parts.length ? '' : ' connection' + s(d.changed.length)));
+  if (d.removed.length) parts.push('removes access to ' + accList(d.removed.map(nameOf)));
+  const line = parts.join(' · ');
+  return line ? line.charAt(0).toUpperCase() + line.slice(1) + '.' : '';
+}
+
+// The access level as three choices, each a badge AND a word, with what the
+// chosen one allows written under it. `aria-pressed` carries the choice for a
+// screen reader, the border and the weight carry it for the eye.
+function AccessLevelPick({ value, onChange, labelledBy }) {
+  return (
+    <>
+      <div className="qh-seg qh-seg-sm qh-acced-levels" role="group" aria-labelledby={labelledBy}>
+        {QH_TIERS.map(t => (
+          <button key={t} type="button" aria-pressed={value === t} className={'qh-seg-opt' + (value === t ? ' is-active' : '')} onClick={() => onChange(t)}>
+            <TierBadge tier={t} sm /><span className="qh-acced-levelw">{qhTierWord(t)}</span>
+          </button>
+        ))}
+      </div>
+      <div className="qh-acced-hint">{ACC_LEVEL_SAYS[value]}</div>
+    </>
+  );
+}
+
+// A connection picker that searches, built like `PersonPick`. Type to filter.
+// ArrowUp and ArrowDown move the highlight. Enter picks the highlighted match,
+// which is the first one until an arrow moves it. Escape closes the list, and
+// the mouse works too. The old control was a native select, and nobody scrolls
+// a list of 60 connections. A connection that another row holds stays in the
+// list, refused, with the reason. A picker that hid it would say the connection
+// does not exist.
+function ConnPick({ conns, taken, onPick, inputId, autoFocus }) {
+  const [q, setQ] = useAcc('');
+  const [open, setOpen] = useAcc(!!autoFocus);
+  const [hi, setHi] = useAcc(0);
+  const [up, setUp] = useAcc(false);
+  const wrapRef = qhUseDismiss(open, () => setOpen(false));
+  const inRef = React.useRef(null);
+  const term = q.trim().toLowerCase();
+  const list = (conns || []).filter(c => !term || (c.name + ' ' + (c.engine || '')).toLowerCase().includes(term));
+  const free = list.filter(c => !taken[c.id]);
+  const cur = free.length ? free[Math.min(hi, free.length - 1)] : null;
+  const optId = (c) => inputId + '-opt-' + c.id;
+  // The list opens upward when the space below the box cannot hold it and the
+  // space above is larger. A new row is often the last thing on the screen.
+  // Each focus measures the space again, because the page may have scrolled.
+  const place = () => {
+    if (!inRef.current) return;
+    const r = inRef.current.getBoundingClientRect();
+    const below = window.innerHeight - r.bottom;
+    setUp(below < 320 && r.top > below);
+  };
+  React.useLayoutEffect(() => { if (open) place(); }, [open]);
+  const pick = (c) => { if (!c || taken[c.id]) return; setOpen(false); setQ(''); onPick(c.id); };
+  const move = (step) => setHi(h => (free.length ? (Math.min(h, free.length - 1) + step + free.length) % free.length : 0));
+  return (
+    <div className="qh-connpick" ref={wrapRef}>
+      <span className="qh-connpick-ic"><AIcon.search /></span>
+      <input id={inputId} ref={inRef} className="qh-input qh-connpick-in" autoFocus={autoFocus} autoComplete="off" spellCheck={false}
+        role="combobox" aria-expanded={open} aria-controls={inputId + '-list'} aria-autocomplete="list"
+        aria-activedescendant={open && cur ? optId(cur) : undefined}
+        placeholder="Search connections…" value={q}
+        // Leaving the box with Tab closes the list. A click on an option is not
+        // a blur: the option prevents mousedown, so the focus stays here.
+        onFocus={() => { place(); setOpen(true); }} onBlur={() => setOpen(false)}
+        onChange={e => { setQ(e.target.value); setHi(0); setOpen(true); }}
+        onKeyDown={e => {
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (open) move(e.key === 'ArrowDown' ? 1 : -1); else setOpen(true); }
+          else if (e.key === 'Enter') { e.preventDefault(); if (open) pick(cur); else setOpen(true); }
+          else if (e.key === 'Escape') setOpen(false);
+        }} />
+      {open && (
+        <div className={'qh-connpick-pop' + (up ? ' is-up' : '')} id={inputId + '-list'} role="listbox" aria-label="Connections">
+          {list.map(c => {
+            const why = taken[c.id], state = accConnState(c);
+            return (
+              <button key={c.id} id={optId(c)} type="button" role="option" tabIndex={-1}
+                aria-selected={c === cur} aria-disabled={why ? true : undefined}
+                className={'qh-connpick-opt' + (c === cur ? ' is-hi' : '') + (why ? ' is-taken' : '')}
+                onMouseEnter={() => { if (!why) setHi(free.indexOf(c)); }}
+                onMouseDown={e => { e.preventDefault(); pick(c); }}>
+                <img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} />
+                <span className="qh-connpick-name">{c.name}</span>
+                {state && <span className="qh-conn-off">{state}</span>}
+                {QH_SHOW_ENV_TAGS && c.env && <span className={'qh-envtag-sm env-' + c.env}>{c.env === 'production' ? 'PROD' : c.env === 'staging' ? 'STG' : c.env}</span>}
+                <span className="qh-connpick-meta">{why || c.engine || ''}</span>
+              </button>
+            );
+          })}
+          {!list.length && <div className="qh-connpick-none">No connection matches “{q.trim()}”.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSubject, onDone }) {
   const people = st.people, teams = st.teams;
   const conns = st.connections || [];
+  const uid = React.useId();
+  const rootRef = React.useRef(null);
+  const seq = React.useRef(0);
+  const nextKey = () => 'r' + (++seq.current);
   const [subjectType, setSubjectType] = useAcc(subjectType0 || 'user');
   const [subject, setSubject] = useAcc(subject0 || '');
   // A connection whose rows differ in tier by database (pod imports, rows
   // written by hand) opens READ-ONLY: POST /admin/grants writes one tier per
   // connection, so saving it here would raise the lower databases to the higher
   // tier (CODE 2026-09-23 (b) §3). It is shown, kept, and left out of the save.
+  // A subject with no grants gets NO rows: the list says what exists.
   const rowsForSubject = (stype, subj) => {
     const ex = st.grants.filter(g => g.subjectType === stype && g.subject === subj);
-    if (!ex.length) return [blankTarget(conns)];
     const out = [], seen = {};
     ex.forEach(g => {
       const on = ex.filter(x => x.connectionId === g.connectionId);
       if (new Set(on.map(x => x.tier)).size > 1) {
         if (seen[g.connectionId]) return;
         seen[g.connectionId] = 1;
-        out.push({ locked: true, connectionId: g.connectionId, parts: on.map(x => ({ databases: (x.databases && x.databases.length) ? x.databases : ['*'], tier: x.tier, expiresAt: x.expiresAt || null })) });
+        out.push({ k: nextKey(), locked: true, connectionId: g.connectionId, parts: on.map(x => ({ databases: (x.databases && x.databases.length) ? x.databases : ['*'], tier: x.tier, expiresAt: x.expiresAt || null })) });
         return;
       }
-      out.push({ connectionId: g.connectionId, databases: (g.databases && g.databases.length) ? g.databases : ['*'], tier: g.tier, ...expForm(g.expiresAt) });
+      out.push({ k: nextKey(), connectionId: g.connectionId, databases: (g.databases && g.databases.length) ? g.databases : ['*'], tier: g.tier, ...expForm(g.expiresAt) });
     });
     return out;
   };
-  const [rows, setRows] = useAcc(() => subject0 ? rowsForSubject(subjectType0, subject0) : [blankTarget(conns)]);
+  // `initial` is what the subject holds as the editor opens. The change line,
+  // the button's name and "Nothing to change." are all read against it.
+  const [initial, setInitial] = useAcc(() => subject0 ? rowsForSubject(subjectType0, subject0) : []);
+  const [rows, setRows] = useAcc(initial);
 
-  const pickType = (v) => { setSubjectType(v); setSubject(''); setRows([blankTarget(conns)]); };
-  const pickSubject = (val) => { setSubject(val); setRows(val ? rowsForSubject(subjectType, val) : [blankTarget(conns)]); };
-  const setRow = (i, patch) => setRows(rs => rs.map((r, j) => j === i ? { ...r, ...patch } : r));
-  const removeRow = (i) => setRows(rs => rs.filter((_, j) => j !== i));
-  const addRow = () => setRows(rs => [...rs, blankTarget(conns)]);
+  const pickType = (v) => { setSubjectType(v); setSubject(''); setRows([]); setInitial([]); };
+  const pickSubject = (val) => { const r = val ? rowsForSubject(subjectType, val) : []; setSubject(val); setRows(r); setInitial(r); };
+  const setRow = (k, patch) => setRows(rs => rs.map(r => (r.k === k ? { ...r, ...patch } : r)));
+  const held = new Set(initial.map(r => r.k));
+  // Where the keyboard goes when its control leaves the screen. A picked
+  // connection hands the focus to its access level. A removed row hands it to
+  // its Undo, and Undo hands it back to Remove.
+  const [focusSel, setFocusSel] = useAcc(null);
+  React.useEffect(() => {
+    if (!focusSel) return;
+    const el = rootRef.current && rootRef.current.querySelector(focusSel);
+    if (el) el.focus();
+    setFocusSel(null);
+  }, [focusSel]);
+  const inRow = (k, sel) => '[data-k="' + k + '"] ' + sel;
+  // A row the subject holds is MARKED, not dropped. It stays in its place, says
+  // that Save takes the access away, and comes back with Undo. A new row has
+  // nothing to take away, so it goes.
+  const removeRow = (r) => {
+    setRows(rs => (held.has(r.k) ? rs.map(x => (x.k === r.k ? { ...x, removed: true } : x)) : rs.filter(x => x.k !== r.k)));
+    setFocusSel(held.has(r.k) ? inRow(r.k, '.qh-acced-undo') : '.qh-acced-add, .qh-acced-empty .qh-btn');
+  };
+  // One empty row at a time: "Add a connection" while one waits goes to it.
+  const addRow = () => {
+    if (rows.some(r => !r.locked && !r.removed && !r.connectionId)) {
+      const box = rootRef.current && rootRef.current.querySelector('.qh-connpick-in');
+      if (box) box.focus();
+      return;
+    }
+    setRows(rs => [...rs, { k: nextKey(), connectionId: '', databases: ['*'], tier: 'RO', ttl: 'none', expDate: '' }]);
+  };
+  const live = rows.filter(r => !r.locked && !r.removed);
   const lockedConns = rows.filter(r => r.locked).map(r => r.connectionId);
   // An editable row may not name a read-only connection, nor one another row
-  // already has: either would be a second tier on one connection.
-  const rowFlag = (r, i) => r.locked ? null
-    : lockedConns.indexOf(r.connectionId) >= 0 ? 'The tier on ' + r.connectionId + ' differs by database — it cannot be changed here. Remove this row.'
-    : rows.findIndex(x => !x.locked && x.connectionId === r.connectionId) !== i ? 'Listed twice — one row per connection.' : null;
+  // already has: either would be a second tier on one connection. The picker
+  // refuses both now, so these come only from rows the server sent.
+  const rowFlag = (r) => (r.locked || r.removed || !r.connectionId) ? null
+    : lockedConns.indexOf(r.connectionId) >= 0 ? 'The access level on ' + r.connectionId + ' differs by database. You cannot change it here. Remove this row.'
+    : live.findIndex(x => x.connectionId === r.connectionId) !== live.indexOf(r) ? 'This connection is in the list twice. Keep one row for each connection.' : null;
+  const diff = accDiff(initial, rows);
+  // ONE reason, read by the button, its tooltip, the line beside it and
+  // `save` itself, so the four cannot disagree. The first three are the old
+  // `blocked` rule. Two more rules block it now. A new row without a
+  // connection would write nothing the admin chose. An edit that changes
+  // nothing would write the same rows again.
+  const NOTHING = 'Nothing to change.';
+  const why = !subject.trim() ? (subjectType === 'team' ? 'Pick a team.' : 'Pick a person.')
+    : live.some(r => !r.connectionId) ? 'Pick a connection for the new row, or remove the row.'
+    : rows.map(rowFlag).find(Boolean)
+      || (live.some(r => expBad(r)) ? 'Pick an end date from today on.' : null)
+      || (diff.any ? null : NOTHING);
+  const blocked = !!why;
   const save = () => {
-    if (!subject.trim() || rows.some(r => !r.locked && expBad(r)) || rows.some(rowFlag)) return;
-    const targets = rows.filter(r => !r.locked).map(r => ({ connectionId: r.connectionId, databases: r.databases, tier: r.tier, expiresAt: expIso(r) }));
+    if (blocked) return;
+    const targets = live.map(r => ({ connectionId: r.connectionId, databases: r.databases, tier: r.tier, expiresAt: expIso(r) }));
     st.setSubjectGrants(subjectType, subject.trim(), targets, { untouched: lockedConns });
     onDone();
   };
-  // ONE save control, rendered in two places (CODE brief 2026-08-20 §1): a
-  // subject with a dozen connections pushes the only Save below the fold, so a
-  // change made at the top is committed by scrolling back down to find it. Same
-  // function, same disabled rule — two buttons that could disagree about
-  // whether the form is savable would be worse than one badly placed.
-  // The rule now matches `save`'s own guard: a bad date used to leave the
-  // button enabled and the click did nothing.
-  const blocked = !subject.trim() || rows.some(r => !r.locked && expBad(r)) || rows.some(rowFlag);
-  const acts = (where) => (
-    <div className={'qh-teamform-acts qh-accedit-acts is-' + where}>
-      <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone}>Cancel</button>
-      <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={save} disabled={blocked}>Save access</button>
+  // A widening edit renames the button (DESIGN.md: "Say what a widening action
+  // changes before it runs"). With nothing held before, it is a grant.
+  const verb = !diff.widens ? 'Save access' : initial.length ? 'Widen access' : 'Grant access';
+  const connOf = (id) => conns.find(c => c.id === id) || { id, name: id, databases: [] };
+  const summary = accSummary(diff, id => connOf(id).name);
+  const taken = {};
+  rows.forEach(r => { if (r.connectionId) taken[r.connectionId] = 'already in the list'; });
+  const name = (subjectType === 'user' ? qhPersonName(name0) : name0) || subjLabel(people, subjectType, subject);
+
+  const head = (c, extra) => (
+    <div className="qh-acced-titlewrap">
+      <span className="qh-acced-title">{c.name}</span>
+      {c.engine && <span className="qh-acced-eng">{c.engine}</span>}
+      {accConnState(c) && <span className="qh-conn-off">{accConnState(c)}</span>}
+      {extra}
     </div>
   );
+  const removeBtn = (r, label) => (
+    <button type="button" className="qh-acced-x" onClick={() => removeRow(r)} aria-label={label} title={label}><AIcon.x /></button>
+  );
+  const renderRow = (r) => {
+    const id = uid + r.k;
+    if (r.locked) {
+      const c = connOf(r.connectionId);
+      return (
+        <div key={r.k} data-k={r.k} className="qh-acced-row is-locked">
+          <div className="qh-acced-rowhead">{head(c, <span className="qh-acced-chip"><AIcon.lock />read-only here</span>)}</div>
+          <div className="qh-acced-say">The access level on this connection differs by database.</div>
+          <div className="qh-acced-parts">{r.parts.map((p, j) => (
+            <div key={j} className="qh-acced-part">
+              <span className="qh-acced-dbs">{p.databases.includes('*') ? 'All databases' : p.databases.join(', ')}</span>
+              <TierBadge tier={p.tier} sm /><span className="qh-acced-levelw">{qhTierWord(p.tier)}</span>
+              <ExpiryChip iso={p.expiresAt} />
+            </div>))}</div>
+          <div className="qh-acced-note">Saving here writes one access level for the whole connection, and that would raise the lower databases. QueryHub does not change this connection here. Change it in Grants, one row at a time.</div>
+        </div>
+      );
+    }
+    if (r.removed) {
+      const c = connOf(r.connectionId);
+      return (
+        <div key={r.k} data-k={r.k} className="qh-acced-row is-removed">
+          <span className="qh-acced-title">{c.name}</span>
+          <span className="qh-acced-say">Saving removes this access.</span>
+          <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-acced-undo" onClick={() => { setRow(r.k, { removed: false }); setFocusSel(inRow(r.k, '.qh-acced-x')); }}>Undo</button>
+        </div>
+      );
+    }
+    if (!r.connectionId) {
+      return (
+        <div key={r.k} data-k={r.k} className="qh-acced-row is-pending">
+          <div className="qh-acced-rowhead">
+            <label className="qh-acced-k" htmlFor={id + 'conn'}>Connection</label>
+            {removeBtn(r, 'Remove the new row')}
+          </div>
+          <ConnPick conns={conns} taken={taken} inputId={id + 'conn'} autoFocus
+            onPick={cid => { setRow(r.k, { connectionId: cid, databases: ['*'] }); setFocusSel(inRow(r.k, '.qh-acced-levels .is-active')); }} />
+          <div className="qh-acced-hint">Pick a connection. Its access level, databases and end date open after that.</div>
+        </div>
+      );
+    }
+    const c = connOf(r.connectionId), flag = rowFlag(r), isNew = !held.has(r.k);
+    const chip = isNew ? <span className="qh-acced-chip">new</span>
+      : diff.changed.indexOf(r.connectionId) >= 0 ? <span className="qh-acced-chip">changed</span> : null;
+    return (
+      <div key={r.k} data-k={r.k} className={'qh-acced-row' + (flag ? ' is-bad' : '')}>
+        <div className="qh-acced-rowhead">
+          {head(c, chip)}
+          {/* A new row may still change its mind. A held row may not: changing
+              its connection turned one grant into another without a word. */}
+          {isNew && <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-acced-change" onClick={() => setRow(r.k, { connectionId: '', databases: ['*'] })}>Change</button>}
+          {removeBtn(r, 'Remove access to ' + c.name)}
+        </div>
+        <div className="qh-acced-say">{accRowSay(r, c)}</div>
+        <div className="qh-acced-fields">
+          <span className="qh-acced-k" id={id + 'lvl'}>Access level</span>
+          <div className="qh-acced-v"><AccessLevelPick value={r.tier} labelledBy={id + 'lvl'} onChange={v => setRow(r.k, { tier: v })} /></div>
+          <span className="qh-acced-k" id={id + 'dbs'}>Databases</span>
+          <div className="qh-acced-v" role="group" aria-labelledby={id + 'dbs'}><DbMultiPick bare conns={conns} connectionId={r.connectionId} databases={r.databases} onChange={dbs => setRow(r.k, { databases: dbs })} /></div>
+          <span className="qh-acced-k" id={id + 'end'}>Access ends</span>
+          <div className="qh-acced-v" role="group" aria-labelledby={id + 'end'}><ExpiryPick f={r} onChange={p => setRow(r.k, p)} /><ExpiryNote f={r} subjectType={subjectType} /></div>
+        </div>
+        {flag && <div className="qh-acced-flag"><AIcon.alert />{flag}</div>}
+      </div>
+    );
+  };
 
   return (
-    <div className="qh-accedit">
-      <div className="qh-accedit-subj">
-        <div className="qh-seg qh-seg-sm">
-          {['user', 'team'].map(v => <button key={v} disabled={lockSubject} className={'qh-seg-opt' + (subjectType === v ? ' is-active' : '')} onClick={() => pickType(v)}>{v}</button>)}
-        </div>
+    <div className="qh-acced" ref={rootRef}>
+      <div className="qh-acced-head">
+        {/* A locked subject is named once, as a sentence. The user/team switch
+            is for picking a subject, so it shows only where one is picked. */}
         {lockSubject
-          ? <span className="qh-accedit-subjname"><span className={'qh-subj-type ' + subjectType}>{subjectType}</span> <b>{(subjectType === 'user' ? qhPersonName(name0) : name0) || subjLabel(people, subjectType, subject)}</b></span>
-          : subjectType === 'user'
-            ? <PersonPick people={people} value={subject} onChange={pickSubject} resolve={st.resolvePerson} autoFocus />
-            : <select className="qh-select" value={subject} onChange={e => pickSubject(e.target.value)}><option value="">Select team…</option>{teams.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}</select>}
-        {acts('top')}
+          ? <div className="qh-acced-h">Access for {subjectType === 'team' ? 'team ' : ''}<b>{name}</b></div>
+          : <>
+            <div className="qh-seg qh-seg-sm">
+              {['user', 'team'].map(v => <button key={v} className={'qh-seg-opt' + (subjectType === v ? ' is-active' : '')} onClick={() => pickType(v)}>{v}</button>)}
+            </div>
+            {subjectType === 'user'
+              ? <PersonPick people={people} value={subject} onChange={pickSubject} resolve={st.resolvePerson} autoFocus />
+              : <select className="qh-select" value={subject} onChange={e => pickSubject(e.target.value)}><option value="">Select team…</option>{teams.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}</select>}
+          </>}
       </div>
 
-      <div className="qh-accedit-label">Targets · {rows.length}<span className="qh-accedit-hint">one row per connection — databases (or all), a single tier, and an end date only if the access should stop</span></div>
-      <div className="qh-acctargets">
-        {rows.map((r, i) => r.locked ? (
-          <div key={i} className="qh-accrow is-locked">
-            <div className="qh-accrow-head">
-              <span className="qh-accrow-conn">{connLabel(conns.find(c => c.id === r.connectionId) || { name: r.connectionId })}</span>
-              <span className="qh-accrow-lock">Tier differs by database · read-only here</span>
-            </div>
-            <div className="qh-accrow-parts">{r.parts.map((p, j) => (
-              <div key={j} className="qh-accrow-part">
-                <span className="qh-accrow-dbs">{p.databases.includes('*') ? 'All databases' : p.databases.join(', ')}</span>
-                <TierBadge tier={p.tier} sm />
-                <ExpiryChip iso={p.expiresAt} />
-              </div>))}</div>
-            <div className="qh-exp-note">Saving here writes one tier for the whole connection, which would raise the lower databases. QueryHub does not change this connection here. Change it in Grants, one row at a time.</div>
-          </div>
-        ) : (
-          <div key={i} className={'qh-accrow' + (rowFlag(r, i) ? ' is-bad' : '')}>
-            <div className="qh-accrow-head">
-              <select className="qh-select" value={r.connectionId} onChange={e => setRow(i, { connectionId: e.target.value, databases: ['*'] })}>{conns.map(c => <option key={c.id} value={c.id}>{connLabel(c)}</option>)}</select>
-              <TierSelect value={r.tier} onChange={v => setRow(i, { tier: v })} />
-              <ExpiryPick f={r} onChange={p => setRow(i, p)} />
-              <button className="qh-accrow-x" onClick={() => removeRow(i)} aria-label="Remove target"><AIcon.x /></button>
-            </div>
-            <DbMultiPick conns={conns} connectionId={r.connectionId} databases={r.databases} onChange={dbs => setRow(i, { databases: dbs })} />
-            <ExpiryNote f={r} subjectType={subjectType} />
-            {rowFlag(r, i) && <div className="qh-autobulk-flag">{rowFlag(r, i)}</div>}
-          </div>
-        ))}
-        {rows.length === 0 && <div className="qh-acc-none">No targets — saving will remove all access for this subject.</div>}
-        {rows.length > 0 && rows.every(r => r.locked) && <div className="qh-acc-none">Nothing here can be edited — every connection's tier differs by database.</div>}
-      </div>
-      <button className="qh-acc-addtarget" onClick={addRow}><AIcon.plus />Add connection</button>
+      {!subject.trim() ? (
+        <div className="qh-acced-empty is-quiet">{subjectType === 'team' ? 'Pick a team first. Its grants open here.' : 'Pick a person first. Their grants open here.'}</div>
+      ) : rows.length === 0 ? (
+        <div className="qh-acced-empty">
+          <div className="qh-acced-empty-t">No access yet.</div>
+          <div className="qh-acced-empty-s">{subjectType === 'team' ? 'Every member of this team gets the access that you add here.' : 'Only the grants for this person show here. Access through a team stays as it is.'}</div>
+          <button type="button" className="qh-btn qh-btn-primary qh-btn-sm" onClick={addRow}><AIcon.plus />Add a connection</button>
+        </div>
+      ) : (
+        <>
+          <div className="qh-acced-list">{rows.map(renderRow)}</div>
+          <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-acced-add" onClick={addRow}><AIcon.plus />Add a connection</button>
+        </>
+      )}
 
-      {acts('bottom')}
+      {/* ONE action bar, where there were two. CODE brief 2026-08-20 §1 put a
+          second Save at the top, so that a long list did not hide it. This bar
+          sticks to the bottom of the editor instead. It stays in view at any
+          length, next to the line that says what Save writes. */}
+      <div className="qh-acced-bar">
+        <div className="qh-acced-bar-say">
+          {summary && <span className="qh-acced-sum">{summary}</span>}
+          {why && why !== NOTHING && <span className="qh-acced-why"><AIcon.alert />{why}</span>}
+          {why === NOTHING && <span>{NOTHING}</span>}
+        </div>
+        <div className="qh-acced-bar-acts">
+          <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone}>Cancel</button>
+          <span title={why || undefined}><button type="button" className="qh-btn qh-btn-primary qh-btn-sm" onClick={save} disabled={blocked}>{verb}</button></span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1211,7 +1525,9 @@ function TeamsView({ st, user }) {
           <div className="qh-teamlist">
             {tRows.map(t => {
               if (editId === t.id) return <div key={t.id} className="qh-teamcard is-editing"><TeamForm people={people} init={t} onSave={(x) => { st.updateTeam(x, actor); setEditId(null); }} onCancel={() => setEditId(null)} /></div>;
-              if (accessId === t.id) return <div key={t.id} className="qh-teamcard is-editing"><div className="qh-teamform"><div className="qh-teamform-label">Access for team “{t.name}”</div><SubjectAccessEditor st={st} actor={actor} subjectType0="team" subject0={t.name} lockSubject onDone={() => setAccessId(null)} /></div></div>;
+              // The editor names the team itself ("Access for team X"), so the
+              // card adds no label of its own: one subject, said once.
+              if (accessId === t.id) return <div key={t.id} className="qh-teamcard is-editing"><SubjectAccessEditor st={st} actor={actor} subjectType0="team" subject0={t.name} lockSubject onDone={() => setAccessId(null)} /></div>;
               const parents = memberOf(t.id), subs = (t.subteams || []), tgts = grantsOf(t.name);
               return (
                 <div key={t.id} className="qh-teamcard">
@@ -2067,4 +2383,6 @@ function ConnectionsView({ st, user }) {
 // a grant can end — a second copy of either is a second set of rules.
 // `AccGroupBy` goes with them: the Roles screen groups by team, and its own
 // segmented control would be a second grouping idiom on one page.
-Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach });
+// `QH_TIER_WORD` / `qhTierWord` too (2026-10-21): the Roles screen and the
+// access editor say Read, Write and Schema from one table.
+Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord });

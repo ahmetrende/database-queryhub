@@ -75,6 +75,38 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Fixed
 
+- **QueryHub is the approver of a super-admin's own query.** The Messages tab
+  already said so. The stored record now says it too. The request names QueryHub
+  as the approver, and the audit row names the super-admin whose access applied.
+  The audit screen files these approvals under the auto-approver, not under the
+  person. Older records stay as they were, and they still read as QueryHub in
+  the tabs. Slack status lines say "Auto-approved by QueryHub". The auto-approve
+  rate in Metrics now counts these queries.
+- **The Messages tab names the request and its real level.** The first line now
+  reads "Submitted DDL query as request #12180". It used to read "Submitted RO
+  query" for a script that opened with a DO block. The tab worked out the level
+  from the text. It now uses the level that the submit stored. The History list
+  does the same.
+- **"Edit access" shows real access only.** The editor used to open a team without
+  grants on a pre-filled row. The row held the first connection, RO and all
+  databases, and Save wrote it. A team without grants now opens on "No access
+  yet", and a new row starts empty. A search box picks the connection. Each field
+  has a label, and one bar says what Save changes. A removed connection stays in
+  place until Save, with Undo.
+- **A statement with no result says so, and Messages opens.** The
+  Results panel used to centre a big "0" over "0 row(s) affected". It now says
+  "No result" at the top left, with a second line that fits the statement. A read
+  says it returned no rows. A write says it affected 0 rows. A write that changed
+  rows says how many, for example "5 rows affected". A schema change says
+  "Statement executed". The run now finishes on the Messages tab, because Results
+  has no grid to show.
+- **A query that QueryHub approves by itself says so.** The Messages tab used to
+  read "Submitted RO query for DBA approval". Then it named the requester as the
+  approver. No DBA saw that query. It now reads "Submitted RO query" and
+  "Auto-approved by QueryHub", and it gives the reason. The reason is super-admin
+  access, an auto-approve grant, or the same query as an earlier request. The
+  Audit log tab and the history list name the system as the approver too. The
+  stored decision does not change.
 - **A read replica leaves the schema catalog.** The hourly refresh skips a read
   replica, because it serves its primary's reads under the primary's name. A
   target that became a replica after its last snapshot kept its rows, and
