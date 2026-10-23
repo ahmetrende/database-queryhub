@@ -353,6 +353,55 @@ DB lookup, with no identity-provider call. That alone closes most holes,
 because the token is short-lived. A deactivated user's session dies within
 the token window, even if nothing else fires.
 
+### 3.1 Admin levels
+
+Every `/api/admin/*` route calls `require_admin(claims, level)` before it
+does anything else. There are three levels:
+
+| Level | Who passes |
+|---|---|
+| `review` | Any admin: a live `admin` role row. A temporary row and a row with a tier ceiling also pass. |
+| `dba` | A PERMANENT (no end date) and UNSCOPED (all teams, all targets) `admin` role row. A tier ceiling is allowed. A super-admin passes too. A temporary admin and a scoped admin do not pass. An approver-only role does not pass. |
+| `access` | A super-admin only: a permanent and unscoped `admin` role row with no tier ceiling. |
+
+With `access_model_v2` off, the `dba` rule reads the `admins` table: an
+enabled row with `scope_team_ids` and `scope_target_ids` both NULL. A
+`temp_admin_grants` row never counts.
+
+Four routes take the `dba` level (PLA-1592):
+
+- `POST /api/admin/kill` sets the kill switch to on or off. Each change
+  writes a `kill_switch_set` audit row. The Slack command `/sql kill` sets
+  the same switch and takes the same level.
+- `GET /api/admin/people/{slack_id}/effective-access` shows the access of
+  one person. Each read writes an `effective_access_viewed` audit row.
+- `GET /api/admin/connections` lists the connections. A super-admin gets
+  the full rows. A DBA who is not a super-admin gets only the keys in
+  `DBA_CONNECTION_FIELDS` (`web/routes_admin.py`). The list has no
+  `credentials`, no `secretsProvider` and no `notes`. It has `health` and
+  `inRotation` (OPERATIONS.md §29). In `health.error`, QueryHub replaces
+  each user name that the row stores with `[redacted]`.
+- `POST /api/admin/connections/{conn}/test` tests the stored read-only
+  credential. For a DBA who is not a super-admin, QueryHub scrubs the error
+  again and replaces the stored user name and the password with
+  `[redacted]`.
+
+All other routes keep their level. Only a super-admin can add, change,
+disable or delete a connection, test a credential that is not saved, or
+change the configuration. `tests/test_dba_level.py` fails when a fifth route
+takes the `dba` level, and when one door of the kill switch changes its
+level and the other does not.
+
+A refused caller gets 403 with the code `forbidden`. A caller who is not an
+admin reads "Refused: you need admin access." An admin who is not a DBA
+reads "Refused: you need DBA access."
+
+In `GET /api/me`, `admin.role` is `dba` for every admin who is not a
+super-admin, a temporary admin too. That value does not tell if the caller
+passes the `dba` level. `admin.isDba` does: it is true for a super-admin and
+for a permanent, unscoped admin, and false for any other admin. It follows
+the same rule as the gate.
+
 ---
 
 ## 4. Refresh = the re-verification checkpoint

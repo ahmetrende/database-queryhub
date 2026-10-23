@@ -2248,7 +2248,7 @@ const qhApi = {
   autoApproveRequests: () => mockDelay(() => {
     const me = mockUser();
     if (!me) return mockFail('Not signed in.', 401, 'unauthenticated');
-    return { windowOptions: MOCK_AUTO_WINDOWS.map(o => ({ ...o })), requests: ADMIN.autoReqs.filter(r => r.requester === me.handle) };
+    return { windowOptions: MOCK_AUTO_WINDOWS.map(o => ({ ...o })), tiers: ['RO', 'RW'], requests: ADMIN.autoReqs.filter(r => r.requester === me.handle) };
   }, 160),
   requestEndpoint: (b) => mockDelay(() => {
     // A picked row is AUTHORITATIVE and there is NO fallback to the free text

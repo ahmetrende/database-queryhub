@@ -24,6 +24,8 @@ from .. import (
     admins,
     audit,
     auto_approve,
+    connection_health,
+    connection_probe,
     core_decide,
     core_submit,
     db,
@@ -31,10 +33,13 @@ from .. import (
     errors,
     grants,
     idp_sync_guard,
+    kill_switch,
     manual_runs,
     owner_approvers,
+    pending_expiry,
     people,
     pii,
+    replicas,
     requesters,
     schema_catalog,
     targets,
@@ -70,6 +75,9 @@ _QUEUE_COLS = (
     "id, requester_slack_id, requester_name, target_server_id, database_name, "
     "query, justification, status, scheduled_for, bundle_id, position, "
     "risk_summary, origin, created_at, engine, required_tier, "
+    # The plan stored at submit, the source of estRows / estTables (PLA-1592
+    # U9). At most 64 KB a row, and NULL unless query_plan_logging is on.
+    "explain_plan, "
     # Items of one `/sql batch` submission are one piece of work to the person
     # who sent them and to the person approving them, but they arrive as N
     # separate rows. `position` and the sibling count let the queue present
@@ -133,11 +141,13 @@ def admin_queue(escalate: bool | None = None,
     # prints the most names and it prints them from a snapshot.
     name_of = people.namer([r.get("requester_name") or r.get("requester_slack_id")
                             for r in rows])
+    # One read of the expiry setting for the page (`expiresAt` on each item).
+    expiry = pending_expiry.window()
     out, ddl_rows = [], []
     for r in rows:
         if not admins.can_approve(uid, r):
             continue
-        item = mapping.queue_item(r, _alias_of, _tags_of, name_of)
+        item = mapping.queue_item(r, _alias_of, _tags_of, name_of, expiry)
         if escalate is not None and item["escalate"] != escalate:
             continue
         out.append(item)
@@ -279,6 +289,61 @@ def admin_batch_approve(body: BatchIn,
     return {"approved": approved}
 
 
+# ---- Review: one decision for a whole batch ---------------------------------
+
+@router.post("/queue/bundles/{bundle_id}/decision")
+def admin_bundle_decision(bundle_id: int, body: DecisionIn,
+                          claims: dict = Depends(deps.current_user)):
+    """Approve, reject or request changes on every open item of one batch,
+    in one transaction (PLA-1592 U12).
+
+    All or nothing. The per-item calls this replaces could stop half way and
+    leave a batch half rejected. Refusals write nothing: 404 for an unknown
+    batch, 403 when an item is outside the caller's approval scope (tier and
+    connection, `admins.can_approve`), 409 when an item already has a
+    decision from somewhere else. The 409 body lists those items in `items`.
+    A waiver can approve an item at submit. Such an item never waited in the
+    queue, so it is not part of the decision. Each decided item gets its own
+    audit row in the same transaction. After the commit, each item notifies
+    and runs the way `batch-approve` does it."""
+    uid = admin.require_admin(claims, "review")
+    decision = (body.decision or "").strip().lower()
+    if decision not in ("approve", "reject", "changes"):
+        raise deps._error(400, "bad_request",
+                          "decision must be approve, reject, or changes.")
+    reason = (body.note or "").strip()
+    if decision in ("reject", "changes") and not reason:
+        raise deps._error(400, "bad_request",
+                          "Enter a note to reject or to request changes.")
+    try:
+        outcomes = core_decide.decide_bundle(
+            bundle_id, decision, by_id=uid, by_name=claims.get("name"),
+            reason=reason or None,
+            may_decide=lambda row: admins.can_approve(uid, row))
+    except core_decide.BundleNotFound:
+        raise deps._error(404, "not_found", "No such batch.")
+    except core_decide.BundleOutOfScope:
+        raise deps._error(403, "forbidden",
+                          "Refused: part of this batch is outside your approval scope.")
+    except core_decide.BundleConflict as e:
+        raise deps._error(409, "conflict",
+                          "Part of this batch already has a decision. Nothing changed.",
+                          items=[str(i) for i in e.item_ids])
+    client = _slack_client()
+    for outcome in outcomes:
+        # After the commit, one failed notification must not keep the next
+        # approved item from running.
+        try:
+            core_decide.apply_effects(client, outcome)
+        except Exception:
+            log.exception("bundle %s: effects failed for request %s",
+                          bundle_id, outcome.row.get("id"))
+    return {"bundleId": str(bundle_id), "decision": decision,
+            "items": [{"id": str(o.row["id"]),
+                       "status": mapping.status_to_web(o.row["status"])}
+                      for o in outcomes]}
+
+
 # ---- Review: requests a DBA has to run by hand -------------------------------
 #
 # The web's copy of the Mark completed / Mark failed card. Without it an admin
@@ -375,9 +440,10 @@ def get_kill(claims: dict = Depends(deps.current_user)):
 
 @router.post("/kill")
 def set_kill(body: KillIn, claims: dict = Depends(deps.current_user)):
-    """Halt / resume all new query traffic. Super-admin only — this stops
-    the whole fleet. Writes bot_config (runtime-effective) + an audit row."""
-    uid = admin.require_admin(claims, "access")
+    """Halt / resume all new query traffic. The DBA level (a permanent,
+    unscoped admin, or a super-admin): this stops the whole fleet. Writes
+    bot_config (runtime-effective) + an audit row."""
+    uid = admin.require_admin(claims, "dba")   # PLA-1592 U4a: a DBA or a super-admin
     val = "on" if body.enabled else "off"
     with db.transaction() as cur:
         cur.execute(
@@ -395,9 +461,30 @@ def set_kill(body: KillIn, claims: dict = Depends(deps.current_user)):
                 "  updated_at = NOW()",
                 (msg,))
         audit.log_in(cur, None, uid, claims.get("name"), "kill_switch_set",
-                     {"enabled": body.enabled})
+                     {"enabled": body.enabled,
+                      **({"message": msg or core_submit.kill_switch_message()}
+                         if body.enabled else {})})
+    # The switch is on now, so no new query starts. Then the running reads of
+    # every user stop. Writes and DDL keep running. Off cancels nothing.
+    cfg.invalidate_cache()
+    cancelled = (kill_switch.stop_running_reads(uid, claims.get("name"))
+                 if body.enabled else 0)
     return {"enabled": body.enabled,
-            "message": core_submit.kill_switch_message()}
+            "message": core_submit.kill_switch_message(),
+            "cancelledCount": cancelled}
+
+
+@router.get("/kill/history")
+def kill_history(claims: dict = Depends(deps.current_user)):
+    """Every pause of the kill switch, newest first.
+
+    Each entry says who set the switch on, when, and with which message. It
+    says who set it off and when, or null while the switch is still on.
+    `cancelledCount` is the number of running reads that the pause cancelled,
+    or null for a pause from before the count. The same authority as GET /kill.
+    """
+    admin.require_admin(claims, "review")
+    return kill_switch.history()
 
 
 # ---- System configuration (super-admin only) --------------------------------
@@ -529,8 +616,12 @@ def admin_grants(claims: dict = Depends(deps.current_user)):
 
 @router.get("/auto-grants")
 def admin_auto_grants(claims: dict = Depends(deps.current_user)):
-    """Active (unexpired) auto-approve grants — the rows that let a
-    developer's query skip DBA review."""
+    """Unexpired auto-approve grants — the rows that let a developer's query
+    skip DBA review.
+
+    A rule that is switched off is listed too, with `enabled: false`: the list
+    is where it is switched on again. `runCount` is how many queries the rule
+    approved, read from the `auto_approved` audit rows that cite it."""
     admin.require_admin(claims, "access")
     # Names, not just ids. The table's subject column showed a raw Slack id,
     # which reads as an opaque token to the person deciding whether a grant
@@ -539,7 +630,7 @@ def admin_auto_grants(claims: dict = Depends(deps.current_user)):
     rows = db.fetch_all(
         "SELECT g.id, g.slack_user_id, g.max_tier, g.target_server_id, "
         "       g.database_name, g.reason, g.expires_at, g.granted_by, "
-        "       g.granted_at, "
+        "       g.granted_at, g.enabled, "
         "       COALESCE(r.name,  a.name)  AS user_name, "
         "       COALESCE(gr.name, ga.name) AS granted_by_name "
         "  FROM auto_approve_grants g "
@@ -549,10 +640,35 @@ def admin_auto_grants(claims: dict = Depends(deps.current_user)):
         "  LEFT JOIN admins     ga ON ga.slack_user_id = g.granted_by "
         " WHERE g.expires_at IS NULL OR g.expires_at > NOW() "
         " ORDER BY g.granted_at DESC")
-    out = [{**mapping.auto_grant_entry(r, _alias_of), "subjectType": "user"} for r in rows]
+    out = [{**mapping.auto_grant_entry(r, _alias_of), "subjectType": "user",
+            "enabled": bool(r.get("enabled", True))} for r in rows]
     if teams_mod.use_v2():
         out += _v2_only_auto_grants()
+    runs = _auto_grant_run_counts([e["id"] for e in out])
+    for e in out:
+        e["runCount"] = runs.get(e["id"], 0)
     return {"autoGrants": out}
+
+
+def _auto_grant_run_counts(ids: list[str]) -> dict[str, int]:
+    """{rule id: queries it auto-approved}, in one read of the audit trail.
+
+    The decision writes one `auto_approved` row per query it lets through, and
+    that row carries the rule's id in `grant_id` (`auto_approve.audit_details`):
+    the number for a legacy rule, `ag:<id>` for an access_grant waiver -- the
+    same strings this API uses as ids. Only that action is counted. The
+    `submitted` row of the same query carries the id too, and counting it would
+    double every number.
+    """
+    if not ids:
+        return {}
+    rows = db.fetch_all(
+        "SELECT details->>'grant_id' AS gid, count(*) AS n "
+        "  FROM audit_log "
+        " WHERE action = 'auto_approved' "
+        "   AND details->>'grant_id' = ANY(%s) "
+        " GROUP BY 1", (list(ids),))
+    return {r["gid"]: int(r["n"]) for r in rows if r.get("gid") is not None}
 
 
 def _v2_only_auto_grants() -> list[dict]:
@@ -569,7 +685,7 @@ def _v2_only_auto_grants() -> list[dict]:
         "SELECT g.id, g.team_id, COALESCE(t.display_name, t.name) AS team_name, "
         "       i.external_id AS slack_user_id, p.display_name AS user_name, "
         "       g.tier, g.target_id, g.database_name, g.reason, g.valid_until, "
-        "       g.valid_from, cb.display_name AS created_by_name "
+        "       g.valid_from, g.enabled, cb.display_name AS created_by_name "
         "  FROM access_grant g "
         "  LEFT JOIN team t ON t.id = g.team_id "
         "  LEFT JOIN principal p ON p.id = g.principal_id "
@@ -599,6 +715,9 @@ def _v2_only_auto_grants() -> list[dict]:
             "createdBy": None,
             "createdByName": r["created_by_name"],
             "grantedAt": mapping.iso(r["valid_from"]),
+            # Migration 146: a waiver can be switched off. It stays on this
+            # list, which is where it is switched on again.
+            "enabled": bool(r.get("enabled", True)),
         })
     return out
 
@@ -629,6 +748,8 @@ def admin_scopes(claims: dict = Depends(deps.current_user)):
 # web. Everything below is deliberately narrow about credentials: a password
 # goes IN through these endpoints and never comes back out, so no response
 # shape — not the list, not the create echo, not an error — can carry one.
+# Two routes also take the DBA level (PLA-1592 U14): the list and the test of
+# the stored credential. A DBA who is not a super-admin gets less from both.
 
 # Aliases end up in URL paths, Slack pickers and admin scope lists, so keep them
 # to a set that survives all three unquoted.
@@ -681,6 +802,83 @@ def _connection_entry(row: dict, databases: list[str]) -> dict:
         "credentials": row["credentials"],
         "databases": [{"id": d, "name": d} for d in databases],
     }
+
+
+# PLA-1592 U14: the keys of a `GET /admin/connections` row that a DBA who is
+# not a super-admin can read. This is an allowlist: a key that a connection
+# row gets later stays hidden from a DBA until somebody adds it here. Three
+# keys stay out on purpose:
+#   - `credentials`: the stored user names and which passwords are set.
+#   - `secretsProvider`: where the passwords come from.
+#   - `notes`: free text. It is where a tunnel or a credential source is
+#     written down.
+# A super-admin gets the full row. tests/test_dba_level.py checks both.
+# `health` (PLA-1592 U7) reaches a DBA through `_dba_health`.
+DBA_CONNECTION_FIELDS = frozenset({
+    "id", "name", "engine", "engineId", "env", "enabled", "host", "port",
+    "defaultDatabase", "tags", "replicaOf", "deleted", "deletedAt",
+    "deletedReason", "superAdminOnly", "databases", "owners",
+    "health", "inRotation",
+})
+
+
+def _dba_connection_row(entry: dict) -> dict:
+    """One connection row as a DBA who is not a super-admin reads it: only
+    the keys in DBA_CONNECTION_FIELDS, in the same order."""
+    return {k: v for k, v in entry.items() if k in DBA_CONNECTION_FIELDS}
+
+
+def _dba_connection_rows(rows: list[dict]) -> list[dict]:
+    """The connection list as a DBA who is not a super-admin reads it: each
+    row through `_dba_connection_row`, and `health` through `_dba_health`
+    with the user names that the row stores. A read replica connects with
+    its primary's login, so the primary's names count for it too."""
+    logins = {r["id"]: {c["username"] for c in (r.get("credentials") or {}).values()
+                        if c.get("username")}
+              for r in rows}
+    out = []
+    for r in rows:
+        if r.get("health"):
+            names = logins[r["id"]] | logins.get(r.get("replicaOf"), set())
+            r = {**r, "health": _dba_health(r["health"], names)}
+        out.append(_dba_connection_row(r))
+    return out
+
+
+def _dba_test_answer(out: dict, username: str, password: str) -> dict:
+    """A connection test answer for a DBA who is not a super-admin.
+
+    `_probe` scrubs the driver error already. That is enough for a
+    super-admin, who sees the stored user names in the connection list. A DBA
+    does not see them, and `errors.scrub` does not find every form that names
+    the user: SQL Server writes `Login failed for user '<name>'` in single
+    quotes, and ClickHouse starts its message with the name. So the error
+    goes through `errors.scrub` again. Then this replaces the stored user
+    name and the password where each stands as a whole word.
+    """
+    message = out.get("error")
+    if not message:
+        return out
+    message = errors.scrub(message)
+    for value in (username, password):
+        if value:
+            message = re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", "[redacted]",
+                             message)
+    return {**out, "error": message}
+
+
+def _dba_health(health: dict, logins: set[str]) -> dict:
+    """A row's `health` for a DBA who is not a super-admin.
+
+    The check stored the error without the password and the login that it
+    used (connection_health.clean_error). A stored user name can change after
+    the check, and a DBA does not see the names. So the error goes through
+    `_dba_test_answer` again, once for each name in `logins`, the longest
+    first. The password needs no second pass: only the check that wrote the
+    error used it, and that check hid it."""
+    for name in sorted(logins, key=len, reverse=True) or [""]:
+        health = _dba_test_answer(health, name, "")
+    return health
 
 
 # The three keys the UI gives real controls to. Everything else is a free
@@ -870,66 +1068,12 @@ def _probe(engine: str, host: str, port: int, database: str,
     close. Returns {ok, latencyMs, serverVersion, error}.
 
     A failed probe is a successful call: "cannot reach it" is the answer the
-    admin asked for, not an error in the API. The message is run through the
-    same scrubber the executor uses before a libpq or ODBC error reaches a
-    user, so a failure can't echo back the DSN it was handed.
+    admin asked for, not an error in the API. The code is in connection_probe,
+    which the periodic health check shares, so the button and the stored
+    health answer the same way.
     """
-    import time
-    started = time.monotonic()
-    version = None
-    try:
-        if engine == "mssql":
-            from .. import mssql_exec
-            conn = mssql_exec.connect(host, port, database, username, password,
-                                      timeout_sec=_PROBE_TIMEOUT_SEC)
-            try:
-                cur = conn.cursor()
-                cur.execute("SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(64))")
-                row = cur.fetchone()
-                version = row[0] if row else None
-            finally:
-                conn.close()
-        elif engine == "clickhouse":
-            from .. import clickhouse_exec
-            version = clickhouse_exec.probe(host, port, database, username,
-                                            password, timeout_sec=_PROBE_TIMEOUT_SEC)
-        else:
-            import psycopg
-            with psycopg.connect(
-                    host=host, port=port, dbname=database, user=username,
-                    password=password, connect_timeout=_PROBE_TIMEOUT_SEC,
-                    **cfg.target_ssl_kwargs(host),
-                    application_name="queryhub-connection-test",
-                    options="-c statement_timeout=5000 "
-                            "-c default_transaction_read_only=on") as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SHOW server_version")
-                    row = cur.fetchone()
-                    version = row[0] if row else None
-    except ImportError as e:
-        # The SQL Server driver is optional and only installed on hosts that
-        # serve MSSQL targets. Say that plainly — the scrubbed pyodbc message
-        # ("No module named ...") reads like a bug in QueryHub.
-        log.warning("connection test: driver unavailable for %s: %r", engine, e)
-        return {"ok": False, "latencyMs": None, "serverVersion": None,
-                "error": "The QueryHub host has no driver for this engine."}
-    except Exception as e:
-        log.info("connection test failed for %s:%s (%s): %r",
-                 host, port, engine, e)
-        message = errors.scrub(e)
-        # scrub() redacts the hostname SHAPES it knows — managed-cloud
-        # endpoints, private IPv4 ranges, libpq `host=` fragments — and a
-        # target on a private domain matches none of them, so libpq's
-        # `connection to server at "..."` preamble survives it. This probe is
-        # the one place that knows exactly which host it dialled, so redact it
-        # by value rather than hoping a pattern covers the next naming scheme.
-        if host:
-            message = message.replace(host, "the host")
-        return {"ok": False,
-                "latencyMs": int((time.monotonic() - started) * 1000),
-                "serverVersion": None, "error": message}
-    return {"ok": True, "latencyMs": int((time.monotonic() - started) * 1000),
-            "serverVersion": str(version) if version else None, "error": None}
+    return connection_probe.probe(engine, host, port, database, username,
+                                  password, timeout_sec=_PROBE_TIMEOUT_SEC)
 
 
 class CredentialIn(BaseModel):
@@ -982,8 +1126,16 @@ def admin_connections(claims: dict = Depends(deps.current_user)):
     Disabled targets are included, which they were not before this screen
     could create one: a new connection starts disabled, so a list that showed
     only enabled rows would hide the row the admin had just added.
+
+    The DBA level (PLA-1592 U14). A super-admin gets the full rows. A DBA who
+    is not a super-admin gets each row through DBA_CONNECTION_FIELDS.
+
+    `health` is the last periodic check (scripts/check_connection_health.py),
+    or null: never checked, out of its scope, or the check is off.
+    `inRotation` says whether automatic routing sends read-only requests to a
+    read replica (replicas.in_rotation). It is null on any other row.
     """
-    admin.require_admin(claims, "access")
+    uid = admin.require_admin(claims, "dba")
     # Who is responsible for each one (migration 115). A target used to be an
     # independent object and the only link to a team was a hostname string
     # joined at query time — which meant this screen could not answer "whose
@@ -1006,11 +1158,18 @@ def admin_connections(claims: dict = Depends(deps.current_user)):
     # trip per row on the screen whose job is to show every row: 117 targets,
     # 121 statements.
     catalog_dbs = routes_data._catalog_databases_map([r["id"] for r in rows])
+    # One read each for the whole fleet, as above.
+    health = connection_health.by_target(rows)
+    rotation = replicas.in_rotation(rows)
     out = []
     for r in rows:
         payload = _connection_payload(r, catalog_dbs.get(r["id"], []))
         payload["owners"] = owners.get(r["id"], [])
+        payload["health"] = mapping.connection_health(health.get(r["id"]))
+        payload["inRotation"] = rotation.get(r["id"])
         out.append(payload)
+    if not admins.is_super_admin(uid):
+        out = _dba_connection_rows(out)
     return {"connections": out}
 
 
@@ -1527,8 +1686,11 @@ def admin_test_connection(conn: str,
     columns, so a target whose secrets live in an external store is tested the
     same way the executor would use it — otherwise this button would pass or
     fail for reasons unrelated to whether a query could actually run.
+
+    The DBA level (PLA-1592 U14). For a DBA who is not a super-admin, the
+    error goes through `_dba_test_answer`, so the answer names no credential.
     """
-    admin.require_admin(claims, "access")
+    uid = admin.require_admin(claims, "dba")
     row = _require_target_row(conn)
     try:
         username, password = targets.get_credentials(row["id"], "ro")
@@ -1542,8 +1704,11 @@ def admin_test_connection(conn: str,
         return {"ok": False, "latencyMs": None, "serverVersion": None,
                 "error": "This connection has no stored read-only "
                          "credentials yet."}
-    return _probe(row["engine"], row["host"], row["port"],
-                  row["default_database"], username, password)
+    out = _probe(row["engine"], row["host"], row["port"],
+                 row["default_database"], username, password)
+    if admins.is_super_admin(uid):
+        return out
+    return _dba_test_answer(out, username, password)
 
 
 @router.post("/connections/{conn}/schema-refresh")
@@ -1970,13 +2135,15 @@ def _team_waiver_plan(team: dict, tid: int, dbs: list[str] | None, tier: str,
     if not teams_mod.use_v2():
         raise deps._error(400, "bad_request",
                           "Team waivers need the new access model.")
+    # A switched-off waiver (migration 146) decides nothing, so it covers
+    # nothing either. `_write_team_waivers` then supersedes it with a live one.
     held = [{"id": f"ag:{r['id']}", "max_tier": r["tier"],
              "target_server_id": r["target_id"], "database_name": r["database_name"],
              "starts_at": r["valid_from"], "expires_at": r["valid_until"]}
             for r in db.fetch_all(
                 "SELECT id, tier, target_id, database_name, valid_from, valid_until "
                 "  FROM access_grant "
-                " WHERE team_id = %s AND auto_approve "
+                " WHERE team_id = %s AND auto_approve AND enabled "
                 "   AND revoked_at IS NULL AND NOT is_deleted", (team["id"],))]
     target = targets.get(tid)
     held = [w for w in held if auto_approve.waiver_applies(target, w)]
@@ -2068,7 +2235,7 @@ def admin_fleet_grants(claims: dict = Depends(deps.current_user)):
     admin.require_admin(claims, "access")
     rows = db.fetch_all(
         "SELECT g.id, g.team_id, g.tier, g.auto_approve, g.reason, g.mirrored_from, "
-        "       g.valid_until, g.created_at, p.display_name AS person, "
+        "       g.valid_until, g.created_at, g.enabled, p.display_name AS person, "
         "       (SELECT i.external_id FROM principal_identity i "
         "         WHERE i.principal_id = p.id AND i.provider = 'slack' "
         "           AND NOT i.is_deleted LIMIT 1) AS slack_id, "
@@ -2090,6 +2257,10 @@ def admin_fleet_grants(claims: dict = Depends(deps.current_user)):
         "expiresAt": mapping.iso(r["valid_until"]),
         "createdAt": mapping.iso(r["created_at"]),
         "syncedFrom": r["mirrored_from"],
+        # FALSE only on a waiver that is switched off (migration 146): it is
+        # listed, and it skips no review. Its id switches it on again with
+        # PATCH /admin/auto-grants/ag:<id>.
+        "enabled": bool(r.get("enabled", True)),
     } for r in rows]}
 
 
@@ -2262,6 +2433,167 @@ def admin_delete_grant(gid: str, claims: dict = Depends(deps.current_user)):
         raise deps._error(404, "not_found", "No active grant to revoke.")
 
 
+class GrantPatchIn(BaseModel):
+    """What a grant can be edited into in place: its end, and the reason the
+    audit row records for the change. Anything else is a new grant
+    (POST /admin/grants) or a revoke. A field this endpoint does not know is
+    refused, not dropped: a client that believes it changed a tier must not
+    get a 200 from a server that ignored it."""
+    expiresAt: str | None = None
+    reason: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+def _end_text(at) -> str:
+    """`30 Oct 2026 14:00 UTC`, in UTC whatever zone the session reads in."""
+    if at is None:
+        return "no end"
+    if at.tzinfo is not None:
+        at = at.astimezone(timezone.utc)
+    return f"{at:%d %b %Y %H:%M} UTC"
+
+
+def _end_note(gid: str, old, new) -> str:
+    """The audit row's sentence: `Extended u:U0EXAMPLE001:12 from 25 Oct 2026
+    14:00 UTC to 30 Oct 2026 14:00 UTC`. "Shortened" when the end moves
+    nearer: the same endpoint does both, and an auditor reads the verb."""
+    longer = new is None or (old is not None and new > old)
+    return (f"{'Extended' if longer else 'Shortened'} {gid} "
+            f"from {_end_text(old)} to {_end_text(new)}")
+
+
+def _grant_ended(old_end) -> HTTPException:
+    return deps._error(
+        409, "grant_ended",
+        f"This grant ended on {_end_text(old_end)}. Readers already treat it "
+        "as no access, so it cannot be extended. Grant the access again with "
+        "POST /admin/grants.")
+
+
+@router.patch("/grants/{gid}")
+def admin_extend_grant(gid: str, body: GrantPatchIn,
+                       claims: dict = Depends(deps.current_user)):
+    """Move a live grant's end date in place: no revoke, no new grant.
+
+    Same id forms, same authority and same write paths as the revoke. A
+    person's grant is a `user_target_grants` row. The migration-109 mirror
+    carries the new end into `access_grant` in this same transaction. A team's
+    grant is `access_grant` rows under access_model_v2 (one per database, all
+    moved together), and a `team_target_grants` row otherwise. The auth-event
+    trigger tells the grantee or every member.
+
+    `expiresAt` is required: an ISO-8601 time still ahead, or null for no end.
+    An earlier end is accepted too (the note says "Shortened").
+
+    A grant that has already ended is refused with 409. Every reader treats an
+    ended grant as no access, and an ended personal grant even blocks the
+    team's access on that server (access.py, rule 2). So moving its end is
+    not an extension: it gives access again, and that is what POST
+    /admin/grants is for. That path records who granted it and when.
+
+    Returns the grant as GET /admin/grants lists it.
+    """
+    uid = admin.require_admin(claims, "access")
+    parsed = _parse_grant_id(gid)
+    if parsed is None:
+        raise deps._error(400, "bad_request", "Bad grant id.")
+    if "expiresAt" not in body.model_fields_set:
+        raise deps._error(400, "bad_request",
+                          "Send expiresAt: an ISO-8601 time, or null for no end.")
+    new_end = _future_moment(body.expiresAt) if body.expiresAt else None
+    reason = (body.reason or "").strip() or None
+    tid = parsed["target_id"]
+    # The create path's refusal, for the same reason: more time on the bot's
+    # own database is more time to edit the audit log.
+    if tid in grants.control_plane_target_ids():
+        raise deps._error(
+            403, "forbidden",
+            "Refused: that connection is the bot's own control-plane database. "
+            "Access to it would allow tampering with the audit log and the "
+            "admin list.")
+
+    if parsed["kind"] == "t":
+        try:
+            team_id = int(parsed["subject"])
+        except ValueError:
+            raise deps._error(400, "bad_request", "Bad team grant id.")
+        with db.transaction() as cur:
+            if teams_mod.use_v2():
+                cur.execute(
+                    "SELECT id, valid_until AS ends, mirrored_from, "
+                    "       (valid_until IS NOT NULL AND valid_until <= NOW()) AS ended "
+                    "  FROM access_grant "
+                    " WHERE team_id = %s AND target_id = %s AND NOT auto_approve "
+                    "   AND revoked_at IS NULL AND NOT is_deleted "
+                    "   FOR UPDATE", (team_id, tid))
+                rows = cur.fetchall()
+                if not rows:
+                    raise deps._error(404, "not_found", "No team grant to extend.")
+                if any(r["mirrored_from"] for r in rows):
+                    raise deps._error(
+                        409, "conflict",
+                        "This grant mirrors the legacy team_target_grants table. "
+                        "Change it there, or the mirror writes it again.")
+                # The list shows the EARLIEST end of the team's rows, and so
+                # does this check: one database that has ended is an ended grant.
+                old_end = min((r["ends"] for r in rows if r["ends"]), default=None)
+                if any(r["ended"] for r in rows):
+                    raise _grant_ended(old_end)
+                cur.execute("UPDATE access_grant SET valid_until = %s WHERE id = ANY(%s)",
+                            (new_end, [r["id"] for r in rows]))
+            else:
+                cur.execute(
+                    "SELECT expires_at AS ends, "
+                    "       (expires_at IS NOT NULL AND expires_at <= NOW()) AS ended "
+                    "  FROM team_target_grants "
+                    " WHERE team_id = %s AND target_server_id = %s "
+                    "   AND revoked_at IS NULL FOR UPDATE", (team_id, tid))
+                row = cur.fetchone()
+                if row is None:
+                    raise deps._error(404, "not_found", "No team grant to extend.")
+                old_end = row["ends"]
+                if row["ended"]:
+                    raise _grant_ended(old_end)
+                cur.execute(
+                    "UPDATE team_target_grants SET expires_at = %s "
+                    " WHERE team_id = %s AND target_server_id = %s "
+                    "   AND revoked_at IS NULL", (new_end, team_id, tid))
+            audit.log_in(cur, None, uid, claims.get("name"), "team_grant_expiry_changed",
+                         {"grant_id": gid, "team_id": team_id, "target_id": tid,
+                          "from": mapping.iso(old_end),
+                          "expires_at": mapping.iso(new_end), "reason": reason,
+                          "note": _end_note(gid, old_end, new_end)})
+    else:
+        subject = parsed["subject"]
+        with db.transaction() as cur:
+            cur.execute(
+                "SELECT expires_at AS ends, "
+                "       (expires_at IS NOT NULL AND expires_at <= NOW()) AS ended "
+                "  FROM user_target_grants "
+                " WHERE slack_user_id = %s AND target_server_id = %s "
+                "   AND revoked_at IS NULL FOR UPDATE", (subject, tid))
+            row = cur.fetchone()
+            if row is None:
+                raise deps._error(404, "not_found", "No active grant to extend.")
+            old_end = row["ends"]
+            if row["ended"]:
+                raise _grant_ended(old_end)
+            # NOT suppressing app.auth_dm_suppress: the auth-event trigger tells
+            # the grantee their access now ends at another time.
+            cur.execute(
+                "UPDATE user_target_grants SET expires_at = %s "
+                " WHERE slack_user_id = %s AND target_server_id = %s "
+                "   AND revoked_at IS NULL", (new_end, subject, tid))
+            audit.log_in(cur, None, uid, claims.get("name"), "grant_expiry_changed",
+                         {"grant_id": gid, "grantee": subject, "target_id": tid,
+                          "from": mapping.iso(old_end),
+                          "expires_at": mapping.iso(new_end), "reason": reason,
+                          "note": _end_note(gid, old_end, new_end)})
+    entry = next((g for g in admin_grants(claims)["grants"] if g["id"] == gid), None)
+    return entry or {"id": gid, "expiresAt": mapping.iso(new_end)}
+
+
 # ---------- People directory + Teams (super-admin) ----------
 def _initials(name: str | None, fallback: str) -> str:
     parts = [p for p in re.split(r"\s+", (name or "").strip()) if p]
@@ -2297,8 +2629,11 @@ def admin_people(claims: dict = Depends(deps.current_user)):
     admin.require_admin(claims, "access")
     # The UNION is wrapped rather than ordered in place: a set operation can
     # only ORDER BY output column NAMES, so the sort key has to sit outside it.
+    # `lastQueryAt` (PLA-1592 U6) comes from ONE grouped read joined to the
+    # whole list, never a query per person. A draft is a reserved id for an
+    # open editor tab, not a query, so it does not count.
     rows = db.fetch_all(
-        "SELECT * FROM ("
+        "SELECT p.*, lq.last_query_at FROM ("
         "  SELECT slack_user_id, name, enabled, 'requester' AS kind"
         "    FROM requesters"
         "   UNION ALL"
@@ -2318,7 +2653,12 @@ def admin_people(claims: dict = Depends(deps.current_user)):
         "                      WHERE r.slack_user_id = g.slack_user_id)"
         "     AND NOT EXISTS (SELECT 1 FROM admins a"
         "                      WHERE a.slack_user_id = g.slack_user_id)"
-        ") p ORDER BY p.enabled DESC, lower(coalesce(p.name, p.slack_user_id))")
+        ") p"
+        " LEFT JOIN (SELECT requester_slack_id, max(created_at) AS last_query_at"
+        "              FROM requests WHERE status <> 'draft'"
+        "             GROUP BY requester_slack_id) lq"
+        "   ON lq.requester_slack_id = p.slack_user_id"
+        " ORDER BY p.enabled DESC, lower(coalesce(p.name, p.slack_user_id))")
     return {"people": [{
         "id": r["slack_user_id"], "handle": r["slack_user_id"],
         "slackId": r["slack_user_id"], "name": r["name"] or r["slack_user_id"],
@@ -2327,6 +2667,8 @@ def admin_people(claims: dict = Depends(deps.current_user)):
         # and marks by these; nothing is inferred from the row being present.
         "enabled": bool(r["enabled"]),
         "kind": r["kind"],
+        # When this person last sent a query, or null if never.
+        "lastQueryAt": mapping.iso(r.get("last_query_at")),
     } for r in rows]}
 
 
@@ -2957,9 +3299,11 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
               # as "none" for the one option that skips human review.
               would_auto = 0
               if body.includeAutoApprove:
+                  # Switched-off rules are not copied (migration 146), so they
+                  # are not counted either.
                   cur.execute(
                       "SELECT count(*) AS n FROM auto_approve_grants "
-                      " WHERE slack_user_id = %s "
+                      " WHERE slack_user_id = %s AND enabled "
                       "   AND (expires_at IS NULL OR expires_at > NOW())",
                       (body.source,))
                   would_auto = int((cur.fetchone() or {}).get("n") or 0)
@@ -3009,10 +3353,12 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
           # human review, so it is copied only when asked for.
           auto_copied: list[str] = []
           if body.includeAutoApprove:
+              # A rule the source has switched off approves nothing for them,
+              # so it must not arrive switched on for the new person.
               cur.execute(
                   "SELECT target_server_id, database_name, max_tier, expires_at "
                   "  FROM auto_approve_grants "
-                  " WHERE slack_user_id = %s "
+                  " WHERE slack_user_id = %s AND enabled "
                   "   AND (expires_at IS NULL OR expires_at > NOW())",
                   (body.source,))
               for r in cur.fetchall():
@@ -3131,18 +3477,23 @@ def _effective_access_legacy(slack_id: str) -> tuple[list, list, dict | None]:
                 (team or {}).get("expires_at") if src == "team" else own_exp.get(t.id)),
         })
 
+    # The waivers that decide today: started, not ended, and switched on
+    # (migration 146), as auto_approve.active_grants reads them.
     auto = db.fetch_all(
         "SELECT max_tier, target_server_id, database_name, expires_at "
         "  FROM auto_approve_grants "
-        " WHERE slack_user_id = %s AND starts_at <= NOW() "
+        " WHERE slack_user_id = %s AND enabled AND starts_at <= NOW() "
         "   AND (expires_at IS NULL OR expires_at > NOW())", (slack_id,))
 
     # Standing as an APPROVER, which is a different question from what they can
     # query and is invisible in the grant tables. Leaving it out made the view
     # answer "what can they read" when the question asked is usually "what can
     # this person do here".
+    # A scope whose end has passed (migration 147) reads as switched off: it
+    # decides nothing, exactly like a disabled row.
     adm = db.fetch_one(
-        "SELECT max_tier, scope_team_ids, scope_target_ids, can_grant, enabled "
+        "SELECT max_tier, scope_team_ids, scope_target_ids, can_grant, "
+        "       (enabled AND (expires_at IS NULL OR expires_at > NOW())) AS enabled "
         "  FROM admins WHERE slack_user_id = %s", (slack_id,))
 
     auto_out = [{
@@ -3347,8 +3698,12 @@ def admin_effective_access(slack_id: str,
     executor uses, rather than re-deriving the answer. It reports; it changes
     nothing and impersonates nobody, and the audit row names the admin who
     looked.
+
+    The DBA level (PLA-1592 U13): a DBA reads the access of the person whose
+    request they review. This route only reads access. A DBA still cannot
+    change a grant.
     """
-    uid = admin.require_admin(claims, "access")
+    uid = admin.require_admin(claims, "dba")
     if not _valid_principal(slack_id):
         raise deps._error(400, "bad_request",
                           "The principal id is not valid. "
@@ -3452,12 +3807,14 @@ def _blocked_v2(slack_id: str, teams_of: list[dict]) -> list[dict]:
 
 
 def _team_rows_v2(team_id: int) -> tuple[list, list, list]:
+    # `g.enabled`: a switched-off waiver (migration 146) is not one the team
+    # holds today. Grant rows are always on, so they are unaffected.
     grants_ = db.fetch_all(
         "SELECT g.target_id, g.database_name, g.all_databases, g.tier, "
         "       g.auto_approve, g.valid_until "
         "  FROM access_grant g "
         " WHERE g.team_id = %s AND NOT g.all_targets "
-        "   AND g.revoked_at IS NULL AND NOT g.is_deleted "
+        "   AND g.revoked_at IS NULL AND NOT g.is_deleted AND g.enabled "
         "   AND g.valid_from <= NOW() "
         "   AND (g.valid_until IS NULL OR g.valid_until > NOW())", (team_id,))
     members = db.fetch_all(
@@ -3503,7 +3860,8 @@ def _team_rows_legacy(team_id: int) -> tuple[list, list, list]:
          "any_tier": a["max_tier"] is None}
         for a in db.fetch_all(
             "SELECT slack_user_id, name, max_tier, scope_target_ids FROM admins "
-            " WHERE enabled AND scope_team_ids IS NOT NULL AND %s = ANY(scope_team_ids)",
+            " WHERE enabled AND (expires_at IS NULL OR expires_at > NOW()) "
+            "   AND scope_team_ids IS NOT NULL AND %s = ANY(scope_team_ids)",
             (team_id,))
         for t in (a["scope_target_ids"] or [None])]
     return grants_, members, approvers
@@ -3604,7 +3962,8 @@ def _super_approvers() -> int:
             + access_model._LIVE_ROLE)
     else:
         row = db.fetch_one("SELECT count(*) AS n FROM admins "
-                           " WHERE enabled AND scope_team_ids IS NULL")
+                           " WHERE enabled AND scope_team_ids IS NULL "
+                           "   AND (expires_at IS NULL OR expires_at > NOW())")
     return int((row or {}).get("n") or 0)
 
 
@@ -3950,6 +4309,111 @@ def admin_delete_auto_grant(grant_id: str,
                       "target_id": row["target_server_id"]})
 
 
+class AutoGrantPatchIn(BaseModel):
+    """The one thing a rule can be edited into: on or off. A field this
+    endpoint does not know is refused, not dropped: a client that believes it
+    changed a rule's tier must not get a 200 from a server that ignored it."""
+    enabled: bool
+
+    model_config = {"extra": "forbid"}
+
+
+def _rule_ended(row: dict) -> HTTPException:
+    return deps._error(
+        409, "rule_ended",
+        "This auto-approve rule ended"
+        + (f" on {_end_text(row['ends'])}" if row.get("ends") else "")
+        + ". Switching it on or off changes nothing. Create a new rule instead.")
+
+
+@router.patch("/auto-grants/{grant_id}")
+def admin_set_auto_grant(grant_id: str, body: AutoGrantPatchIn,
+                         claims: dict = Depends(deps.current_user)):
+    """Switch one auto-approve rule off, or on again (migration 146).
+
+    Off, the rule approves nothing. The submit decision reads only switched-on
+    rules (`auto_approve.active_grants`), and the migration-109 mirror revokes
+    the copy of a legacy rule in `access_grant`. On again, the rule decides
+    again. The row, its reason and its run count stay either way. A delete
+    loses all three.
+
+    Same id forms as the DELETE: a number for a legacy rule, `ag:<id>` for a
+    waiver that lives only in `access_grant`. Same authority: super-admin.
+
+    A rule that has ended is refused with 409. Switching it changes nothing,
+    and the list does not show it any more. An edit that changes nothing writes
+    no audit row. Returns the rule as the list shows it, plus `changed`.
+    """
+    uid = admin.require_admin(claims, "access")
+    want = bool(body.enabled)
+    action = "auto_approve_enabled" if want else "auto_approve_disabled"
+    if grant_id.startswith("ag:"):
+        try:
+            ag_id = int(grant_id[3:])
+        except ValueError:
+            raise deps._error(400, "bad_request", "Bad auto-grant id.")
+        key = f"ag:{ag_id}"
+        with db.transaction() as cur:
+            # A mirrored row is not addressable here, as on the DELETE: its
+            # legacy source decides it, and the list never shows it.
+            cur.execute(
+                "SELECT id, team_id, principal_id, target_id, database_name, tier, "
+                "       enabled, valid_until AS ends, "
+                "       (valid_until IS NOT NULL AND valid_until <= NOW()) AS ended "
+                "  FROM access_grant "
+                " WHERE id = %s AND auto_approve AND mirrored_from IS NULL "
+                "   AND revoked_at IS NULL AND NOT is_deleted "
+                "   FOR UPDATE", (ag_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise deps._error(404, "not_found", "No such auto-grant.")
+            if row["ended"]:
+                raise _rule_ended(row)
+            changed = bool(row["enabled"]) != want
+            if changed:
+                # NOT suppressing app.auth_dm_suppress: the auth-event trigger
+                # tells every person the waiver reaches.
+                cur.execute("UPDATE access_grant SET enabled = %s WHERE id = %s",
+                            (want, ag_id))
+                audit.log_in(cur, None, uid, claims.get("name"), action,
+                             {"grant_id": key, "team_id": row["team_id"],
+                              "target_id": row["target_id"],
+                              "database": row["database_name"],
+                              "tier": row["tier"]})
+    else:
+        try:
+            legacy_id = int(grant_id)
+        except ValueError:
+            raise deps._error(400, "bad_request", "Bad auto-grant id.")
+        key = str(legacy_id)
+        with db.transaction() as cur:
+            cur.execute(
+                "SELECT id, slack_user_id, target_server_id, database_name, "
+                "       max_tier, enabled, expires_at AS ends, "
+                "       (expires_at IS NOT NULL AND expires_at <= NOW()) AS ended "
+                "  FROM auto_approve_grants WHERE id = %s FOR UPDATE", (legacy_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise deps._error(404, "not_found", "No such auto-grant.")
+            if row["ended"]:
+                raise _rule_ended(row)
+            changed = bool(row["enabled"]) != want
+            if changed:
+                # The migration-109 mirror runs inside this statement and revokes
+                # (off) or writes again (on) the copy in access_grant. The
+                # auth-event trigger tells the person.
+                cur.execute("UPDATE auto_approve_grants SET enabled = %s WHERE id = %s",
+                            (want, legacy_id))
+                audit.log_in(cur, None, uid, claims.get("name"), action,
+                             {"grant_id": legacy_id, "user": row["slack_user_id"],
+                              "target_id": row["target_server_id"],
+                              "database": row["database_name"],
+                              "tier": row["max_tier"]})
+    entry = next((e for e in admin_auto_grants(claims)["autoGrants"]
+                  if e["id"] == key), None)
+    return {**(entry or {"id": key, "enabled": want}), "changed": changed}
+
+
 class WindowDecisionIn(BaseModel):
     approve: bool
 
@@ -3957,7 +4421,8 @@ class WindowDecisionIn(BaseModel):
 @router.get("/auto-approve-requests")
 def admin_window_requests(claims: dict = Depends(deps.current_user)):
     """Auto-approve window requests waiting for a decision -- the ones this
-    admin may decide, by the same scope the Slack card checks.
+    admin may decide. The rules are the rules of the Slack card: the scope,
+    and a super-admin for a RW window on a production connection.
 
     `days` is whole days, null for Slack's short windows; `windowLabel` reads
     right for both ("8h", "7 days").
@@ -3967,9 +4432,7 @@ def admin_window_requests(claims: dict = Depends(deps.current_user)):
     from .. import window_options
     out = []
     for r in aar.list_pending():
-        if not admins.can_approve(uid, {"required_tier": r["max_tier"],
-                                        "target_server_id": r["target_server_id"],
-                                        "requester_slack_id": r["requester_slack_id"]}):
+        if not aar.can_decide(uid, r, r["alias"]):
             continue
         m = r["window_minutes"]
         out.append({
@@ -4100,16 +4563,23 @@ def admin_bulk_create_auto_grants(body: BulkAutoGrantIn,
     unreachable = _reach_refusals(body.subject, team, tier, plan)
     refused += unreachable
     if team is not None and plan:
-        live = {(r["target_id"], r["database_name"]) for r in db.fetch_all(
-            "SELECT target_id, database_name FROM access_grant "
-            " WHERE team_id = %s AND auto_approve AND tier = %s "
-            "   AND revoked_at IS NULL AND NOT is_deleted", (team["id"], tier))}
+        # A switched-off waiver (migration 146) still holds its place in
+        # `access_grant_live_uq`, so a second one cannot be written beside it.
+        # The refusal says to switch it on instead.
+        live = {(r["target_id"], r["database_name"]): bool(r.get("enabled", True))
+                for r in db.fetch_all(
+                    "SELECT target_id, database_name, enabled FROM access_grant "
+                    " WHERE team_id = %s AND auto_approve AND tier = %s "
+                    "   AND revoked_at IS NULL AND NOT is_deleted", (team["id"], tier))}
         named = {x["target"] for x in unreachable}      # one refusal per target
         for p in plan:
             if (p["tid"], p["db"]) in live and p["label"] not in named:
                 refused.append({"target": p["label"], "connectionId": p["connectionId"],
                                 "databaseId": p["databaseId"],
-                                "reason": "The team already holds this waiver."})
+                                "reason": ("The team already holds this waiver."
+                                           if live[(p["tid"], p["db"])] else
+                                           "The team already holds this waiver, but it "
+                                           "is switched off. Switch it on instead.")})
     if refused:
         raise deps._error(
             409, "conflict",
@@ -4220,6 +4690,10 @@ def admin_decide_endpoint(req_id: int, body: EndpointDecisionIn,
 # NULL (+ can_grant); a scoped DBA = max_tier (+ optional target scope). The
 # auth_event trigger on `admins` DMs the affected user. The last super-admin can
 # never be demoted or removed, or nobody can grant.
+#
+# A DBA scope can end (`expiresAt`, migration 147). The end is enforced where
+# the scope is read: `role_assignment.valid_until` under access_model_v2 (the
+# mirror projects it), the `admins` readers otherwise. A super-admin never ends.
 
 _TIER_ORDER = {"ro": 0, "rw": 1, "ddl": 2}
 
@@ -4229,6 +4703,28 @@ class ScopeIn(BaseModel):
     role: str = "dba"                                   # dba | super
     canApprove: list[str] = Field(default_factory=list)  # RO/RW/DDL (dba only)
     connections: list[str] = Field(default_factory=list)  # aliases, or [] = all
+    # When the scope stops applying (migration 147): ISO-8601, or null for no
+    # end. Left out of the body, an end that is stored and still ahead is KEPT.
+    # A client that has never heard of this field must not turn a scope that
+    # ends on Friday into one that never ends by editing its tiers.
+    expiresAt: str | None = None
+
+
+def _future_moment(value: str, field: str = "expiresAt") -> datetime:
+    """An ISO-8601 moment that is still ahead, read as UTC when it has no
+    zone. A moment already past is refused: a row that ends before it is
+    written reads to the admin as done, and decides nothing."""
+    try:
+        at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise deps._error(400, "bad_request", f"{field} must be an ISO-8601 timestamp.")
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    if at <= datetime.now(timezone.utc):
+        raise deps._error(400, "bad_request",
+                          f"{field} is in the past. Send a later time, or null "
+                          "for no end.")
+    return at
 
 
 def _apply_scope(body: ScopeIn, uid: str, actor_name: str | None) -> dict:
@@ -4242,6 +4738,9 @@ def _apply_scope(body: ScopeIn, uid: str, actor_name: str | None) -> dict:
         raise deps._error(409, "conflict",
                           "Refused: you cannot demote the last super-admin. "
                           "Promote another person first.")
+    # Parsed before anything is written, so a bad date is a 400, not half a scope.
+    sent_end = "expiresAt" in body.model_fields_set
+    new_end = _future_moment(body.expiresAt) if sent_end and body.expiresAt else None
 
     if role == "super":
         max_tier, target_ids, can_grant = None, None, True
@@ -4264,22 +4763,43 @@ def _apply_scope(body: ScopeIn, uid: str, actor_name: str | None) -> dict:
 
     admin_name = _slack_profile(target).get("name")
     with db.transaction() as cur:
+        # The end this write leaves on the row. Sent: what was sent (null is no
+        # end). Not sent: the stored end, but only while the scope is live and
+        # the end is still ahead. A disabled or ended row's old end must not
+        # make a fresh scope dead on arrival.
+        cur.execute(
+            "SELECT expires_at FROM admins "
+            " WHERE slack_user_id = %s AND enabled AND expires_at > NOW() "
+            "   FOR UPDATE", (target,))
+        live = cur.fetchone()
+        end = new_end if sent_end else (live["expires_at"] if live else None)
+        if role == "super" and end is not None:
+            # The new model never treats a role with an end as a super-admin
+            # (access.is_super_admin), and admins_super_admin_never_ends
+            # refuses the row. Said here, before the write, in words.
+            raise deps._error(
+                400, "bad_request",
+                "A super-admin has no end date. Send expiresAt: null to make "
+                "this role permanent, or keep role dba with the end date.")
         cur.execute(
             "INSERT INTO admins (slack_user_id, name, added_by, enabled, "
-            "  max_tier, scope_team_ids, scope_target_ids, can_grant) "
-            "VALUES (%s, %s, %s, TRUE, %s, NULL, %s, %s) "
+            "  max_tier, scope_team_ids, scope_target_ids, can_grant, expires_at) "
+            "VALUES (%s, %s, %s, TRUE, %s, NULL, %s, %s, %s) "
             "ON CONFLICT (slack_user_id) DO UPDATE SET "
             "  enabled = TRUE, name = COALESCE(EXCLUDED.name, admins.name), "
             "  max_tier = EXCLUDED.max_tier, scope_team_ids = EXCLUDED.scope_team_ids, "
-            "  scope_target_ids = EXCLUDED.scope_target_ids, can_grant = EXCLUDED.can_grant",
-            (target, admin_name, uid, max_tier, target_ids, can_grant))
+            "  scope_target_ids = EXCLUDED.scope_target_ids, can_grant = EXCLUDED.can_grant, "
+            "  expires_at = EXCLUDED.expires_at",
+            (target, admin_name, uid, max_tier, target_ids, can_grant, end))
         audit.log_in(cur, None, uid, actor_name, "admin_scope_set",
                      {"admin": target, "role": role, "max_tier": max_tier,
-                      "scope_target_ids": target_ids})
+                      "scope_target_ids": target_ids,
+                      "expires_at": end.isoformat() if end else None})
     blk = admin.admin_block(target) or {}
     return {"id": target, "admin": admin_name or target,
             "role": blk.get("role", role), "canApprove": blk.get("canApprove", []),
-            "connections": blk.get("connections", [])}
+            "connections": blk.get("connections", []),
+            "expiresAt": mapping.iso(end)}
 
 
 @router.post("/scopes", status_code=201)
@@ -4816,10 +5336,13 @@ def admin_mask_exemptions(claims: dict = Depends(deps.current_user)):
         "       e.table_name, e.column_name, e.reason, e.enabled, "
         "       e.created_by, e.created_at, e.updated_by, e.updated_at, "
         "       e.apply_in_joins, e.keep_value_scan, e.super_admin_only, "
+        "       e.audience, e.audience_team_id, e.expires_at, "
+        "       (e.expires_at IS NOT NULL AND e.expires_at <= NOW()) AS expired, "
         "       ts.alias "
         "  FROM pii_masking_exemptions e "
         "  LEFT JOIN target_servers ts ON ts.id = e.target_server_id "
         " ORDER BY e.enabled DESC, e.id")
+    _mask_team_names(rows)
 
     names = sorted({r["column_name"] for r in rows if r["column_name"]})
     explained = pii.explain_columns(names) if names else {}
@@ -4845,7 +5368,9 @@ def admin_mask_exemptions(claims: dict = Depends(deps.current_user)):
 
     aliases = {r["id"]: r["alias"] for r in db.fetch_all(
         "SELECT id, alias FROM target_servers WHERE enabled")}
-    live = [r for r in rows if r["enabled"]]
+    # Live = switched on AND not ended (migration 149). An ended row unmasks
+    # nothing, so it covers no sibling server and earns no suggestion.
+    live = [r for r in rows if r["enabled"] and not r.get("expired")]
 
     out = []
     for r in rows:
@@ -4859,7 +5384,7 @@ def admin_mask_exemptions(claims: dict = Depends(deps.current_user)):
                            r["column_name"]) not in cat
 
         also = []
-        if r["enabled"] and scope == "column" and dbname:
+        if r["enabled"] and not r.get("expired") and scope == "column" and dbname:
             for other, alias in sorted(aliases.items(), key=lambda kv: kv[1]):
                 if other == tid:
                     continue
@@ -4917,6 +5442,19 @@ def admin_mask_exemptions(claims: dict = Depends(deps.current_user)):
 _MASK_RUNGS = ("fleet", "server", "database", "schema", "table", "column")
 
 
+class MaskAudienceIn(BaseModel):
+    """Who an exemption unmasks for (migration 149): `{kind, teamId?}`.
+
+    `kind` is everyone, super, dba (any admin role holder, super-admins
+    included) or team. `teamId` names a team from GET /admin/teams, only for
+    kind team. The plain string form ("everyone", "super", "dba") is still
+    accepted, so a client that sends the old shape keeps working."""
+    kind: str
+    teamId: int | str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class MaskExemptionIn(BaseModel):
     connectionId: str | None = None
     databaseId: str | None = None
@@ -4928,10 +5466,68 @@ class MaskExemptionIn(BaseModel):
     column: str | None = None
     strength: str = "soft"
     survivesJoin: bool = False
-    audience: str = "everyone"
+    audience: str | MaskAudienceIn = "everyone"
+    # When the exemption stops applying, so masking comes back: ISO-8601, or
+    # null / left out for no end (migration 149).
+    expiresAt: str | None = None
     reason: str = ""
 
     model_config = {"populate_by_name": True}
+
+
+def _mask_audience(value) -> tuple[str, int | None]:
+    """(audience, team id) from either wire form, or a 400.
+
+    A team audience with no `teamId` comes back as ("team", None). A new row
+    refuses that; an edit reads it as "the team this row already names", so
+    a client that echoes the plain string back changes nothing."""
+    if isinstance(value, MaskAudienceIn):
+        kind = (value.kind or "").strip().lower()
+        team = value.teamId
+    else:
+        kind = (value or "").strip().lower()
+        team = None
+    if kind not in pii.AUDIENCES:
+        raise deps._error(400, "bad_request",
+                          "audience must be everyone, super, dba or team.")
+    if kind != "team":
+        if team not in (None, ""):
+            raise deps._error(400, "bad_request",
+                              "teamId is only for the team audience.")
+        return kind, None
+    if team in (None, ""):
+        return "team", None
+    try:
+        return "team", int(team)
+    except (TypeError, ValueError):
+        raise deps._error(400, "bad_request",
+                          "teamId must be a team id from GET /admin/teams.")
+
+
+def _mask_team_check(team_id: int) -> None:
+    """A team audience names a live `team` row, which only the new access model
+    reads. Refused before anything is written: a row for a team nobody can be a
+    member of would sit in the list looking like a protection removed for
+    somebody."""
+    if not teams_mod.use_v2():
+        raise deps._error(400, "bad_request",
+                          "A team audience needs the new access model.")
+    if _team_for_write(team_id) is None:
+        raise deps._error(404, "not_found", f"No team with id {team_id}.")
+
+
+def _mask_team_names(rows: list[dict]) -> None:
+    """Fill `audience_team_name` on the rows that name a team, in one read."""
+    ids = sorted({int(r["audience_team_id"]) for r in rows
+                  if r.get("audience_team_id") is not None})
+    if not ids:
+        return
+    names = {x["id"]: x["name"] for x in db.fetch_all(
+        "SELECT id, COALESCE(display_name, name) AS name FROM team "
+        " WHERE id = ANY(%s)", (ids,))}
+    for r in rows:
+        if r.get("audience_team_id") is not None:
+            r["audience_team_name"] = names.get(int(r["audience_team_id"]))
 
 
 class MaskPatchIn(BaseModel):
@@ -4950,7 +5546,9 @@ class MaskPatchIn(BaseModel):
     enabled: bool | None = None
     strength: str | None = None
     survivesJoin: bool | None = None
-    audience: str | None = None
+    audience: str | MaskAudienceIn | None = None
+    # Sent: the new end (null = no end). Not sent: untouched (migration 149).
+    expiresAt: str | None = None
     reason: str | None = None
 
     # Refused, never applied — see above.
@@ -4995,11 +5593,15 @@ def _mask_edit_fields(body: MaskPatchIn) -> dict:
     if body.survivesJoin is not None:
         out["apply_in_joins"] = body.survivesJoin
     if body.audience is not None:
-        audience = body.audience.strip().lower()
-        if audience not in ("everyone", "super"):
-            raise deps._error(400, "bad_request",
-                              "audience must be 'everyone' or 'super'.")
+        # The old flag follows the new column, so the two never disagree on a
+        # row this endpoint writes. A team with no id is resolved against the
+        # stored row by the caller (`admin_set_mask_exemption`).
+        audience, team_id = _mask_audience(body.audience)
         out["super_admin_only"] = audience == "super"
+        out["audience"] = audience
+        out["audience_team_id"] = team_id
+    if "expiresAt" in body.model_fields_set:
+        out["expires_at"] = _future_moment(body.expiresAt) if body.expiresAt else None
     if body.reason is not None:
         # The same rule the POST applies, for the same reason and in the same
         # words. Editing exists largely so a reason can be corrected; a reason
@@ -5036,7 +5638,18 @@ def _mask_row_core(r: dict, alias_of: dict | None = None) -> dict:
         "column": r["column_name"],
         "strength": "soft" if r["keep_value_scan"] else "full",
         "survivesJoin": bool(r["apply_in_joins"]),
-        "audience": "super" if r["super_admin_only"] else "everyone",
+        # The audience the masker applies (pii.audience_of): the old flag
+        # narrows the new column, never the other way round. One of everyone,
+        # super, dba, team (migration 149); the first two are what this field
+        # always carried.
+        "audience": pii.audience_of(r),
+        "audienceTeamId": (str(r["audience_team_id"])
+                           if r.get("audience_team_id") is not None else None),
+        "audienceTeamName": r.get("audience_team_name"),
+        # The end, and whether it has passed. An ended row is listed and
+        # applies to nobody: masking is back for every reader.
+        "expiresAt": mapping.iso(r.get("expires_at")),
+        "expired": bool(r.get("expired")),
         "reason": r["reason"],
         "enabled": bool(r["enabled"]),
         # Stored as a principal (a Slack id for anything written through the
@@ -5103,9 +5716,14 @@ def _mask_fields(body: MaskExemptionIn) -> tuple[int | None, dict]:
     strength = (body.strength or "soft").lower()
     if strength not in ("soft", "full"):
         raise deps._error(400, "bad_request", "strength must be soft or full.")
-    audience = (body.audience or "everyone").lower()
-    if audience not in ("everyone", "super"):
-        raise deps._error(400, "bad_request", "audience must be everyone or super.")
+    audience, team_id = _mask_audience(body.audience or "everyone")
+    if audience == "team":
+        if team_id is None:
+            raise deps._error(400, "bad_request",
+                              "A team audience needs teamId: "
+                              "{\"kind\": \"team\", \"teamId\": ...}.")
+        _mask_team_check(team_id)
+    expires_at = _future_moment(body.expiresAt) if body.expiresAt else None
 
     return tid, {
         "target_server_id": tid,
@@ -5116,7 +5734,12 @@ def _mask_fields(body: MaskExemptionIn) -> tuple[int | None, dict]:
         # Soft keeps the value scan running; full stops both layers.
         "keep_value_scan": strength == "soft",
         "apply_in_joins": bool(body.survivesJoin),
+        # The old flag follows the new column (migration 149), so the two
+        # never disagree on a row this endpoint writes.
         "super_admin_only": audience == "super",
+        "audience": audience,
+        "audience_team_id": team_id,
+        "expires_at": expires_at,
         "reason": reason,
     }
 
@@ -5177,6 +5800,10 @@ def admin_add_mask_exemption(body: MaskExemptionIn,
     # without one. Comparing the column straight would have found no duplicate
     # for any of them and quietly grown a second copy of every legacy row.
     schema_matters = f["table_name"] is None
+    # Who it is for and until when (migration 149) are settings of the row, not
+    # part of its reach: `uq_pii_masking_exemptions_scope` (migration 050)
+    # allows one row per reach. A second audience on the same reach is an Edit
+    # of the row that holds it, which the refusal below says.
     dupe = db.fetch_one(
         "SELECT id, enabled FROM pii_masking_exemptions "
         " WHERE target_server_id IS NOT DISTINCT FROM %s "
@@ -5207,10 +5834,12 @@ def admin_add_mask_exemption(body: MaskExemptionIn,
             "INSERT INTO pii_masking_exemptions "
             "  (target_server_id, database_name, schema_name, table_name, "
             "   column_name, keep_value_scan, apply_in_joins, "
-            "   super_admin_only, reason, created_by) "
+            "   super_admin_only, audience, audience_team_id, expires_at, "
+            "   reason, created_by) "
             "VALUES (%(target_server_id)s, %(database_name)s, %(schema_name)s, "
             "        %(table_name)s, %(column_name)s, %(keep_value_scan)s, "
-            "        %(apply_in_joins)s, %(super_admin_only)s, %(reason)s, %(by)s) "
+            "        %(apply_in_joins)s, %(super_admin_only)s, %(audience)s, "
+            "        %(audience_team_id)s, %(expires_at)s, %(reason)s, %(by)s) "
             "RETURNING id", {**f, "by": uid})
         new_id = cur.fetchone()["id"]
         audit.log_in(cur, None, uid, claims.get("name"), "pii_exemption_added",
@@ -5220,7 +5849,9 @@ def admin_add_mask_exemption(body: MaskExemptionIn,
                       "column": f["column_name"],
                       "strength": "soft" if f["keep_value_scan"] else "full",
                       "survives_join": f["apply_in_joins"],
-                      "audience": "super" if f["super_admin_only"] else "everyone",
+                      "audience": f["audience"],
+                      "audience_team_id": f["audience_team_id"],
+                      "expires_at": mapping.iso(f["expires_at"]),
                       "reason": f["reason"]})
     return {"id": str(new_id)}
 
@@ -5245,18 +5876,35 @@ def admin_set_mask_exemption(exemption_id: int, body: MaskPatchIn,
             "SELECT id, target_server_id, database_name, schema_name, "
             "       table_name, column_name, reason, enabled, created_by, "
             "       created_at, updated_by, updated_at, apply_in_joins, "
-            "       keep_value_scan, super_admin_only "
+            "       keep_value_scan, super_admin_only, audience, "
+            "       audience_team_id, expires_at, "
+            "       (expires_at IS NOT NULL AND expires_at <= NOW()) AS expired "
             "  FROM pii_masking_exemptions WHERE id = %s FOR UPDATE",
             (exemption_id,))
         before = cur.fetchone()
         if before is None:
             raise deps._error(404, "not_found", "No such exemption.")
 
+        # A team audience sent without its id keeps the team this row already
+        # names: a client that echoes the plain string "team" back is not
+        # asking to change anything. A team the row does not name yet is
+        # checked like a new row's.
+        if fields.get("audience") == "team":
+            if fields["audience_team_id"] is None:
+                if pii.audience_of(before) != "team" or before.get("audience_team_id") is None:
+                    raise deps._error(400, "bad_request",
+                                      "A team audience needs teamId: "
+                                      "{\"kind\": \"team\", \"teamId\": ...}.")
+                fields["audience_team_id"] = before["audience_team_id"]
+            elif fields["audience_team_id"] != before.get("audience_team_id"):
+                _mask_team_check(fields["audience_team_id"])
+
         # Only what actually differs. An edit that changes nothing must not
         # stamp `updated_by`, or every visit to the form rewrites the row's
         # history with an edit nobody made.
-        changes = {k: v for k, v in fields.items() if before[k] != v}
+        changes = {k: v for k, v in fields.items() if before.get(k) != v}
         if not changes:
+            _mask_team_names([before])
             return {**_mask_row_core(before, _mask_aliases()), "changed": False}
 
         sets = ", ".join(f"{k} = %({k})s" for k in changes)
@@ -5267,7 +5915,9 @@ def admin_set_mask_exemption(exemption_id: int, body: MaskPatchIn,
             "RETURNING id, target_server_id, database_name, schema_name, "
             "          table_name, column_name, reason, enabled, created_by, "
             "          created_at, updated_by, updated_at, apply_in_joins, "
-            "          keep_value_scan, super_admin_only",
+            "          keep_value_scan, super_admin_only, audience, "
+            "          audience_team_id, expires_at, "
+            "          (expires_at IS NOT NULL AND expires_at <= NOW()) AS expired",
             {**changes, "by": uid, "id": exemption_id})
         after = cur.fetchone()
         audit.log_in(cur, None, uid, claims.get("name"), "pii_exemption_changed",
@@ -5280,9 +5930,16 @@ def admin_set_mask_exemption(exemption_id: int, body: MaskPatchIn,
                       # Both sides of every field that moved. "changed" with no
                       # values is the audit row that sends the next reader to
                       # the table to find out what it was.
-                      "changed": {k: {"from": before[k], "to": v}
+                      "changed": {k: {"from": _audit_value(before.get(k)),
+                                      "to": _audit_value(v)}
                                   for k, v in changes.items()}})
+    _mask_team_names([after])
     return {**_mask_row_core(after, _mask_aliases()), "changed": True}
+
+
+def _audit_value(v):
+    """A value as an audit row's JSON can hold it: a time as ISO-8601."""
+    return mapping.iso(v) if isinstance(v, datetime) else v
 
 
 def _mask_aliases() -> dict:
@@ -6101,10 +6758,16 @@ def admin_audit_search(body: AuditSearchIn,
               # REFERENCE (`grant_id`), so naming it is a join — and the window
               # can be gone, which is why the null has to be distinguishable
               # from "there was never one".
+              #
+              # The cast sits inside CASE because SQL does not evaluate an AND
+              # left to right: with the regex as a sibling condition, the
+              # planner may cast first, and a `grant_id` like `ag:12` (a team
+              # waiver) or `u:<id>:<target>` (a grant id) then fails the whole
+              # search with InvalidTextRepresentation. CASE tests first.
               "  LEFT JOIN auto_approve_grants g "
               "    ON s.actor_kind = 'auto' "
-              "   AND al.details ->> 'grant_id' ~ '^[0-9]+$' "
-              "   AND g.id = (al.details ->> 'grant_id')::int "
+              "   AND g.id = CASE WHEN al.details ->> 'grant_id' ~ '^[0-9]{1,18}$' "
+              "                   THEN (al.details ->> 'grant_id')::bigint END "
               "  LEFT JOIN target_servers gts ON gts.id = g.target_server_id "
               f" WHERE {' AND '.join(page_where)} "
               " ORDER BY s.id DESC LIMIT %(lim)s", pp)
@@ -6229,12 +6892,18 @@ def _audit_row(r: dict, names: dict) -> dict:
 
 
 @router.get("/metrics")
-def admin_metrics(claims: dict = Depends(deps.current_user)):
+def admin_metrics(window: str | None = None,
+                  claims: dict = Depends(deps.current_user)):
     """Full product metrics from p_metrics_request_facts (reportable,
     self-test-excluded) + aux views — the same panels as the static S3
-    dashboard, aggregated server-side. See web/metrics.py."""
+    dashboard, aggregated server-side. See web/metrics.py.
+
+    `?window=7d|30d` keeps the last 7 or 30 days (PLA-1592 U8). Without it,
+    every key keeps the values it had. `decisionTime` is new either way."""
     admin.require_admin(claims, "review")
-    return metrics.build_metrics()
+    if window is not None and window not in metrics.WINDOWS:
+        raise deps._error(400, "bad_request", "window must be 7d or 30d.")
+    return metrics.build_metrics(window)
 
 
 @router.get("/feedback")

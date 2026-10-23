@@ -130,6 +130,12 @@ def enabled() -> bool:
     return (cfg.get_setting("replica_routing", "off") or "off").strip().lower() == "on"
 
 
+def routes_reads(engine: str | None) -> bool:
+    """Whether a read-only request on a target of this engine can run on a
+    read replica at all (rule 2). PostgreSQL only."""
+    return (engine or "postgres") == "postgres"
+
+
 def node_local(sql: str) -> str | None:
     """The first node-local name `sql` reads, or None."""
     m = _NODE_LOCAL.search(query_safety.code_text(sql or ""))
@@ -157,6 +163,42 @@ def enabled_by_primary(primary_ids: list[int]) -> dict[int, list[dict]]:
             (ids,)):
         out.setdefault(r["replica_of"], []).append({"id": r["id"], "alias": r["alias"]})
     return out
+
+
+def in_rotation(rows: list[dict]) -> dict[int, bool]:
+    """For each read replica in `rows`, whether automatic routing sends
+    read-only requests to it: {replica id: bool}. A row that is not a replica
+    gets no entry.
+
+    `rows` is the whole registry as the admin list reads it: dicts with `id`,
+    `engine` and `replica_of`. The rule is the one `choose` applies before it
+    looks at a request: routing is on (`enabled`, rule 1), the primary is
+    PostgreSQL (`routes_reads`, rule 2), and the replica is one of the enabled
+    replicas of that primary (`enabled_by_primary`, the rows `replicas_of`
+    gives `choose`). One read for the whole list.
+
+    What `choose` decides per request is not in it: the node-local rule,
+    read-your-writes and the live lag check (rules 3 to 5) depend on the
+    request and on the moment. Nor is a super-admin's chosen run, which needs
+    only an enabled replica.
+
+    Never raises. The answer is for a screen, so a failed read gives {} and
+    the screen shows no answer rather than a wrong one."""
+    replica_rows = [r for r in rows if r.get("replica_of") is not None]
+    if not replica_rows:
+        return {}
+    try:
+        if not enabled():
+            return {r["id"]: False for r in replica_rows}
+        engine_of = {r["id"]: r.get("engine") for r in rows}
+        primaries = {r["replica_of"] for r in replica_rows
+                     if routes_reads(engine_of.get(r["replica_of"]))}
+        live = {x["id"] for found in enabled_by_primary(sorted(primaries)).values()
+                for x in found}
+    except Exception:  # noqa: BLE001 -- a screen, not a request
+        log.warning("replica rotation could not be read", exc_info=True)
+        return {}
+    return {r["id"]: r["id"] in live for r in replica_rows}
 
 
 def parse_run_on(value: str | None) -> RunOn:
@@ -280,7 +322,7 @@ def choose(target, request: dict, mode: str, user: str, password: str) -> Decisi
     bot DB blinking, a malformed row -- sends the request to the primary, where
     it would have run anyway.
     """
-    if (getattr(target, "engine", "postgres") or "postgres") != "postgres" or mode != "ro":
+    if not routes_reads(getattr(target, "engine", None)) or mode != "ro":
         return _NONE
     try:
         if not enabled():
@@ -348,7 +390,7 @@ def _replica_label(replica_id: int | None) -> str:
 
 def _chosen(target, replica_id: int | None, mode: str, user: str,
             password: str) -> Decision:
-    if (getattr(target, "engine", "postgres") or "postgres") != "postgres":
+    if not routes_reads(getattr(target, "engine", None)):
         return Decision(refused=f"`{target.alias}` is not a PostgreSQL connection, "
                                 f"and only those have read replicas here")
     if mode != "ro":

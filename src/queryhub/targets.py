@@ -104,6 +104,26 @@ def label_with_provider(alias: str, host: str | None) -> str:
     return f"{alias} ({prov})" if prov else alias
 
 
+def environment(alias: str | None) -> str:
+    """`production` or `staging`, from the alias of a connection.
+
+    The fleet is production first. An alias that contains `test`, `staging` or
+    `stage` is staging. Every other alias, and no alias, is production. The env
+    dot in the web UI shows this value (`web.mapping.env_of`). The rules for an
+    auto-approve window use it too: on production, only a super-admin decides a
+    window that covers writes.
+
+    The alias is the input, not the tags. Tags are labels for people and never
+    a policy input (migration 095). Only a super-admin can create or rename a
+    connection. An unknown name counts as production, so a mistake makes the
+    rule stricter, not looser.
+    """
+    a = (alias or "").lower()
+    if "test" in a or "staging" in a or "stage" in a:
+        return "staging"
+    return "production"
+
+
 def list_enabled() -> list[TargetServer]:
     """Enabled targets people can pick. A read replica is not one: it serves its
     primary's read-only requests under the primary's name (replicas.py)."""

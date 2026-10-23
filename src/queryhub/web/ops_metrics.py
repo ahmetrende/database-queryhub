@@ -191,7 +191,9 @@ def _fleet(out: _Out) -> None:
     out.metric("queryhub_people", "People who can use QueryHub.", "gauge")
     for label, sql in (
         ("requesters", "SELECT COUNT(*) AS n FROM requesters WHERE enabled"),
-        ("admins", "SELECT COUNT(*) AS n FROM admins WHERE enabled"),
+        # A scope whose end has passed (migration 147) is nobody's any more.
+        ("admins", "SELECT COUNT(*) AS n FROM admins WHERE enabled "
+                   "AND (expires_at IS NULL OR expires_at > NOW())"),
     ):
         row = db.fetch_one(sql)
         if row:

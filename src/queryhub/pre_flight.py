@@ -16,6 +16,7 @@ Toggle via `bot_config.pre_flight_explain` (default 'on'). Plan capture
 toggle is `bot_config.query_plan_logging` (default 'off')."""
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -621,6 +622,42 @@ def analyze_plan(plan: list | None) -> dict | None:
         "flags": flags,
         "has_risk": bool(flags),
     }
+
+
+def plan_estimate(plan) -> tuple[int | None, list[str]]:
+    """(estimated rows, tables) of a stored plan, for the approval queue.
+
+    `plan` is `requests.explain_plan`: the list that `EXPLAIN (FORMAT JSON)`
+    gives, with the node tree under "Plan". The submit path stores it when
+    `pre_flight_explain` and `query_plan_logging` are both on.
+
+      rows    the estimate of the top node. For a write (ModifyTable), the
+              rows its input gives it, the same number as the "~N rows
+              affected" hint.
+      tables  each "Relation Name" in the tree, in plan order, once each.
+
+    (None, []) when there is no plan, for the 64 KB truncation marker, and
+    for any shape that is not a PostgreSQL plan. Pure: no I/O."""
+    if isinstance(plan, str):
+        try:
+            plan = json.loads(plan)
+        except ValueError:
+            return None, []
+    if not isinstance(plan, list) or not plan or not isinstance(plan[0], dict):
+        return None, []
+    root = plan[0].get("Plan")
+    if not isinstance(root, dict) or "Plan Rows" not in root:
+        return None, []
+    try:
+        rows = _affected_rows(plan)
+        tables: list[str] = []
+        for node in _walk_plan_nodes(root):
+            name = node.get("Relation Name")
+            if isinstance(name, str) and name and name not in tables:
+                tables.append(name)
+    except (AttributeError, TypeError, ValueError):
+        return None, []
+    return rows, tables
 
 
 def _fmt_int(n: int) -> str:

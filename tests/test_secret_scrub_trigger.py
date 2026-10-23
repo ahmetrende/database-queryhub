@@ -86,12 +86,20 @@ def test_the_trigger_masks_every_write_and_drops_the_copy_at_the_end():
     from queryhub import db
 
     secret = "CREATE ROLE t_probe LOGIN PASSWORD 'Sup3rSecret-not-real-42';"
+    # The test makes its own target. It used to name target 1 and so depended on
+    # an earlier test leaving that row behind: it passed in one order and failed
+    # with a foreign-key error in another, and a new test file changed the order.
+    tid = db.insert_returning(
+        "INSERT INTO target_servers (alias, host, default_database, username, "
+        "  password_encrypted, enabled) "
+        "VALUES ('scrub-trigger-probe', 'fixture.example.test', 'postgres', "
+        "  'unused', 'unused', FALSE) RETURNING id", ())["id"]
     with db.transaction() as cur:
         cur.execute("""INSERT INTO requests
             (requester_slack_id, requester_name, target_server_id, database_name,
              query, wants_result, status, required_tier, query_secret)
-            VALUES ('U_TEST_PROBE', 'trigger probe', 1, 'queryhub', %s, false,
-                    'approved', 'ddl', 'opaque-token') RETURNING id""", (secret,))
+            VALUES ('U_TEST_PROBE', 'trigger probe', %s, 'queryhub', %s, false,
+                    'approved', 'ddl', 'opaque-token') RETURNING id""", (tid, secret))
         rid = cur.fetchone()["id"]
     try:
         def row():
@@ -106,3 +114,4 @@ def test_the_trigger_masks_every_write_and_drops_the_copy_at_the_end():
         assert row()["query_secret"] is None            # a DBA sets a new one
     finally:
         db.execute("DELETE FROM requests WHERE id=%s", (rid,))
+        db.execute("DELETE FROM target_servers WHERE id=%s", (tid,))

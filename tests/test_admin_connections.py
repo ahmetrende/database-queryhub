@@ -147,8 +147,8 @@ def _mutations():
                                 defaultDatabase="ledger",
                                 username="reader", password="s3cret"),
             claims=DBA)),
-        ("test-stored", lambda: ra.admin_test_connection("prod-beta", claims=DBA)),
-        ("list", lambda: ra.admin_connections(claims=DBA)),
+        # `list` and `test-stored` take the DBA level since PLA-1592 U14, and
+        # tests/test_dba_level.py refuses a scoped admin on both.
     ]
 
 

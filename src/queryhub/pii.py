@@ -663,40 +663,144 @@ def _load_column_patterns() -> list[tuple]:
 # wildcard). Resolved once per statement, before streaming.
 
 
+#: Who an exemption unmasks for (migration 149). Anything else in the column is
+#: a value this code cannot read, and a row it cannot read applies to nobody.
+AUDIENCES = ("everyone", "super", "dba", "team")
+
+
+def audience_of(row: dict) -> str:
+    """The audience a row is applied with: its `audience`, narrowed to `super`
+    when the old `super_admin_only` flag says so. Either column saying super
+    makes the row super-only, so a writer that sets only the old flag (psql
+    habit) narrows a row and never widens it. A row with neither column is an
+    everyone row, which is what it was before the columns existed."""
+    kind = str(row.get("audience") or "everyone").strip().lower()
+    if row.get("super_admin_only") and kind in ("everyone", "dba"):
+        return "super"
+    return kind
+
+
+class _Reader:
+    """Who is reading, asked lazily and at most once per question, because most
+    results meet only `everyone` rows and then nobody is looked up at all.
+
+    Every lookup fails CLOSED: an error reads as "not in the audience", so an
+    unavailable metadata DB keeps masking on rather than lifting it."""
+
+    def __init__(self, principal_id: str | None):
+        self.pid = principal_id
+        self._super: bool | None = None
+        self._admin: bool | None = None
+        self._teams: set[int] | None = None
+
+    def is_super(self) -> bool:
+        if self._super is None:
+            self._super = self._ask("super-admin", lambda a: a.is_super_admin(self.pid))
+        return self._super
+
+    def is_admin(self) -> bool:
+        """`dba`: a holder of any admin role. Under access_model_v2 that is
+        `access.is_admin` (any live `admin` row in role_assignment), which is
+        what `admins.is_admin` asks; super-admins are admins, so they are in."""
+        if self._admin is None:
+            self._admin = self._ask("admin", lambda a: a.is_admin(self.pid))
+        return self._admin
+
+    def teams(self) -> set[int]:
+        if self._teams is None:
+            self._teams = set()
+            if self.pid:
+                try:
+                    self._teams = _reader_team_ids(self.pid)
+                except Exception:
+                    log.exception("team lookup failed for %s; treating the "
+                                  "reader as in no team", self.pid)
+        return self._teams
+
+    def _ask(self, what: str, question) -> bool:
+        if not self.pid:
+            return False
+        try:
+            from . import admins
+            return bool(question(admins))
+        except Exception:
+            log.exception("%s lookup failed for %s; treating the reader as "
+                          "unprivileged", what, self.pid)
+            return False
+
+
+def _reader_team_ids(principal_id: str) -> set[int]:
+    """The `team` rows this reader is a live member of. A team audience names
+    a `team` row (the Teams screen's id), which only access_model_v2 reads, so
+    with the switch off nobody is in one and a team row applies to nobody."""
+    from . import db
+    from .teams import use_v2
+    if not use_v2():
+        return set()
+    rows = db.fetch_all(
+        "SELECT tm.team_id FROM team_member tm "
+        "  JOIN team t ON t.id = tm.team_id AND NOT t.is_deleted "
+        "  JOIN principal_identity i ON i.principal_id = tm.principal_id "
+        "   AND i.provider = 'slack' AND NOT i.is_deleted "
+        " WHERE i.external_id = %s AND NOT tm.is_deleted",
+        (principal_id,))
+    return {int(r["team_id"]) for r in rows if r.get("team_id") is not None}
+
+
+def _in_audience(row: dict, reader: _Reader) -> bool:
+    """Whether this row unmasks anything for this reader. Every restriction a
+    row carries must hold, so a row that says both super and team applies to a
+    super-admin in that team, and to nobody else."""
+    kind = audience_of(row)
+    if kind not in AUDIENCES:
+        return False
+    if kind == "everyone":
+        return True
+    if kind == "super":
+        return reader.is_super()
+    if kind == "dba":
+        return reader.is_admin()
+    team = row.get("audience_team_id")
+    if team is None:
+        return False
+    if row.get("super_admin_only") and not reader.is_super():
+        return False
+    return int(team) in reader.teams()
+
+
 def _load_exemptions(target_id: int, database: str,
                      principal_id: str | None = None) -> list[dict]:
-    """Enabled exemption rows in scope for (target, database, reader).
+    """Enabled, unexpired exemption rows in scope for (target, database, reader).
 
     `target_server_id IS NULL` means every target — one row for the fleet, so a
     newly added server inherits the same masking as its siblings instead of
     quietly differing until someone notices.
 
-    `super_admin_only` rows are dropped for everyone else, and dropped for an
-    unknown reader too: a caller that cannot say who is asking gets the strict
-    answer, never the privileged one.
+    `expires_at` (migration 149): a row whose end has passed is not read, so
+    masking comes back. Evaluated by the database in this statement, never by
+    a sweep that may not have run yet.
+
+    A row is applied only for a reader in its audience (`_in_audience`):
+    `super` rows for super-admins, `dba` rows for admins, `team` rows for that
+    team's members. An unknown reader gets only `everyone` rows: a caller that
+    cannot say who is asking gets the strict answer, never the privileged one.
     """
     from . import db
     rows = db.fetch_all(
         "SELECT database_name, schema_name, table_name, column_name, "
-        "       apply_in_joins, keep_value_scan, super_admin_only "
+        "       apply_in_joins, keep_value_scan, super_admin_only, "
+        "       audience, audience_team_id "
         "  FROM pii_masking_exemptions "
         " WHERE enabled "
+        "   AND (expires_at IS NULL OR expires_at > NOW()) "
         "   AND (target_server_id IS NULL OR target_server_id = %s) "
         "   AND (database_name IS NULL OR database_name = %s)",
         (target_id, database),
     )
-    if not any(r.get("super_admin_only") for r in rows):
+    if all(audience_of(r) == "everyone" for r in rows):
         return rows
-    privileged = False
-    if principal_id:
-        try:
-            from . import admins
-            privileged = admins.is_super_admin(principal_id)
-        except Exception:
-            log.exception("super-admin lookup failed for %s; treating the "
-                          "reader as unprivileged", principal_id)
-            privileged = False
-    return [r for r in rows if privileged or not r.get("super_admin_only")]
+    reader = _Reader(principal_id)
+    return [r for r in rows if _in_audience(r, reader)]
 
 
 def _schema_scoped_skip(rows: list[dict], sql: str, engine: str) -> bool:

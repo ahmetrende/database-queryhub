@@ -1213,12 +1213,16 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
   const [opts, setOpts] = React.useState(() => QH_AUTO_DAYS.map(d => ({ minutes: d * 1440, label: d === 1 ? '1 day' : d + ' days', days: d })));
   const [win, setWin] = React.useState({ minutes: 10080, label: '7 days', days: 7 });
   const [mine, setMine] = React.useState([]);
+  // The tiers the server offers (`["RO"]`, or `["RO", "RW"]` while its RW switch is on).
+  // null until it answers, and when it sends none: then "Reads and writes" stays on offer.
+  const [tiers, setTiers] = React.useState(null);
   React.useEffect(() => {
     if (!load) return undefined;
     let live = true;
     Promise.resolve(load()).then(r => {
       if (!live || !r) return;
       if ((r.windowOptions || []).length) setOpts(r.windowOptions);
+      if (Array.isArray(r.tiers)) setTiers(r.tiers);
       setMine(r.requests || []);
     }).catch(() => {});
     return () => { live = false; };
@@ -1231,7 +1235,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
   const conn = list.find(c => c.id === connId) || null;
   const dbRow = conn ? (conn.databases || []).find(d => (d.id || d.name) === db) : null;
   const held = dbRow && dbRow.tier ? String(dbRow.tier).toUpperCase() : null;
-  const rwOk = !held || held === 'RW' || held === 'DDL';
+  const { rwOk, reason: rwReason } = qhAutoTierState(tiers, held);
   const eff = !rwOk && tier === 'RW' ? 'RO' : tier;
   const waiting = conn && db ? waitingOn(conn.id, db) : null;
   const valid = conn && db && reason.trim() && !busy && !waiting;
@@ -1276,7 +1280,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
           <span className="qh-field-lbl">Queries to auto-approve</span>
           <div className="qh-seg">
             <button className={'qh-seg-opt' + (eff === 'RO' ? ' is-active' : '')} onClick={() => setTier('RO')}><TierBadge tier="RO" sm />Reads only</button>
-            <button className={'qh-seg-opt' + (eff === 'RW' ? ' is-active' : '')} disabled={!rwOk} title={rwOk ? undefined : 'You hold read-only here, so only reads can be auto-approved.'} onClick={() => setTier('RW')}><TierBadge tier="RW" sm />Reads and writes</button>
+            <button className={'qh-seg-opt' + (eff === 'RW' ? ' is-active' : '')} disabled={!rwOk} title={rwOk ? undefined : rwReason} onClick={() => setTier('RW')}><TierBadge tier="RW" sm />Reads and writes</button>
           </div>
           <span className="qh-req-note">Schema changes (DDL) are always reviewed and cannot be asked for.</span>
         </div>

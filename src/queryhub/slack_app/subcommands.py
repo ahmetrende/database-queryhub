@@ -385,16 +385,16 @@ def _handle_pending(user_id, rest, client, respond, body):
 # ---------- /sql kill (admin) ----------
 
 def _handle_kill(user_id, rest, client, respond, body):
-    # Super-admin, matching the web Kill switch. The dispatcher's `admin_only`
-    # flag only asks for an admin, so the same fleet-wide stop had two different
-    # privilege levels depending on which door you came through: a scoped DBA
-    # admin could halt every target from Slack and would be refused for the same
-    # action on the web. Nobody live could actually do it — both admins are
-    # super — but an authority that differs by door is one nobody can reason
-    # about, and this is the most consequential command in the product.
-    if not admins.is_super_admin(user_id):
-        _respond(respond, ":lock: Refused: only a super-admin can set the kill switch. "
-                          "Ask a super-admin, or use the Kill switch in the web app.")
+    # The DBA level, the same as the web Kill switch (PLA-1592 U4a): a
+    # permanent, unscoped admin. The dispatcher's `admin_only` flag only asks
+    # for an admin, so the same fleet-wide stop had two different privilege
+    # levels depending on which door you came through: a scoped DBA admin
+    # could stop every target from Slack and would be refused for the same
+    # action on the web. An authority that differs by door is one nobody can
+    # reason about, and this is the most consequential command in the
+    # product. tests/test_dba_level.py fails when one door changes alone.
+    if not admins.is_dba(user_id):
+        _respond(respond, ":lock: Refused: you need DBA access to set the kill switch.")
         return
     arg = rest.strip().lower()
     current = (db.fetch_one("SELECT value FROM bot_config WHERE key = 'kill_switch'") or {}).get("value", "off")
@@ -410,6 +410,7 @@ def _handle_kill(user_id, rest, client, respond, body):
         "SELECT name FROM admins WHERE slack_user_id = %s", (user_id,)
     )
     actor = (user_name or {}).get("name") or user_id
+    from .. import core_submit, kill_switch
     # The config write and the audit row go in ONE transaction. This wrote
     # the switch and then only `log.warning`, so the single most consequential
     # toggle in the product -- it halts every query on every target -- left no
@@ -422,12 +423,24 @@ def _handle_kill(user_id, rest, client, respond, body):
                     " WHERE key = 'kill_switch'", (arg,))
         audit.log_in(cur, None, user_id, actor, "kill_switch_set",
                      {"enabled": arg == "on", "from": current, "to": arg,
-                      "via": "slack"})
+                      "via": "slack",
+                      **({"message": core_submit.kill_switch_message()}
+                         if arg == "on" else {})})
     cfg.invalidate_cache()   # the kill switch must take effect on the next call
     log.warning("kill_switch toggled to %s by %s", arg, actor)
+    # The switch is on now, so no new query starts. Then the running reads of
+    # every user stop, as on the web door. Writes and DDL keep running.
+    cancelled = kill_switch.stop_running_reads(user_id, actor) if arg == "on" else 0
+    stopped = ""
+    if arg == "on":
+        stopped = (" QueryHub could not read the running queries, so it cancelled none."
+                   if cancelled is None else
+                   f" It cancelled {cancelled} running read-only "
+                   f"{'query' if cancelled == 1 else 'queries'}. "
+                   "Writes and DDL continue to run.")
     _respond(respond,
              f":zap: {actor} set `kill_switch` to *{arg}*. "
-             f"It was `{current}`.")
+             f"It was `{current}`.{stopped}")
 
 
 # ---------- /sql teams ----------

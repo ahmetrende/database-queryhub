@@ -45,6 +45,7 @@ you need.
 26. [Read replicas](#26-read-replicas)
 27. [Verifying target certificates](#27-verifying-target-certificates)
 28. [Splitting the metadata database roles](#28-splitting-the-metadata-database-roles)
+29. [Connection health](#29-connection-health)
 
 ---
 
@@ -126,7 +127,7 @@ UPDATE bot_config SET value = '<new>' WHERE key = '<key>';
 | `bot_display_icon` | `:query_hub:` | no | Emoji that the bot uses as its avatar in chat. Upload it to the workspace as a custom emoji. |
 | `bot_display_name` | `QueryHub` | no | Username shown in chat |
 | `csv_size_mb` | `10` | no | Max CSV file size. Result streaming aborts at this cap |
-| `kill_switch` | `off` | no | Master kill switch. `on` blocks new submissions and scheduler dispatch. Admins can still approve |
+| `kill_switch` | `off` | no | Master kill switch. `on` blocks new submissions and scheduler dispatch. Admins can still approve. Set `on` from the web or with `/sql kill on`, the switch goes on first, then it cancels the running read-only queries. Writes and DDL continue to run. Audit rows: `kill_switch_set`, then `kill_switch_cancelled` with the count. The SQL below cancels nothing |
 | `kill_switch_message` | (banner text) | no | Ephemeral message shown when kill_switch is on |
 | `log_level` | `INFO` | yes | Python logging level |
 | `max_open_requests_per_user` | `5` | no | Cap on in-flight requests per non-admin Slack user (pending/approved/scheduled/executing) |
@@ -135,7 +136,7 @@ UPDATE bot_config SET value = '<new>' WHERE key = '<key>';
 | `min_query_length` | `6` | no | The bot rejects queries shorter than this |
 | `pre_flight_explain` | `on` | no | Runs EXPLAIN at submit time to catch typos in a single read-only statement |
 | `pre_flight_validate_scripts` | `on` | no | Plans every statement of a write request and of a multi-statement script at submit time. Nothing runs. Needs `pre_flight_explain`. Set `off` to check one read-only statement only |
-| `query_plan_logging` | `off` | no | When pre_flight_explain AND this key are on, the bot stores the EXPLAIN plan in `requests.explain_plan` (capped at 64KB) |
+| `query_plan_logging` | `off` | no | When pre_flight_explain AND this key are on, the bot stores the EXPLAIN plan in `requests.explain_plan` (capped at 64KB). The web approval queue reads `estRows` and `estTables` from that plan. With this key off, they stay empty |
 | `query_timeout_sec` | `300` | no | Per-query `statement_timeout` (5 min) |
 | `require_justification` | `false` | no | Requires the justification field for RO queries too. RW/DDL always require it |
 | `results_ttl_hours` | `72` | no | How long the bot keeps CSV results, in Slack and locally, before cleanup deletes them. The default is short on purpose: it limits how long sensitive result data stays in Slack |
@@ -166,6 +167,10 @@ UPDATE bot_config SET value = '20' WHERE key = 'max_open_requests_per_user';
 UPDATE bot_config SET value = '5'  WHERE key = 'ro_burst_threshold';
 UPDATE bot_config SET value = '15' WHERE key = 'ro_burst_window_min';
 UPDATE bot_config SET value = '120' WHERE key = 'ro_window_minutes';
+
+# Windows that cover writes (RW). Default off: only RO windows can be asked for.
+# On a production connection, only a super-admin decides a RW window.
+UPDATE bot_config SET value = 'on' WHERE key = 'auto_approve_rw_requests';
 
 # Stale-grant reaper (scripts/reap_stale_grants.py, run daily):
 #   grant_reaper_enabled    — master switch (on|off). OFF = dry-run report only.
@@ -1188,6 +1193,15 @@ A waiver skips review, but it grants no access. So the web panel and
   (no target): it already means "every server they can reach". It does not
   verify rows written by hand in SQL either, so open the person's Effective
   access screen first.
+- **Switch a rule off, and on again.** `PATCH /admin/auto-grants/{id}` with
+  `{"enabled": false}` stops a rule and keeps the row, its reason and its run
+  count. A switched-off rule approves nothing: the submit decision skips it,
+  `v_active_auto_approve` leaves it out, and the mirror revokes its copy in
+  `access_grant`. `{"enabled": true}` makes it decide again. The id is the
+  number of a person's rule, or `ag:<id>` for a team's waiver. A rule that has
+  ended returns `409`. `GET /admin/auto-grants` lists a switched-off rule with
+  `enabled: false`. `runCount` counts the `auto_approved` audit rows that cite
+  the rule.
 
 ### Grant patterns
 
@@ -1320,6 +1334,37 @@ SELECT slack_user_id, name
   FROM admins
  WHERE enabled = TRUE
    AND max_tier         IS NULL
+   AND scope_team_ids   IS NULL
+   AND scope_target_ids IS NULL;
+```
+
+### Who is a DBA?
+
+The `dba` level (`docs/AUTH.md` §3.1) is a PERMANENT (no end date) and
+UNSCOPED (all teams, all targets) `admin` role row. A tier ceiling is
+allowed. A super-admin passes too. A temporary admin and a scoped admin do
+not pass. An approver-only role does not pass. So a temp admin grant never
+makes a DBA.
+
+A DBA can set the kill switch, with the Kill switch in the web app or with
+`/sql kill`. A DBA can also read the effective access of a person, list the
+connections without their credentials, and test a stored credential.
+
+```sql
+-- access_model_v2 on: the people who pass the dba level.
+SELECT i.external_id AS slack_user_id, p.display_name, ra.max_tier
+  FROM role_assignment ra
+  JOIN principal p ON p.id = ra.principal_id AND p.enabled
+  JOIN principal_identity i ON i.principal_id = p.id
+   AND i.provider = 'slack' AND NOT i.is_deleted
+ WHERE ra.role = 'admin' AND ra.all_teams AND ra.all_targets
+   AND ra.valid_until IS NULL AND ra.revoked_at IS NULL
+   AND NOT ra.is_deleted AND ra.valid_from <= NOW();
+
+-- access_model_v2 off: the same question on the admins table.
+SELECT slack_user_id, name, max_tier
+  FROM admins
+ WHERE enabled = TRUE
    AND scope_team_ids   IS NULL
    AND scope_target_ids IS NULL;
 ```
@@ -2149,3 +2194,88 @@ Not done by the split, and still open (SEC-AUDIT):
   SET NULL`, which lets a DELETE on `requests` rewrite audit rows through the
   foreign key. No runtime path deletes an audited request today. Drafts are
   the only requests that the runtime deletes, and they have no audit rows.
+
+## 29. Connection health
+
+A scheduled job checks that QueryHub can connect to each target, and stores
+the answer. Before it, health showed only when an admin pressed **Test** on
+one connection. `GET /api/admin/connections` shows the last answer on each row
+as `health: {ok, checkedAt, failingSince, error}`. `health` is `null` when the
+target was never checked, when the check does not cover it, or when the check
+is off. Code: `src/queryhub/connection_health.py` and
+`scripts/check_connection_health.py`. Table: `connection_health`, one row per
+target.
+
+**What it checks.** Every enabled target that is not deleted and whose engine
+is not excluded, when its last check is at least the interval old:
+
+- PostgreSQL, SQL Server and ClickHouse: the probe of the **Test** button,
+  with the stored read-only login. It connects and reads the server version.
+  A read replica uses its primary's login, as replica routing does.
+- Athena: the Glue catalog listing that the catalog job makes. It runs no
+  Athena query.
+
+At most 8 checks run at once, and each one gets the timeout. An advisory lock
+stops two runs from overlapping. The stored error has no password, no login
+name, no connection string and no ARN, and it has at most 200 characters.
+`failingSince` is the time of the first failed check after a good one. It
+stays while the failures continue, and it clears on the next good check. A
+DBA who is not a super-admin gets `health` too. In its `error`, QueryHub
+replaces each user name that the row stores with `[redacted]` (AUTH.md, the
+`dba` level).
+
+**The four settings** are `bot_config` keys (migration 191). The job reads
+them at the start of every run, so a change needs no job edit and no restart.
+Change them on the System configuration screen, group "Connection health".
+
+| Key | Default |
+|---|---|
+| `connection_health_enabled` | `on` |
+| `connection_health_interval_sec` | `300` |
+| `connection_health_timeout_sec` | `5` (1 to 60) |
+| `connection_health_exclude_engines` | empty: every engine |
+
+**Cost.** A ClickHouse check is a query. It wakes an idle ClickHouse Cloud
+service, bills its compute and starts its idle timer again. With the defaults,
+a service whose idle timeout is longer than the interval never goes idle. That
+is why the catalog job reads ClickHouse once a day. To stop the ClickHouse
+checks, set `connection_health_exclude_engines` to `clickhouse`. An Athena
+check costs Glue catalog requests only.
+
+**Schedule.** Run the job every minute from the host scheduler, with the
+bot's environment, as the other jobs run. The interval setting decides how
+often each target gets a check. A run takes the targets that are due and
+skips the rest.
+
+```bash
+cd __INSTALL_PATH__ && set -a && . /etc/queryhub/env && set +a && \
+  .venv/bin/python scripts/check_connection_health.py
+```
+
+A systemd timer works too: use the template in
+[deploy/INSTALL.md §12](../deploy/INSTALL.md) with this script and
+`OnCalendar=minutely`. `--dry-run` prints what a run would check, skip and
+delete. It opens no connection to a target and writes nothing.
+
+**Switch it off.** Set `connection_health_enabled` to `off`. The next run
+exits at once, and the connection list shows no result. Disable the scheduled
+job only if the switch stays off.
+
+**A target that leaves the check.** The list shows no result for a disabled
+target, a deleted target or an excluded engine. The next run deletes its row.
+When the target comes back, its first check starts again from nothing.
+
+**Read replicas.** A replica row also has `inRotation`: `true` when automatic
+routing sends read-only requests to it. That needs `replica_routing` on, a
+PostgreSQL primary and the replica row enabled (§26). The per-request rules
+and the live lag check are not in it. Every row that is not a replica has
+`inRotation: null`.
+
+```sql
+-- Targets that fail now, the oldest failure first
+SELECT t.alias, h.failing_since, h.checked_at, h.error
+  FROM connection_health h
+  JOIN target_servers t ON t.id = h.target_server_id
+ WHERE NOT h.ok
+ ORDER BY h.failing_since;
+```

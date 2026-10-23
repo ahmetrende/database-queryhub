@@ -1,4 +1,6 @@
-"""Asking for access: `GET /requestable` and `POST /endpoint-requests`.
+"""Asking for access: `GET /requestable` and `POST /endpoint-requests`, and the
+requester's own side of it: `GET /endpoint-requests` lists their requests,
+`POST /endpoint-requests/{id}/withdraw` withdraws a pending one.
 
 Reuses the Slack blocked-query access-request flow end to end: same
 access_requests storage, same admin DMs with approve/reject buttons, same
@@ -27,9 +29,9 @@ import logging
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from .. import access_requests, grants, targets, teams
+from .. import access_requests, grants, people, targets, teams
 from . import deps, mapping
-from .routes_data import _catalog_databases, _target_by_alias
+from .routes_data import _alias_of, _catalog_databases, _target_by_alias
 from .routes_queries import _bot_client
 
 log = logging.getLogger(__name__)
@@ -216,6 +218,97 @@ def endpoint_request(body: EndpointRequestIn,
             "slackMessageTs": ts}
 
 
+# ---- The requester's own access requests -------------------------------------
+
+def _access_request_id(raw: str) -> int | None:
+    """The id as the lists give it (`er_17`), or the bare number (`17`).
+    None for anything else. Only the digits 0 to 9 count: `str.isdigit()`
+    also accepts a superscript two, and `int()` then raises."""
+    value = (raw or "").strip()
+    if value.startswith("er_"):
+        value = value[len("er_"):]
+    return int(value) if value.isascii() and value.isdigit() else None
+
+
+def _own_entries(rows: list[dict]) -> list[dict]:
+    """The rows in the requester's shape, with one name lookup for the page."""
+    name_of = people.namer(
+        [r.get("requester_name") or r.get("requester_slack_id") for r in rows]
+        + [r.get("decided_by_name") or r.get("decided_by_slack_id") for r in rows])
+    return [mapping.own_endpoint_request_entry(r, _alias_of, name_of) for r in rows]
+
+
+@router.get("/endpoint-requests")
+def my_endpoint_requests(claims: dict = Depends(deps.current_user)):
+    """The caller's own access requests, newest first: the status, the
+    decision note, who decided, and when.
+
+    Only the caller's rows. The admin list is `GET /admin/endpoint-requests`."""
+    deps.require_whitelisted(claims)
+    return {"requests": _own_entries(access_requests.list_for(claims["sub"]))}
+
+
+def _closed_message(status: str | None) -> str:
+    if status == "withdrawn":
+        return "You already withdrew this request."
+    return "This request already has a decision."
+
+
+def _retire_access_request_cards(row: dict, claims: dict) -> None:
+    """Take a withdrawn access request off the admins' Slack cards.
+
+    The same step as `routes_queries._retire_admin_cards` for a withdrawn SQL
+    request, on the cards of an access request: the Approve and Reject buttons
+    go, and a line says that nobody has to act. Without it an admin presses
+    Approve on a request that is gone and reads "already decided".
+
+    Failures are logged and swallowed. The withdrawal is committed, and a
+    Slack problem must not turn it into an error for the requester."""
+    client = _bot_client()
+    if client is None:          # vanilla profile: no Slack, no cards to retire
+        return
+    from ..slack_app import access
+    who = claims.get("name") or claims.get("sub") or "The requester"
+    try:
+        target = (targets.get(row["target_server_id"])
+                  if row.get("target_server_id") else None)
+        access.update_admin_cards(
+            client, row["id"], target,
+            f":wastebasket: {who} withdrew this request. You do not need to act.")
+    except Exception:
+        log.exception("could not retire the admin cards of withdrawn access "
+                      "request %s", row.get("id"))
+
+
+@router.post("/endpoint-requests/{req_id}/withdraw")
+def withdraw_endpoint_request(req_id: str,
+                              claims: dict = Depends(deps.current_user)):
+    """Withdraw one of your own pending access requests.
+
+    404 for an id that is unknown or that belongs to another person, so this
+    route tells nobody which requests exist. 409 when the request is not
+    pending any more: an admin decided it, or you withdrew it already.
+
+    The status change and its audit row commit in one transaction
+    (`access_requests.withdraw`). Then the admins' Slack cards lose their
+    buttons. The answer is the row in the shape of `GET /endpoint-requests`."""
+    deps.require_whitelisted(claims)
+    uid = claims["sub"]
+    rid = _access_request_id(req_id)
+    row = access_requests.get(rid) if rid is not None else None
+    if rid is None or row is None or row["requester_slack_id"] != uid:
+        raise deps._error(404, "not_found", "No such access request.")
+    if row["status"] != "pending":
+        raise deps._error(409, "conflict", _closed_message(row["status"]))
+    done = access_requests.withdraw(rid, uid, claims.get("name"))
+    if done is None:
+        # Lost the race: an admin decided it between the read and the UPDATE.
+        fresh = access_requests.get(rid) or row
+        raise deps._error(409, "conflict", _closed_message(fresh["status"]))
+    _retire_access_request_cards(done, claims)
+    return _own_entries([done])[0]
+
+
 # ---- Auto-approve window requests (requester) --------------------------------
 
 class WindowRequestIn(BaseModel):
@@ -241,17 +334,21 @@ def _days(minutes) -> int | None:
 
 @router.get("/auto-approve-requests")
 def my_window_requests(claims: dict = Depends(deps.current_user)):
-    """The requester's own read-only window requests, and the lengths on offer.
+    """The requester's own window requests, the lengths on offer, and the
+    tiers on offer.
 
     Asking for a window was Slack-only; this is the web half. The lengths come
     from the same list the Slack modal offers, so the two surfaces cannot
-    drift into offering different windows.
+    drift into offering different windows. `tiers` is `["RO"]`, or
+    `["RO", "RW"]` while `auto_approve_rw_requests` is on. A RW window also
+    needs RW access on the database, which the connection list shows.
     """
     uid = claims["sub"]
     from .. import auto_approve_requests
     rows = auto_approve_requests.list_for(uid)
     return {
         "windowOptions": _window_options(),
+        "tiers": auto_approve_requests.offered_tiers(),
         "requests": [{
             "id": r["id"], "connectionId": r["alias"], "databaseId": r["database_name"],
             "tier": (r["max_tier"] or "ro").upper(), "windowMinutes": r["window_minutes"],
@@ -267,13 +364,19 @@ def my_window_requests(claims: dict = Depends(deps.current_user)):
 @router.post("/auto-approve-requests", status_code=201)
 def create_window_request(body: WindowRequestIn,
                           claims: dict = Depends(deps.current_user)):
-    """Ask for a read-only auto-approve window from the web.
+    """Ask for an auto-approve window from the web.
 
     Granting stays a DBA's decision: this files the request and sends every
     active admin the same approve / reject card the Slack modal sends, and the
     approval happens there. The rules are the Slack modal's own
     (`auto_approve_requests.submit_window`), so a request the one surface
     refuses the other refuses too.
+
+    `tier` is RO by default. RW is accepted only while
+    `auto_approve_rw_requests` is on, and only from a person who holds RW
+    there. Otherwise the answer is 403 with `field: "tier"`. DDL is always
+    refused. On a production connection, only a super-admin decides a RW
+    window.
     """
     uid = claims["sub"]
     from .. import auto_approve_requests, targets

@@ -11,6 +11,51 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Added
 
+- **A `dba` admin level.** A person with a permanent admin role that covers every
+  connection passes it. A tier ceiling does not block it, and a super-admin passes. A
+  temporary, scoped or approver-only role does not. `GET /api/me` returns
+  `admin.isDba`. Four routes need this level and no longer need `access`:
+  `POST /api/admin/kill`, the read of `GET /api/admin/people/{id}/effective-access`,
+  `GET /api/admin/connections` and `POST /api/admin/connections/{conn}/test`. The
+  Slack `/sql kill` command follows the same rule. A row for a `dba` caller has no
+  `credentials`, `secretsProvider` or `notes`, and a failed test hides the user
+  name and the password.
+- **Kill switch history, and a cancel of running reads.** `GET /api/admin/kill/history`
+  lists the pauses, newest first. Setting the kill switch on cancels the read-only
+  queries that run. A write and a schema change keep running, because a cancel
+  can leave a half-applied change. The app sets the switch first, then cancels the
+  reads. `POST /api/admin/kill` returns `cancelledCount`.
+- **Periodic connection health.** `scripts/check_connection_health.py` checks each
+  target when it is due. Each row of `GET /api/admin/connections` carries `health`
+  (`ok`, `checkedAt`, `failingSince`, `error`, or `null`) and `inRotation`. The
+  settings are `connection_health_enabled`, `connection_health_interval_sec`,
+  `connection_health_timeout_sec` and `connection_health_exclude_engines`. A
+  ClickHouse check is a query, so it keeps a cloud service awake: list
+  `clickhouse` in the last setting to skip it.
+- **Your own access requests.** `GET /api/endpoint-requests` lists them.
+  `POST /api/endpoint-requests/{id}/withdraw` withdraws one that nobody has
+  decided. The new status is `withdrawn`.
+- **`outcome` and `expiresAt` on a request.** `GET /api/queries/{id}`, the queue
+  items and `GET /api/history` carry `outcome` (`withdrawn`, `expired`, `denied`,
+  `changes_requested` or `null`). `GET /api/queries/{id}` and the queue items also
+  carry `expiresAt`, which is `null` while request expiry is off. `GET
+  /api/queries/{id}/result` returns `tier`.
+- **One decision for a bundle.** `POST /api/admin/queue/bundles/{id}/decision` takes
+  `{decision, note}` and answers `{bundleId, decision, items}`. A 409 lists the
+  items that already have a decision. An item that QueryHub approved at submit does
+  not take part.
+- **Extend a grant, pause a rule, end a scope, expire an exemption.**
+  `PATCH /api/admin/grants/{gid}` takes `expiresAt` and `reason`. An ended grant
+  answers 409. `PATCH /api/admin/auto-grants/{id}` takes `enabled`, and the list
+  adds `enabled` and `runCount`. Admin scopes, fleet grants and mask exemptions
+  take `expiresAt`. A mask exemption also takes `audience` and returns
+  `audienceTeamId`. Every reader of an expiry or of `enabled` enforces it.
+- **Metric windows and a last-query time.** `GET /api/admin/metrics` takes
+  `?window=7d|30d` and adds `window`, `windowStart` and `decisionTime`.
+  `GET /api/admin/people` adds `lastQueryAt`. A draft does not count.
+- **RW auto-approve requests, off by default.** The setting
+  `auto_approve_rw_requests` turns them on. `GET /api/auto-approve-requests`
+  returns the new `tiers` field.
 - **The audit log shows failed requests.** Rows that say a request stopped with
   an error are no longer hidden. The screen has a "Failed requests" filter with
   a count. A failed row says "Failed" and shows the error text in the list. The
@@ -42,6 +87,11 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **An RW auto-approve request answers 403 while `auto_approve_rw_requests` is
+  off.** That is the default. Before, a person who held RW could ask for one.
+  Nobody did. The web form greys out "Reads and writes" and says why. Production
+  keeps one more rule: only a super-admin decides an RW window.
+- **The kill switch cancels running reads.** See "Kill switch history" above.
 - **The Home cards show a loading state.** History, saved queries, saved
   sessions and scheduled runs load after sign-in. Until they arrive, each card
   shows grey placeholder rows with no count, not "0" and "Your recent queries

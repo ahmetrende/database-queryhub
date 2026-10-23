@@ -291,11 +291,14 @@ def copy_grants(cur, apply: bool) -> dict:
     # Copying only the live ones is both honest and consistent — the expired
     # rows stay in auto_approve_grants, which is not dropped until phase 4, and
     # the audit trail has them either way.
+    #
+    # A rule that is switched off (migration 146) is not in force either: the
+    # mirror keeps no live copy of it, and neither does this copy.
     cur.execute(
         "SELECT slack_user_id AS sid, max_tier, target_server_id AS tid, "
         "       database_name AS dbn, starts_at, expires_at, reason, granted_by "
         "  FROM auto_approve_grants "
-        " WHERE expires_at IS NULL OR expires_at > now() "
+        " WHERE enabled AND (expires_at IS NULL OR expires_at > now()) "
         " ORDER BY expires_at DESC NULLS FIRST")
     for g in cur.fetchall():
         pid = people.get(g["sid"])
@@ -315,7 +318,14 @@ def copy_grants(cur, apply: bool) -> dict:
 def copy_roles(cur, apply: bool) -> dict:
     people = _principal_ids(cur)
     out = {"admin": 0, "granter": 0}
-    cur.execute("SELECT slack_user_id AS sid, max_tier, can_grant, enabled FROM admins")
+    # Only a scope in force becomes a role, and it keeps its end
+    # (admins.expires_at, migration 147) as valid_until -- the same rule the
+    # migration-109 mirror follows since migration 148. Copying a scope that
+    # has ended, or one that is switched off, as a role with no end would hand
+    # the authority back on the next run.
+    cur.execute("SELECT slack_user_id AS sid, max_tier, can_grant, enabled, expires_at "
+                "  FROM admins "
+                " WHERE enabled AND (expires_at IS NULL OR expires_at > now())")
     for a in cur.fetchall():
         pid = people.get(a["sid"])
         roles = [("admin", a["max_tier"])] + ([("granter", None)] if a["can_grant"] else [])
@@ -331,9 +341,9 @@ def copy_roles(cur, apply: bool) -> dict:
             if apply and pid is not None:
                 cur.execute(
                     "INSERT INTO role_assignment (principal_id, role, all_teams, "
-                    " all_targets, max_tier, any_tier, reason) "
-                    "VALUES (%s,%s,true,true,%s,%s,'carried from admins')",
-                    (pid, role, max_tier, max_tier is None))
+                    " all_targets, max_tier, any_tier, valid_until, reason) "
+                    "VALUES (%s,%s,true,true,%s,%s,%s,'carried from admins')",
+                    (pid, role, max_tier, max_tier is None, a["expires_at"]))
     return out
 
 
@@ -422,13 +432,16 @@ def verify(cur) -> list[str]:
         # revoked by the mirror — the gate reported drift that did not exist
         # and would have stopped a cutover for nothing. A revoked waiver is
         # not a window; it is the record that one closed.
+        # A switched-off rule (migration 146) is not a window on either side:
+        # the mirror revokes its copy, and a native waiver that is off waives
+        # nothing.
         ("auto windows (live scopes)",
          "SELECT count(*) FROM access_grant "
-         " WHERE auto_approve AND revoked_at IS NULL AND NOT is_deleted "
+         " WHERE auto_approve AND enabled AND revoked_at IS NULL AND NOT is_deleted "
          "   AND (valid_until IS NULL OR valid_until > now())",
          "SELECT count(*) FROM ("
          "  SELECT 1 FROM auto_approve_grants "
-         "   WHERE expires_at IS NULL OR expires_at > now() "
+         "   WHERE enabled AND (expires_at IS NULL OR expires_at > now()) "
          "   GROUP BY slack_user_id, target_server_id, database_name, max_tier) x"),
         ("settings", "SELECT count(*) FROM principal_setting",
          "SELECT (SELECT count(*) FROM user_row_limit_overrides) + "

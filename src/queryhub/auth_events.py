@@ -23,6 +23,8 @@ import threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # only a type hint — no runtime dependency on slack_sdk
+    from collections.abc import Callable
+
     from slack_sdk import WebClient
 
 from . import config as cfg
@@ -119,6 +121,26 @@ def _mask_reach(row: dict, alias_of: "callable") -> str:
     return f"{where} — {dbname} on {alias}"
 
 
+_MASK_AUDIENCE = {"super": " for super-admins only", "dba": " for DBAs only"}
+
+
+def _mask_who_until(row: dict,
+                    team_info: Callable[..., tuple[str | None, list[str]]]) -> str:
+    """Who the exemption unmasks for, and until when (migration 149), as a
+    tail for the DM. Says nothing for "everyone, no end", which is what every
+    row meant before the two columns existed. The audience is the one the
+    masker applies (`pii.audience_of`), so the DM cannot name a wider one."""
+    from .pii import audience_of        # lazy: the DM poller needs no masker
+    kind = audience_of(row)
+    who = _MASK_AUDIENCE.get(kind, "")
+    if kind == "team":
+        name, _members = team_info(row.get("audience_team_id"), "team_member")
+        who = (f" for team `{name}` only" if name
+               else f" for team #{row.get('audience_team_id')} only")
+    until = f", {_fmt_until(row.get('expires_at'))}" if row.get("expires_at") else ""
+    return who + until
+
+
 def _mask_why(row: dict) -> str:
     """The reason, trimmed onto the end of the DM. An exemption with no reason
     is the one an auditor cannot read, so its absence is said out loud."""
@@ -181,6 +203,9 @@ def build_notifications(
             changes.append(f"tier is now *{(new.get('mode') or '?').upper()}*")
         if old.get("allowed_databases") != new.get("allowed_databases"):
             changes.append(f"database scope is now{_fmt_dbs(new.get('allowed_databases')) or ' *all databases*'}")
+        # An end date that moved: PATCH /admin/grants extends a grant in place.
+        if old.get("expires_at") != new.get("expires_at"):
+            changes.append(f"it now lasts {_fmt_until(new.get('expires_at'))}")
         if not changes:
             return []
         return [(user, f":arrows_counterclockwise: Your access on `{alias}` changed: "
@@ -199,6 +224,18 @@ def build_notifications(
         if op == "DELETE":
             return [(user, f":zap: :x: Your auto-approve (up to *{tier}* on {scope}) was removed — "
                            "queries go through normal admin approval again.")]
+        # Migration 146: a rule can be switched off and on again. A missing key
+        # (an outbox row written before the column existed) is "on".
+        if old.get("enabled", True) != new.get("enabled", True):
+            if not user:
+                return []          # nobody to tell
+            if new.get("enabled", True):
+                return [(user, f":zap: Your auto-approve on {scope} is on again. Queries up "
+                               f"to *{tier}* run without approval, "
+                               f"{_fmt_until(new.get('expires_at'))}.")]
+            return [(user, f":zap: :pause_button: Your auto-approve on {scope} is off. "
+                           "Your queries go to normal admin approval until an admin "
+                           "switches it on again.")]
         if old.get("expires_at") != new.get("expires_at"):
             return [(user, f":zap: Your auto-approve on {scope} now runs "
                            f"{_fmt_until(new.get('expires_at'))}.")]
@@ -226,14 +263,17 @@ def build_notifications(
         if op == "INSERT":
             if not new.get("enabled", True):
                 return []
+            # Migration 147: a scope can end. A permanent one says nothing more.
             return [(user, f":shield: You've been made a QueryHub *admin*"
-                           f"{_mention(new.get('added_by'))}.")]
+                           f"{_mention(new.get('added_by'))}"
+                           f"{_fmt_until_suffix(new.get('expires_at'))}.")]
         if op == "DELETE":
             return [(user, ":shield: :x: Your QueryHub admin rights were removed.")]
         if old.get("enabled") and not new.get("enabled"):
             return [(user, ":shield: :x: Your QueryHub admin rights were disabled.")]
         if not old.get("enabled") and new.get("enabled"):
-            return [(user, ":shield: Your QueryHub admin rights were re-enabled.")]
+            return [(user, ":shield: Your QueryHub admin rights were re-enabled"
+                           f"{_fmt_until_suffix(new.get('expires_at'))}.")]
         changes = []
         if old.get("can_grant") != new.get("can_grant"):
             changes.append("you *can now grant access*" if new.get("can_grant")
@@ -243,6 +283,8 @@ def build_notifications(
         if (old.get("scope_team_ids") != new.get("scope_team_ids")
                 or old.get("scope_target_ids") != new.get("scope_target_ids")):
             changes.append("your admin scope changed")
+        if old.get("expires_at") != new.get("expires_at"):
+            changes.append(f"they now last {_fmt_until(new.get('expires_at'))}")
         if not changes:
             return []
         return [(user, ":shield: Your QueryHub admin rights changed: " + "; ".join(changes) + ".")]
@@ -291,6 +333,8 @@ def build_notifications(
                 changes.append(f"tier is now *{(new.get('mode') or '?').upper()}*")
             if old.get("allowed_databases") != new.get("allowed_databases"):
                 changes.append(f"database scope is now{_fmt_dbs(new.get('allowed_databases')) or ' *all databases*'}")
+            if old.get("expires_at") != new.get("expires_at"):
+                changes.append(f"it now lasts {_fmt_until(new.get('expires_at'))}")
             if not changes:
                 return []
             text = (f":busts_in_silhouette: Your team {team_lbl}'s access on `{alias}` "
@@ -364,6 +408,16 @@ def build_notifications(
             return out(f":no_entry: {whose} {what} on {alias}{scope} was revoked.")
         if new.get("revoked_at"):
             return []              # edits on an already-revoked row: invisible
+        # Migration 146: a waiver can be switched off and on again. A missing
+        # key (an outbox row from before the column) is "on".
+        if waiver and old.get("enabled", True) != new.get("enabled", True):
+            if new.get("enabled", True):
+                return out(f":stopwatch: Approval is skipped again for *{tier}* "
+                           f"queries on {alias}{scope} for {subject}, "
+                           f"{_fmt_until(new.get('valid_until'))}.")
+            return out(f":stopwatch: :pause_button: Approval is not skipped any more "
+                       f"for *{tier}* queries on {alias}{scope} for {subject}. "
+                       "An admin switched the rule off.")
         changes = []
         if old.get("tier") != new.get("tier"):
             changes.append(f"tier is now *{(new.get('tier') or '?').upper()}*")
@@ -458,6 +512,7 @@ def build_notifications(
             if not row.get("enabled"):
                 return []          # written switched off: nothing is unmasked
             return [(uid, f":unlock: Masking turned OFF for {reach}"
+                          f"{_mask_who_until(row, team_info)}"
                           f"{_mention(row.get('created_by'))}."
                           f"{_mask_why(row)}")
                     for uid in admin_ids()]
@@ -481,12 +536,16 @@ def build_notifications(
         # itself, so the trail is complete. Only a change to what the exemption
         # DOES reaches people's DMs. Anybody who later wants the two to match
         # should widen this, not narrow the audit.
+        # Who it is for and until when (migration 149) change what readers see
+        # as much as the reach does, so they DM too.
         if any(old.get(k) != new.get(k) for k in
                ("target_server_id", "database_name", "schema_name",
                 "table_name", "column_name", "keep_value_scan",
-                "apply_in_joins", "super_admin_only")):
+                "apply_in_joins", "super_admin_only",
+                "audience", "audience_team_id", "expires_at")):
             return [(uid, f":unlock: A live masking exemption changed — it now "
-                          f"covers {reach}.{_mask_why(new)}")
+                          f"covers {reach}{_mask_who_until(new, team_info)}."
+                          f"{_mask_why(new)}")
                     for uid in admin_ids()]
         return []
 

@@ -5,7 +5,7 @@ strings, history rows, env labels) are unit-testable without a DB.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 import json
 
@@ -14,8 +14,8 @@ import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from .. import config as cfg, origins
-from .. import query_safety
+from .. import config as cfg, engines, origins, pre_flight
+from .. import pending_expiry, query_safety
 from ..access_requests import requested_tier_of
 from ..auto_approve import AUTO_DECIDED_BY, is_super_decision
 
@@ -91,13 +91,64 @@ def awaiting_dba(status: str | None) -> bool:
     return status == "awaiting_dba_manual"
 
 
+# ---- how a request closed without running ----------------------------------
+#
+# `status_to_web` shows four different ends as `rejected`. A request that its
+# requester withdrew then looked like a refusal by a DBA. `outcome` tells the
+# four apart, and `status` keeps its values.
+
+#: The audit action of the expiry job. The job writes it in the transaction of
+#: its status change (scripts/expire_stale_pending.py).
+EXPIRY_ACTION = "request_expired"
+#: The audit actions of a cancel before the run. Every path that sets
+#: `cancelled` writes one of them in the transaction of its status change:
+#: `withdrawn` (cancellation.withdraw, from the web) and `cancelled` (the
+#: Slack buttons, the web cancel of a scheduled query, and an edit that
+#: replaces a pending request). An admin can cancel a scheduled run too, and
+#: that also reads as `withdrawn`: a person stopped the request before it ran.
+WITHDRAWAL_ACTIONS = frozenset({"withdrawn", "cancelled"})
+#: The audit actions that `request_outcome` reads. A page asks for these only.
+OUTCOME_ACTIONS = (EXPIRY_ACTION, *sorted(WITHDRAWAL_ACTIONS))
+#: The statuses whose outcome comes from the audit log. Every other status
+#: gives its outcome alone.
+OUTCOME_NEEDS_AUDIT = frozenset({"cancelled"})
+
+_OUTCOME_OF_STATUS = {"rejected": "denied",
+                      "changes_requested": "changes_requested"}
+
+
+def request_outcome(status: str | None,
+                    actions: Iterable[str | None] | None) -> str | None:
+    """How a request closed without running: `withdrawn`, `expired`, `denied`,
+    `changes_requested`, or None.
+
+    None for every other status, and for a request that is still open.
+    `actions` holds the audit actions of the request. Only a `cancelled`
+    request needs them. The status enum has no `expired` value, so the expiry
+    job sets `cancelled` and writes its own audit action.
+
+    A `cancelled` request with no marker gives None, because nothing says how
+    it closed. On the live fleet on 2026-10-22, no such request existed."""
+    if status in _OUTCOME_OF_STATUS:
+        return _OUTCOME_OF_STATUS[status]
+    if status not in OUTCOME_NEEDS_AUDIT:
+        return None
+    acts = set(actions or ())
+    if EXPIRY_ACTION in acts:
+        return "expired"
+    if acts & WITHDRAWAL_ACTIONS:
+        return "withdrawn"
+    return None
+
+
 def env_of(alias: str) -> str:
     """production | staging — drives the env dot in the UI. The fleet is
-    prod-first; anything that self-describes as test/staging is staging."""
-    a = (alias or "").lower()
-    if "test" in a or "staging" in a or "stage" in a:
-        return "staging"
-    return "production"
+    prod-first. Anything that self-describes as test/staging is staging.
+
+    The rule lives in `targets.environment`, because the auto-approve window
+    rules ask the same question. One rule, so the dot and the rule agree."""
+    from .. import targets
+    return targets.environment(alias)
 
 
 # One label per engine id the database accepts (the `target_servers_engine_check`
@@ -134,6 +185,15 @@ def iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
 
+def connection_health(row: dict | None) -> dict | None:
+    """A stored health check (connection_health.by_target) as a connection
+    row shows it, or None when there is no result to show."""
+    if not row:
+        return None
+    return {"ok": bool(row["ok"]), "checkedAt": iso(row["checked_at"]),
+            "failingSince": iso(row["failing_since"]), "error": row["error"]}
+
+
 _SLACK_SHORTCODE = re.compile(r":[a-z0-9_'+-]+:")
 _SLACK_LINK = re.compile(r"<([^|>]+)\|([^>]+)>")
 
@@ -152,12 +212,16 @@ def web_text(s: str | None) -> str | None:
 
 
 def history_entry(row: dict, alias_of: "callable",
-                  state_of: "callable" = None, name_of: "callable" = None) -> dict:
+                  state_of: "callable" = None, name_of: "callable" = None,
+                  actions_of: Callable[[int], Iterable[str]] | None = None) -> dict:
     """One requests row → the /history shape.
 
     `state_of` says whether the caller can still reach that connection, and
     when not, why — see `_conn_state_resolver`. Optional so a caller that does
     not care (or has no viewer) keeps the old shape.
+
+    `actions_of` gives the audit actions of a request id, for `outcome`
+    (`request_outcome`). Optional for the same reason.
     """
     return {
         "id": str(row["id"]),
@@ -177,6 +241,10 @@ def history_entry(row: dict, alias_of: "callable",
         "approver": approver_label(row.get("decided_by_slack_id"),
                                    row.get("decided_by_name"), name_of,
                                    row.get("requester_slack_id")),
+        # withdrawn | expired | denied | changes_requested | null. `status`
+        # shows the first four as `rejected`.
+        **({"outcome": request_outcome(row.get("status"), actions_of(row["id"]))}
+           if actions_of else {}),
     }
 
 
@@ -257,17 +325,31 @@ def _initials(name: str | None) -> str:
     return (parts[0][0] + parts[-1][0]).upper()
 
 
+def queue_estimate(row: dict) -> tuple[int | None, list[str]]:
+    """`(estRows, estTables)` for a queue item, from the plan stored at submit.
+
+    Only an engine with a PostgreSQL-style EXPLAIN stores such a plan. For any
+    other engine the answer stays (None, []), as before (PLA-1592 U9)."""
+    if not engines.spec(row.get("engine")).supports_explain:
+        return None, []
+    return pre_flight.plan_estimate(row.get("explain_plan"))
+
+
 def queue_item(row: dict, alias_of: "callable", tags_of=None,
-               name_of: "callable" = None) -> dict:
+               name_of: "callable" = None, expiry=None) -> dict:
     """One pending `requests` row → the ADMIN_API GET /admin/queue item.
 
-    `trust` has no backend model yet (None); `estRows`/`estTables` aren't
-    persisted as discrete fields — the render-ready `risk_summary` we do
-    store is surfaced as `riskSummary` instead.
+    `trust` has no backend model yet (None). `estRows`/`estTables` come from
+    the plan stored at submit (`explain_plan`, see `queue_estimate`), and stay
+    null and [] when there is none. The render-ready `risk_summary` is
+    surfaced as `riskSummary` either way.
 
     `tags_of` resolves the target's hosting bag SERVER-side. The client must
     not join it: an approver saying yes to a DDL is being shown where it runs,
     and a client-side join is a stale cloud name next to a DROP.
+
+    `expiry` is `pending_expiry.window()`. With it, `expiresAt` tells when the
+    expiry job may close the request. Without it, `expiresAt` is null.
     """
     tid = row.get("target_server_id")
     alias = alias_of(tid) if tid else None
@@ -280,6 +362,7 @@ def queue_item(row: dict, alias_of: "callable", tags_of=None,
     name = row.get("requester_name")
     if name_of:
         name = name_of(name) if name else name_of(row.get("requester_slack_id"))
+    est_rows, est_tables = queue_estimate(row)
     return {
         "id": str(row["id"]),
         "submitter": {
@@ -296,8 +379,8 @@ def queue_item(row: dict, alias_of: "callable", tags_of=None,
         "sql": query,
         "statements": len(classification_of(query)["statements"]),
         "piiCols": pii_preview(query)["columns"],
-        "estRows": None,
-        "estTables": [],
+        "estRows": est_rows,
+        "estTables": est_tables,
         # Same field, two names, and only one of them is honest. The write side
         # takes `justification` (POST /queries); this mapper invented `reason`
         # because it was written separately, so the approver's UI reads
@@ -315,6 +398,11 @@ def queue_item(row: dict, alias_of: "callable", tags_of=None,
         "bundlePosition": row.get("position") if row.get("bundle_id") else None,
         "bundleSize": row.get("bundle_size") if row.get("bundle_id") else None,
         "origin": (row.get("origin") or "slack"),
+        "expiresAt": iso(pending_expiry.expires_at(row, expiry)),
+        # Null for every item, because the queue lists pending requests only.
+        # The field is here so that a queue item and GET /queries/{id} carry
+        # the same fields.
+        "outcome": request_outcome(row.get("status"), ()),
     }
 
 
@@ -482,6 +570,9 @@ AUDIT_KIND = {
     "web_login": "access", "web_signout": "access",
     "slack_sql_opened": "access",
     "kill_switch_set": "kill",
+    # The count of a pause. Without this entry the keyword rule `cancel`
+    # would draw it as a rejected request.
+    "kill_switch_cancelled": "kill",
 }
 
 # Friendlier event labels for actions whose raw name reads poorly. Anything not
@@ -496,6 +587,12 @@ _EVENT_LABEL = {
     "access_revoked": "Access revoked",
     "team_grant_added": "Team grant added",
     "team_grant_removed": "Team grant removed",
+    # "kill switch cancelled" would read as "the switch went off".
+    "kill_switch_cancelled": "Kill switch stopped running reads",
+    "grant_expiry_changed": "User grant end changed",
+    "team_grant_expiry_changed": "Team grant end changed",
+    "auto_approve_disabled": "Auto-approve switched off",
+    "auto_approve_enabled": "Auto-approve switched on",
 }
 
 
@@ -672,7 +769,7 @@ def feedback_entry(row: dict, name_of: "callable" = None) -> dict:
     }
 
 
-#: The three states of an access request, in the words the screen filters on.
+#: The states of an access request, in the words the screen filters on.
 #: The table stores `pending / approved / rejected`. The design calls them
 #: `submitted / provisioned / rejected`, and `POST /endpoint-requests` already
 #: answers `submitted`. Sending the stored word left the pending list and the
@@ -681,6 +778,9 @@ _ENDPOINT_STATUS = {
     "pending": "submitted",
     "approved": "provisioned",
     "rejected": "rejected",
+    # The requester withdrew it (migration 160). Not `rejected`: no admin
+    # refused it.
+    "withdrawn": "withdrawn",
 }
 
 
@@ -703,6 +803,24 @@ def endpoint_request_entry(row: dict, alias_of: "callable",
         "status": _ENDPOINT_STATUS.get(status or "", status),
         "requestedAt": iso(row.get("created_at")),
     }
+
+
+def own_endpoint_request_entry(row: dict, alias_of: Callable[[int | None], str | None],
+                               name_of: Callable[[str], str] | None = None) -> dict:
+    """One access_requests row → the requester's own list
+    (GET /endpoint-requests). The admin shape, plus how the request ended.
+
+    `decidedAt` is when an admin decided it, or when the requester withdrew
+    it. `decidedBy` and `decisionNote` are null while the request is pending,
+    and for a withdrawn request, because no admin decided it."""
+    entry = endpoint_request_entry(row, alias_of, name_of)
+    decider = row.get("decided_by_name") or row.get("decided_by_slack_id")
+    entry.update({
+        "decidedAt": iso(row.get("decided_at")),
+        "decidedBy": name_of(decider) if (name_of and decider) else decider,
+        "decisionNote": row.get("decision_reason"),
+    })
+    return entry
 
 
 # ---- POST /queries response pieces ------------------------------------------

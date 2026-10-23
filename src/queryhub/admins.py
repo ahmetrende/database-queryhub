@@ -2,7 +2,9 @@
 
 Two tables back this module:
 
-  - `admins`: permanent admin rows (no time bounds).
+  - `admins`: admin rows. Permanent unless `expires_at` is set (migration
+    147). After that moment the row decides nothing, as if it were disabled.
+    A super-admin row never ends (the admins_super_admin_never_ends CHECK).
   - `temp_admin_grants`: time-bounded admin grants used for vacation /
     on-call deputisation. Only super-admins can issue these (a
     super-admin is a permanent admin row with all scope columns NULL
@@ -41,15 +43,20 @@ def list_active() -> list[dict]:
     """Every Slack user who counts as admin RIGHT NOW (permanent +
     currently-active temp). Columns: slack_user_id, name, source
     ('permanent' | 'temp'), expires_at (None for permanent). De-dup'd
-    on slack_user_id with permanent rows winning."""
+    on slack_user_id with permanent rows winning.
+
+    An `admins` row with an end (migration 147) is listed until that end, as
+    'temp' -- the word the new model uses for a role with a `valid_until`."""
     if _v2():
         return access.list_admins()
     rows = db.fetch_all(
         "SELECT slack_user_id, name, "
-        "       'permanent'::text AS source, "
-        "       NULL::timestamptz AS expires_at "
+        "       CASE WHEN expires_at IS NULL THEN 'permanent' "
+        "            ELSE 'temp' END AS source, "
+        "       expires_at "
         "  FROM admins "
         " WHERE enabled = TRUE "
+        "   AND (expires_at IS NULL OR expires_at > NOW()) "
         "UNION ALL "
         "SELECT t.slack_user_id, "
         "       COALESCE(a.name, r.name, '(?)') AS name, "
@@ -60,21 +67,24 @@ def list_active() -> list[dict]:
         "  LEFT JOIN requesters  r ON r.slack_user_id     = t.slack_user_id "
         "  WHERE NOT EXISTS ("
         "      SELECT 1 FROM admins p "
-        "       WHERE p.slack_user_id = t.slack_user_id AND p.enabled = TRUE) "
+        "       WHERE p.slack_user_id = t.slack_user_id AND p.enabled = TRUE "
+        "         AND (p.expires_at IS NULL OR p.expires_at > NOW())) "
         "ORDER BY name NULLS LAST"
     )
     return rows
 
 
 def is_admin(principal_id: str) -> bool:
-    """True iff the user has either a permanent admin row OR at least
-    one active temp grant. Cheap — single query against the union."""
+    """True iff the user has either a live admin row (enabled, not ended)
+    OR at least one active temp grant. Cheap — single query against the
+    union."""
     if _v2():
         return access.is_admin(principal_id)
     row = db.fetch_one(
         "SELECT 1 "
         "  FROM admins "
         " WHERE slack_user_id = %s AND enabled = TRUE "
+        "   AND (expires_at IS NULL OR expires_at > NOW()) "
         "UNION ALL "
         "SELECT 1 "
         "  FROM v_active_temp_admins "
@@ -90,7 +100,11 @@ def is_super_admin(principal_id: str) -> bool:
     columns NULL — they can approve anything AND grant temp admins to
     others. Temp grants can NOT make someone a super-admin (their own
     scope columns mirror the same shape, and the grant code path
-    requires the issuer to be permanent + unrestricted)."""
+    requires the issuer to be permanent + unrestricted).
+
+    A super-admin row never ends: the admins_super_admin_never_ends CHECK
+    (migration 147) refuses an `expires_at` on a row with every scope
+    column NULL, as access.is_super_admin refuses a role with a valid_until."""
     if _v2():
         return access.is_super_admin(principal_id)
     row = db.fetch_one(
@@ -98,6 +112,31 @@ def is_super_admin(principal_id: str) -> bool:
         " WHERE slack_user_id = %s "
         "   AND enabled       = TRUE "
         "   AND max_tier         IS NULL "
+        "   AND scope_team_ids   IS NULL "
+        "   AND scope_target_ids IS NULL",
+        (principal_id,),
+    )
+    return row is not None
+
+
+def is_dba(principal_id: str) -> bool:
+    """The DBA level: a PERMANENT (no end date) and UNSCOPED (all teams, all
+    targets) admin row. A tier ceiling is allowed, so a super-admin passes
+    too. A temporary admin, a scoped admin and an approver do not pass.
+
+    In the legacy model a temporary admin is a `temp_admin_grants` row, which
+    this never reads. Since migration 147 an `admins` row can have an end
+    (`expires_at`) too. Such a row is temporary, so it does not pass either,
+    as `access.is_dba` refuses a role with a `valid_until`. A scope column
+    that is NULL means every team or every target. An EMPTY array means none,
+    so `IS NULL` is the test and `{}` fails closed."""
+    if _v2():
+        return access.is_dba(principal_id)
+    row = db.fetch_one(
+        "SELECT 1 FROM admins "
+        " WHERE slack_user_id = %s "
+        "   AND enabled       = TRUE "
+        "   AND expires_at       IS NULL "
         "   AND scope_team_ids   IS NULL "
         "   AND scope_target_ids IS NULL",
         (principal_id,),
@@ -141,12 +180,14 @@ _TIER_RANK = {"ro": 0, "rw": 1, "ddl": 2}
 def _candidate_scope_rows(admin_slack_id: str) -> list[dict]:
     """Every "admin-like" row this user has right now — permanent
     + active temp. Each row carries the three scope columns; the
-    `source` column distinguishes them in audit / debug output."""
+    `source` column distinguishes them in audit / debug output. An
+    `admins` row whose end has passed (migration 147) is not a candidate."""
     return db.fetch_all(
         "SELECT scope_team_ids, scope_target_ids, max_tier, "
         "       'permanent' AS source, NULL::integer AS grant_id "
         "  FROM admins "
         " WHERE slack_user_id = %s AND enabled = TRUE "
+        "   AND (expires_at IS NULL OR expires_at > NOW()) "
         "UNION ALL "
         "SELECT scope_team_ids, scope_target_ids, max_tier, "
         "       'temp' AS source, grant_id "
@@ -397,9 +438,13 @@ def get_scope(admin_slack_id: str) -> dict | None:
     """Permanent admins row + any active temp grants for one user.
     Useful for audit snapshots and `/sql whoami`. Returns None when
     the user has no admin presence at all."""
+    # `ended` (migration 147): the row's end has passed. The row is still
+    # returned, as a disabled one is, so a caller that folds scopes must skip
+    # it (web/admin.admin_block does).
     perm = db.fetch_one(
         "SELECT slack_user_id, name, email, enabled, "
-        "       scope_team_ids, scope_target_ids, max_tier "
+        "       scope_team_ids, scope_target_ids, max_tier, expires_at, "
+        "       (expires_at IS NOT NULL AND expires_at <= NOW()) AS ended "
         "  FROM admins WHERE slack_user_id = %s",
         (admin_slack_id,),
     )

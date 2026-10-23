@@ -107,7 +107,7 @@ default instead of stopping the process.
 
 | Key | Default | What it does |
 |---|---|---|
-| `kill_switch` | `off` | Master stop: reject all new submissions. |
+| `kill_switch` | `off` | Master stop: reject all new submissions. When an admin sets it `on` from the web or with `/sql kill on`, QueryHub sets the switch first, then cancels every running read-only query. Writes and DDL continue to run. The `kill_switch_set` audit row records the message. A `kill_switch_cancelled` row after it records `cancelledCount`. A direct SQL update cancels nothing. `GET /api/admin/kill/history` lists the pauses. |
 | `kill_switch_message` | _(notice)_ | Message shown while the kill switch is on. |
 | `query_timeout_sec` | `300` | Statement timeout for an executing query. |
 | `execution_lease_sec` | `900` | How long a claimed execution lease lasts before the app considers it stale. |
@@ -150,9 +150,12 @@ default instead of stopping the process.
 | `fingerprint_cache_ttl_days` | `30` | How long a fingerprint stays eligible for auto-approve. |
 | `require_justification` | `false` | Require a justification note on every submission. |
 | `max_open_access_requests_per_user` | `5` | Cap on pending target-access requests per user. |
+| `pending_expiry_enabled` | `off` | When on, `scripts/expire_stale_pending.py --commit` cancels a request that stays pending longer than `pending_expiry_hours`. The web then shows `expiresAt` on a pending request. |
+| `pending_expiry_hours` | `24` | How long a request can stay pending before the expiry job can cancel it. `expiresAt` is the submit time plus these hours. |
 | `ro_burst_threshold` | `3` | Read-only submissions within the window that trigger the RO-window nudge. |
 | `ro_burst_window_min` | `10` | The RO-burst detection window (minutes). |
 | `ro_window_minutes` | `60` | Length of a granted read-only auto-approve window. |
+| `auto_approve_rw_requests` | `off` | `on` = a person who holds RW on a database can ask for an auto-approve window that covers writes (`POST /api/auto-approve-requests` with `tier: "RW"`). Every window has an end time. A window for DDL is never possible. On a production connection (`targets.environment`: an alias without `test`, `stage` or `staging`), only a super-admin decides a RW window. `off` = QueryHub refuses a RW window request with 403, and an admin cannot approve a pending one. Migration 150. |
 | `auto_approve_feed_channel` | `""` | Slack channel that receives an auto-approve FYI feed. **(Slack)** |
 | `access_model_v2` | `off` | Resolve authorization from the nine-table model instead of the team tables. Turn it on only when the access snapshot comparison is empty. |
 
@@ -199,6 +202,20 @@ target (`target_servers.replica_of`). See OPERATIONS.md, "Read replicas".
 | `replica_max_lag_seconds` | `10` | The app does not use a replica that is further behind its primary than this. It measures lag against the primary's current WAL position. |
 | `replica_health_ttl_seconds` | `15` | How long a process trusts one health probe of a replica. |
 | `replica_read_your_writes_minutes` | `5` | After a requester's own RW/DDL request on a target, their reads there stay on the primary this long. `0` = off. |
+
+## Connection health
+
+A scheduled job, `scripts/check_connection_health.py`, checks the connection
+to each enabled target. The admin connection list shows the last result on
+each row as `health`. The job reads these keys at the start of each run. See
+[OPERATIONS.md §29](OPERATIONS.md#29-connection-health).
+
+| Key | Default | What it does |
+|---|---|---|
+| `connection_health_enabled` | `on` | `on` = the job checks the targets, and the connection list shows the last result. `off` = the job exits at once, and the list shows no result. |
+| `connection_health_interval_sec` | `300` | Seconds between two checks of the same target. The job can run more often. It checks only the targets that are due. |
+| `connection_health_timeout_sec` | `5` | Seconds that one check can take, from 1 to 60. After this time, the check records a failure. |
+| `connection_health_exclude_engines` | `""` | Engines that the job skips, as a comma list: `postgres`, `mssql`, `clickhouse`, `athena`. Empty = check every engine. A ClickHouse check is a query: it wakes an idle ClickHouse Cloud service and bills its compute. An Athena check reads the Glue catalog and runs no Athena query. |
 
 ## Target TLS
 

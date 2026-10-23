@@ -99,11 +99,14 @@ def authz(principal_id: str) -> dict | None:
 
 
 def _authz_legacy(principal_id: str) -> dict | None:
+    # A scope whose end has passed (migration 147) grants nothing, as the
+    # new model's `_authz_v2` reads only live role rows.
     row = db.fetch_one(
         "SELECT can_grant, max_tier, "
         "  (max_tier IS NULL AND scope_team_ids IS NULL "
         "   AND scope_target_ids IS NULL) AS is_super "
-        "FROM admins WHERE slack_user_id = %s AND enabled",
+        "FROM admins WHERE slack_user_id = %s AND enabled "
+        "  AND (expires_at IS NULL OR expires_at > NOW())",
         (principal_id,),
     )
     if row is None:

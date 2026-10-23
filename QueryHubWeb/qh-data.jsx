@@ -773,6 +773,19 @@ function qhAffectedInfo(result) {
 // at in Results, so Messages opens: it holds what the run said.
 function qhTabAfterResult(res) { return res && res.kind === 'affected' ? 'messages' : 'results'; }
 
+// Whether the auto-approve form can offer "Reads and writes", and the reason when
+// it cannot. `tiers` is the answer of GET /auto-approve-requests: ["RO"], or
+// ["RO", "RW"] while the server switch `auto_approve_rw_requests` is on. A server
+// that sends no list keeps the old behaviour: the choice is on offer. `held` is
+// the tier the person holds on the database (RO, RW, DDL, or null when none is
+// picked yet).
+function qhAutoTierState(tiers, held) {
+  const offered = !Array.isArray(tiers) || tiers.includes('RW');
+  if (!offered) return { rwOk: false, reason: 'Auto-approve for writes is not available. You can ask for reads only.' };
+  if (held && held !== 'RW' && held !== 'DDL') return { rwOk: false, reason: 'You hold read-only here, so only reads can be auto-approved.' };
+  return { rwOk: true, reason: null };
+}
+
 // ---------- Engine-aware helpers (multi-engine; added v4) ----------
 // Whether RO queries auto-approve on this target. Server sends `autoApproveRO`
 // per connection AND per database (db overrides conn); read it, never hardcode.
@@ -1097,7 +1110,7 @@ Object.assign(window, {
   qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhConfirmReasons, qhSplitReasons,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,
-  qhClassify, qhDetectPII, qhMockResult, qhAffectedInfo, qhTabAfterResult, qhMaskValue, qhStripComments, qhSplitStatements,
+  qhClassify, qhDetectPII, qhMockResult, qhAffectedInfo, qhTabAfterResult, qhAutoTierState, qhMaskValue, qhStripComments, qhSplitStatements,
   qhConnState, QH_CONN_STATE,
   qhColumnsFor, qhIndexesFor, qhViewsFor, qhSplitRelations, qhAgo, qhPersonName, qhIsHandleName, QH_ROLE_PREFIXES,
   qhRiskHints, qhExplainPlan, qhQuoteIdent, qhQuoteList, qhApproxRows, qhFmtRows,

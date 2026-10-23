@@ -17,6 +17,9 @@ auto-grant is deliberately least-privilege and conservative:
     end date: an approval never lengthens or removes a limit that an admin
     set.
 
+The requester can withdraw a pending request (`withdraw`, migration 160). A
+withdrawn request is closed, and no admin decided it.
+
 `notify_admins` tells the admins about a new request. It imports `slack_app`
 only when Slack is on and a client exists. So the web route works when Slack
 is off, and also when the `slack_app` package is not there.
@@ -155,15 +158,66 @@ def create(
         return None
 
 
+_ROW_COLS = ("id, requester_slack_id, requester_name, target_server_id, "
+             "database_name, attempted_query, reason, requested_tier, status, "
+             "decided_by_slack_id, decided_by_name, decision_reason, "
+             "created_at, decided_at")
+
+
 def get(access_request_id: int) -> dict | None:
     return db.fetch_one(
-        "SELECT id, requester_slack_id, requester_name, target_server_id, "
-        "       database_name, attempted_query, reason, requested_tier, status, "
-        "       decided_by_slack_id, decided_by_name, decision_reason, "
-        "       created_at, decided_at "
-        "FROM access_requests WHERE id = %s",
+        f"SELECT {_ROW_COLS} FROM access_requests WHERE id = %s",
         (access_request_id,),
     )
+
+
+def list_for(principal_id: str, limit: int = 200) -> list[dict]:
+    """The access requests that one person filed, newest first.
+
+    The WHERE names the person, so a caller gets only its own rows."""
+    return db.fetch_all(
+        f"SELECT {_ROW_COLS} FROM access_requests "
+        "WHERE requester_slack_id = %s ORDER BY id DESC LIMIT %s",
+        (principal_id, limit),
+    )
+
+
+def withdraw(access_request_id: int, by_id: str,
+             by_name: str | None) -> dict | None:
+    """The requester withdraws their own pending request. Returns the updated
+    row, or None when nothing changed.
+
+    Nothing changes when the request is not theirs or is not pending any more:
+    an admin decided it, or the requester withdrew it already. The WHERE names
+    the requester, so this function cannot withdraw the request of another
+    person. The status test makes a race with an admin's decision safe. The
+    first UPDATE wins, and the other one changes nothing. An approval that
+    loses writes no grant, because `decide()` writes the grant in the
+    transaction of its own UPDATE.
+
+    The status change and its audit row commit in one transaction. The row
+    keeps no decider and no note: no admin decided it. `decided_at` is the
+    time of the withdrawal, which closes the request.
+
+    A database function only. The caller retires the admins' Slack cards,
+    as the web withdraw of a SQL request does."""
+    with db.transaction() as cur:
+        cur.execute(
+            "UPDATE access_requests SET status = 'withdrawn', decided_at = NOW() "
+            "WHERE id = %s AND requester_slack_id = %s AND status = 'pending' "
+            f"RETURNING {_ROW_COLS}",
+            (access_request_id, by_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        row = dict(row)
+        audit.log_in(cur, None, by_id, by_name, "access_request_withdrawn",
+                     {"access_request_id": row["id"],
+                      "target_server_id": row["target_server_id"],
+                      "database": row["database_name"],
+                      "tier": requested_tier_of(row)})
+    return row
 
 
 def _auto_grant(cur, row: dict, decided_by_slack_id: str,

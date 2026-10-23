@@ -26,7 +26,9 @@ _TZSET = available_timezones()
 _TYPES = {
     # bool
     "allow_explain_analyze": "bool", "ast_safety_enabled": "bool",
-    "batch_enabled": "bool", "csv_import_enabled": "bool",
+    "auto_approve_rw_requests": "bool",
+    "batch_enabled": "bool", "connection_health_enabled": "bool",
+    "csv_import_enabled": "bool",
     "fingerprint_cache_enabled": "bool", "grant_reaper_enabled": "bool",
     "kill_switch": "bool", "mssql_trust_server_cert": "bool",
     "pending_expiry_enabled": "bool", "pii_masking_enabled": "bool",
@@ -35,7 +37,8 @@ _TYPES = {
     "security_override_ttl_enabled": "bool", "web_auth_slack_enabled": "bool",
     "web_cookie_secure": "bool",
     # int
-    "batch_max_items": "int", "cost_avoided_replicas": "int",
+    "batch_max_items": "int", "connection_health_interval_sec": "int",
+    "connection_health_timeout_sec": "int", "cost_avoided_replicas": "int",
     "cost_dba_hourly_usd": "int", "cost_dba_minutes_per_request": "int",
     "cost_other_monthly_usd": "int", "cost_per_replica_monthly_usd": "int",
     "csv_size_mb": "int", "execution_lease_sec": "int",
@@ -52,6 +55,9 @@ _TYPES = {
     # str
     "auto_approve_feed_channel": "str", "bot_display_icon": "str",
     "bot_display_name": "str", "kill_switch_message": "str", "log_level": "str",
+    # A comma list of engine ids. Empty is a real value (check every engine),
+    # so it must stay free text and never be guessed as anything else.
+    "connection_health_exclude_engines": "str",
     "report_start_date": "str", "report_timezone": "str",
     "set_allowed_params": "str", "target_alias_allow_patterns": "str",
     "target_host_allow_patterns": "str", "target_ssl_mode": "str",
@@ -74,6 +80,7 @@ _GROUPS = [
         "grant_idle_revoke_days", "grant_reaper_enabled",
         "security_override_ttl_enabled", "security_override_ttl_minutes",
         "ro_burst_threshold", "ro_burst_window_min", "ro_window_minutes",
+        "auto_approve_rw_requests",
         "fingerprint_cache_enabled", "fingerprint_cache_ttl_days"]),
     ("execution", "Query execution", [
         "query_timeout_sec", "execution_lease_sec", "max_rows",
@@ -87,6 +94,9 @@ _GROUPS = [
         "target_alias_allow_patterns", "target_host_allow_patterns",
         "target_ssl_mode", "target_ssl_rootcert", "target_ssl_verify_hosts",
         "target_ssl_verify_exempt_hosts", "mssql_trust_server_cert"]),
+    ("health", "Connection health", [
+        "connection_health_enabled", "connection_health_interval_sec",
+        "connection_health_timeout_sec", "connection_health_exclude_engines"]),
     ("csv", "CSV import", [
         "csv_import_enabled", "csv_size_mb", "import_max_mb", "import_max_rows",
         "import_timeout_sec", "import_csv_ttl_hours"]),
@@ -160,6 +170,9 @@ _MUST_BE_POSITIVE = frozenset({
     "query_timeout_sec", "execution_lease_sec", "import_timeout_sec",
     "max_rows", "import_max_rows", "min_query_length",
     "max_open_requests_per_user",
+    # 0 would mean "wait for ever" to a driver, and "check on every run" for
+    # the interval: the spacing that keeps an idle service asleep.
+    "connection_health_timeout_sec", "connection_health_interval_sec",
 })
 
 

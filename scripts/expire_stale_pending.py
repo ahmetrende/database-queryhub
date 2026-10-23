@@ -30,8 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from queryhub import audit, db  # noqa: E402
-from queryhub import config as cfg  # noqa: E402
+from queryhub import audit, db, pending_expiry  # noqa: E402
 from queryhub.config import ENV  # noqa: E402
 
 log = logging.getLogger("pending-expiry")
@@ -51,8 +50,8 @@ def find_stale(hours: int) -> list[dict]:
 
 
 def _expiry_enabled() -> bool:
-    return (cfg.get_setting("pending_expiry_enabled", "off") or "").strip().lower() \
-        in {"on", "true", "yes", "1"}
+    # The web shows `expiresAt` from the same rule (pending_expiry.py).
+    return pending_expiry.enabled()
 
 
 def main() -> int:
@@ -64,7 +63,7 @@ def main() -> int:
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     db.init_pool()
 
-    hours = cfg.get_int("pending_expiry_hours", 24)
+    hours = pending_expiry.hours()
     stale = find_stale(hours)
     log.info("stale pending requests (idle > %dh): %d", hours, len(stale))
     for r in stale:

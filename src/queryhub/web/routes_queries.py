@@ -33,8 +33,8 @@ from pydantic import BaseModel, Field
 
 from .. import people
 from .. import admins, audit as audit_mod
-from .. import (cancellation, core_submit, db, engines, origins, pii, pre_flight, profile_sync,
-               query_safety, requesters)
+from .. import (cancellation, core_submit, db, engines, origins, pending_expiry, pii,
+               pre_flight, profile_sync, query_safety, requesters)
 from .. import config as cfg
 from . import deps, mapping, sessions
 from .routes_data import _alias_of, _target_by_alias
@@ -464,10 +464,14 @@ def _derive_notifications(uid: str) -> list[dict]:
             items.append({"id": f"q{r['id']}-sched", "kind": "scheduled", "title": "Scheduled query ran",
                           "body": f"Your scheduled query on {loc} finished — {int(r['row_count'] or 0):,} rows.",
                           "createdAt": mapping.iso(r["completed_at"])})
+    # An admin's decisions only. A withdrawn request has a `decided_at` too
+    # (the time of the withdrawal), and the line below would call it
+    # "declined" to the person who withdrew it.
     for r in db.fetch_all(
             "SELECT e.id, e.status, e.decided_at, e.database_name, s.alias "
             "FROM access_requests e LEFT JOIN target_servers s ON s.id = e.target_server_id "
             "WHERE e.requester_slack_id = %s AND e.decided_at IS NOT NULL "
+            "  AND e.status IN ('approved', 'rejected') "
             "  AND e.decided_at > now() - interval '30 days' "
             "ORDER BY e.id DESC LIMIT 20", (uid,)):
         loc = "/".join(str(b) for b in [r["alias"], r["database_name"]] if b) or "a target"
@@ -1103,6 +1107,14 @@ def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
         "messages": mapping.status_messages(row, audit_rows),
         # Where it ran: {kind, name, forced, lagSeconds}, null until it has.
         "ranOn": mapping.ran_on(row, audit_rows, _alias_of),
+        # When the expiry job may close it: null unless it is pending and
+        # pending_expiry_enabled is on (pending_expiry.py).
+        "expiresAt": mapping.iso(
+            pending_expiry.expires_at(row, pending_expiry.window())),
+        # withdrawn | expired | denied | changes_requested | null, from the
+        # audit rows above: no second read.
+        "outcome": mapping.request_outcome(
+            row.get("status"), {a.get("action") for a in audit_rows}),
     }
 
 

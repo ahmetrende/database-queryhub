@@ -325,6 +325,60 @@ def cancel(request_id: int, by_id: str | None, by_name: str | None) -> str:
     return outcome
 
 
+# How many reads the kill switch stops at the same time. One stop can wait 10 s
+# for a connection and `cancel_escalate_sec` for the cancel. One at a time, a
+# few slow targets could hold the answer to the admin back for minutes.
+_SWEEP_WORKERS = 8
+
+
+def cancel_running_reads(by_id: str | None, by_name: str | None) -> int | None:
+    """Cancel every running read-only request. Returns how many stopped.
+
+    The kill switch calls this after somebody sets it on (through
+    `kill_switch.stop_running_reads`). It cancels reads only.
+    A write or a DDL script keeps running, because a stop in the middle can
+    leave it half applied. `executed_tier` is the tier that the executor ran the
+    request at, so a script with one write in it counts as a write.
+
+    Each request goes through `cancel`, so it gets the same audit rows and the
+    same row update as a cancel from the Stop button. A cancel that fails or
+    raises is logged and does not stop the others. None means that the list of
+    running requests could not be read, so nothing was cancelled.
+    """
+    try:
+        rows = db.fetch_all(
+            "SELECT id FROM requests "
+            " WHERE status = 'executing' AND executed_tier = 'ro' ORDER BY id")
+    except Exception:
+        log.exception("kill switch: cannot read the running read-only requests")
+        return None
+    ids = [r["id"] for r in rows]
+    if not ids:
+        return 0
+
+    def stop_one(request_id: int) -> str:
+        try:
+            return cancel(request_id, by_id, by_name)
+        except Exception:
+            log.exception("kill switch: the cancel of request %s failed", request_id)
+            return CancelOutcome.FAILED
+
+    from concurrent.futures import ThreadPoolExecutor
+    try:
+        with ThreadPoolExecutor(max_workers=min(len(ids), _SWEEP_WORKERS),
+                                thread_name_prefix="kill-switch-cancel") as pool:
+            outcomes = list(pool.map(stop_one, ids))
+    except Exception:
+        # The caller sets the switch whatever happens here.
+        log.exception("kill switch: the cancels did not run")
+        return None
+    stopped = sum(1 for o in outcomes
+                  if o in (CancelOutcome.CANCELLED, CancelOutcome.TERMINATED))
+    log.warning("kill switch: stopped %s of %s running read-only requests",
+                stopped, len(ids))
+    return stopped
+
+
 # States a request can be withdrawn from: it has not started running, so there
 # is no backend to signal and nothing to escalate — just a row to close and an
 # audit line to leave. Kept next to cancel() because "stop my request" is one

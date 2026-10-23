@@ -3130,6 +3130,15 @@ def _ro_window_already_decided(client: WebClient, body: dict, req: dict | None) 
         f":information_source: This window request is already *{status}*.")
 
 
+def _ro_window_rule_refused(client: WebClient, actor_id: str, rid: int,
+                            e: "auto_approve_requests.WindowDecisionRefused") -> None:
+    """Tell the admin who clicked which window rule refused the decision: a
+    RW window on production, the RW switch, RW access, DDL. The card keeps its
+    buttons, because the request is still pending."""
+    notifications.dm_requester(
+        client, actor_id, f":no_entry: Window request `#{rid}`: {e.message}")
+
+
 def handle_open_ro_window(ack: Ack, body: dict, client: WebClient) -> None:
     """Banner/CTA button → open the RO-window request modal (user picks the
     target + window there). The button value may carry a preselect target
@@ -3242,7 +3251,9 @@ def handle_ro_window_approve(ack: Ack, body: dict, client: WebClient) -> None:
             rid, approve=True, actor_id=actor["id"],
             actor_name=actor.get("name") or actor.get("username"))
     except auto_approve_requests.WindowDecisionRefused as e:
-        if e.status == 403:
+        if e.code:
+            _ro_window_rule_refused(client, actor["id"], rid, e)
+        elif e.status == 403:
             notifications.dm_requester(
                 client, actor["id"],
                 f":no_entry: Window request `#{rid}` is on a target outside your "
@@ -3276,8 +3287,11 @@ def handle_ro_window_reject(ack: Ack, body: dict, client: WebClient) -> None:
         out = auto_approve_requests.decide_window(
             rid, approve=False, actor_id=actor["id"],
             actor_name=actor.get("name") or actor.get("username"))
-    except auto_approve_requests.WindowDecisionRefused:
-        _ro_window_already_decided(client, body, auto_approve_requests.get(rid))
+    except auto_approve_requests.WindowDecisionRefused as e:
+        if e.code:
+            _ro_window_rule_refused(client, actor["id"], rid, e)
+        else:
+            _ro_window_already_decided(client, body, auto_approve_requests.get(rid))
         return
     _ro_window_update_admin_msg(
         client, body, f":no_entry: *Window #{rid} rejected* by <@{actor['id']}>.")

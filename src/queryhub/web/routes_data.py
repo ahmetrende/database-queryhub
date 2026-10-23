@@ -565,12 +565,30 @@ def history(limit: int = 50, claims: dict = Depends(deps.current_user)):
             aliases[tid] = _alias_of(tid)
         return aliases[tid]
     audits = _ran_on_audits([r["id"] for r in rows if r.get("executed_at")])
+    closings = _outcome_audits([r["id"] for r in rows
+                                if r["status"] in mapping.OUTCOME_NEEDS_AUDIT])
     return {"history": [
         # The same builder as GET /queries/:id, so a row and its status poll
         # can never disagree about where the query ran.
-        {**mapping.history_entry(r, alias_of, state_of, name_of),
+        {**mapping.history_entry(r, alias_of, state_of, name_of,
+                                 lambda rid: closings.get(rid, ())),
          "ranOn": mapping.ran_on(r, audits.get(r["id"], []), alias_of)}
         for r in rows]}
+
+
+def _outcome_audits(request_ids: list[int]) -> dict[int, set[str]]:
+    """The audit actions that `mapping.request_outcome` reads, for a page of
+    requests in one read: {request id: {action}}. Only a cancelled request
+    needs them, and a page with none asks nothing."""
+    if not request_ids:
+        return {}
+    out: dict[int, set[str]] = {}
+    for r in db.fetch_all(
+            "SELECT request_id, action FROM audit_log "
+            " WHERE request_id = ANY(%s) AND action = ANY(%s)",
+            (list(request_ids), list(mapping.OUTCOME_ACTIONS))):
+        out.setdefault(r["request_id"], set()).add(r["action"])
+    return out
 
 
 def _ran_on_audits(request_ids: list[int]) -> dict[int, list[dict]]:

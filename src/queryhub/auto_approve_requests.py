@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 
 from . import audit, db, idp_outbox, window_options
+from . import config as cfg
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +123,81 @@ class WindowRequestRefused(Exception):
 DAY_WINDOWS = (1, 7, 14, 30)
 _TIER_RANK = {"ro": 1, "rw": 2, "ddl": 3}
 
+# The switch for windows that cover writes (migration 150). Off by default.
+RW_REQUESTS_KEY = "auto_approve_rw_requests"
+_ON = {"on", "true", "yes", "1"}
+
+RW_OFF_MESSAGE = ("Auto-approve for writes (RW) is not available. "
+                  "You can ask for read-only (RO) auto-approve.")
+RW_OFF_DECISION_MESSAGE = ("Auto-approve for writes (RW) is not available, so "
+                           "this window cannot be approved. You can reject it.")
+DDL_MESSAGE = "Schema changes are always reviewed and cannot be auto-approved."
+PRODUCTION_WRITE_MESSAGE = ("Only a super-admin can decide a window that covers "
+                            "writes on a production connection.")
+RW_NOT_HELD_MESSAGE = ("The requester does not hold RW here now, so a window "
+                       "for writes cannot be approved. You can reject it.")
+
+
+def rw_requests_enabled() -> bool:
+    """True when people may ask for an auto-approve window that covers writes.
+
+    A read that fails counts as off. A switch that opens a way around review
+    must stay closed when nobody can say that it is open."""
+    try:
+        # The literal key, not RW_REQUESTS_KEY: tests/test_config_keys_seeded
+        # reads the literal and checks that a migration seeds it.
+        value = cfg.get_setting("auto_approve_rw_requests", "off")
+    except Exception:
+        log.exception("could not read %s. RW window requests stay off",
+                      RW_REQUESTS_KEY)
+        return False
+    return (value or "").strip().lower() in _ON
+
+
+def offered_tiers() -> list[str]:
+    """The tiers a person can ask a window for, in the words the web uses."""
+    return ["RO", "RW"] if rw_requests_enabled() else ["RO"]
+
+
+def _held_rank(principal_id: str, target_id: int, db_scope: str | None) -> int:
+    """The rank of the tier the person holds, per database when one is named.
+    Asked of the resolver that the submit path uses. 0 means no access."""
+    from . import teams
+    held = (teams.effective_mode_for_database(principal_id, target_id, db_scope)
+            if db_scope else
+            ((teams.effective_grant_for_user(principal_id, target_id) or {}).get("mode")))
+    return _TIER_RANK.get((held or "").lower(), 0)
+
+
+def on_production(alias: str | None) -> bool:
+    """True when the connection counts as production (`targets.environment`).
+    No alias, for example a deleted connection, counts as production."""
+    from . import targets
+    return targets.environment(alias) == "production"
+
+
+def needs_super_admin(req: dict, alias: str | None) -> bool:
+    """A window that covers writes on production is a super-admin's decision.
+
+    Only a read-only window stays with every admin in scope. A `ddl` row
+    cannot be asked for, but if one exists, it counts as a write here."""
+    return (req.get("max_tier") or "ro").lower() != "ro" and on_production(alias)
+
+
+def can_decide(actor_id: str, req: dict, alias: str | None) -> bool:
+    """True when this admin may decide this window request.
+
+    The scope check is the one a query approval uses, because the waiver gives
+    exactly that. A window that covers writes on production also needs a
+    super-admin. The admin screen lists only the requests that pass this."""
+    from . import admins
+    if needs_super_admin(req, alias) and not admins.is_super_admin(actor_id):
+        return False
+    return admins.can_approve(actor_id, {
+        "required_tier": req.get("max_tier"),
+        "target_server_id": req.get("target_server_id"),
+        "requester_slack_id": req.get("requester_slack_id")})
+
 
 def valid_window(minutes: int) -> bool:
     return (window_options.is_valid_window(minutes)
@@ -131,7 +207,7 @@ def valid_window(minutes: int) -> bool:
 def submit_window(*, principal_id: str, name: str | None, target_id: int,
                   window_minutes: int, reason: str,
                   database_name: str | None = None, tier: str = "ro"):
-    """Validate and persist one read-only window request.
+    """Check and persist one window request.
 
     The rules the Slack modal always enforced, in one place so the web form
     enforces the same ones: the bot is not halted, the window is one of the
@@ -141,6 +217,10 @@ def submit_window(*, principal_id: str, name: str | None, target_id: int,
     offers windows at all (an Athena archive does not, unless its engine_config
     turns auto-approve on).
 
+    A window that covers writes (RW) needs the `auto_approve_rw_requests`
+    switch on, and RW access that the requester holds now. While the switch is
+    off, only a read-only window can be asked for. DDL is never offered.
+
     Returns (row, target). Notifying the admins is the caller's, because it
     needs a Slack client and the two surfaces hold theirs differently.
     """
@@ -149,10 +229,11 @@ def submit_window(*, principal_id: str, name: str | None, target_id: int,
         raise WindowRequestRefused("reason", core_submit.kill_switch_message(), 503)
     tier = (tier or "ro").strip().lower()
     if tier == "ddl":
-        raise WindowRequestRefused(
-            "tier", "Schema changes are always reviewed and cannot be auto-approved.")
+        raise WindowRequestRefused("tier", DDL_MESSAGE)
     if tier not in ("ro", "rw"):
         raise WindowRequestRefused("tier", "Pick RO or RW.")
+    if tier == "rw" and not rw_requests_enabled():
+        raise WindowRequestRefused("tier", RW_OFF_MESSAGE, 403)
     if not valid_window(window_minutes):
         raise WindowRequestRefused("window", "Pick a valid window length.")
     reason = (reason or "").strip()
@@ -194,10 +275,7 @@ def submit_window(*, principal_id: str, name: str | None, target_id: int,
         # A waiver covers what the access allows and no more, so asking to skip
         # review on writes needs write access to start with. Asked of the
         # resolver, per database when one is named.
-        held = (teams.effective_mode_for_database(principal_id, target_id, db_scope)
-                if db_scope else
-                ((teams.effective_grant_for_user(principal_id, target_id) or {}).get("mode")))
-        if _TIER_RANK.get((held or "").lower(), 0) < _TIER_RANK["rw"]:
+        if _held_rank(principal_id, target_id, db_scope) < _TIER_RANK["rw"]:
             raise WindowRequestRefused(
                 "tier", "You hold read-only here, so only reads can be auto-approved.", 403)
     row = create(principal_id=principal_id, name=name, target_server_id=target_id,
@@ -267,9 +345,14 @@ def list_for(principal_id: str, limit: int = 50) -> list[dict]:
 
 
 class WindowDecisionRefused(Exception):
-    def __init__(self, message: str, status: int = 409):
+    """A decision that cannot be made. `code` names a rule of the window
+    itself (`super_admin`, `ddl`, `rw_off`, `rw_not_held`, `no_window`), so
+    that a surface can say that rule. It is None for the older refusals:
+    not an admin, no such request, already decided, outside the scope."""
+
+    def __init__(self, message: str, status: int = 409, code: str | None = None):
         super().__init__(message)
-        self.message, self.status = message, status
+        self.message, self.status, self.code = message, status, code
 
 
 def decide_window(request_id: int, *, approve: bool, actor_id: str,
@@ -282,6 +365,12 @@ def decide_window(request_id: int, *, approve: bool, actor_id: str,
     scope as a query approval, because the waiver hands out exactly that. Two
     admins deciding at once: the second finds the request already decided.
     Returns {status, request, grant_id?, alias}.
+
+    A window that covers writes has more rules. On a production connection
+    only a super-admin decides it, to approve or to reject. Approval also needs
+    the `auto_approve_rw_requests` switch on, and RW access that the requester
+    holds at the time of the decision. A DDL window is never approved. Every
+    waiver ends: the window length is the time to its expiry.
 
     Because both surfaces decide through here, this is the one place that
     writes the IdP panel's `queryhub.window_request_decided` row, after the
@@ -298,6 +387,9 @@ def decide_window(request_id: int, *, approve: bool, actor_id: str,
         raise WindowDecisionRefused(f"Already {req['status']}.")
     t = targets.get(req["target_server_id"])
     alias = t.alias if t else f"target #{req['target_server_id']}"
+    if needs_super_admin(req, t.alias if t else None) \
+            and not admins.is_super_admin(actor_id):
+        raise WindowDecisionRefused(PRODUCTION_WRITE_MESSAGE, 403, code="super_admin")
     if not approve:
         # One transaction: the decision and its audit row commit together, as
         # they do on the approve path below. They were two commits, so a failure
@@ -320,6 +412,26 @@ def decide_window(request_id: int, *, approve: bool, actor_id: str,
                                          "requester_slack_id": req["requester_slack_id"]}):
         raise WindowDecisionRefused(
             "That request is outside your admin scope. Ask an admin with broader scope.", 403)
+    tier = (req["max_tier"] or "ro").lower()
+    if tier == "ddl":
+        # submit_window never files one. A row from somewhere else is refused
+        # here, at the point where the waiver would be written.
+        raise WindowDecisionRefused(DDL_MESSAGE, 409, code="ddl")
+    if tier == "rw":
+        if not rw_requests_enabled():
+            raise WindowDecisionRefused(RW_OFF_DECISION_MESSAGE, 409, code="rw_off")
+        # A waiver skips the review and grants nothing. Access can change
+        # between the ask and the decision, so it is asked again now.
+        if _held_rank(req["requester_slack_id"], req["target_server_id"],
+                      auto_approve.normalise_scope(req["database_name"])) \
+                < _TIER_RANK["rw"]:
+            raise WindowDecisionRefused(RW_NOT_HELD_MESSAGE, 409, code="rw_not_held")
+    minutes = req.get("window_minutes")
+    if not isinstance(minutes, int) or minutes <= 0:
+        # The table refuses such a row (migration 052). A waiver with no end
+        # is never written from a window request.
+        raise WindowDecisionRefused("This request has no window length, so it "
+                                    "cannot be approved.", 409, code="no_window")
     with db.connection() as conn:
         with conn.cursor() as cur:
             # The requester is told by the caller, in words about the window;
@@ -330,11 +442,13 @@ def decide_window(request_id: int, *, approve: bool, actor_id: str,
                 "  (slack_user_id, max_tier, target_server_id, database_name, "
                 "   expires_at, reason, granted_by) "
                 "VALUES (%s, %s, %s, %s, NOW() + make_interval(mins => %s), %s, %s) "
-                "RETURNING id",
+                "RETURNING id, expires_at",
                 (req["requester_slack_id"], req["max_tier"], req["target_server_id"],
-                 auto_approve.normalise_scope(req["database_name"]), req["window_minutes"],
+                 auto_approve.normalise_scope(req["database_name"]), minutes,
                  f"window request #{request_id}: {req['reason']}", actor_id))
-            grant_id = cur.fetchone()["id"]
+            granted = cur.fetchone()
+            grant_id = granted["id"]
+            expires_at = granted.get("expires_at")
             cur.execute(
                 "UPDATE auto_approve_requests SET status='approved', "
                 "  decided_by_slack_id=%s, decided_by_name=%s, granted_id=%s, "
@@ -351,7 +465,10 @@ def decide_window(request_id: int, *, approve: bool, actor_id: str,
                     "user": req["requester_slack_id"],
                     "target_server_id": req["target_server_id"],
                     "database_name": req["database_name"],
-                    "max_tier": req["max_tier"], "window_minutes": req["window_minutes"]})))
+                    "max_tier": req["max_tier"], "window_minutes": minutes,
+                    # When the waiver ends, from the row the INSERT wrote.
+                    **({"expires_at": expires_at.isoformat()}
+                       if hasattr(expires_at, "isoformat") else {})})))
         conn.commit()
     _tell_the_panel(req, approved=True, alias=alias,
                     actor_id=actor_id, actor_name=actor_name)

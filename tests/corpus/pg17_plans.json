@@ -1,0 +1,590 @@
+{
+ "_about": "Real EXPLAIN (FORMAT JSON, ANALYZE OFF, COSTS ON, BUFFERS OFF) output of PostgreSQL 17.11, with the options that pre_flight.explain uses. Captured from a throwaway server with invented tables. tests/test_queue_estimates.py reads it.",
+ "join": {
+  "sql": "SELECT c.email, o.amount FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.status = 'failed'",
+  "plan": [
+   {
+    "Plan": {
+     "Node Type": "Hash Join",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Join Type": "Inner",
+     "Startup Cost": 375.02,
+     "Total Cost": 2348.9,
+     "Plan Rows": 20287,
+     "Plan Width": 25,
+     "Inner Unique": true,
+     "Hash Cond": "(o.customer_id = c.id)",
+     "Plans": [
+      {
+       "Node Type": "Bitmap Heap Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Relation Name": "orders",
+       "Alias": "o",
+       "Startup Cost": 225.52,
+       "Total Cost": 2146.11,
+       "Plan Rows": 20287,
+       "Plan Width": 15,
+       "Recheck Cond": "(status = 'failed'::text)",
+       "Plans": [
+        {
+         "Node Type": "Bitmap Index Scan",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Index Name": "orders_status_idx",
+         "Startup Cost": 0.0,
+         "Total Cost": 220.45,
+         "Plan Rows": 20287,
+         "Plan Width": 0,
+         "Index Cond": "(status = 'failed'::text)"
+        }
+       ]
+      },
+      {
+       "Node Type": "Hash",
+       "Parent Relationship": "Inner",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Startup Cost": 87.0,
+       "Total Cost": 87.0,
+       "Plan Rows": 5000,
+       "Plan Width": 26,
+       "Plans": [
+        {
+         "Node Type": "Seq Scan",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Relation Name": "customers",
+         "Alias": "c",
+         "Startup Cost": 0.0,
+         "Total Cost": 87.0,
+         "Plan Rows": 5000,
+         "Plan Width": 26
+        }
+       ]
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "point": {
+  "sql": "SELECT * FROM customers WHERE id = 42",
+  "plan": [
+   {
+    "Plan": {
+     "Node Type": "Index Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Scan Direction": "Forward",
+     "Index Name": "customers_pkey",
+     "Relation Name": "customers",
+     "Alias": "customers",
+     "Startup Cost": 0.28,
+     "Total Cost": 8.3,
+     "Plan Rows": 1,
+     "Plan Width": 29,
+     "Index Cond": "(id = 42)"
+    }
+   }
+  ]
+ },
+ "limit": {
+  "sql": "SELECT * FROM orders ORDER BY created_at DESC LIMIT 50",
+  "plan": [
+   {
+    "Plan": {
+     "Node Type": "Limit",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 7751.63,
+     "Total Cost": 7757.38,
+     "Plan Rows": 50,
+     "Plan Width": 36,
+     "Plans": [
+      {
+       "Node Type": "Gather Merge",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Startup Cost": 7751.63,
+       "Total Cost": 21281.03,
+       "Plan Rows": 117647,
+       "Plan Width": 36,
+       "Workers Planned": 1,
+       "Plans": [
+        {
+         "Node Type": "Sort",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Startup Cost": 6751.62,
+         "Total Cost": 7045.74,
+         "Plan Rows": 117647,
+         "Plan Width": 36,
+         "Sort Key": [
+          "created_at DESC"
+         ],
+         "Plans": [
+          {
+           "Node Type": "Seq Scan",
+           "Parent Relationship": "Outer",
+           "Parallel Aware": true,
+           "Async Capable": false,
+           "Relation Name": "orders",
+           "Alias": "orders",
+           "Startup Cost": 0.0,
+           "Total Cost": 2843.47,
+           "Plan Rows": 117647,
+           "Plan Width": 36
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "subquery": {
+  "sql": "SELECT id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.amount > (SELECT avg(amount) FROM payouts p JOIN orders o2 ON o2.id = p.id))",
+  "plan": [
+   {
+    "Plan": {
+     "Node Type": "Hash Join",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Join Type": "Inner",
+     "Startup Cost": 6820.05,
+     "Total Cost": 6938.7,
+     "Plan Rows": 4997,
+     "Plan Width": 8,
+     "Inner Unique": true,
+     "Hash Cond": "(o.customer_id = c.id)",
+     "Plans": [
+      {
+       "Node Type": "Aggregate",
+       "Strategy": "Plain",
+       "Partial Mode": "Simple",
+       "Parent Relationship": "InitPlan",
+       "Subplan Name": "InitPlan 1",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Startup Cost": 2336.87,
+       "Total Cost": 2336.88,
+       "Plan Rows": 1,
+       "Plan Width": 32,
+       "Plans": [
+        {
+         "Node Type": "Merge Join",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Join Type": "Inner",
+         "Startup Cost": 0.82,
+         "Total Cost": 2261.87,
+         "Plan Rows": 30000,
+         "Plan Width": 7,
+         "Inner Unique": true,
+         "Merge Cond": "(p.id = o2.id)",
+         "Plans": [
+          {
+           "Node Type": "Index Only Scan",
+           "Parent Relationship": "Outer",
+           "Parallel Aware": false,
+           "Async Capable": false,
+           "Scan Direction": "Forward",
+           "Index Name": "payouts_pkey",
+           "Relation Name": "payouts",
+           "Alias": "p",
+           "Startup Cost": 0.29,
+           "Total Cost": 786.29,
+           "Plan Rows": 30000,
+           "Plan Width": 8
+          },
+          {
+           "Node Type": "Index Scan",
+           "Parent Relationship": "Inner",
+           "Parallel Aware": false,
+           "Async Capable": false,
+           "Scan Direction": "Forward",
+           "Index Name": "orders_pkey",
+           "Relation Name": "orders",
+           "Alias": "o2",
+           "Startup Cost": 0.42,
+           "Total Cost": 6874.42,
+           "Plan Rows": 200000,
+           "Plan Width": 15
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "Node Type": "Aggregate",
+       "Strategy": "Hashed",
+       "Partial Mode": "Simple",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Startup Cost": 4333.67,
+       "Total Cost": 4383.64,
+       "Plan Rows": 4997,
+       "Plan Width": 8,
+       "Group Key": [
+        "o.customer_id"
+       ],
+       "Planned Partitions": 0,
+       "Plans": [
+        {
+         "Node Type": "Seq Scan",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Relation Name": "orders",
+         "Alias": "o",
+         "Startup Cost": 0.0,
+         "Total Cost": 4167.0,
+         "Plan Rows": 66667,
+         "Plan Width": 8,
+         "Filter": "(amount > (InitPlan 1).col1)"
+        }
+       ]
+      },
+      {
+       "Node Type": "Hash",
+       "Parent Relationship": "Inner",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Startup Cost": 87.0,
+       "Total Cost": 87.0,
+       "Plan Rows": 5000,
+       "Plan Width": 8,
+       "Plans": [
+        {
+         "Node Type": "Seq Scan",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Relation Name": "customers",
+         "Alias": "c",
+         "Startup Cost": 0.0,
+         "Total Cost": 87.0,
+         "Plan Rows": 5000,
+         "Plan Width": 8
+        }
+       ]
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "cte": {
+  "sql": "WITH f AS MATERIALIZED (SELECT customer_id FROM orders WHERE status = 'failed') SELECT count(*) FROM f JOIN customers c ON c.id = f.customer_id",
+  "plan": [
+   {
+    "Plan": {
+     "Node Type": "Aggregate",
+     "Strategy": "Plain",
+     "Partial Mode": "Simple",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 2805.36,
+     "Total Cost": 2805.37,
+     "Plan Rows": 1,
+     "Plan Width": 8,
+     "Plans": [
+      {
+       "Node Type": "Bitmap Heap Scan",
+       "Parent Relationship": "InitPlan",
+       "Subplan Name": "CTE f",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Relation Name": "orders",
+       "Alias": "orders",
+       "Startup Cost": 225.52,
+       "Total Cost": 2146.11,
+       "Plan Rows": 20287,
+       "Plan Width": 8,
+       "Recheck Cond": "(status = 'failed'::text)",
+       "Plans": [
+        {
+         "Node Type": "Bitmap Index Scan",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Index Name": "orders_status_idx",
+         "Startup Cost": 0.0,
+         "Total Cost": 220.45,
+         "Plan Rows": 20287,
+         "Plan Width": 0,
+         "Index Cond": "(status = 'failed'::text)"
+        }
+       ]
+      },
+      {
+       "Node Type": "Hash Join",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Join Type": "Inner",
+       "Startup Cost": 149.5,
+       "Total Cost": 608.54,
+       "Plan Rows": 20287,
+       "Plan Width": 0,
+       "Inner Unique": true,
+       "Hash Cond": "(f.customer_id = c.id)",
+       "Plans": [
+        {
+         "Node Type": "CTE Scan",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "CTE Name": "f",
+         "Alias": "f",
+         "Startup Cost": 0.0,
+         "Total Cost": 405.74,
+         "Plan Rows": 20287,
+         "Plan Width": 8
+        },
+        {
+         "Node Type": "Hash",
+         "Parent Relationship": "Inner",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Startup Cost": 87.0,
+         "Total Cost": 87.0,
+         "Plan Rows": 5000,
+         "Plan Width": 8,
+         "Plans": [
+          {
+           "Node Type": "Seq Scan",
+           "Parent Relationship": "Outer",
+           "Parallel Aware": false,
+           "Async Capable": false,
+           "Relation Name": "customers",
+           "Alias": "c",
+           "Startup Cost": 0.0,
+           "Total Cost": 87.0,
+           "Plan Rows": 5000,
+           "Plan Width": 8
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "partitions": {
+  "sql": "SELECT kind, count(*) FROM events GROUP BY kind",
+  "plan": [
+   {
+    "Plan": {
+     "Node Type": "Aggregate",
+     "Strategy": "Hashed",
+     "Partial Mode": "Simple",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 1272.0,
+     "Total Cost": 1272.07,
+     "Plan Rows": 7,
+     "Plan Width": 11,
+     "Group Key": [
+      "events.kind"
+     ],
+     "Planned Partitions": 0,
+     "Plans": [
+      {
+       "Node Type": "Append",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Startup Cost": 0.0,
+       "Total Cost": 1022.0,
+       "Plan Rows": 50000,
+       "Plan Width": 3,
+       "Subplans Removed": 0,
+       "Plans": [
+        {
+         "Node Type": "Seq Scan",
+         "Parent Relationship": "Member",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Relation Name": "events_2026_09",
+         "Alias": "events_1",
+         "Startup Cost": 0.0,
+         "Total Cost": 386.1,
+         "Plan Rows": 25010,
+         "Plan Width": 3
+        },
+        {
+         "Node Type": "Seq Scan",
+         "Parent Relationship": "Member",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Relation Name": "events_2026_10",
+         "Alias": "events_2",
+         "Startup Cost": 0.0,
+         "Total Cost": 385.9,
+         "Plan Rows": 24990,
+         "Plan Width": 3
+        }
+       ]
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "update": {
+  "sql": "UPDATE payouts SET status = 'retry', retry_after = now() WHERE status = 'failed' AND failure_code = 'BANK_TIMEOUT'",
+  "plan": [
+   {
+    "Plan": {
+     "Node Type": "ModifyTable",
+     "Operation": "Update",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "payouts",
+     "Alias": "payouts",
+     "Startup Cost": 0.0,
+     "Total Cost": 613.01,
+     "Plan Rows": 0,
+     "Plan Width": 0,
+     "Plans": [
+      {
+       "Node Type": "Seq Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Relation Name": "payouts",
+       "Alias": "payouts",
+       "Startup Cost": 0.0,
+       "Total Cost": 613.01,
+       "Plan Rows": 6,
+       "Plan Width": 46,
+       "Filter": "((status = 'failed'::text) AND (failure_code = 'BANK_TIMEOUT'::text))"
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "delete": {
+  "sql": "DELETE FROM orders WHERE status = 'failed' AND amount < 100",
+  "plan": [
+   {
+    "Plan": {
+     "Node Type": "ModifyTable",
+     "Operation": "Delete",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "orders",
+     "Alias": "orders",
+     "Startup Cost": 220.45,
+     "Total Cost": 2191.75,
+     "Plan Rows": 0,
+     "Plan Width": 0,
+     "Plans": [
+      {
+       "Node Type": "Bitmap Heap Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Relation Name": "orders",
+       "Alias": "orders",
+       "Startup Cost": 220.45,
+       "Total Cost": 2191.75,
+       "Plan Rows": 6,
+       "Plan Width": 6,
+       "Recheck Cond": "(status = 'failed'::text)",
+       "Filter": "(amount < '100'::numeric)",
+       "Plans": [
+        {
+         "Node Type": "Bitmap Index Scan",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Index Name": "orders_status_idx",
+         "Startup Cost": 0.0,
+         "Total Cost": 220.45,
+         "Plan Rows": 20287,
+         "Plan Width": 0,
+         "Index Cond": "(status = 'failed'::text)"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "insert_values": {
+  "sql": "INSERT INTO payouts (id, status) VALUES (900001, 'hold')",
+  "plan": [
+   {
+    "Plan": {
+     "Node Type": "ModifyTable",
+     "Operation": "Insert",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "payouts",
+     "Alias": "payouts",
+     "Startup Cost": 0.0,
+     "Total Cost": 0.01,
+     "Plan Rows": 0,
+     "Plan Width": 0,
+     "Plans": [
+      {
+       "Node Type": "Result",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Startup Cost": 0.0,
+       "Total Cost": 0.01,
+       "Plan Rows": 1,
+       "Plan Width": 80
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "function_only": {
+  "sql": "SELECT now(), generate_series(1, 3)",
+  "plan": [
+   {
+    "Plan": {
+     "Node Type": "ProjectSet",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 0.0,
+     "Total Cost": 0.04,
+     "Plan Rows": 3,
+     "Plan Width": 12,
+     "Plans": [
+      {
+       "Node Type": "Result",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Startup Cost": 0.0,
+       "Total Cost": 0.01,
+       "Plan Rows": 1,
+       "Plan Width": 0
+      }
+     ]
+    }
+   }
+  ]
+ }
+}

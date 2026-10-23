@@ -18,17 +18,20 @@ def _src(rel: str) -> str:
     return (SRC / rel).read_text(encoding="utf-8")
 
 
-def test_the_kill_switch_needs_a_super_admin_on_both_doors():
+def test_the_kill_switch_needs_the_dba_level_on_both_doors():
     """The most consequential command in the product had two privilege levels:
     the Slack dispatcher asks for an admin, the web route asks for a super. A
     scoped DBA admin could halt every target from Slack and be refused for the
-    same act on the web."""
+    same act on the web.
+
+    PLA-1592 U4a moved both doors to the DBA level: a permanent, unscoped
+    admin. tests/test_dba_level.py checks the two doors against each other."""
     slack = _src("slack_app/subcommands.py")
     body = slack.split("def _handle_kill", 1)[1].split("\ndef ", 1)[0]
-    assert "is_super_admin" in body, "the Slack kill switch dropped its guard"
+    assert "admins.is_dba(user_id)" in body, "the Slack kill switch dropped its guard"
     web = _src("web/routes_admin.py")
     kill = web.split("def set_kill", 1)[1].split("\ndef ", 1)[0]
-    assert 'require_admin(claims, "access")' in kill
+    assert 'require_admin(claims, "dba")' in kill
 
 
 def test_grant_authority_reads_the_model_that_is_switched_on():

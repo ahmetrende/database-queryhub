@@ -138,10 +138,40 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
 - **139_target_deleted** — `target_servers.deleted_at` / `deleted_reason`: the
   instance behind the target no longer exists. Such a row cannot be enabled: a
   CHECK forbids it. The inventory sync sets and clears these columns.
+- **160_access_request_withdrawn** — `access_requests.status` accepts
+  `withdrawn`. The requester withdraws a pending request with
+  `POST /api/endpoint-requests/{id}/withdraw`. The audit action is
+  `access_request_withdrawn`.
 - **140_archive_freshness** — `target_servers.archive_freshness` (jsonb): the
   verdict that the hourly catalog refresh read from an Athena archive's
   freshness marker (`engine_config.freshness_marker`). The approver's hint
   reports this verdict. New `bot_config`: `athena_freshness_stale_hours` (36).
+- **146_auto_approve_rule_switch** — `enabled` on `auto_approve_grants` and on
+  `access_grant`. A switched-off rule approves nothing. Only a waiver row can
+  be off (CHECK `access_grant_only_a_waiver_switches_off`).
+  `v_active_auto_approve` lists only switched-on rows.
+- **147_admin_scope_expiry** — `admins.expires_at`: the scope ends at that
+  moment. A row with every scope column NULL (a super-admin) cannot have an
+  end (CHECK `admins_super_admin_never_ends`). The auth-event trigger on
+  `admins` also fires on this column.
+- **148_mirror_rule_switch_and_scope_end** — the migration-109 mirror projects
+  the two columns above. It does not copy a switched-off rule into
+  `access_grant`. It writes `admins.expires_at` to
+  `role_assignment.valid_until`, and it revokes the mirrored roles of a scope
+  that has ended.
+- **149_mask_exemption_expiry_audience** — `pii_masking_exemptions.expires_at`,
+  `audience` (`everyone`, `super`, `dba`, `team`) and `audience_team_id`. Rows
+  with `super_admin_only` became `audience = 'super'`.
+- **190_connection_health** — `connection_health`: one row per target with
+  the last periodic connection check (`scripts/check_connection_health.py`):
+  `ok`, `checked_at`, `failing_since`, `error` (scrubbed, at most 200
+  characters) and `latency_ms`. Two CHECKs hold the pairs: a failure has a
+  `failing_since` and an `error`, and a good check has neither. A deleted
+  target takes its row with it.
+- **191_connection_health_settings** — new `bot_config`:
+  `connection_health_enabled` (on), `connection_health_interval_sec` (300),
+  `connection_health_timeout_sec` (5) and `connection_health_exclude_engines`
+  (empty: every engine). See OPERATIONS.md §29.
 
 ---
 
@@ -179,6 +209,7 @@ The resolver decides who may run what from the tables that migrations
 | `database_name` / `all_databases` | One database, or every database on the target: one row per database. A database name across every target is refused. |
 | `tier` | `ro` / `rw` / `ddl`, from `tier`. |
 | `auto_approve` | True makes the row a waiver. It skips the review for queries up to its tier and makes nothing reachable on its own. |
+| `enabled` | False only on a waiver that is switched off (`PATCH /admin/auto-grants/ag:<id>`, migration 146). Such a waiver skips no review. A grant row is always true: a grant ends by revoke or by `valid_until`. |
 | `merge_with_team` | Principal rows only. False, the default, means the person's own grants replace their teams' grants on that server. True keeps the team's grants beside them (rule 4 below). |
 | `db_role` | A database role that the session assumes after it connects. No row sets it today. |
 | `valid_from`, `valid_until` | The planned window. |
@@ -296,7 +327,7 @@ Current keys:
 | `log_level` | `INFO` | Python logging level. **Read at startup** — restart to apply. |
 | `results_ttl_hours` | `72` | How long Slack file uploads + local CSV results persist before cleanup deletes them. |
 | `max_schedule_days` | `7` | Max days into the future that a /sql query can be scheduled. 0 = scheduling disabled. |
-| `kill_switch` | `off` | When `on`, the bot rejects new `/sql` invocations and shows `kill_switch_message`. In-flight requests are unaffected. |
+| `kill_switch` | `off` | When `on`, the bot rejects new `/sql` invocations and shows `kill_switch_message`. When an admin sets it `on` from the web or with `/sql kill on`, the bot sets it first. Then it cancels the running read-only requests and writes a `kill_switch_cancelled` audit row with the count. Running writes and DDL continue. |
 | `kill_switch_message` | (text) | Message shown to users when the kill switch is on. |
 | `pre_flight_explain` | `on` | When `on`, the bot runs `EXPLAIN` before approval. This shows plan-time errors and (when `query_plan_logging=on`) captures the plan. It plans a single read-only statement with RO credentials. Writes and scripts follow `pre_flight_validate_scripts`. |
 | `pre_flight_validate_scripts` | `on` | When `on`, the bot plans every statement of a write request and of a multi-statement script before approval. Nothing runs. A wrong column or a syntax error is refused at submit. Migration 143. |
@@ -398,6 +429,7 @@ approve everything. To restrict the scope, set any of them.
 | `max_tier` | NULL / `ro` / `rw` / `ddl`. Highest tier that this admin can approve. `rw` covers ro+rw but not ddl. NULL = any tier. |
 | `scope_team_ids` | `INTEGER[]` of `teams.id`. NULL = any team. Non-NULL = the admin only sees / approves requests from a requester who belongs to at least one of these teams. A non-NULL scope does **not** match a requester with no team membership. |
 | `scope_target_ids` | `INTEGER[]` of `target_servers.id`. NULL = any target. Non-NULL = the admin only sees / approves requests whose target is in this list. |
+| `expires_at` | NULL = the scope does not end. Otherwise the scope stops at that moment, as if `enabled` were false (migration 147). The mirror writes it to `role_assignment.valid_until`. A super-admin row cannot have one. |
 | `added_at`, `added_by` | Audit. |
 
 The scope check lives in `admins.can_approve(slack_id, request)`. The bot
@@ -578,7 +610,7 @@ Every `/sql` submission, regardless of outcome. The audit trail.
 | `requester_dm_channel_id`, `requester_dm_message_ts` | Coordinates of the user's "approved + scheduled" DM that carries the [Cancel] button. `chat.update` uses them when the request is cancelled or starts executing. NULL for non-scheduled requests. |
 | `bundle_id`, `position` | Set when this row is one item of a `/sql batch` submission (FK to `request_bundles`, ON DELETE SET NULL). `position` is the 1-based order inside the bundle. NULL for legacy single-shot submissions. |
 | `result_format` | `'csv'` (default) or `'xlsx'` — output file format chosen in the modal (migration 037). |
-| `explain_plan` | `jsonb` — captured EXPLAIN (FORMAT JSON) plan when `query_plan_logging` is on. Capped at 64 KB (migration 016). |
+| `explain_plan` | `jsonb` — captured EXPLAIN (FORMAT JSON) plan when `query_plan_logging` is on. Capped at 64 KB (migration 016). `GET /api/admin/queue` reads `estRows` and `estTables` from it. |
 | `risk_summary` | A one-line risk hint for the admin DM, derived from the pre-flight plan (size band + seq-scan flag). NULL for non-explainable / fail-open (migration 040). |
 | `query_fingerprint` | Literal-normalized sqlglot fingerprint of the query, set for RO submissions. The auto-approve cache for repeated RO queries uses it. A partial index serves the lookup (migration 044). |
 | `created_at` | Submission time. |
@@ -653,8 +685,8 @@ row can be created again for the same combo.
 | `target_server_id` | FK to `target_servers`, ON DELETE SET NULL. |
 | `database_name`, `attempted_query` | Optional context. |
 | `reason` | Required free text. |
-| `status` | `'pending'`, `'approved'`, `'rejected'` (CHECK constrained). |
-| `decided_by_slack_id`, `decided_by_name`, `decision_reason`, `decided_at` | Decision details. |
+| `status` | `'pending'`, `'approved'`, `'rejected'`, `'withdrawn'` (CHECK constrained). An admin sets `approved` or `rejected`. The requester sets `withdrawn` (migration 160). |
+| `decided_by_slack_id`, `decided_by_name`, `decision_reason`, `decided_at` | Decision details. A withdrawn request has `decided_at` only: the time of the withdrawal. |
 | `created_at` | Submission time. |
 
 ### `access_request_notifications`
@@ -752,6 +784,7 @@ queries go through the normal admin flow, with a user-facing warning.
 | `database_name` | NULL = any database on the (scoped) target. Non-NULL = only this database. Ignored when `target_server_id` IS NULL. Migration 051. |
 | `starts_at` | Defaults to NOW(). |
 | `expires_at` | NULL = no expiry. CHECK constraint: if both bounds are set, `expires_at > starts_at`. |
+| `enabled` | False = the rule is switched off and approves nothing (migration 146). The mirror keeps no live copy of it. `PATCH /admin/auto-grants/{id}` sets it. |
 | `reason` | Free text — why this grant was issued. |
 | `granted_by`, `granted_at` | Audit. |
 
@@ -913,6 +946,16 @@ runtime-effective, with no restart. Every exempted execution writes a
 `pii_masking_exempted` audit row, and the requester DM carries an `:unlock:`
 note. So the forensic trail survives. `enabled` is a soft off-switch. UNIQUE
 on the COALESCEd scope quadruple keeps re-inserts idempotent.
+
+Two more columns decide who a row applies to, and until when (migration 149):
+
+- `expires_at` — after this moment the row is not applied, and masking comes
+  back. NULL = no end. The reader (`pii._load_exemptions`) checks it in SQL.
+- `audience` — `everyone`, `super` (super-admins), `dba` (holders of an admin
+  role, super-admins included) or `team` (members of `audience_team_id`, a
+  `team` row). A reader outside the audience keeps full masking. A row where
+  `audience` or the older `super_admin_only` says super applies to
+  super-admins only.
 
 ### `import_grants`
 
@@ -1123,7 +1166,7 @@ Two namespaces:
 | `v_team_summary` | Per-team: id, name, description, member count, grant count, created_at. |
 | `v_user_targets` | For every (Slack user, target) pair that the user can reach through team membership + grant: alias, host, default database, per-team `allowed_databases`. |
 | `v_effective_user_grants` | Resolved (user, target, mode, allowed_databases) that the bot uses at runtime. The `source` column tells you whether the row came from a `user_target_grants` override or from aggregated team grants. |
-| `v_active_auto_approve` | One row per currently-active auto-approve grant (`NOW()` inside `[starts_at, expires_at)`). Multiple rows per user are possible. Readers should pick the highest `max_tier` when summarising. |
+| `v_active_auto_approve` | One row per currently-active auto-approve grant: switched on (`enabled`, migration 146) and `NOW()` inside `[starts_at, expires_at)`. Multiple rows per user are possible. Readers should pick the highest `max_tier` when summarising. |
 | `v_active_temp_admins` | One row per temp admin grant that is active now. It excludes rows where `revoked_at` is set. It serves the `admins.is_admin` / `can_approve` / `list_active` extensions. |
 | `requests_reportable` / `audit_log_reportable` / `request_ratings_reportable` | Filtered wrappers around the base tables. They drop rows touched by `report_excluded_users`. The `p_metrics_*` views read from these wrappers instead of the raw base tables. So a single INSERT excludes a user from reports. |
 

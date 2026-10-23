@@ -122,6 +122,9 @@ def active_grants(principal_id: str,
     (target, database) `effective_grant` is asked about. A caller with many
     questions loads it once and passes it back in — the connections payload
     asked per database and issued 79 identical statements to do it.
+
+    A rule that is switched off (`enabled`, migration 146) is not live: it
+    approves nothing, and nothing that asks this function counts it.
     """
     at = at or datetime.now(timezone.utc)
     rows = db.fetch_all(
@@ -130,6 +133,7 @@ def active_grants(principal_id: str,
                starts_at, expires_at, reason, granted_by
           FROM auto_approve_grants
          WHERE slack_user_id = %s
+           AND enabled
            AND starts_at   <= %s
            AND (expires_at IS NULL OR expires_at > %s)
         """,
@@ -158,6 +162,9 @@ def _v2_only_waivers(principal_id: str, at: datetime) -> list[dict]:
     never mistake an `access_grant` id for an `auto_approve_grants` one.
     `team_id` marks a team waiver, which `effective_grant` confirms with the
     resolver before trusting -- see `_team_waiver_applies`.
+
+    A waiver that is switched off (`access_grant.enabled`, migration 146) is
+    not read, exactly as `active_grants` skips a switched-off legacy rule.
     """
     return db.fetch_all(
         """
@@ -175,6 +182,7 @@ def _v2_only_waivers(principal_id: str, at: datetime) -> list[dict]:
           LEFT JOIN team t ON t.id = g.team_id
          WHERE g.auto_approve AND g.mirrored_from IS NULL
            AND g.revoked_at IS NULL AND NOT g.is_deleted
+           AND g.enabled
            AND g.valid_from <= %(at)s
            AND (g.valid_until IS NULL OR g.valid_until > %(at)s)
            AND (g.principal_id IN (SELECT id FROM me)

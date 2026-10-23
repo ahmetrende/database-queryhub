@@ -134,6 +134,26 @@ def is_super_admin(principal_id: str, rows: list[dict] | None = None) -> bool:
                for r in (roles(principal_id) if rows is None else rows))
 
 
+def is_dba(principal_id: str, rows: list[dict] | None = None) -> bool:
+    """The DBA level: a PERMANENT (no end date) and UNSCOPED (all teams, all
+    targets) `admin` role row. A tier ceiling is allowed.
+
+    This is `is_super_admin` without the `any_tier` condition, so a
+    super-admin passes too. A temporary admin, a scoped admin and an
+    approver do not pass. `valid_until IS NULL` is load-bearing for the same
+    reason as in `is_super_admin`: a temporary admin is a row with an end
+    date in the same table. The `admin` rows are fleet-wide by a CHECK
+    constraint (migration 106). The two scope conditions are here so that
+    the rule does not depend on that constraint.
+
+    `rows` are this principal's `roles`, for a caller that read them
+    already.
+    """
+    return any(r["role"] == "admin" and r["all_teams"] and r["all_targets"]
+               and r["valid_until"] is None
+               for r in (roles(principal_id) if rows is None else rows))
+
+
 def _approver_of(r: dict, target_id: int) -> bool:
     return r["role"] == "approver" and r["scope_target_id"] == target_id
 
@@ -222,7 +242,10 @@ def archive_role(principal_id: str, target_id: int) -> str | None:
 
 def _covering(principal_id: str, target_id: int, database_name: str | None,
               explicit: bool = False):
-    """`explicit` drops the fleet-wide rows: see `explicit_only`."""
+    """`explicit` drops the fleet-wide rows: see `explicit_only`.
+
+    `g.enabled` drops a waiver that is switched off (migration 146). Only a
+    waiver can be off, so the grant rows are untouched by it."""
     return db.fetch_all(
         f"WITH {_ME} "
         "SELECT (g.principal_id IS NOT NULL) AS mine, g.tier, t.rank, "
@@ -232,7 +255,7 @@ def _covering(principal_id: str, target_id: int, database_name: str | None,
         "       (g.valid_from > NOW()) AS not_started "
         "  FROM access_grant g "
         "  JOIN tier t ON t.name = g.tier "
-        " WHERE NOT g.is_deleted AND g.revoked_at IS NULL "
+        " WHERE NOT g.is_deleted AND g.revoked_at IS NULL AND g.enabled "
         "   AND ((g.all_targets AND NOT %(explicit)s) OR g.target_id = %(tid)s) "
         # The cast is required, not cosmetic: a bare parameter compared only
         # to NULL leaves Postgres unable to infer its type.
@@ -500,7 +523,7 @@ def resolve_many(principal_id: str,
         "  JOIN tier t ON t.name = g.tier "
         "  JOIN target_servers ts "
         "    ON ((g.all_targets AND NOT ts.super_admin_only) OR g.target_id = ts.id) "
-        " WHERE NOT g.is_deleted AND g.revoked_at IS NULL "
+        " WHERE NOT g.is_deleted AND g.revoked_at IS NULL AND g.enabled "
         "   AND ts.id = ANY(%(ids)s) "
         "   AND (g.principal_id IN (SELECT id FROM me) "
         "        OR g.team_id IN (SELECT team_id FROM my_teams))",
@@ -849,7 +872,7 @@ def resolve_databases(principal_id: str, scopes) -> dict:
         "  JOIN tier t ON t.name = g.tier "
         "  JOIN target_servers ts "
         "    ON ((g.all_targets AND NOT ts.super_admin_only) OR g.target_id = ts.id) "
-        " WHERE NOT g.is_deleted AND g.revoked_at IS NULL "
+        " WHERE NOT g.is_deleted AND g.revoked_at IS NULL AND g.enabled "
         "   AND ts.id = ANY(%(ids)s) "
         "   AND (g.principal_id IN (SELECT id FROM me) "
         "        OR g.team_id IN (SELECT team_id FROM my_teams))",

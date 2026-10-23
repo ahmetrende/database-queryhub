@@ -161,12 +161,22 @@ def test_the_lengths_offered_are_the_slack_modals_own(web, monkeypatch):
 
 # --- tiers and day windows (design 2026-09-22 §3) ------------------------------
 
+@pytest.fixture
+def rw_switch_on(monkeypatch):
+    """`auto_approve_rw_requests` on. Its default is off (migration 150), and
+    with it off no RW window can be asked for: tests/test_rw_window_policy.py."""
+    from queryhub import config as cfg
+    stub = cfg.get_setting
+    monkeypatch.setattr(cfg, "get_setting", lambda key, default=None:
+                        "on" if key == "auto_approve_rw_requests" else stub(key, default))
+
+
 def test_a_day_window_is_accepted(core):
     _submit(window_minutes=7 * 1440)
     assert core["made"][0]["window_minutes"] == 7 * 1440
 
 
-def test_writes_may_be_asked_for_by_someone_who_can_write(core):
+def test_writes_may_be_asked_for_by_someone_who_can_write(core, rw_switch_on):
     _submit(tier="RW", database_name="ledger")
     assert core["made"][0]["max_tier"] == "rw"
 
@@ -184,7 +194,7 @@ def test_schema_changes_cannot_be_asked_for(core):
     assert (e.value.field, e.value.status) == ("tier", 400)
 
 
-def test_the_web_turns_days_into_the_window(web, core):
+def test_the_web_turns_days_into_the_window(web, core, rw_switch_on):
     rr = web["rr"]
     core["created"] = {**core["created"], "window_minutes": 14 * 1440, "max_tier": "rw"}
     out = rr.create_window_request(rr.WindowRequestIn(connectionId="prod-ledger", tier="RW",

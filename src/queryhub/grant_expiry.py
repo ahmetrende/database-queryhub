@@ -141,6 +141,9 @@ def due(threshold_hours: int, floor_hours: int = 0) -> list[dict]:
            AND i.provider = 'slack' AND NOT i.is_deleted
          WHERE NOT g.is_deleted AND g.revoked_at IS NULL
            AND g.mirrored_from IS NULL
+           -- A switched-off waiver (migration 146) decides nothing, so its
+           -- end changes nothing for anyone. Grant rows are always on.
+           AND g.enabled
            AND g.valid_until IS NOT NULL
            AND g.valid_until > NOW() + make_interval(hours => %(lo)s)
            AND g.valid_until <= NOW() + make_interval(hours => %(h)s)
