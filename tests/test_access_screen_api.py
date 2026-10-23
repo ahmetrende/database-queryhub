@@ -284,6 +284,7 @@ def test_the_directory_lists_everyone_an_admin_can_name(monkeypatch):
          "enabled": False, "kind": "grant_only"},
     ]
     monkeypatch.setattr(ra.admin, "require_admin", lambda c, s: "UADMIN")
+    monkeypatch.setattr(ra.admins, "is_super_admin", lambda uid: True)   # the full row
     monkeypatch.setattr(ra.db, "fetch_all", lambda *a, **k: rows)
     people = ra.admin_people(claims={"sub": "UADMIN"})["people"]
 
@@ -297,6 +298,7 @@ def test_the_directory_lists_everyone_an_admin_can_name(monkeypatch):
 def test_the_query_reaches_all_four_sources(monkeypatch):
     seen = {}
     monkeypatch.setattr(ra.admin, "require_admin", lambda c, s: "UADMIN")
+    monkeypatch.setattr(ra.admins, "is_super_admin", lambda uid: True)
     monkeypatch.setattr(ra.db, "fetch_all",
                         lambda sql, *a, **k: seen.setdefault("sql", sql) and [] or [])
     ra.admin_people(claims={"sub": "UADMIN"})

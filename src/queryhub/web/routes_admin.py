@@ -2604,6 +2604,16 @@ def _initials(name: str | None, fallback: str) -> str:
     return (parts[0][0] + parts[-1][0]).upper()
 
 
+# The keys of a `GET /admin/people` row that a DBA who is not a super-admin can
+# read (PLA-1592 follow-up, 2026-10-23). The portal's person picker needs a name
+# to pick, so the DBA level reads the list. It reads `id` and `name` and nothing
+# else: not `enabled`, not `kind` (why a person is in the list), not
+# `lastQueryAt`. This is an allowlist like DBA_CONNECTION_FIELDS: a key that a
+# person row gets later stays hidden from a DBA until somebody adds it here. A
+# super-admin gets the full row. tests/test_dba_level.py checks both.
+DBA_PEOPLE_FIELDS = frozenset({"id", "name"})
+
+
 @router.get("/people")
 def admin_people(claims: dict = Depends(deps.current_user)):
     """Every principal an admin can name — the pool the Teams screen assigns
@@ -2625,8 +2635,11 @@ def admin_people(claims: dict = Depends(deps.current_user)):
     a flag the client can sort and mark by, rather than an absence it has to
     interpret. Not paginated: this is a directory of tens, and a page boundary
     in a picker is a person you cannot find.
+
+    A DBA who is not a super-admin can read the list, with `id` and `name` only
+    (DBA_PEOPLE_FIELDS). The writes stay super-admin only.
     """
-    admin.require_admin(claims, "access")
+    uid = admin.require_admin(claims, "dba")
     # The UNION is wrapped rather than ordered in place: a set operation can
     # only ORDER BY output column NAMES, so the sort key has to sit outside it.
     # `lastQueryAt` (PLA-1592 U6) comes from ONE grouped read joined to the
@@ -2659,7 +2672,7 @@ def admin_people(claims: dict = Depends(deps.current_user)):
         "             GROUP BY requester_slack_id) lq"
         "   ON lq.requester_slack_id = p.slack_user_id"
         " ORDER BY p.enabled DESC, lower(coalesce(p.name, p.slack_user_id))")
-    return {"people": [{
+    people = [{
         "id": r["slack_user_id"], "handle": r["slack_user_id"],
         "slackId": r["slack_user_id"], "name": r["name"] or r["slack_user_id"],
         "initials": _initials(r["name"], r["slack_user_id"]),
@@ -2669,7 +2682,11 @@ def admin_people(claims: dict = Depends(deps.current_user)):
         "kind": r["kind"],
         # When this person last sent a query, or null if never.
         "lastQueryAt": mapping.iso(r.get("last_query_at")),
-    } for r in rows]}
+    } for r in rows]
+    if not admins.is_super_admin(uid):
+        people = [{k: v for k, v in p.items() if k in DBA_PEOPLE_FIELDS}
+                  for p in people]
+    return {"people": people}
 
 
 @router.get("/people/duplicate-addresses")

@@ -12,7 +12,7 @@ with a tier ceiling. The operator chose a narrower level (2026-10-22):
           approver-only role does not pass.
 
 These tests hold that definition at three heights: the rule over role rows
-(`access.is_dba`), the gate (`require_admin(claims, "dba")`) and the four
+(`access.is_dba`), the gate (`require_admin(claims, "dba")`) and the five
 routes, each called by every kind of caller. A guard test pins WHICH routes
 take the level, so a fifth route needs a deliberate edit here. The Slack
 `/sql kill` sets the same switch as `POST /admin/kill`, so it takes the same
@@ -212,7 +212,7 @@ def test_the_levels_are_the_three_known_ones():
 
 
 # ---------------------------------------------------------------------------
-# The four routes, called by every caller
+# The five routes, called by every caller
 # ---------------------------------------------------------------------------
 
 class FakeCursor:
@@ -269,7 +269,7 @@ OWNERS = [{"target_id": 42, "id": 7, "name": "payments-be",
 
 @pytest.fixture
 def world(personas, monkeypatch):
-    """Every read and write the four route bodies make, stood in for."""
+    """Every read and write the five route bodies make, stood in for."""
     st = {"audit": [], "cursors": [], "probes": [],
           "probe": {"ok": True, "latencyMs": 4, "serverVersion": "17.2", "error": None}}
 
@@ -312,6 +312,8 @@ ROUTES = {
         lambda claims: ra.admin_connections(claims=claims),
     "POST /api/admin/connections/{conn}/test":
         lambda claims: ra.admin_test_connection("prod-main", claims=claims),
+    "GET /api/admin/people":
+        lambda claims: ra.admin_people(claims=claims),
 }
 
 
@@ -498,6 +500,59 @@ def test_a_dba_gets_each_connection_through_the_allowlist(client):
         assert text not in r.text
 
 
+PEOPLE_ROWS = [
+    {"slack_user_id": "U0EXAMPLE101", "name": "Jordan Ray", "enabled": True,
+     "kind": "requester", "last_query_at": datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)},
+    {"slack_user_id": "U0EXAMPLE102", "name": None, "enabled": False,
+     "kind": "grant_only", "last_query_at": None},
+]
+
+
+def _people(world, monkeypatch, uid):
+    monkeypatch.setattr(ra.db, "fetch_all", lambda sql, params=None: PEOPLE_ROWS)
+    return ra.admin_people(claims={"sub": uid, "name": "Jordan Ray"})["people"]
+
+
+def test_a_super_admin_gets_the_whole_people_row(world, monkeypatch):
+    rows = _people(world, monkeypatch, SUPER)
+    assert [set(r) for r in rows] == [
+        {"id", "handle", "slackId", "name", "initials", "enabled", "kind", "lastQueryAt"}] * 2
+    assert rows[0]["enabled"] is True and rows[0]["lastQueryAt"] is not None
+
+
+def test_a_dba_gets_each_person_with_an_id_and_a_name_only(world, monkeypatch):
+    full = _people(world, monkeypatch, SUPER)
+    rows = _people(world, monkeypatch, CAPPED)
+    assert len(rows) == len(full) == 2
+    for got, whole in zip(rows, full):
+        # The allowlisted keys, with the super-admin's values, in its order.
+        assert list(got.items()) == [(k, v) for k, v in whole.items()
+                                     if k in ra.DBA_PEOPLE_FIELDS]
+        assert set(got) == {"id", "name"}
+    # A person with no name still has one to pick: the id, as for a super-admin.
+    assert rows[1] == {"id": "U0EXAMPLE102", "name": "U0EXAMPLE102"}
+
+
+def test_over_http_a_dba_reads_the_people_list_and_a_temporary_admin_does_not(client, monkeypatch):
+    monkeypatch.setattr(ra.db, "fetch_all", lambda sql, params=None: PEOPLE_ROWS)
+    client.cookies.set("qh_session", CAPPED)
+    r = client.get("/api/admin/people")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"people": [{"id": "U0EXAMPLE101", "name": "Jordan Ray"},
+                                   {"id": "U0EXAMPLE102", "name": "U0EXAMPLE102"}]}
+    for text in ("enabled", "kind", "lastQueryAt", "handle", "slackId", "initials"):
+        assert text not in r.text
+    client.cookies.set("qh_session", TEMP)
+    r = client.get("/api/admin/people")
+    assert r.status_code == 403
+    assert r.json()["error"] == {"code": "forbidden", "message": NEED_DBA}
+
+
+def test_the_people_allowlist_is_id_and_name_and_nothing_else():
+    """Widening it is a decision: make it here, on purpose."""
+    assert ra.DBA_PEOPLE_FIELDS == frozenset({"id", "name"})
+
+
 def test_the_allowlist_names_only_keys_a_row_has(client):
     """A typo in the allowlist hides a field from a DBA without a sound."""
     full = _get_connections(client, SUPER).json()["connections"][0]
@@ -663,6 +718,7 @@ DBA_ROUTES = {
     "admin_effective_access": ("GET", "/api/admin/people/{slack_id}/effective-access"),
     "admin_connections": ("GET", "/api/admin/connections"),
     "admin_test_connection": ("POST", "/api/admin/connections/{conn}/test"),
+    "admin_people": ("GET", "/api/admin/people"),
 }
 
 # Routes that the request named and that stay where they are.
@@ -692,7 +748,7 @@ def _levels() -> dict[str, list]:
     return out
 
 
-def test_exactly_four_routes_take_the_dba_level():
+def test_exactly_five_routes_take_the_dba_level():
     """A fifth route on the DBA level is a decision. Make it here, on purpose."""
     found = {name for name, levels in _levels().items() if "dba" in levels}
     assert found == set(DBA_ROUTES)

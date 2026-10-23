@@ -14,12 +14,14 @@ frontend and the endpoints it calls are explicitly outside it.
 - **A `dba` admin level.** A person with a permanent admin role that covers every
   connection passes it. A tier ceiling does not block it, and a super-admin passes. A
   temporary, scoped or approver-only role does not. `GET /api/me` returns
-  `admin.isDba`. Four routes need this level and no longer need `access`:
+  `admin.isDba`. Five routes need this level and no longer need `access`:
   `POST /api/admin/kill`, the read of `GET /api/admin/people/{id}/effective-access`,
-  `GET /api/admin/connections` and `POST /api/admin/connections/{conn}/test`. The
-  Slack `/sql kill` command follows the same rule. A row for a `dba` caller has no
-  `credentials`, `secretsProvider` or `notes`, and a failed test hides the user
-  name and the password.
+  `GET /api/admin/connections`, `POST /api/admin/connections/{conn}/test` and
+  `GET /api/admin/people`. The Slack `/sql kill` command follows the same rule. A
+  row for a `dba` caller has no `credentials`, `secretsProvider` or `notes`, and a
+  failed test hides the user name and the password. A person row for a `dba`
+  caller has `id` and `name` only, so the portal's person picker has names to
+  offer. A super-admin gets the whole row.
 - **Kill switch history, and a cancel of running reads.** `GET /api/admin/kill/history`
   lists the pauses, newest first. Setting the kill switch on cancels the read-only
   queries that run. A write and a schema change keep running, because a cancel

@@ -16,6 +16,9 @@ WHEN = datetime(2026, 10, 21, 14, 12, tzinfo=timezone.utc)
 def _wire(monkeypatch, rows):
     calls = []
     monkeypatch.setattr(ra.admin, "require_admin", lambda c, s: "U0ADMIN")
+    # The route reads the caller's level to decide how much of a row they get.
+    # These tests hold the full row, so the caller is a super-admin.
+    monkeypatch.setattr(ra.admins, "is_super_admin", lambda uid: True)
     monkeypatch.setattr(ra.db, "fetch_all",
                         lambda sql, *a, **k: calls.append(" ".join(sql.split())) or rows)
 

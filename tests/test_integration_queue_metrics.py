@@ -246,6 +246,8 @@ def test_the_last_query_is_the_newest_request_and_a_draft_does_not_count(target,
     db.execute("INSERT INTO requests (requester_slack_id, query, database_name, status, "
                "  created_at) VALUES (%s, '', '', 'draft', now())", (REQ,))
     monkeypatch.setattr(routes_admin.admin, "require_admin", lambda c, s: "U0QADMIN01")
+    # The caller is a super-admin here: a DBA reads id and name only.
+    monkeypatch.setattr(routes_admin.admins, "is_super_admin", lambda uid: True)
     people = {p["id"]: p for p in routes_admin.admin_people(claims={"sub": "U0QADMIN01"})["people"]}
     want = db.fetch_one("SELECT created_at FROM requests WHERE id = %s", (newest,))["created_at"]
     assert people[REQ]["lastQueryAt"] == want.isoformat()
