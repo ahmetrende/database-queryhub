@@ -31,12 +31,14 @@ function TierSelect({ value, onChange }) {
   );
 }
 
-function expiryLabel(iso) {
-  if (!iso) return { text: 'No expiry', cls: '' };
-  const days = Math.ceil((new Date(iso) - Date.now()) / (1000 * 86400));
-  if (days <= 0) return { text: 'Expired', cls: 'is-exp' };
-  if (days <= 3) return { text: days + 'd left', cls: 'is-soon' };
-  return { text: days + 'd left', cls: '' };
+// The words and the class come from `qhEndState` (qh-data.jsx, 2026-10-23), the
+// one rule for "ends soon" on every screen. This used to count days on its own
+// with a three-day "soon", and the Grants, Auto-approve and Admin scopes
+// screens now need the same seven days. `none` is the caller's word.
+function expiryLabel(iso, none) {
+  const e = qhEndState(iso);
+  if (e.state === 'none') return { text: none || 'No expiry', cls: '', state: 'none' };
+  return { text: e.label, cls: e.state === 'ended' ? 'is-exp' : e.state === 'soon' ? 'is-soon' : '', state: e.state };
 }
 // Standing grants can expire as of migration 096 (CODE brief 2026-08-15 (c)) —
 // until then only auto-approve was time-bounded and this control was removed
@@ -47,10 +49,14 @@ function expiryLabel(iso) {
 const expDay = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const expToday = () => expDay(new Date());
 function expForm(iso) { return iso ? { ttl: 'date', expDate: expDay(new Date(iso)) } : { ttl: 'none', expDate: '' }; }
-function expIso(f) {
+// `base` (2026-10-23): the moment a quick pick counts from. Extend counts from
+// the grant's current end, so "+7 days" never moves an end that is three
+// weeks away to one that is one week away. It is never earlier than now.
+function expIso(f, base) {
   if (!f.ttl || f.ttl === 'none') return null;
   if (f.ttl === 'date') return f.expDate ? new Date(f.expDate + 'T23:59:59').toISOString() : null;
-  return qhIso(new Date(Date.now() + 1000 * 86400 * parseInt(f.ttl)));
+  const from = Math.max(Date.now(), base ? new Date(base).getTime() || 0 : 0);
+  return qhIso(new Date(from + 1000 * 86400 * parseInt(f.ttl)));
 }
 // The server refuses a past date with 400 rather than accepting it inert — a
 // grant that is dead on arrival still reads to the admin as "access given". The
@@ -75,7 +81,36 @@ function ExpiryPick({ f, onChange }) {
     </div>
   );
 }
-function ExpiryChip({ iso }) { if (!iso) return null; const ex = expiryLabel(iso); return <span className={'qh-expiry ' + ex.cls}>{ex.text}</span>; }
+function ExpiryChip({ iso }) { return iso ? <EndChip iso={iso} /> : null; }
+// The end of a grant, a rule or a scope as one chip (2026-10-23). Text, never
+// colour alone: "Ends soon · 2d left", "Ended 6d ago", "45d left", or the
+// caller's word for no end ("No expiry", "Permanent"). The exact moment is on
+// hover, in the fleet's time zone.
+function EndChip({ iso, none }) {
+  const ex = expiryLabel(iso, none);
+  return <span className={'qh-expiry qh-endchip ' + ex.cls} data-end={ex.state} title={iso ? (ex.state === 'ended' ? 'Ended ' : 'Ends ') + qhFmt(iso) : undefined}>{ex.text}</span>;
+}
+// Quick picks for an end date (2026-10-23): +7, +30 and +90 days, a date
+// field, and "No end date" where the caller allows one. Pills, not a select,
+// so every choice is in view. The state is ExpiryPick's ({ ttl, expDate }), so
+// `expIso` and `expBad` read both. `keep` adds "Keep the current end" for an
+// edit that should not move the end at all. `base` is what the picks count
+// from, and each pick shows the day it lands on.
+function EndPick({ f, onChange, base, none, keep, label }) {
+  const opts = [['7', '+7 days'], ['30', '+30 days'], ['90', '+90 days'], ['date', 'Pick a date']];
+  if (none) opts.push(['none', 'No end date']);
+  if (keep) opts.unshift(['keep', 'Keep the current end']);
+  const lands = (v) => (v === 'date' || v === 'none' || v === 'keep') ? undefined : 'Ends ' + qhFmt(expIso({ ttl: v }, base));
+  return (
+    <div className="qh-endpick" role="group" aria-label={label || 'End date'}>
+      <div className="qh-seg qh-seg-sm">
+        {opts.map(([v, l]) => <button key={v} type="button" aria-pressed={f.ttl === v} title={lands(v)} className={'qh-seg-opt' + (f.ttl === v ? ' is-active' : '')}
+          onClick={() => onChange({ ttl: v, expDate: v === 'date' ? (f.expDate || expToday()) : f.expDate })}>{l}</button>)}
+      </div>
+      {f.ttl === 'date' && <input type="date" aria-label="End date" className={'qh-input qh-input-sm qh-input-date' + (expBad(f) ? ' is-err' : '')} min={expToday()} value={f.expDate} onChange={e => onChange({ ttl: 'date', expDate: e.target.value })} />}
+    </div>
+  );
+}
 // Database multi-pick for a per-connection grant: "All databases" (['*']) or a
 // specific set. Picking a specific db drops '*'; clearing all falls back to '*'.
 // `bare` drops the inline "Databases" label, for a form that puts its labels in
@@ -717,6 +752,54 @@ function GrantForm({ init, actor, st, people, teams, onDone }) {
 //     with the full text on hover, or a sentence would stretch the column.
 function grantByLabel(g) { return qhPersonName(g.grantedByName || g.grantedBy) || '—'; }
 
+// Extend a grant in place (PATCH /admin/grants/{id}, 2026-10-23). Only a grant
+// that has an end and has not reached it gets this form. The picks count from
+// the current end. The summary says what changes before Save, and a later end
+// renames the button "Extend this grant" (DESIGN.md: a widening edit says so).
+// An earlier end is accepted too, as the server accepts it, and says "Shorten".
+// The server answers 409 `grant_ended` when the end passed while the page was
+// open. Its message names an API path, so the form says it in plain words.
+function grantEndedSay(g) {
+  return 'This grant ended' + (g.expiresAt ? ' on ' + qhFmt(g.expiresAt) : '') + '. QueryHub cannot extend an ended grant. Use Edit to grant the access again.';
+}
+function ExtendForm({ g, st, people, onDone }) {
+  const [f, setF] = useAcc({ ttl: '30', expDate: '' });
+  const [reason, setReason] = useAcc('');
+  const [busy, setBusy] = useAcc(false);
+  const [err, setErr] = useAcc(null);
+  const next = expIso(f, g.expiresAt);
+  const oldMs = g.expiresAt ? new Date(g.expiresAt).getTime() : null;
+  const nextMs = next ? new Date(next).getTime() : null;
+  const wider = nextMs === null || (oldMs !== null && nextMs > oldMs);
+  const same = nextMs !== null && oldMs !== null && Math.abs(nextMs - oldMs) < 60000;
+  const why = expBad(f) ? 'Pick a date from today on.' : same ? 'Nothing to change.' : null;
+  const who = grantName(g, people);
+  const save = () => {
+    if (why || busy) return;
+    setBusy(true); setErr(null);
+    st.extendGrant(g.id, { expiresAt: next, reason: reason.trim() || null })
+      .then(() => { setBusy(false); onDone(); })
+      .catch(e => { setBusy(false); setErr(e && e.code === 'grant_ended' ? grantEndedSay(g) : ((e && e.message) || 'QueryHub could not change the end date.')); });
+  };
+  return (
+    <div className="qh-addrow wrap qh-extend">
+      <span className="qh-rolefield-l">New end</span>
+      <EndPick f={f} onChange={p => { setF(x => ({ ...x, ...p })); setErr(null); }} base={g.expiresAt} none label="New end date" />
+      <input className="qh-input qh-input-sm qh-extend-why" aria-label="Reason" placeholder="Reason (optional, kept in the audit log)" value={reason} onChange={e => setReason(e.target.value)} />
+      <div className="qh-exp-note qh-extend-say">
+        {g.subjectType === 'team' ? <>Every member of <b>{who}</b> keeps</> : <><b>{who}</b> keeps</>} {g.tier} access to <span className="qh-mono">{qhGrantTarget(g)}</span>
+        {next ? <> until <b>{qhFmt(next)}</b>.</> : <> with <b>no end date</b>, until someone revokes it.</>}
+        {g.expiresAt && <> Now it ends {qhFmt(g.expiresAt)}.</>}
+      </div>
+      {err && <div className="qh-roleform-err">{err}</div>}
+      <div className="qh-extend-acts">
+        <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone} disabled={busy}>Cancel</button>
+        <span title={why || undefined}><button type="button" className="qh-btn qh-btn-primary qh-btn-sm" disabled={!!why || busy} onClick={save}>{busy ? <span className="qh-spin" /> : wider ? 'Extend this grant' : 'Shorten this grant'}</button></span>
+      </div>
+    </div>
+  );
+}
+
 // Grants on every server (CODE 2026-10-06 (c)): RO only, a person or a team,
 // optionally with reads auto-approved (the fleet waiver). Above the
 // per-connection list, because it reaches every row of it. A super-admin-only
@@ -797,8 +880,12 @@ function FleetGrantsBlock({ st, canWrite }) {
           <span className="qh-fleet-who" title={g.subject}>{grantName(g, people)}</span>
           {g.subjectType === 'team' && <span className="qh-fleet-kind">team</span>}
           <TierBadge tier={g.tier || 'RO'} sm />
-          {g.autoApprove && <span className="qh-fleet-auto" title="Reads on every server run without a DBA.">auto-approve</span>}
-          {g.expiresAt ? <ExpiryChip iso={g.expiresAt} /> : <span className="qh-fleet-kind">No expiry</span>}
+          {g.autoApprove && (g.enabled === false
+            ? <span className="qh-pausedchip" title="This auto-approve is off. A DBA reviews the reads.">auto-approve paused</span>
+            : <span className="qh-fleet-auto" title="Reads on every server run without a DBA.">auto-approve</span>)}
+          {/* Read-only end (2026-10-23): the API has no PATCH for a grant on
+              every server. To move the end, remove the grant and add it again. */}
+          <EndChip iso={g.expiresAt} none="No expiry" />
           {g.reason && <span className="qh-fleet-reason-t" title={g.reason}>{g.reason}</span>}
           <span className="qh-fleet-end">
             {g.syncedFrom
@@ -825,6 +912,7 @@ function GrantsView({ st, user }) {
   const [group, setGroup] = useAcc('none');
   const [adding, setAdding] = useAcc(false);
   const [editId, setEditId] = useAcc(null);
+  const [extendId, setExtendId] = useAcc(null);
   const c0 = (st.connections || [])[0] || { id: '' };
   const blank = { subjectType: 'user', subject: '', connectionId: c0.id, databases: ['*'], tier: 'RO' };
 
@@ -895,22 +983,31 @@ function GrantsView({ st, user }) {
             const grouped = keyFn ? accGroup(rows, keyFn) : [['', rows]];
             function renderRow(g) {
               if (editId === g.id) return <tr key={g.id} className="qh-editrow"><td colSpan={6}><GrantForm init={{ ...g }} actor={actor} st={st} people={st.people} teams={st.teams} onDone={() => setEditId(null)} /></td></tr>;
-              const ex = expiryLabel(g.expiresAt);
+              // An ended grant still lists (the server keeps it until a revoke),
+              // and readers treat it as no access: it says "Ended" and has no
+              // Extend (2026-10-23). A grant with no end has nothing to extend.
+              const end = qhEndState(g.expiresAt).state;
+              const canExtend = end === 'live' || end === 'soon';
               return (
-                <tr key={g.id}>
+                <React.Fragment key={g.id}>
+                <tr className={end === 'ended' ? 'is-ended' : undefined}>
                   <td><span className={'qh-subj-type ' + g.subjectType}>{g.subjectType}</span> <b>{grantName(g, st.people)}</b>{g.subjectType === 'user' && grantName(g, st.people) !== g.subject && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{g.subject}</div>}</td>
                   <td className="qh-mono">{qhGrantTarget(g)}</td>
                   <td><TierBadge tier={g.tier} sm /></td>
-                  <td><span className={'qh-expiry ' + ex.cls}>{ex.text}</span></td>
+                  <td><EndChip iso={g.expiresAt} /></td>
                   <td className="qh-muted"><span className="qh-grantby" title={grantByLabel(g)}>{grantByLabel(g)}</span>{g.grantedByName && g.grantedByName !== g.grantedBy && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{g.grantedBy}</div>}</td>
-                  <td className="qh-tright"><div className="qh-rowacts"><button className="qh-rowbtn" onClick={() => { setEditId(g.id); setAdding(false); }}><AIcon.edit />Edit</button><button className="qh-revoke" onClick={() => st.revokeGrant(g.id, actor)}>Revoke</button></div></td>
+                  <td className="qh-tright"><div className="qh-rowacts">
+                    {canExtend && <button className="qh-rowbtn" aria-expanded={extendId === g.id} onClick={() => { setExtendId(x => x === g.id ? null : g.id); setEditId(null); setAdding(false); }}>Extend</button>}
+                    <button className="qh-rowbtn" onClick={() => { setEditId(g.id); setExtendId(null); setAdding(false); }}><AIcon.edit />Edit</button><button className="qh-revoke" onClick={() => st.revokeGrant(g.id, actor)}>Revoke</button></div></td>
                 </tr>
+                {extendId === g.id && canExtend && <tr className="qh-editrow"><td colSpan={6}><ExtendForm g={g} st={st} people={st.people} onDone={() => setExtendId(null)} /></td></tr>}
+                </React.Fragment>
               );
             }
             return (
               <div className="qh-tablewrap">
               <table className="qh-atable qh-acttable">
-                <thead><tr><th>Subject</th><th>Target</th><th>Tier</th><th>Expires</th><th>Granted by</th><th></th></tr></thead>
+                <thead><tr><th>Subject</th><th>Target</th><th>Tier</th><th>Ends</th><th>Granted by</th><th></th></tr></thead>
                 <tbody>
                   {grouped.map(([k, list]) => <React.Fragment key={k || 'all'}>{k && <tr className="qh-grouphead"><td colSpan={6}>{k}<span className="qh-grouphead-n">{list.length}</span></td></tr>}{list.map(renderRow)}</React.Fragment>)}
                   {rows.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No grants match your filter.</td></tr>}
@@ -937,6 +1034,28 @@ const AUTO_EVERYWHERE = 'every server they can reach';
 function autoScopeLabel(a) {
   if (!a.connectionId) return AUTO_EVERYWHERE;
   return a.connectionId + ' · ' + (autoAllDbs(a.databaseId) ? 'all databases' : a.databaseId);
+}
+// A rule is 'ended', 'paused' or 'on' (2026-10-23). Ended wins: the server
+// filters ended rules out of its list, so this branch is a rule that ended
+// while the page was open, and a switch on it changes nothing. `enabled`
+// absent is on, which is what a server older than migration 146 means.
+function autoRuleState(a) {
+  if (qhEndState(a.expiresAt).state === 'ended') return 'ended';
+  return a.enabled === false ? 'paused' : 'on';
+}
+// The run count as the API gives it (`runCount`: the queries the rule approved).
+// No field, no words: an absent count is not zero.
+function autoRunsSay(a) {
+  const n = a.runCount;
+  if (typeof n !== 'number' || !isFinite(n) || n < 0) return '';
+  return n === 0 ? 'Never ran' : n === 1 ? 'Ran once' : 'Ran ' + n + ' times';
+}
+// What a pause or a resume changes, said before it runs.
+function autoToggleSay(a, on) {
+  const who = qhPersonName(a.userName || a.user);
+  const where = autoScopeLabel(a);
+  if (!on) return 'Pause this auto-approve rule? A DBA then reviews the queries of ' + who + ' on ' + where + '. QueryHub keeps the rule, its reason and its run count. QueryHub does not revoke the rule. You can resume it here.';
+  return 'Resume this auto-approve rule? The queries of ' + who + ' on ' + where + ' then run without a DBA again, up to ' + a.tier + (a.expiresAt ? ', until ' + qhFmt(a.expiresAt) : ', with no end date') + '.';
 }
 function AutoForm({ init, actor, st, onDone }) {
   const [f, setF] = useAcc(init);
@@ -1015,8 +1134,32 @@ function AutoView({ st, user }) {
     return (a.user + ' ' + (a.userName || '') + ' ' + a.connectionId + ' ' + (a.databaseId || '') + ' ' + a.tier).toLowerCase().includes(t);
   });
   const subjects = autoSubjects(rows, st.people);
+  const [busyId, setBusyId] = useAcc(null);
+  const [rowErr, setRowErr] = useAcc(null);
 
-  const actions = (a) => <div className="qh-rowacts"><button className="qh-rowbtn" onClick={() => { setEditId(a.id); setAdding(null); }}><AIcon.edit />Edit</button><button className="qh-revoke" onClick={() => st.revokeAutoGrant(a.id, actor)}>Revoke</button></div>;
+  // Pause and resume (PATCH /admin/auto-grants/{id}, 2026-10-23). A paused rule
+  // approves nothing and stays on this list with its reason and run count. An
+  // ended rule gets no switch: the server answers 409 for it. Edit is off on a
+  // paused rule, because an edit writes a NEW rule, and a new rule is on.
+  const toggle = (a) => {
+    const on = a.enabled === false;
+    if (!window.confirm(autoToggleSay(a, on))) return;
+    setBusyId(a.id); setRowErr(null);
+    st.setAutoGrantEnabled(a.id, on)
+      .then(() => setBusyId(null))
+      .catch(e => { setBusyId(null); setRowErr({ id: a.id, msg: e && e.code === 'rule_ended' ? 'This rule ended. QueryHub cannot pause or resume it. Create a new rule instead.' : ((e && e.message) || 'QueryHub could not change the rule.') }); });
+  };
+  const actions = (a) => {
+    const st8 = autoRuleState(a);
+    return (
+      <div className="qh-rowacts">
+        {st8 !== 'ended' && <button className="qh-rowbtn" disabled={busyId === a.id} onClick={() => toggle(a)}>{st8 === 'paused' ? 'Resume' : 'Pause'}</button>}
+        <span title={st8 === 'paused' ? 'Resume the rule first. An edit writes a new rule, and a new rule is on.' : undefined}><button className="qh-rowbtn" disabled={st8 === 'paused'} onClick={() => { setEditId(a.id); setAdding(null); }}><AIcon.edit />Edit</button></span>
+        <button className="qh-revoke" onClick={() => st.revokeAutoGrant(a.id, actor)}>Revoke</button>
+      </div>
+    );
+  };
+  const errFor = (a) => rowErr && rowErr.id === a.id ? <div className="qh-roleform-err qh-autosub-err">{rowErr.msg}</div> : null;
 
   return (
     <div className="qh-apad">
@@ -1066,21 +1209,24 @@ function AutoView({ st, user }) {
                 <span className={'qh-peravatar' + (s.team ? ' is-team' : '')}>{s.initials}</span>
                 <div className="qh-autosub-who"><div className="qh-autosub-name">{s.name}{s.team && <span className="qh-subj-type team">team</span>}</div>
                   {!s.team && s.key !== s.name && <div className="qh-autosub-h">{s.key}</div>}</div>
-                <div className="qh-autosub-sum">Auto-approved on {s.rows.length} target{s.rows.length === 1 ? '' : 's'}{s.open ? <> · <span className="qh-expiry is-soon">{s.open} with no end date</span></> : null}</div>
+                <div className="qh-autosub-sum">Auto-approved on {s.rows.length} target{s.rows.length === 1 ? '' : 's'}{s.open ? <> · <span className="qh-expiry is-soon">{s.open} with no end date</span></> : null}{s.paused ? <> · {s.paused} paused</> : null}</div>
               </div>
               <div className="qh-autosub-rows">
                 {s.rows.map(a => editId === a.id
                   ? <div key={a.id} className="qh-autosub-edit"><AutoForm init={{ ...a, ttl: 'keep' }} actor={actor} st={st} onDone={() => setEditId(null)} /></div>
-                  : (() => { const ex = expiryLabel(a.expiresAt); return (
-                    <div key={a.id} className="qh-autosub-row">
+                  : (
+                    <div key={a.id} className={'qh-autosub-row is-' + autoRuleState(a)}>
                       <span className="qh-autosub-t">{a.connectionId
                         ? <>{a.connectionId}<span className="qh-autosub-db">{autoAllDbs(a.databaseId) ? 'all databases' : a.databaseId}</span></>
-                        : <span className="qh-autosub-db">{AUTO_EVERYWHERE}</span>}</span>
+                        : <span className="qh-autosub-db">{AUTO_EVERYWHERE}</span>}
+                        {autoRuleState(a) === 'paused' && <span className="qh-pausedchip">Paused</span>}</span>
                       <TierBadge tier={a.tier} sm />
-                      <span className={'qh-expiry ' + ex.cls}>{ex.text}</span>
+                      <EndChip iso={a.expiresAt} />
+                      <span className="qh-autosub-runs">{autoRunsSay(a)}</span>
                       <span className="qh-autosub-by">by {qhPersonName(a.createdByName || a.createdBy) || '—'}</span>
                       {actions(a)}
-                    </div>); })())}
+                      {errFor(a)}
+                    </div>))}
               </div>
               {/* A team can hold auto-approve too (CODE 2026-09-23 §4), so its card gets the same Add. */}
               {adding === s.key
@@ -1093,24 +1239,25 @@ function AutoView({ st, user }) {
       ) : (
       <div className="qh-tablewrap">
       <table className="qh-atable qh-acttable">
-        <thead><tr><th>Person or team</th><th>Scope</th><th>Tier</th><th>Expiry</th><th>Granted by</th><th></th></tr></thead>
+        <thead><tr><th>Person or team</th><th>Scope</th><th>Tier</th><th>Ends</th><th>Runs</th><th>Granted by</th><th></th></tr></thead>
         <tbody>
           {rows.map(a => {
-            if (editId === a.id) return <tr key={a.id} className="qh-editrow"><td colSpan={6}><AutoForm init={{ ...a, ttl: 'keep' }} actor={actor} st={st} onDone={() => setEditId(null)} /></td></tr>;
-            const ex = expiryLabel(a.expiresAt);
+            if (editId === a.id) return <tr key={a.id} className="qh-editrow"><td colSpan={7}><AutoForm init={{ ...a, ttl: 'keep' }} actor={actor} st={st} onDone={() => setEditId(null)} /></td></tr>;
+            const rs = autoRuleState(a);
             return (
-              <tr key={a.id}>
-                <td><b>{qhPersonName(a.userName || a.user)}</b>{a.userName && a.userName !== a.user && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{a.user}</div>}</td>
+              <tr key={a.id} className={'is-' + rs}>
+                <td><b>{qhPersonName(a.userName || a.user)}</b>{rs === 'paused' && <span className="qh-pausedchip">Paused</span>}{a.userName && a.userName !== a.user && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{a.user}</div>}</td>
                 <td className="qh-mono">{!a.connectionId ? <span className="qh-muted">{AUTO_EVERYWHERE}</span>
                   : <>{a.connectionId}{autoAllDbs(a.databaseId) ? <span className="qh-muted"> · all databases</span> : '/' + a.databaseId}</>}</td>
                 <td><TierBadge tier={a.tier} sm /></td>
-                <td><span className={'qh-expiry ' + ex.cls}>{ex.text}</span></td>
+                <td><EndChip iso={a.expiresAt} /></td>
+                <td className="qh-autosub-runs">{autoRunsSay(a)}</td>
                 <td className="qh-muted">{qhPersonName(a.createdByName || a.createdBy) || '—'}</td>
-                <td className="qh-tright">{actions(a)}</td>
+                <td className="qh-tright">{actions(a)}{errFor(a)}</td>
               </tr>
             );
           })}
-          {rows.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No auto-approve grants match your filter.</td></tr>}
+          {rows.length === 0 && <tr><td colSpan={7} className="qh-conn-empty">No auto-approve grants match your filter.</td></tr>}
         </tbody>
       </table>
       </div>
@@ -1135,7 +1282,7 @@ function autoSubjects(rows, people) {
     }
     m.get(a.user).rows.push(a);
   });
-  return [...m.values()].map(s => ({ ...s, open: s.rows.filter(a => !a.expiresAt).length }))
+  return [...m.values()].map(s => ({ ...s, open: s.rows.filter(a => !a.expiresAt).length, paused: s.rows.filter(a => autoRuleState(a) === 'paused').length }))
     .sort((a, b) => (a.team === b.team ? (a.name < b.name ? -1 : 1) : a.team ? 1 : -1));
 }
 
@@ -1333,24 +1480,46 @@ function AutoBulkForm({ st, actor, lockType, lockUser, lockName, existing, onDon
 }
 
 // ---------- Admin scopes ----------
+// An admin scope can end on a date (migration 147, 2026-10-23). The body
+// carries `expiresAt` only when the form chose one: "Keep the current end"
+// leaves it out, and the server then keeps a stored end that is still ahead.
+// A super-admin has no end date. The server refuses one, so the form sends
+// null for a super-admin and does not offer the picks.
+// What an end does is read from the code, not assumed: after it the scope row
+// decides nothing (migration 147), and an admin with an end date never passes
+// the DBA level (access.is_dba needs no end), so the kill switch and the
+// connection list stay closed to them for the whole time.
+function scopeEndSay(f) {
+  if (f.role === 'super') return 'A super-admin has no end date.';
+  if (f.ttl === 'none') return 'No end date. The scope stays until someone removes it.';
+  if (f.ttl === 'keep') return null;
+  return 'After this date the scope stops. The admin can no longer approve requests through it. An admin with an end date cannot use the kill switch or the connection list.';
+}
 function ScopeForm({ init, actor, st, onDone }) {
-  const [f, setF] = useAcc(init);
+  const [f, setF] = useAcc(() => ({ ...init, ttl: init.expiresAt ? 'keep' : 'none', expDate: '' }));
   const editing = !!f.id;
   const toggleTier = (t) => setF(s => ({ ...s, canApprove: s.canApprove.includes(t) ? s.canApprove.filter(x => x !== t) : [...s.canApprove, t] }));
+  const why = !f.admin.trim() ? 'Type the admin handle.' : (f.role !== 'super' && expBad(f)) ? 'Pick a date from today on.' : null;
   const save = () => {
-    if (!f.admin.trim()) return;
+    if (why) return;
     const connections = (f.connections.trim() === '*' || !f.connections.trim()) ? ['*'] : f.connections.split(',').map(s => s.trim()).filter(Boolean);
-    st.saveScope({ ...(editing ? { id: f.id } : {}), admin: f.admin.trim(), role: f.role, canApprove: f.canApprove, connections }, actor);
+    const end = f.role === 'super' ? { expiresAt: null } : f.ttl === 'keep' ? {} : { expiresAt: expIso(f) };
+    st.saveScope({ ...(editing ? { id: f.id } : {}), admin: f.admin.trim(), role: f.role, canApprove: f.canApprove, connections, ...end }, actor);
     onDone();
   };
+  const say = scopeEndSay(f);
   return (
     <div className="qh-addrow wrap">
       <input className="qh-input qh-input-sm" placeholder="admin handle" value={f.admin} onChange={e => setF({ ...f, admin: e.target.value })} />
       <div className="qh-seg qh-seg-sm">{['dba', 'super'].map(v => <button key={v} className={'qh-seg-opt' + (f.role === v ? ' is-active' : '')} onClick={() => setF({ ...f, role: v })}>{v === 'super' ? 'super-admin' : 'DBA'}</button>)}</div>
       <div className="qh-tierchecks">{QH_TIERS.map(t => <button key={t} className={'qh-tierchk' + (f.canApprove.includes(t) ? ' is-on' : '')} onClick={() => toggleTier(t)}><TierBadge tier={t} sm />{f.canApprove.includes(t) ? '✓' : ''}</button>)}</div>
       <input className="qh-input qh-input-sm" placeholder="connections (* or comma list)" value={f.connections} onChange={e => setF({ ...f, connections: e.target.value })} />
-      <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={save}>{editing ? 'Save' : 'Add'}</button>
+      {f.role !== 'super' && <><span className="qh-rolefield-l">Ends</span>
+        <EndPick f={f} onChange={p => setF(x => ({ ...x, ...p }))} none keep={!!init.expiresAt} label="Scope end date" /></>}
+      <span title={why || undefined}><button className="qh-btn qh-btn-primary qh-btn-sm" disabled={!!why} onClick={save}>{editing ? 'Save' : 'Add'}</button></span>
       {editing && <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone}>Cancel</button>}
+      {say && <div className="qh-exp-note">{say}</div>}
+      {f.role !== 'super' && f.ttl === 'keep' && init.expiresAt && <div className="qh-exp-note">The scope keeps its end: {qhFmt(init.expiresAt)}.</div>}
     </div>
   );
 }
@@ -1373,14 +1542,15 @@ function ScopesView({ st, user }) {
 
   const renderRow = (s) => {
     if (editId === s.id) return (
-      <tr key={s.id} className="qh-editrow"><td colSpan={5}><ScopeForm init={{ id: s.id, admin: s.admin, role: s.role, canApprove: s.canApprove, connections: s.connections.join(', ') }} actor={actor} st={st} onDone={() => setEditId(null)} /></td></tr>
+      <tr key={s.id} className="qh-editrow"><td colSpan={6}><ScopeForm init={{ id: s.id, admin: s.admin, role: s.role, canApprove: s.canApprove, connections: s.connections.join(', '), expiresAt: s.expiresAt || null }} actor={actor} st={st} onDone={() => setEditId(null)} /></td></tr>
     );
     return (
-      <tr key={s.id}>
+      <tr key={s.id} className={qhEndState(s.expiresAt).state === 'ended' ? 'is-ended' : undefined}>
         <td><b>{s.admin}</b></td>
         <td><span className={'qh-rolechip ' + s.role}>{s.role === 'super' ? 'super-admin' : 'DBA'}</span></td>
         <td><div className="qh-tierrow">{s.canApprove.map(t => <TierBadge key={t} tier={t} sm />)}</div></td>
         <td className="qh-mono">{s.connections.join(', ')}</td>
+        <td><EndChip iso={s.expiresAt} none="Permanent" /></td>
         <td className="qh-tright"><div className="qh-rowacts"><button className="qh-rowbtn" onClick={() => { setEditId(s.id); setAdding(false); }}><AIcon.edit />Edit</button>{st.scopes.length > 1 && <button className="qh-revoke" onClick={() => st.removeScope(s.id, actor)}>Remove</button>}</div></td>
       </tr>
     );
@@ -1399,15 +1569,15 @@ function ScopesView({ st, user }) {
       </div>
       <div className="qh-tablewrap">
       <table className="qh-atable qh-acttable">
-        <thead><tr><th>Admin</th><th>Role</th><th>Can approve</th><th>Connections</th><th></th></tr></thead>
+        <thead><tr><th>Admin</th><th>Role</th><th>Can approve</th><th>Connections</th><th>Ends</th><th></th></tr></thead>
         <tbody>
           {grouped.map(([k, list]) => (
             <React.Fragment key={k || 'all'}>
-              {k && <tr className="qh-grouphead"><td colSpan={5}>{k}<span className="qh-grouphead-n">{list.length}</span></td></tr>}
+              {k && <tr className="qh-grouphead"><td colSpan={6}>{k}<span className="qh-grouphead-n">{list.length}</span></td></tr>}
               {list.map(renderRow)}
             </React.Fragment>
           ))}
-          {rows.length === 0 && <tr><td colSpan={5} className="qh-conn-empty">No admins match your filter.</td></tr>}
+          {rows.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No admins match your filter.</td></tr>}
         </tbody>
       </table>
       </div>
@@ -2077,13 +2247,50 @@ function ConnOwnersForm({ st, conn, onDone }) {
   );
 }
 
-function ConnectionsView({ st, user }) {
-  const act = 'dba.' + user.name.split(' ')[0].toLowerCase();
+// The last periodic check of a connection (2026-10-23). `health` is
+// {ok, checkedAt, failingSince, error} or null. Null means there is no stored
+// answer: the check is off, it skips this engine, or it has not run yet.
+function connHealthState(h) {
+  if (!h) return { kind: 'none', text: 'Not checked', title: 'No check result. The periodic check is off, it skips this engine, or it has not run yet.' };
+  const at = h.checkedAt ? ' Last check ' + qhAgo(h.checkedAt) + '.' : '';
+  if (h.ok) return { kind: 'ok', text: 'Healthy', title: 'The last check connected.' + at };
+  return { kind: 'bad', text: h.failingSince ? 'Failing since ' + qhAgo(h.failingSince) : 'Failing',
+    title: 'The last check could not connect.' + (h.failingSince ? ' Failing since ' + new Date(h.failingSince).toLocaleString() + '.' : '') + at };
+}
+const connFailing = (c) => !c.deleted && !!c.health && !c.health.ok;
+// The chip, and the error behind a disclosure. The server scrubs the error.
+// It renders as text, never as HTML.
+function ConnHealth({ h }) {
+  const s = connHealthState(h);
+  return (
+    <div className="qh-health-wrap">
+      <span className={'qh-health is-' + s.kind} title={s.title}>{s.text}</span>
+      {s.kind === 'bad' && h.error && (
+        <details className="qh-health-err"><summary>Error</summary><div className="qh-health-errtext">{h.error}</div></details>
+      )}
+    </div>
+  );
+}
+// A replica row says if automatic routing sends reads to it. `inRotation`
+// comes from the server. It is null when the server could not read it: the
+// row then falls back to the enabled switch, as before 2026-10-23.
+function connRotation(c) {
+  if (!c.replicaOf) return null;
+  if (typeof c.inRotation !== 'boolean') return { on: !!c.enabled, title: c.enabled ? 'Enabled. QueryHub could not read the rotation.' : 'Disabled.' };
+  if (c.inRotation) return { on: true, title: 'Automatic routing sends read-only queries on ' + c.replicaOf + ' here.' };
+  return { on: false, title: c.enabled ? 'Enabled, but automatic routing sends no reads here. Routing is off, or the primary is not PostgreSQL.' : 'Disabled.' };
+}
+
+// `readOnly` (2026-10-23): the DBA level reads this list but changes nothing.
+// It hides every write control. Test stays: the DBA level may run it.
+function ConnectionsView({ st, user, readOnly }) {
+  const act = 'dba.' + ((user && user.name) || '').split(' ')[0].toLowerCase();
   const pending = st.endpointReqs.filter(e => e.status === 'submitted');
   const [refreshing, setRefreshing] = React.useState(null);
   const [q, setQ] = React.useState('');
   const [envF, setEnvF] = React.useState('all');
   const [provF, setProvF] = React.useState('all');
+  const [healthF, setHealthF] = React.useState('all');
   // No default client sort. The server orders by `enabled DESC, alias`, so
   // disabled targets arrive LAST and an alphabetical re-sort here would
   // silently undo that (CODE brief 2026-08-20 §5). A clicked header still
@@ -2164,10 +2371,10 @@ function ConnectionsView({ st, user }) {
     <div className="qh-apad">
       <div className="qh-aview-head">
         <div><div className="qh-aview-title">Connections & endpoint requests</div><div className="qh-aview-sub">Registered databases and pending access requests from developers.</div></div>
-        <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => setForm({ mode: 'create', conn: null })}><AIcon.plus />Add connection</button>
+        {!readOnly && <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => setForm({ mode: 'create', conn: null })}><AIcon.plus />Add connection</button>}
       </div>
-      {form && form.mode === 'owners' && <ConnOwnersForm st={st} conn={form.conn} onDone={() => setForm(null)} />}
-      {form && form.mode !== 'owners' && <ConnectionForm st={st} init={form.conn} mode={form.mode} canSuper={!!(user && user.role === 'super')} onDone={() => setForm(null)} />}
+      {!readOnly && form && form.mode === 'owners' && <ConnOwnersForm st={st} conn={form.conn} onDone={() => setForm(null)} />}
+      {!readOnly && form && form.mode !== 'owners' && <ConnectionForm st={st} init={form.conn} mode={form.mode} canSuper={!!(user && user.role === 'super')} onDone={() => setForm(null)} />}
 
       {pending.length > 0 && <div className="qh-section-label">Pending requests · {pending.length}</div>}
       <div className="qh-erlist">
@@ -2181,10 +2388,10 @@ function ConnectionsView({ st, user }) {
                   handle stays on `title`. */}
               <div className="qh-ercard-by">requested by <b title={qhIsHandleName(er.requester) ? er.requester : null}>{qhPersonName(er.requester)}</b></div>
             </div>
-            <div className="qh-ercard-actions">
+            {!readOnly && <div className="qh-ercard-actions">
               <button className="qh-btn qh-btn-danger qh-btn-sm" onClick={() => st.decideEndpoint(er.id, false, act)}>Reject</button>
               <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => st.decideEndpoint(er.id, true, act)}>Provision</button>
-            </div>
+            </div>}
           </div>
         ))}
       </div>
@@ -2208,12 +2415,20 @@ function ConnectionsView({ st, user }) {
             </button>
           ))}
         </div>
+        {/* The last periodic check. "Failing" is the list an admin opens this
+            screen for after an alert. */}
+        <div className="qh-seg qh-seg-sm">
+          {[['all', 'Any health'], ['failing', 'Failing']].map(([v, l]) => (
+            <button key={v} className={'qh-seg-opt' + (healthF === v ? ' is-active' : '')} onClick={() => setHealthF(v)}>{l}{v === 'failing' && <span className="qh-mxseg-n">{allConns.filter(connFailing).length}</span>}</button>
+          ))}
+        </div>
       </div>
       {(() => {
         const dir = sort.dir === 'asc' ? 1 : -1;
         const rows0 = allConns
           .filter(c => envF === 'all' || c.env === envF)
           .filter(c => provF === 'all' || (provF === 'none' ? !qhProvider(c) : qhTags(c).provider === provF))
+          .filter(c => healthF === 'all' || connFailing(c))
           .filter(c => { const t = q.trim().toLowerCase(); if (!t) return true; return (c.name + ' ' + c.engine + ' ' + (c.host || '') + ' ' + qhHostingFull(c) + ' ' + (c.databases || []).map(d => d.name).join(' ') + ' ' + (c.owners || []).map(o => o.displayName + ' ' + o.name).join(' ')).toLowerCase().includes(t); })
           .slice();
         if (sort.key) rows0.sort((a, b) => {
@@ -2247,6 +2462,7 @@ function ConnectionsView({ st, user }) {
         const credWord = bulk ? { ro: 'read-only', rw: 'read/write', ddl: 'DDL' }[bulk.tier] : '';
         const had = bulk ? selRows.filter(c => { const k = (c.credentials || {})[bulk.tier]; return k && k.configured && !k.placeholder; }).length : 0;
         const nSel = selRows.length;
+        const nCols = readOnly ? 5 : 6;
         return (
           <>
           {sel.length > 0 && (
@@ -2294,13 +2510,13 @@ function ConnectionsView({ st, user }) {
           )}
           <div className="qh-tablewrap">
           <table className="qh-atable qh-conntable qh-acttable">
-            <thead><tr><th className="qh-conn-selcol"><ConnCheck on={allOn} some={someOn} label={allOn ? 'Deselect every connection shown' : 'Select all ' + vis.length + ' connections shown'} onChange={() => { setRefused(null); setSel(xs => allOn ? xs.filter(id => vis.indexOf(id) < 0) : [...new Set(xs.concat(vis))]); }} /></th>{th('name', 'Connection')}{th('engine', 'Engine · hosting')}{th('enabled', 'Status')}{th('dbs', 'Databases')}<th className="qh-tright">Actions</th></tr></thead>
+            <thead><tr>{!readOnly && <th className="qh-conn-selcol"><ConnCheck on={allOn} some={someOn} label={allOn ? 'Deselect every connection shown' : 'Select all ' + vis.length + ' connections shown'} onChange={() => { setRefused(null); setSel(xs => allOn ? xs.filter(id => vis.indexOf(id) < 0) : [...new Set(xs.concat(vis))]); }} /></th>}{th('name', 'Connection')}{th('engine', 'Engine · hosting')}{th('enabled', 'Status')}{th('dbs', 'Databases')}<th className="qh-tright">Actions</th></tr></thead>
             <tbody>
               {rows.map(c => {
                 const probe = tested[c.id];
                 return (
                 <tr key={c.id} className={(sel.indexOf(c.id) >= 0 ? 'is-sel' : '') + (refusedNames.indexOf(c.name) >= 0 ? ' is-refused' : '') + (c.replicaOf ? ' is-replica' : '')}>
-                  <td className="qh-conn-selcol"><ConnCheck on={sel.indexOf(c.id) >= 0} onChange={() => toggleSel(c.id)} label={'Select ' + c.name} /></td>
+                  {!readOnly && <td className="qh-conn-selcol"><ConnCheck on={sel.indexOf(c.id) >= 0} onChange={() => toggleSel(c.id)} label={'Select ' + c.name} /></td>}
                   <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b><span className={'qh-envtag env-' + c.env}>{c.env}</span></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}{!c.replicaOf && <div className="qh-muted qh-conn-owners" title="The lead of each owner team approves requests to this connection.">{(c.owners || []).length ? 'Owners: ' + c.owners.map(o => o.displayName).join(', ') : 'No owner'}</div>}{!c.replicaOf && c.superAdminOnly && <span className="qh-sao-chip" title="Only super-admins, and grants that name this connection, reach it.">super-admin only</span>}</td>
                   {/* Engine over hosting in ONE column, and the environment beside
                       the name: seven columns plus pinned actions were ~400px wider
@@ -2320,10 +2536,12 @@ function ConnectionsView({ st, user }) {
                   <td>
                     {/* A replica runs on its primary's login, so it has no
                         credential to be missing; "enabled" means "in rotation". */}
-                    <span className={'qh-expiry' + (c.enabled ? '' : ' is-exp')}>{c.replicaOf ? (c.enabled ? 'in rotation' : 'out of rotation') : (c.enabled ? 'enabled' : 'disabled')}</span>
+                    {(() => { const rot = connRotation(c); return (
+                      <span className={'qh-expiry' + (c.enabled ? '' : ' is-exp')} title={rot ? rot.title : undefined}>{rot ? (rot.on ? 'in rotation' : 'out of rotation') : (c.enabled ? 'enabled' : 'disabled')}</span>); })()}
                     {c.replicaOf
                       ? <div className="qh-replica-chip" title={'Read-only queries on ' + c.replicaOf + ' can run here. It uses ' + c.replicaOf + '’s login, and nobody picks it by name.'}>Replica of {c.replicaOf}</div>
                       : credNote(c) && <div className="qh-expiry is-soon">{credNote(c)}</div>}
+                    <ConnHealth h={c.health} />
                   </td>
                   <td><div className="qh-conn-dbcell">{(c.databases || []).map(d => <span key={d.id} className="qh-dbchip">{d.name}{d.tier && <TierBadge tier={d.tier} sm />}</span>)}</div></td>
                   <td className="qh-tright"><div className="qh-rowacts">
@@ -2334,25 +2552,25 @@ function ConnectionsView({ st, user }) {
                       title={probe ? (probe.ok ? 'Connected' + (probe.serverVersion ? ' · server ' + probe.serverVersion : '') + ' — press to test again' : 'Could not connect — ' + (probe.error || 'unknown error') + ' — press to test again') : 'Open one connection with the stored read-only credential'}>
                       {testing === c.id ? <span className="qh-spin" /> : probe ? (probe.ok ? <>{CONN_TEST_ICON.ok}{probe.latencyMs != null ? 'OK · ' + probe.latencyMs + ' ms' : 'OK'}</> : <>{CONN_TEST_ICON.bad}Failed</>) : 'Test'}
                     </button>
-                    <button className="qh-rowbtn" onClick={() => setForm({ mode: 'edit', conn: c })}><AIcon.edit />Edit</button>
+                    {!readOnly && <button className="qh-rowbtn" onClick={() => setForm({ mode: 'edit', conn: c })}><AIcon.edit />Edit</button>}
                     {/* Six buttons per row made the pinned actions column wider than
                         the Databases column it sat on top of. The two used most stay
                         out; the rest are one click further, in the row's menu. */}
-                    <ConnRowMenu busy={refreshing === c.id} items={[
+                    {!readOnly && <ConnRowMenu busy={refreshing === c.id} items={[
                       !c.replicaOf && { label: 'Rotate credentials', on: () => setForm({ mode: 'rotate', conn: c }) },
                       !c.replicaOf && { label: 'Owners', on: () => setForm({ mode: 'owners', conn: c }) },
                       { label: c.replicaOf ? (c.enabled ? 'Take out of rotation' : 'Put back in rotation') : (c.enabled ? 'Disable' : 'Enable'), on: () => toggleEnabled(c) },
                       { label: 'Refresh schema', hint: 'otherwise hourly', on: () => refreshSchema(c) },
                       { label: 'Delete', danger: true, on: () => removeConnection(c) },
-                    ].filter(Boolean)} />
+                    ].filter(Boolean)} />}
                   </div></td>
                 </tr>
                 );
               })}
-              {gone.length > 0 && <tr><td colSpan={6} className="qh-conn-empty">Deleted. The instance does not exist now. QueryHub keeps the row for the record. You cannot enable it.</td></tr>}
+              {gone.length > 0 && <tr><td colSpan={nCols} className="qh-conn-empty">Deleted. The instance does not exist now. QueryHub keeps the row for the record. You cannot enable it.</td></tr>}
               {gone.map(c => (
                 <tr key={c.id} className="is-deleted">
-                  <td className="qh-conn-selcol" />
+                  {!readOnly && <td className="qh-conn-selcol" />}
                   <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b></div></td>
                   <td className="qh-conn-engtd">
                     <div className="qh-conn-eng">{c.engine}</div>
@@ -2366,7 +2584,7 @@ function ConnectionsView({ st, user }) {
                   <td className="qh-tright" />
                 </tr>
               ))}
-              {rows.length === 0 && gone.length === 0 && <tr><td colSpan={6} className="qh-conn-empty">No connections match your filter.</td></tr>}
+              {rows.length === 0 && gone.length === 0 && <tr><td colSpan={nCols} className="qh-conn-empty">No connections match your filter.</td></tr>}
             </tbody>
           </table>
           </div>
@@ -2385,4 +2603,4 @@ function ConnectionsView({ st, user }) {
 // segmented control would be a second grouping idiom on one page.
 // `QH_TIER_WORD` / `qhTierWord` too (2026-10-21): the Roles screen and the
 // access editor say Read, Write and Schema from one table.
-Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord });
+Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, connHealthState, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, EndChip, EndPick, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord });

@@ -215,7 +215,7 @@ each row as `health`. The job reads these keys at the start of each run. See
 | `connection_health_enabled` | `on` | `on` = the job checks the targets, and the connection list shows the last result. `off` = the job exits at once, and the list shows no result. |
 | `connection_health_interval_sec` | `300` | Seconds between two checks of the same target. The job can run more often. It checks only the targets that are due. |
 | `connection_health_timeout_sec` | `5` | Seconds that one check can take, from 1 to 60. After this time, the check records a failure. |
-| `connection_health_exclude_engines` | `""` | Engines that the job skips, as a comma list: `postgres`, `mssql`, `clickhouse`, `athena`. Empty = check every engine. A ClickHouse check is a query: it wakes an idle ClickHouse Cloud service and bills its compute. An Athena check reads the Glue catalog and runs no Athena query. |
+| `connection_health_exclude_engines` | `clickhouse` | Engines that the job skips, as a comma list: `postgres`, `mssql`, `clickhouse`, `athena`. Empty = check every engine. Migration 191 seeded it empty and migration 192 sets `clickhouse` where it was still empty. A ClickHouse check is a query: it wakes an idle ClickHouse Cloud service and bills its compute. An Athena check reads the Glue catalog and runs no Athena query. |
 
 ## Target TLS
 

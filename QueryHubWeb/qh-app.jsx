@@ -236,7 +236,7 @@ function App() {
       wsInit.current = {
         tabs: [
           welcomeTab(),
-          { id: 't1', name: 'Query 1', sql: '', conn: null, db: null, dirty: false, result: null, status: null, runMs: null, messages: [], audit: [], touchedAt: Date.now() },
+          { id: 't1', name: 'Query 1', sql: '', conn: null, db: null, unpicked: true, dirty: false, result: null, status: null, runMs: null, messages: [], audit: [], touchedAt: Date.now() },
         ], activeId: 'welcome',
       };
     }
@@ -460,7 +460,9 @@ function App() {
   useEffect(() => {
     let alive = true;
     qhApi.me()
-      .then(m => { if (alive) { window.QH_TZ = (m && m.displayTz) || 'Europe/Istanbul'; setSlackEnabled(!m || m.slackEnabled !== false); setUser(m.user || null); } })
+      // `isDba` sits in the `admin` block of /me, not in `user` (PR 260). It is
+      // false when the field is absent, so an older server never widens the nav.
+      .then(m => { if (alive) { window.QH_TZ = (m && m.displayTz) || 'Europe/Istanbul'; setSlackEnabled(!m || m.slackEnabled !== false); setUser(m.user ? { ...m.user, isDba: !!(m.admin && m.admin.isDba === true) } : null); } })
       .catch(() => { if (alive) setUser(null); })
       .finally(() => { if (alive) setAuthChecked(true); });
     const onSignedOut = () => setUser(null);
@@ -723,6 +725,8 @@ function App() {
   // keep tab tier dot synced for tabs bar
   const tabsForBar = tabs.map(x => ({ ...x, tier: qhClassify(x.sql).tier }));
   const queryTabsForBar = tabsForBar.filter(x => !x.kind);
+  // A single click on a database uses it in this tab only while the tab is blank and unpicked.
+  const bindOnClick = qhTabBindsOnClick(tab);
   const isWelcome = tab.kind === 'welcome';
   const isWhatsNew = tab.kind === 'whatsnew';
 
@@ -760,7 +764,7 @@ function App() {
     const f = freshTab({ name: c.name, conn: c.id, db: db ? db.id : c.databases[0].id });
     setTabs(ts => [...ts, f]); setActiveId(f.id); focusEditor(); reserveFor(f.id);  };
 
-  const pickDb = (c, d) => patch(activeId, { conn: c.id, db: d.id });
+  const pickDb = (c, d) => patch(activeId, { conn: c.id, db: d.id, unpicked: false });
 
   const loadSaved = (s) => {
     const f = freshTab({ name: s.name, sql: s.sql, conn: s.conn, db: s.db, connState: s.state });
@@ -781,7 +785,7 @@ function App() {
 
   const newTab = () => {
     const c = conns.find(x => x.id === tab.conn) || conns[0];
-    const f = freshTab(c ? { name: c.name, conn: c.id, db: tab.db } : {});
+    const f = freshTab(c ? { name: c.name, conn: c.id, db: tab.db, unpicked: true } : { unpicked: true });
     setTabs(ts => [...ts, f]); setActiveId(f.id); reserveFor(f.id);  };
 
   // ---- Save/open a tab's SQL as a .sql file (client-side; no backend) ----
@@ -1440,7 +1444,7 @@ function App() {
     <Sidebar modeEntry={modeEntry('side')} focusSearch={sideFocus} mode={sideMode} setMode={setSideMode} conns={conns} connsLoading={connsLoading} schemaCache={schemaCache} onLoadSchema={loadSchema} rolesCache={rolesCache} onLoadRoles={loadRoles}
       canRefresh={!!(user && user.role !== 'developer')} onRefreshSchema={refreshSchema}
       onToast={pushToast}
-      active={{ conn: tab.conn, db: tab.db }} onPick={pickDb}
+      active={{ conn: tab.conn, db: tab.db }} onPick={pickDb} bindOnClick={bindOnClick}
       saved={savedList} onLoadSaved={loadSaved} onDeleteSaved={deleteSaved}
       sessions={sessions} onSaveSession={() => setSessionModal(true)} onRestoreSession={restoreSession} onDeleteSession={deleteSession}
       scheduled={scheduled} onOpenScheduled={openScheduled} onCancelScheduled={cancelScheduled}
@@ -1541,6 +1545,7 @@ function App() {
           ) : (
             <>
               <ActionBar
+                pickHint={bindOnClick}
                 conn={conn} db={db} connAlias={tab.conn} dbAlias={tab.db} dbTier={dbTier} classify={classify} pii={pii}
                 autoApprove={autoApprove} tierExceedsGrant={tierExceedsGrant} busy={busy} status={tab.status}
                 hasSql={!!tab.sql.trim()} onPrimary={primary} onExplain={explain} killed={killed}
@@ -2069,7 +2074,7 @@ function RunOnToggle({ conn, runOn, tier, onRunOn, tight }) {
 }
 
 // ---------- Action bar (target context + security + actions) ----------
-function ActionBar({ redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn }) {
+function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn }) {
   const runOnConflict = !!(runOnConn && runOn && runOn.mode === 'replica' && hasSql && !classify.empty && classify.tier !== 'RO');
   const tierLabel = { RO: 'Read-only', RW: 'Read/Write', DDL: 'Schema (DDL)' }[classify.tier];
   const highRisks = (riskHints || []).filter(h => h.level !== 'low');
@@ -2172,6 +2177,7 @@ function ActionBar({ redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyEr
           + (conn && db ? ' on ' + conn.name + '/' + db.name : '')}>
           <TierBadge tier={dbTier} sm />
         </span>
+        {pickHint && <span className="qh-target-hint" title={QH_PICK_HINT}>{QH_PICK_HINT}</span>}
       </div>
 
       <div className="qh-ab-spacer" />

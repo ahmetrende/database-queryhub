@@ -205,7 +205,8 @@ function EffPerson({ st, subject, onOpenTeam }) {
   }, [subject.id]);
   React.useEffect(() => { load(); }, [load]);
 
-  const name = qhPersonName(subject.name);
+  // A person a DBA opened by id has no name until the answer brings one.
+  const name = qhPersonName(subject.name || (eff && eff.name) || subject.handle);
   const access = (eff && eff.access) || [];
   const autos = (eff && eff.autoApprove) || [];
   const ap = eff && eff.admin;
@@ -222,16 +223,19 @@ function EffPerson({ st, subject, onOpenTeam }) {
   return (
     <div className="qh-eff-body">
       <div className="qh-eff-head">
-        <span className="qh-peravatar lg">{subject.initials || '?'}</span>
+        <span className="qh-peravatar lg">{subject.initials || (eff && eff.name ? eff.name.split(/\s+/).slice(0, 2).map(w => w.charAt(0).toUpperCase()).join('') : '?')}</span>
         <div className="qh-eff-head-main">
           <div className="qh-eff-head-name">{name}
             {subject.enabled === false && <span className="qh-perkind is-off">disabled — nothing below was revoked</span>}
             {eff && eff.known === false && <span className="qh-perkind">no QueryHub account</span>}</div>
-          <div className="qh-eff-head-id">{subject.handle}{subject.slackId ? ' · ' + subject.slackId : ''}</div>
+          <div className="qh-eff-head-id">{subject.handle}{subject.slackId && subject.slackId !== subject.handle ? ' · ' + subject.slackId : ''}</div>
         </div>
         {eff && (eff.teams || []).length > 0 && (
           <div className="qh-eff-head-teams"><span className="qh-eff-head-k">In</span>
-            {eff.teams.map(t => <button key={t.id || t.name} className="qh-eff-teamlink" onClick={() => onOpenTeam(t)}>{t.name}</button>)}</div>
+            {/* The team view needs a super-admin. For a DBA a team is a name, not a link that would fail. */}
+            {eff.teams.map(t => onOpenTeam
+              ? <button key={t.id || t.name} className="qh-eff-teamlink" onClick={() => onOpenTeam(t)}>{t.name}</button>
+              : <span key={t.id || t.name} className="qh-eff-teamlink is-plain">{t.name}</span>)}</div>
         )}
       </div>
 
@@ -369,17 +373,39 @@ function EffTeam({ st, subject, onOpenPerson }) {
 }
 
 // ---------- The screen ----------
-function EffectiveAccessView({ st }) {
+// A DBA (2026-10-23, PLA-1592 U13) reads one person's access, and nothing else
+// here: GET /admin/people, /admin/teams and the team view need a super-admin.
+// So for a DBA the list is the people of the approval queue, and a Slack id or
+// local:<name> typed in the search opens that person directly.
+const EFF_PRINCIPAL_RE = /^(?:[UW][A-Z0-9]{8,}|local:[A-Za-z0-9._-]{1,64})$/;
+function effQueuePeople(st) {
+  const out = [], seen = {};
+  const add = (id, name, initials) => {
+    if (!id || seen[id]) return;
+    seen[id] = 1;
+    const ini = initials || (name ? qhPersonName(name).split(/\s+/).slice(0, 2).map(w => w.charAt(0).toUpperCase()).join('') : null);
+    out.push({ id, handle: id, slackId: id, name: name || null, initials: ini || null });
+  };
+  (st.queue || []).forEach(it => it.submitter && add(it.submitter.slackId, it.submitter.name, it.submitter.initials));
+  (st.manualRuns || []).forEach(it => it.requester && add(it.requester.slackId, it.requester.name, null));
+  return out;
+}
+function EffectiveAccessView({ st, user }) {
+  const full = !!(user && user.role === 'super');
   const [kind, setKind] = useEff('person');
   const [q, setQ] = useEff('');
   const [pick, setPick] = useEff(null);   // { kind, key }
-  const people = st.people || [];
-  const teams = st.teams || [];
+  const [typed, setTyped] = useEff(null); // a person a DBA opened by id
+  const people = full ? (st.people || []) : effQueuePeople(st).concat(typed && !effQueuePeople(st).some(p => p.id === typed.id) ? [typed] : []);
+  const teams = full ? (st.teams || []) : [];
   const t = q.trim().toLowerCase();
   const pList = people.filter(p => !t || [p.name, p.handle, p.slackId, p.id].filter(Boolean).join(' ').toLowerCase().includes(t));
   const tList = teams.filter(x => !t || (x.name + ' ' + (x.desc || '')).toLowerCase().includes(t));
+  const asId = q.trim();
+  const canLookUp = !full && EFF_PRINCIPAL_RE.test(asId) && !people.some(p => p.id === asId);
+  const lookUp = () => { setTyped({ id: asId, handle: asId, slackId: asId, name: null, initials: null }); setKind('person'); setPick({ kind: 'person', key: asId }); setQ(''); };
   const openPerson = (h) => { setKind('person'); setPick({ kind: 'person', key: h }); };
-  const openTeam = (tm) => { setKind('team'); setPick({ kind: 'team', key: tm.id || tm.name }); };
+  const openTeam = full ? (tm) => { setKind('team'); setPick({ kind: 'team', key: tm.id || tm.name }); } : null;
   const person = pick && pick.kind === 'person' ? people.find(p => p.handle === pick.key || p.id === pick.key) : null;
   const team = pick && pick.kind === 'team' ? teams.find(x => x.id === pick.key || x.name === pick.key) : null;
 
@@ -388,21 +414,27 @@ function EffectiveAccessView({ st }) {
       <aside className="qh-eff-pick">
         <div className="qh-eff-pick-top">
           <div className="qh-aview-title">Effective access</div>
-          <div className="qh-aview-sub">What a person or a team can actually reach, and why.</div>
-          <div className="qh-seg qh-seg-sm qh-eff-kind">
+          <div className="qh-aview-sub">{full ? 'What a person or a team can actually reach, and why.' : 'What a person can actually reach, and why. Pick someone from the queue, or enter a Slack id.'}</div>
+          {full && <div className="qh-seg qh-seg-sm qh-eff-kind">
             <button className={'qh-seg-opt' + (kind === 'person' ? ' is-active' : '')} onClick={() => setKind('person')}>People · {people.length}</button>
             <button className={'qh-seg-opt' + (kind === 'team' ? ' is-active' : '')} onClick={() => setKind('team')}>Teams · {teams.length}</button>
-          </div>
+          </div>}
           <div className="qh-search sm">
             <span className="qh-search-ic"><EffIcon.search /></span>
-            <input className="qh-search-in" placeholder={kind === 'person' ? 'Name, handle or Slack id' : 'Team name'} value={q} onChange={e => setQ(e.target.value)} />
+            <input className="qh-search-in" placeholder={kind === 'person' ? (full ? 'Name, handle or Slack id' : 'Name, or a Slack id to look up') : 'Team name'} value={q} onChange={e => setQ(e.target.value)}
+                   onKeyDown={e => { if (e.key === 'Enter' && canLookUp) lookUp(); }} />
           </div>
+          {!full && <div className="qh-eff-pick-k">People in the queue · {effQueuePeople(st).length}</div>}
         </div>
         <div className="qh-eff-pick-list">
+          {canLookUp && <button className="qh-eff-pick-row" onClick={lookUp}>
+            <span className="qh-peravatar sm"><EffIcon.search /></span>
+            <span className="qh-eff-pick-main"><span className="qh-eff-pick-n">Look up {asId}</span><span className="qh-eff-pick-h">Not in the queue</span></span>
+          </button>}
           {kind === 'person' ? pList.map(p => (
             <button key={p.handle} className={'qh-eff-pick-row' + (person && person.handle === p.handle ? ' is-on' : '') + (p.enabled === false ? ' is-off' : '')} onClick={() => openPerson(p.handle)}>
-              <span className="qh-peravatar sm">{p.initials}</span>
-              <span className="qh-eff-pick-main"><span className="qh-eff-pick-n">{qhPersonName(p.name)}</span><span className="qh-eff-pick-h">{p.handle}</span></span>
+              <span className="qh-peravatar sm">{p.initials || '?'}</span>
+              <span className="qh-eff-pick-main"><span className="qh-eff-pick-n">{p.name ? qhPersonName(p.name) : p.handle}</span><span className="qh-eff-pick-h">{p.handle}</span></span>
               {p.enabled === false && <span className="qh-perkind is-off">disabled</span>}
             </button>
           )) : tList.map(x => (
@@ -411,11 +443,13 @@ function EffectiveAccessView({ st }) {
               <span className="qh-eff-pick-main"><span className="qh-eff-pick-n">{x.name}</span><span className="qh-eff-pick-h">{x.members.length} member{x.members.length === 1 ? '' : 's'}</span></span>
             </button>
           ))}
-          {(kind === 'person' ? pList : tList).length === 0 && <div className="qh-eff-empty">Nobody matches “{q.trim()}”.</div>}
+          {(kind === 'person' ? pList : tList).length === 0 && !canLookUp && <div className="qh-eff-empty">{q.trim() ? <>Nobody matches “{q.trim()}”.</> : full ? 'Nobody to show.' : 'Nobody waits in the queue. Enter a Slack id to look someone up.'}</div>}
         </div>
       </aside>
       <div className="qh-eff-main">
         {person ? <EffPerson key={'p' + person.handle} st={st} subject={person} onOpenTeam={openTeam} />
+          : !full && !person ? <div className="qh-eff-intro"><div className="qh-eff-intro-t">Pick someone on the left</div>
+              <div className="qh-eff-intro-p">Shows every connection and database they can query, its source and its end date. Also shows what is auto-approved and what they approve. Only a super-admin can change access.</div></div>
           : team ? <EffTeam key={'t' + team.id} st={st} subject={team} onOpenPerson={openPerson} />
           : <div className="qh-eff-intro"><div className="qh-eff-intro-t">Pick someone on the left</div>
               <div className="qh-eff-intro-p">Shows every connection and database they can query, its source and its end date. Also shows what is auto-approved and what they approve. A submission resolves access the same way.</div></div>}

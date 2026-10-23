@@ -754,6 +754,14 @@ def test_zero_is_refused_for_the_interval_and_the_timeout(key):
     assert config_admin._coerce("60", "int", "300", key=key) == "60"
 
 
+def test_migration_192_skips_clickhouse_only_where_the_seed_is_still_empty():
+    text = (Path(__file__).resolve().parent.parent / "migrations"
+            / "192_connection_health_skip_clickhouse.sql").read_text(encoding="utf-8")
+    assert "SET value = 'clickhouse'" in text
+    assert "AND value = ''" in text
+    assert "WHERE key = 'connection_health_exclude_engines'" in text
+
+
 def test_the_four_keys_are_seeded_with_the_defaults_the_code_passes():
     text = (Path(__file__).resolve().parent.parent / "migrations"
             / "191_connection_health_settings.sql").read_text(encoding="utf-8")

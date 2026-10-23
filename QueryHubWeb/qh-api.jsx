@@ -225,6 +225,10 @@ const qhApi = {
   adminBatchApprove:(ids) => qhFetch('/admin/queue/batch-approve', { method: 'POST', body: JSON.stringify({ ids }) }),
   adminKillGet:    ()     => qhFetch('/admin/kill'),
   adminKillSet:    (b)    => qhFetch('/admin/kill', { method: 'POST', body: JSON.stringify(b) }),
+  // The pauses, newest first: a bare list of {startedAt, by, message, endedAt,
+  // endedBy, cancelledCount}. endedAt is null while the switch is on, and
+  // cancelledCount is null when nobody counted (PLA-1592 U4c).
+  adminKillHistory:()     => qhFetch('/admin/kill/history'),
   adminGrants:     ()     => qhFetch('/admin/grants'),
   adminAddGrant:   (b)    => qhFetch('/admin/grants', { method: 'POST', body: JSON.stringify(b) }),
   adminDelGrant:   (id)   => qhFetch('/admin/grants/' + encodeURIComponent(id), { method: 'DELETE' }),
@@ -234,6 +238,12 @@ const qhApi = {
   // writes nothing and carries `refused` (design 2026-09-23).
   adminAddAutoGrantsBulk:(b) => qhFetch('/admin/auto-grants/bulk', { method: 'POST', body: JSON.stringify(b) }),
   adminDelAutoGrant:(id)  => qhFetch('/admin/auto-grants/' + encodeURIComponent(id), { method: 'DELETE' }),
+  // 2026-10-23: move a grant's end in place, and pause or resume a rule.
+  // `expiresAt` is always sent, null for no end: the server refuses a body
+  // without it. An ended grant or rule answers 409 (`grant_ended`,
+  // `rule_ended`). A grant on every server has no PATCH.
+  adminExtendGrant:(id, b) => qhFetch('/admin/grants/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ expiresAt: (b && b.expiresAt) || null, reason: (b && b.reason) || null }) }),
+  adminSetAutoGrant:(id, enabled) => qhFetch('/admin/auto-grants/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ enabled: !!enabled }) }),
   // One person's resolved reach, and "give them what that person has".
   adminEffectiveAccess:(id) => qhFetch('/admin/people/' + encodeURIComponent(id) + '/effective-access'),
   // The team half of Effective access (design 2026-09-22 §1).

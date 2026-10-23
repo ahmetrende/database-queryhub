@@ -30,8 +30,9 @@ frontend and the endpoints it calls are explicitly outside it.
   (`ok`, `checkedAt`, `failingSince`, `error`, or `null`) and `inRotation`. The
   settings are `connection_health_enabled`, `connection_health_interval_sec`,
   `connection_health_timeout_sec` and `connection_health_exclude_engines`. A
-  ClickHouse check is a query, so it keeps a cloud service awake: list
-  `clickhouse` in the last setting to skip it.
+  ClickHouse check is a query, so it keeps a cloud service awake: the last
+  setting is `clickhouse` by default (migration 192), so ClickHouse is skipped.
+  Empty the setting to check it.
 - **Your own access requests.** `GET /api/endpoint-requests` lists them.
   `POST /api/endpoint-requests/{id}/withdraw` withdraws one that nobody has
   decided. The new status is `withdrawn`.
@@ -84,6 +85,39 @@ frontend and the endpoints it calls are explicitly outside it.
   end at once. A signed portal request and Slack are not affected. The sign-in
   screen shows "Refused: QueryHub opens through the portal. Sign in there." The
   default is `off`. Migration 145 adds the key.
+
+- **A click on a database uses it in a blank tab.** A new blank tab starts with a
+  default database. The first click on a database in the tree sets the tab to it,
+  and the tab then keeps it, so browsing the tree never changes a connection. To
+  change it later, double-click the database for a new query or right-click it.
+  A tab with SQL in it is never changed by a click. A blank tab says this on its
+  target strip, and each database row says it in its tooltip.
+- **The Kill switch screen lists past pauses.** Each row shows who paused, when,
+  why, how long it lasted and how many reads it cancelled. After you turn the
+  switch on, the screen says how many running reads stopped. It also says that
+  writes and schema changes keep running.
+- **A DBA opens three admin pages.** The pages are Kill switch (with its button),
+  Effective access and Connections. Connections is read-only for a DBA. Every
+  other page shows as a locked row with a lock icon and the words "Super-admin
+  only", not as a missing item. A deep link to a locked page opens the queue.
+  The screens read `admin.isDba` of `GET /api/me`. A server that does not send
+  it gives an admin the old pages only.
+- **A reject note needs 15 characters.** Reject and Request changes show a
+  counter and four chips: "Try on test first", "Add a WHERE clause", "Link an
+  incident" and "Inside change freeze". A chip adds a ready sentence. The
+  server still accepts any note, so a note from Slack is not refused.
+- **Extend a grant, pause an auto-approve rule, end an admin scope.** The Grants
+  screen has an Extend button on a grant with an end date, and an "Ends soon"
+  chip within seven days. A rule has Pause and Resume, a "Paused" chip and a
+  run count. A paused rule cannot be edited, because an edit would resume it. A
+  scope form has an end date, and a scope row says "Permanent" or its end.
+- **Masking exemptions show who they unmask for and when they end.** The form has
+  an audience (everyone, admins only, super-admins only or one team) and an end
+  date. A row with the `dba` or team audience no longer reads "everyone".
+- **Connections show a health chip, and People show the last query.** The chip
+  says "Healthy", "Failing since ..." with the error, or "Not checked". A
+  replica says "In rotation" or "Out of rotation". A "Failing" filter lists the
+  failing connections. The People list says when a person last sent a query.
 
 ### Changed
 

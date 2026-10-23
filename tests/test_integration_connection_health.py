@@ -144,6 +144,30 @@ def test_both_migrations_run_a_second_time_and_change_nothing():
                    (before["connection_health_interval_sec"],))
 
 
+def test_migration_192_fills_an_empty_seed_and_keeps_a_chosen_value():
+    key = "connection_health_exclude_engines"
+    db.init_pool()
+    before = _settings_rows()[key]
+    sql = (MIGRATIONS / "192_connection_health_skip_clickhouse.sql").read_text(encoding="utf-8")
+
+    def run():
+        with _owner() as conn:
+            conn.execute(sql)
+            conn.commit()
+
+    try:
+        db.execute("UPDATE bot_config SET value = '' WHERE key = %s", (key,))
+        run()
+        assert _settings_rows()[key] == "clickhouse"
+        run()
+        assert _settings_rows()[key] == "clickhouse"
+        db.execute("UPDATE bot_config SET value = 'athena' WHERE key = %s", (key,))
+        run()
+        assert _settings_rows()[key] == "athena"
+    finally:
+        db.execute("UPDATE bot_config SET value = %s WHERE key = %s", (before, key))
+
+
 def test_one_row_per_target_through_ok_fail_fail_ok(fleet):
     store = FixtureStore({"primary": fleet["primary"]})
     check_fn = _answers(True, False, False, True)

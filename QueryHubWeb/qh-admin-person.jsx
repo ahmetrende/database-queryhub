@@ -41,6 +41,15 @@ function perSource(t) {
   return { word: 'direct', cls: '' };
 }
 
+// When this person last sent a query (GET /admin/people `lastQueryAt`,
+// 2026-10-23). A draft does not count. Null means the server found no query
+// at all, so the card says so. A missing field (an older server) shows nothing.
+function PerLastQuery({ at }) {
+  if (at === undefined) return null;
+  if (!at) return <span className="qh-percard-last is-none">No queries yet</span>;
+  return <span className="qh-percard-last" title={'Last query ' + new Date(at).toLocaleString()}>Last query {qhAgo(at)}</span>;
+}
+
 function PersonCard({ p, grants, onOpen }) {
   const own = (grants || []).filter(g => g.subjectType === 'user' && g.subject === p.handle).length;
   // `enabled` and `kind` come from the server (CODE brief 2026-09-01 §4). A
@@ -57,6 +66,7 @@ function PersonCard({ p, grants, onOpen }) {
           {p.kind === 'admin' && <span className="qh-perkind">admin only</span>}
           {p.kind === 'grant_only' && <span className="qh-perkind">grant only</span>}</span>
         <span className="qh-percard-h">{p.handle}</span>
+        <PerLastQuery at={p.lastQueryAt} />
       </span>
       {/* Direct grants only — what a team adds needs the resolver, and one
           request per person to draw a list would be a hundred requests. */}

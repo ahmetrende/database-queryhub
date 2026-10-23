@@ -135,7 +135,7 @@ function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, ri
   );
 }
 
-function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, open, setOpen, onPickDb, onOpenTable, onNewQuery, isSuper, canRefresh, onRefreshSchema, reveal, narrow, tagFilters, onToast }) {
+function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, open, setOpen, onPickDb, onOpenTable, onNewQuery, isSuper, canRefresh, onRefreshSchema, reveal, narrow, tagFilters, onToast }) {
   // A `provider:aws` token in the search box narrows the TREE, not just the
   // dropdown: the list you then browse is the answer to what you typed.
   const conns = React.useMemo(() => (
@@ -336,10 +336,10 @@ function SchemaTree({ conns: allConns, schemaCache, onLoadSchema, rolesCache, on
     };
     return (
       <div key={did}>
-        <TreeRow depth={base} expandable open={isOpen(did)} onToggle={() => { tog(did); onLoadSchema && onLoadSchema(c.id, db.id); }}
+        <TreeRow depth={base} expandable open={isOpen(did)} onToggle={() => { tog(did); onLoadSchema && onLoadSchema(c.id, db.id); if (bindOnClick && onPickDb) onPickDb(c, db); }}
           icon={rightExtra !== undefined ? <img className="qh-engine-logo" src={qhEngineLogo(c)} alt={qhEngine(c).label} draggable={false} /> : TICN.db()}
           label={db.name} sub={sub} tier={db.tier} active={act} drag={qhQuoteIdent(db.name)} dbDrag={dbDragKey} nodeId={did}
-          title={rightExtra !== undefined ? [db.name, c.name + ' · ' + c.engine, c.host ? c.host + (c.port ? ':' + c.port : '') : '', qhHosting(c)].filter(Boolean).join('\n') : undefined}
+          title={(rightExtra !== undefined ? [db.name, c.name + ' · ' + c.engine, c.host ? c.host + (c.port ? ':' + c.port : '') : '', qhHosting(c)] : [db.name]).concat(['Click uses it in a blank tab.', 'Double-click opens a new query.', 'Right-click shows more.']).filter(Boolean).join('\n')}
           right={rightExtra}
           onCtx={(e) => openMenu(e, c, db)} onDbl={() => newQ(c, db)} />
         {isOpen(did) && (
@@ -705,7 +705,7 @@ function QhConnSkeleton() {
   );
 }
 
-function Sidebar({ modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
+function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
   const [open, setOpen] = React.useState(() => ({ 'prod-main': true, 'prod-replica': true }));
   const [q, setQ] = React.useState('');
   const sqlFileRef = React.useRef(null);
@@ -914,7 +914,7 @@ function Sidebar({ modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode
       )}
 
       <div className="qh-side-body">
-        {mode === 'conns' && (connsLoading && conns.length === 0 ? <QhConnSkeleton /> : <SchemaTree conns={conns} schemaCache={schemaCache} onLoadSchema={onLoadSchema} canRefresh={canRefresh} onRefreshSchema={onRefreshSchema} rolesCache={rolesCache} onLoadRoles={onLoadRoles} active={active} open={open} setOpen={setOpen} onPickDb={onPick} onOpenTable={onOpenTable} onNewQuery={onNewQuery} isSuper={isSuper} reveal={reveal} narrow={!width || width < 330} tagFilters={tagF} onToast={onToast} />)}
+        {mode === 'conns' && (connsLoading && conns.length === 0 ? <QhConnSkeleton /> : <SchemaTree bindOnClick={bindOnClick} conns={conns} schemaCache={schemaCache} onLoadSchema={onLoadSchema} canRefresh={canRefresh} onRefreshSchema={onRefreshSchema} rolesCache={rolesCache} onLoadRoles={onLoadRoles} active={active} open={open} setOpen={setOpen} onPickDb={onPick} onOpenTable={onOpenTable} onNewQuery={onNewQuery} isSuper={isSuper} reveal={reveal} narrow={!width || width < 330} tagFilters={tagF} onToast={onToast} />)}
 
         {mode === 'saved' && saved.length === 0 && (
           <div className="qh-side-empty">

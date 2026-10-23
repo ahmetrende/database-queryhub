@@ -150,3 +150,26 @@ def test_full_versus_partial_follows_the_masker_not_a_second_table(monkeypatch):
                         ("email", "partial"), ("name", "partial")):
         masker = pii._COLUMN_MASKERS.get(ptype)
         assert ("full" if masker in (None, pii._redact) else "partial") == want
+
+
+def test_screen_offers_exactly_the_audiences_the_server_takes():
+    """The screen knew two audiences. The server takes four (migration 149),
+    and a `dba` or `team` row printed as "everyone": the widest reading of a
+    narrower row. The picker must offer what `_mask_audience` accepts."""
+    src = SCREEN.read_text(encoding="utf-8")
+    i = src.index("const MX_AUDIENCES = [")
+    block = src[i:src.index("];", i)]
+    offered = re.findall(r"^\s*\['([a-z]+)',", block, flags=re.M)
+    assert sorted(offered) == sorted(pii.AUDIENCES)
+
+
+def test_screen_sends_the_end_and_the_audience_the_routes_read():
+    """The add and the edit send `expiresAt` and `audience`. Both models must
+    declare them, or `extra: forbid` on the PATCH refuses every edit."""
+    src = SCREEN.read_text(encoding="utf-8")
+    assert "expiresAt: expIso(f.exp)" in src
+    assert "patch.expiresAt = expIso(f.exp)" in src
+    assert "{ kind: 'team', teamId: f.audienceTeamId }" in src
+    for model in (routes_admin.MaskExemptionIn, routes_admin.MaskPatchIn):
+        assert {"expiresAt", "audience"} <= set(model.model_fields)
+    assert set(routes_admin.MaskAudienceIn.model_fields) == {"kind", "teamId"}

@@ -2233,13 +2233,13 @@ Change them on the System configuration screen, group "Connection health".
 | `connection_health_enabled` | `on` |
 | `connection_health_interval_sec` | `300` |
 | `connection_health_timeout_sec` | `5` (1 to 60) |
-| `connection_health_exclude_engines` | empty: every engine |
+| `connection_health_exclude_engines` | `clickhouse` (migration 192; empty: every engine) |
 
 **Cost.** A ClickHouse check is a query. It wakes an idle ClickHouse Cloud
 service, bills its compute and starts its idle timer again. With the defaults,
 a service whose idle timeout is longer than the interval never goes idle. That
-is why the catalog job reads ClickHouse once a day. To stop the ClickHouse
-checks, set `connection_health_exclude_engines` to `clickhouse`. An Athena
+is why the catalog job reads ClickHouse once a day. ClickHouse is skipped by default.
+To check it, empty `connection_health_exclude_engines`. An Athena
 check costs Glue catalog requests only.
 
 **Schedule.** Run the job every minute from the host scheduler, with the

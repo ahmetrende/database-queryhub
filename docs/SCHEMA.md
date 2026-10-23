@@ -172,6 +172,9 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
   `connection_health_enabled` (on), `connection_health_interval_sec` (300),
   `connection_health_timeout_sec` (5) and `connection_health_exclude_engines`
   (empty: every engine). See OPERATIONS.md §29.
+- **192_connection_health_skip_clickhouse** — sets
+  `connection_health_exclude_engines` to `clickhouse` where it still holds the
+  empty seed of 191.
 
 ---
 

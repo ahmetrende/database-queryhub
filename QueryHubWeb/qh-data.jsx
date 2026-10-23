@@ -864,6 +864,33 @@ function qhAgo(t) {
   const h = Math.floor(m / 60); if (h < 24) return h + 'h ago';
   return Math.floor(h / 24) + 'd ago';
 }
+// When a grant, an auto-approve rule, an admin scope or an exemption ends
+// (2026-10-23). ONE rule for every screen that shows an end date, so "ends
+// soon" means the same seven days everywhere. `now` is for tests. It defaults
+// to the clock. Returns `{ state, label }`:
+//   none  -- no end date. The caller picks the word ("No expiry", "Permanent").
+//   live  -- ends later than seven days from now: "45d left".
+//   soon  -- ends within seven days: "Ends soon · 2d left".
+//   ended -- the end has passed: "Ended 6d ago". Readers treat it as gone.
+// Under 48 hours the time left is in hours, so 47 hours never reads "1d left".
+// A date that does not parse is not a missing date: it shows as it came.
+const QH_END_SOON_MS = 7 * 86400000;
+function qhEndSpan(ms) {
+  const m = Math.floor(ms / 60000);
+  if (m < 60) return Math.max(1, m) + 'm';
+  const h = Math.floor(m / 60);
+  return h < 48 ? h + 'h' : Math.floor(h / 24) + 'd';
+}
+function qhEndState(expiresAt, now) {
+  if (!expiresAt) return { state: 'none', label: '' };
+  const end = new Date(expiresAt).getTime();
+  if (isNaN(end)) return { state: 'live', label: 'Ends ' + String(expiresAt) };
+  const t = now == null ? Date.now() : new Date(now).getTime();
+  const left = end - t;
+  if (left <= 0) return { state: 'ended', label: 'Ended ' + qhEndSpan(-left) + ' ago' };
+  if (left <= QH_END_SOON_MS) return { state: 'soon', label: 'Ends soon · ' + qhEndSpan(left) + ' left' };
+  return { state: 'live', label: qhEndSpan(left) + ' left' };
+}
 // A person is printed as a NAME. `submitter.name` (and every other person
 // field) is whatever the identity source held: Slack's display name for most
 // people, but the bare `ad.soyad` handle wherever the profile carried no real
@@ -1106,17 +1133,30 @@ function qhConfirmReasons(err) {
   return qhSplitReasons(msg);
 }
 
+// A query tab that has had no explicit target yet: the first tab, and a blank
+// one from "New query". It starts on a default target, so a single click on a
+// database in the tree uses that database in the tab ONCE (2026-10-23). After
+// that the tab is picked: a single click only opens or closes the row, so
+// browsing the tree never changes a tab's connection. Double-click opens a new
+// query on the database. Right-click shows "Use in this tab". A tab with SQL in
+// it is never rebound by a single click.
+const QH_PICK_HINT = 'Click a database in the tree to use it here. To change it later, double-click or right-click.';
+function qhTabBindsOnClick(tab) {
+  return !!tab && !tab.kind && tab.unpicked === true && !String(tab.sql || '').trim();
+}
+
 Object.assign(window, {
   qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhConfirmReasons, qhSplitReasons,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,
   qhClassify, qhDetectPII, qhMockResult, qhAffectedInfo, qhTabAfterResult, qhAutoTierState, qhMaskValue, qhStripComments, qhSplitStatements,
   qhConnState, QH_CONN_STATE,
-  qhColumnsFor, qhIndexesFor, qhViewsFor, qhSplitRelations, qhAgo, qhPersonName, qhIsHandleName, QH_ROLE_PREFIXES,
+  qhColumnsFor, qhIndexesFor, qhViewsFor, qhSplitRelations, qhAgo, qhEndState, qhPersonName, qhIsHandleName, QH_ROLE_PREFIXES,
   qhRiskHints, qhExplainPlan, qhQuoteIdent, qhQuoteList, qhApproxRows, qhFmtRows,
   QH_SHOW_ENV_TAGS,
   QH_ENGINES, qhEngineId, qhEngine, qhEngineBadge, qhEngineLogo, qhQuoteIdentFor, qhServerRoles,
   QH_PROVIDERS, QH_TAG_KEYS, QH_TAG_RESERVED, qhProviderLogo, qhProvider, qhTags, qhHosting, qhHostingFull, qhEndpointHover,
   qhCustomTags, qhParseTagQuery, qhTagMatch, qhProviderGroups, qhTagVocab, qhTokenSuggest, qhApplyToken,
   qhAutoApproveRO, qhSchemaFor, qhSchemaOf, qhQualify, qhSelectSql,
+  QH_PICK_HINT, qhTabBindsOnClick,
 });

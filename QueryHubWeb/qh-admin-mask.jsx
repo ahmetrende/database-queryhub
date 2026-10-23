@@ -75,39 +75,109 @@ function MxReach({ e }) {
   return <div className="qh-mxsent">Unmasks <b>{e.schema}.{e.table}.{e.column}</b> in {db} on {conn}.</div>;
 }
 
-// The three settings in a few words each — the summary that replaces asking.
-function mxSummary(e) {
+// ---------- Who it unmasks for, and until when (2026-10-23) ----------
+// The four audiences the server takes (pii.AUDIENCES, migration 149). `dba` is
+// anyone who holds an admin role, super-admins too. It is NOT the DBA level of
+// GET /api/me, so the screen never calls it "DBA". Before this round the screen
+// knew only `super`, and printed a `dba` or a `team` row as "everyone".
+const MX_AUDIENCES = [
+  ['everyone', 'everyone', 'Anyone who can read the table.'],
+  ['dba', 'admins only', 'Anyone with an admin role, super-admins too.'],
+  ['super', 'super-admins only', 'Everyone else still gets the mask.'],
+  ['team', 'one team', 'Only the members of the team you pick.'],
+];
+// One key per audience: two teams are two audiences.
+const mxAudKey = (e) => (e.audience === 'team' ? 'team:' + (e.audienceTeamId == null ? '' : String(e.audienceTeamId)) : (e.audience || 'everyone'));
+const mxAudFromKey = (k) => (String(k).indexOf('team:') === 0 ? { audience: 'team', audienceTeamId: String(k).slice(5) } : { audience: k || 'everyone', audienceTeamId: '' });
+// The audience in words. A team is named by the row, then by the team list,
+// then by its id. A value this screen does not know is printed as it came.
+function mxAudText(e, teams) {
+  const a = (e && e.audience) || 'everyone';
+  if (a === 'team') {
+    const t = (teams || []).find(x => String(x.id) === String(e.audienceTeamId));
+    const name = e.audienceTeamName || (t && t.name);
+    return name ? 'team ' + name : (e.audienceTeamId ? 'team #' + e.audienceTeamId : 'one team');
+  }
+  const o = MX_AUDIENCES.find(x => x[0] === a);
+  return o ? o[1] : a;
+}
+// Whether audience key `a` holds every reader of audience key `b`. An edit
+// whose new audience sits inside the old one narrows. Every other change widens.
+function mxAudCovers(a, b) {
+  if (a === b || a === 'everyone') return true;
+  return a === 'dba' && b === 'super';
+}
+// What the wire takes: the plain string, or {kind, teamId} for a team.
+const mxAudBody = (f) => (f.audience === 'team' ? { kind: 'team', teamId: f.audienceTeamId } : f.audience);
+
+// The end of an exemption. `expired` is the server's word. The clock decides
+// only for a row whose end passed after the list was read.
+function mxEndState(e, now) {
+  const at = e && e.expiresAt ? Date.parse(e.expiresAt) : NaN;
+  if (e && e.expired) return { kind: 'ended', text: 'Ended' };
+  if (isNaN(at)) return { kind: 'none', text: 'No end date' };
+  const ms = at - (now == null ? Date.now() : now);
+  if (ms <= 0) return { kind: 'ended', text: 'Ended' };
+  const d = Math.ceil(ms / 86400000);
+  return { kind: d <= 7 ? 'soon' : 'ends', text: 'Ends in ' + d + ' day' + (d === 1 ? '' : 's') };
+}
+const mxDay = (iso) => (iso ? String(iso).slice(0, 10) : '');
+
+// What an edit widens, in words. `b` is the stored row, `a` the row after the
+// edit. Empty when the edit narrows or keeps the reach of the exemption.
+function mxWidens(b, a) {
+  const out = [];
+  if (b.strength !== 'full' && a.strength === 'full') out.push('values are not checked');
+  if (!b.survivesJoin && a.survivesJoin) out.push('it stays exempt in joins');
+  if (!mxAudCovers(mxAudKey(b), mxAudKey(a))) out.push('more people see the values');
+  const end = (x) => (x.expiresAt ? Date.parse(x.expiresAt) : Infinity);
+  if (end(a) > end(b)) out.push(mxEndState(b).kind === 'ended' ? 'it applies again' : a.expiresAt ? 'it ends later' : 'it has no end date');
+  return out;
+}
+
+// The settings in a few words each — the summary that replaces asking.
+function mxSummary(e, teams) {
+  const end = mxEndState(e);
   return [
     e.strength === 'full' ? 'Values not checked' : 'Values still checked',
     e.survivesJoin ? 'stays exempt in joins' : 're-masked on joins',
-    e.audience === 'super' ? 'super-admins only' : 'everyone',
+    mxAudText(e, teams),
+    end.kind === 'none' ? 'no end date' : (end.kind === 'ended' ? 'ended ' : 'ends ') + mxDay(e.expiresAt),
   ].join(' · ');
 }
 
 // The default a row is measured against is READ FROM THE ROWS, not assumed. A
 // row chips only where it disagrees with the majority, so the rule holds
 // whatever the fleet's mix turns out to be.
+const MX_NORM0 = { strength: 'soft', survivesJoin: false, audience: 'everyone', ends: false };
 function mxNorms(rows) {
-  const most = (key, fallback) => {
+  const most = (get, fallback) => {
     const tally = new Map();
-    rows.forEach(r => { const v = r[key]; tally.set(v, (tally.get(v) || 0) + 1); });
+    rows.forEach(r => { const v = get(r); tally.set(v, (tally.get(v) || 0) + 1); });
     let best = fallback, n = -1;
     tally.forEach((c, v) => { if (c > n) { n = c; best = v; } });
     return best;
   };
-  if (!rows || rows.length < 4) return { strength: 'soft', survivesJoin: false, audience: 'everyone' };
-  return { strength: most('strength', 'soft'), survivesJoin: !!most('survivesJoin', false), audience: most('audience', 'everyone') };
+  if (!rows || rows.length < 4) return MX_NORM0;
+  const audience = most(mxAudKey, 'everyone');
+  return { strength: most(r => r.strength, 'soft'), survivesJoin: !!most(r => r.survivesJoin, false),
+    audience, audRow: rows.find(r => mxAudKey(r) === audience) || null, ends: !!most(r => !!r.expiresAt, false) };
 }
 const mxNormShort = (n) => [
   n.strength === 'full' ? 'no masking' : 'soft',
   n.survivesJoin ? 'exempt in joins' : 're-masked on joins',
-  n.audience === 'super' ? 'super-admins only' : 'everyone',
+  mxAudText(n.audRow || mxAudFromKey(n.audience)),
+  n.ends ? 'with an end date' : 'no end date',
 ].join(' · ');
 
 // What differs from the norm, and nothing else. Absence of a chip is information.
-function MxFlags({ e, norms }) {
-  const n = norms || { strength: 'soft', survivesJoin: false, audience: 'everyone' };
+// The end chip is the exception that proves it: a date is never the norm, so a
+// row with an end always says when. "No end date" chips only where most rows end.
+function MxFlags({ e, norms, teams }) {
+  const n = norms || MX_NORM0;
   const wide = mxWide(e.scope);
+  const end = mxEndState(e);
+  const aud = mxAudKey(e) !== n.audience;
   return <>
     {wide && <span className={'qh-mxchip is-' + e.scope}>{e.scope === 'fleet' ? 'every server' : e.scope === 'server' ? 'whole server' : e.scope === 'database' ? 'whole database' : 'whole schema'}</span>}
     {e.scope === 'table' && <span className="qh-mxchip">whole table</span>}
@@ -117,9 +187,16 @@ function MxFlags({ e, norms }) {
     {e.survivesJoin !== n.survivesJoin && (e.survivesJoin
       ? <span className="qh-mxchip is-join" title="Stays exempt when the query joins a masked table">in joins</span>
       : <span className="qh-mxchip" title="Re-masked when the query joins a masked table">not in joins</span>)}
-    {e.audience !== n.audience && (e.audience === 'super'
+    {aud && (e.audience === 'super'
       ? <span className="qh-mxchip is-aud" title="Only super-admins see it unmasked. Everyone else sees the mask.">super only</span>
-      : <span className="qh-mxchip" title="Everyone who can read the table sees it unmasked">everyone</span>)}
+      : e.audience === 'dba'
+        ? <span className="qh-mxchip is-aud" title="Anyone with an admin role sees it unmasked, super-admins too. Everyone else sees the mask.">admins only</span>
+        : e.audience === 'team'
+          ? <span className="qh-mxchip is-aud" title="Only the members of this team see it unmasked. Everyone else sees the mask.">{mxAudText(e, teams)}</span>
+          : <span className="qh-mxchip" title="Everyone who can read the table sees it unmasked">{mxAudText(e, teams)}</span>)}
+    {end.kind === 'ended' && <span className="qh-mxchip is-off" title={'Ended ' + mxDay(e.expiresAt) + '. QueryHub masks this again for every reader.'}>ended</span>}
+    {(end.kind === 'soon' || end.kind === 'ends') && <span className={'qh-mxchip' + (end.kind === 'soon' ? ' is-soon' : '')} title={'Ends ' + mxDay(e.expiresAt) + '. Then QueryHub masks this again.'}>{end.text}</span>}
+    {end.kind === 'none' && n.ends && <span className="qh-mxchip" title="It applies until somebody disables it.">no end date</span>}
     {!e.enabled && <span className="qh-mxchip is-off" title="Disabled. QueryHub masks this column again and keeps the record.">off</span>}
     {e.missing && <span className="qh-mxchip is-gone" title="Still enforced, but that table or column is not in the catalog any more">matches nothing</span>}
   </>;
@@ -185,16 +262,20 @@ const MX_SETTINGS = [
   { k: 'survivesJoin', label: 'Joins', opts: [
     [false, 're-masked', 'A join to a masked table masks it again.'],
     [true, 'stays exempt', 'For tables that are almost always joined.']] },
-  { k: 'audience', label: 'Who', opts: [
-    ['everyone', 'everyone', 'Anyone who can read the table.'],
-    ['super', 'super-admins only', 'Everyone else still gets the mask.']] },
+  { k: 'audience', label: 'Who', opts: MX_AUDIENCES },
 ];
-function MxOptions({ f, set, norms, joinStats, table, fleet }) {
+// `usual` marks the option most rows use. For the audience that is the kind:
+// the norm key of a team audience names the team too.
+const mxUsual = (norms, k, v) => !!norms && (k === 'audience' ? String(norms.audience).split(':')[0] === v : norms[k] === v);
+const MX_NO_END = { ttl: 'none', expDate: '' };
+function MxOptions({ f, set, norms, joinStats, table, fleet, teams }) {
+  const teamOpts = (teams || []).map(t => ({ value: String(t.id), label: t.name || String(t.id) }));
+  const exp = f.exp || MX_NO_END;
   return (
     <div className="qh-mxsettings">
       {MX_SETTINGS.map(q => (
         <React.Fragment key={q.k}>
-          <div className="qh-mxset" role="radiogroup" aria-label={q.label}>
+          <div className={'qh-mxset' + (q.opts.length > 2 ? ' is-many' : '')} role="radiogroup" aria-label={q.label}>
             <span className="qh-mxset-k">{q.label}</span>
             {q.opts.map(([v, l, h]) => {
               const on = f[q.k] === v;
@@ -202,37 +283,72 @@ function MxOptions({ f, set, norms, joinStats, table, fleet }) {
               return (
                 <label key={String(v)} className={'qh-mxradio' + (on ? ' is-on' : '')}>
                   <input type="radio" name={'mx-' + q.k} checked={on} onChange={() => set({ [q.k]: v })} />
-                  <span className="qh-mxradio-t"><span className="qh-mxradio-l">{l}{norms && norms[q.k] === v && <span className="qh-mxradio-d">usual</span>}</span><span className="qh-mxradio-h">{hint}</span></span>
+                  <span className="qh-mxradio-t"><span className="qh-mxradio-l">{l}{mxUsual(norms, q.k, v) && <span className="qh-mxradio-d">usual</span>}</span><span className="qh-mxradio-h">{hint}</span></span>
                 </label>
               );
             })}
+            {/* A team audience names one team from the Teams screen. */}
+            {q.k === 'audience' && f.audience === 'team' && (
+              <div className="qh-mxset-more">
+                {teamOpts.length
+                  ? <MxCombo ariaLabel="Team" value={f.audienceTeamId || ''} placeholder="Pick a team" options={teamOpts} onPick={v => set({ audienceTeamId: v })} />
+                  : <span className="qh-mxnote is-bad">There are no teams to pick. Add a team on the Teams screen first.</span>}
+              </div>
+            )}
           </div>
           {/* The screen cannot count how this table is really queried. The
               server can, and that count is the evidence the decision needs. */}
           {q.k === 'survivesJoin' && joinStats && <div className="qh-mxevidence">Of the {joinStats.total} queries against <code>{table}</code> in the last {joinStats.days} days, <b>{joinStats.joined}</b> joined another table.</div>}
         </React.Fragment>
       ))}
+      {/* The end (2026-10-23): the same expiry control as a grant. On that
+          day the exemption stops, and masking is back for every reader. */}
+      <div className="qh-mxset is-ends">
+        <span className="qh-mxset-k">Ends</span>
+        <div className="qh-mxset-more">
+          <ExpiryPick f={exp} onChange={v => set({ exp: v })} />
+          <span className="qh-mxradio-h">{exp.ttl === 'none' ? 'It applies until somebody disables it.' : 'After this day, QueryHub masks the data again for every reader.'}</span>
+        </div>
+      </div>
     </div>
   );
 }
+// The form's end as a row field: what the summary and the widening check read.
+const mxFormRow = (f) => ({ ...f, expiresAt: expIso(f.exp || MX_NO_END) });
 
 // ---------- Editing one in place ----------
 // Reach is absent from this form on purpose, and the line says so with the
 // action that does change it. The three settings are open from the start
 // (CODE 2026-10-06): behind a "Change" link they read as optional, and an
 // operator who wanted "survives joins" took Replace instead and hit a 409.
+// The end form of a stored row, and whether the form moved off it. A row whose
+// end is untouched sends no `expiresAt`: the server reads "not sent" as
+// "keep it", and an ended row must not be revived by a reason fix.
+const mxExpMoved = (f0, f1) => f0.ttl !== f1.ttl || (f1.ttl === 'date' && f0.expDate !== f1.expDate);
 function MxEdit({ e, st, norms, onDone, onReplace }) {
-  const [f, setF] = useMx({ strength: e.strength || 'soft', survivesJoin: !!e.survivesJoin, audience: e.audience || 'everyone', reason: e.reason || '' });
+  const exp0 = expForm(e.expiresAt);
+  const [f, setF] = useMx({ strength: e.strength || 'soft', survivesJoin: !!e.survivesJoin, audience: e.audience || 'everyone',
+    audienceTeamId: e.audienceTeamId == null ? '' : String(e.audienceTeamId), exp: exp0, reason: e.reason || '' });
   const [busy, setBusy] = useMx(false);
   const [err, setErr] = useMx(null);
   const set = (patch) => { setF(x => ({ ...x, ...patch })); setErr(null); };
+  const expMoved = mxExpMoved(exp0, f.exp);
+  const after = { ...e, strength: f.strength, survivesJoin: f.survivesJoin, audience: f.audience, audienceTeamId: f.audienceTeamId,
+    expiresAt: expMoved ? expIso(f.exp) : e.expiresAt, expired: expMoved ? false : e.expired };
   const dirty = f.strength !== (e.strength || 'soft') || f.survivesJoin !== !!e.survivesJoin
-    || f.audience !== (e.audience || 'everyone') || f.reason.trim() !== (e.reason || '');
-  const why = !f.reason.trim() ? 'Write a reason.' : !dirty ? 'Change a field first.' : null;
+    || mxAudKey(after) !== mxAudKey(e) || expMoved || f.reason.trim() !== (e.reason || '');
+  const why = !f.reason.trim() ? 'Write a reason.'
+    : f.audience === 'team' && !f.audienceTeamId ? 'Pick a team.'
+      : expMoved && expBad(f.exp) ? 'Pick an end date from today on.'
+        : !dirty ? 'Change a field first.' : null;
+  // A widening edit says what it widens and renames its button (DESIGN §4).
+  const widens = dirty ? mxWidens(e, after) : [];
   const save = () => {
     if (busy || why) return;
     setBusy(true);
-    st.updateMaskExemption(e.id, { strength: f.strength, survivesJoin: f.survivesJoin, audience: f.audience, reason: f.reason.trim() })
+    const patch = { strength: f.strength, survivesJoin: f.survivesJoin, audience: mxAudBody(f), reason: f.reason.trim() };
+    if (expMoved) patch.expiresAt = expIso(f.exp);
+    st.updateMaskExemption(e.id, patch)
       .then(() => { setBusy(false); onDone(); })
       .catch(x => { setBusy(false); setErr((x && x.message) || 'Could not save the change.'); });
   };
@@ -242,11 +358,12 @@ function MxEdit({ e, st, norms, onDone, onReplace }) {
       <div className="qh-mxfield"><span className="qh-mxlab">Why</span>
         <textarea className="qh-input qh-mxreason-in" rows={2} value={f.reason} onChange={x => set({ reason: x.target.value })} /></div>
       <div className="qh-mxfield"><span className="qh-mxlab">Settings</span>
-        <MxOptions f={f} set={set} norms={norms} /></div>
+        <MxOptions f={f} set={set} norms={norms} teams={st.teams} /></div>
+      {widens.length > 0 && <div className="qh-mxnote is-warn">This edit widens the exemption: {widens.join(', ')}.</div>}
       {err && <div className="qh-roleform-err">{err}</div>}
       <div className="qh-mxacts">
         <button className="qh-btn qh-btn-sm" onClick={onDone}>Cancel</button>
-        <MxSave label="Save changes" why={why} busy={busy} onClick={save} />
+        <MxSave label={widens.length ? 'Widen this exemption' : 'Save changes'} danger={widens.length > 0} why={why} busy={busy} onClick={save} />
       </div>
     </div>
   );
@@ -259,14 +376,16 @@ function MxEdit({ e, st, norms, onDone, onReplace }) {
 function MxItem({ e, canWrite, moot, norms, open, onToggleOpen, st, onReplace, onAlso, onRemove, onAddHere }) {
   const [editing, setEditing] = useMx(false);
   const wide = mxWide(e.scope);
+  // An ended row reads like a disabled one: it applies to nobody now.
+  const ended = mxEndState(e).kind === 'ended';
   return (
-    <div className={'qh-mxitem' + (wide ? ' is-wide' : '') + (e.enabled ? '' : ' is-off') + (open ? ' is-open' : '') + (moot ? ' is-moot' : '')}>
+    <div className={'qh-mxitem' + (wide ? ' is-wide' : '') + (e.enabled ? '' : ' is-off') + (ended ? ' is-ended' : '') + (open ? ' is-open' : '') + (moot ? ' is-moot' : '')}>
       <button className="qh-mxitem-top" onClick={() => { setEditing(false); onToggleOpen(); }} aria-expanded={open}>
         <span className="qh-mxcaret"><MxIcon.caret /></span>
         <span className="qh-mxbody">
           <span className="qh-mxline1">
             <span className="qh-mxtitle">{mxWhat(e)}</span>
-            <MxFlags e={e} norms={norms} />
+            <MxFlags e={e} norms={norms} teams={st.teams} />
           </span>
           {e.reason && <span className="qh-mxsaid">{e.reason}</span>}
         </span>
@@ -278,7 +397,8 @@ function MxItem({ e, canWrite, moot, norms, open, onToggleOpen, st, onReplace, o
             ? <MxEdit e={e} st={st} norms={norms} onDone={() => setEditing(false)} onReplace={onReplace} />
             : <>
               <MxReach e={e} />
-              <div className="qh-mxlines">{mxSummary(e)}</div>
+              <div className="qh-mxlines">{mxSummary(e, st.teams)}</div>
+              {ended && <div className="qh-mxwhy">This exemption ended on {mxDay(e.expiresAt)}. It applies to nobody, and QueryHub masks the data again.{canWrite ? ' To use it again, edit the end date.' : ''}</div>}
               {e.maskedBy && <div className="qh-mxwhy">Caught by the name rule <code>{e.maskedBy.key}</code> — {e.maskedBy.label}, {e.maskedBy.mask === 'full' ? 'fully' : 'partially'} masked.</div>}
               {e.missing && <div className="qh-mxwhy is-gone">That table or column is not in the catalog now. The exemption still applies, but it matches nothing today.</div>}
               {e.reason && <div className="qh-mxreason">“{e.reason}”</div>}
@@ -402,14 +522,18 @@ function MxCombo({ value, options, onPick, placeholder, disabled, clearOnPick, w
 function mxRef(id) { return /^\d+$/.test(String(id)) ? '#' + id : String(id); }
 function MxForm({ st, seed, norms, onDone }) {
   const conns = (st.connections || []).filter(c => c.enabled !== false);
-  const n = norms || { strength: 'soft', survivesJoin: false, audience: 'everyone' };
+  const n = norms || MX_NORM0;
   const orig = (seed && seed.replaceOf) || null;
+  // A replace starts on the original's audience and end. A new row starts on
+  // the usual audience and no end date.
+  const aud0 = orig ? { audience: orig.audience || 'everyone', audienceTeamId: orig.audienceTeamId == null ? '' : String(orig.audienceTeamId) } : mxAudFromKey(n.audience);
+  const exp0 = orig ? expForm(orig.expiresAt) : MX_NO_END;
   const [f, setF] = useMx(() => ({
     connectionId: (seed && seed.connectionId) || '', databaseId: (seed && seed.databaseId) || '',
     scope: (seed && seed.scope) || 'column', schema: (seed && seed.schema) || '', table: (seed && seed.table) || '', column: '',
     columns: (seed && seed.column) ? [seed.column] : [],
     strength: (seed && seed.strength) || n.strength, survivesJoin: seed && seed.survivesJoin != null ? !!seed.survivesJoin : !!n.survivesJoin,
-    audience: (orig && orig.audience) || n.audience || 'everyone', reason: (orig && orig.reason) || '', confirmed: false, typed: '',
+    ...aud0, exp: exp0, reason: (orig && orig.reason) || '', confirmed: false, typed: '',
   }));
   const focus = seed && seed.focus;
   const [more, setMore] = useMx(false);
@@ -473,12 +597,20 @@ function MxForm({ st, seed, norms, onDone }) {
   const sameReach = samePlace && (f.scope !== 'column' || (picked.length === 1 && picked[0] === orig.column));
   // The original's column plus others: that column is a duplicate and the rest are new.
   const mixed = samePlace && f.scope === 'column' && picked.length > 1 && picked.indexOf(orig.column) >= 0;
+  // The end is checked when it is written: always for a new row, and for a
+  // same-place replace only when the form moved off the original's end.
+  const expMoved = mxExpMoved(exp0, f.exp);
   const why = missing ? 'Pick ' + missing + '.'
     : colGone ? 'Pick columns that are in the catalog.'
       : mixed ? 'Remove ' + orig.column + ', or pick only ' + orig.column + '. ' + mxRef(orig.id) + ' covers it.'
         : !sameReach && needsConfirm && !f.confirmed ? 'Tick the confirmation above.'
           : !sameReach && !typedOk ? 'Type “' + FLEET_PHRASE + '” to confirm.'
-            : !f.reason.trim() ? 'Write a reason.' : null;
+            : f.audience === 'team' && !f.audienceTeamId ? 'Pick a team.'
+              : (!sameReach || expMoved) && expBad(f.exp) ? 'Pick an end date from today on.'
+                : !f.reason.trim() ? 'Write a reason.' : null;
+  // A same-place replace is an edit of the original: it says when it widens.
+  const widens = sameReach ? mxWidens(orig, { ...orig, strength: f.strength, survivesJoin: f.survivesJoin, audience: f.audience, audienceTeamId: f.audienceTeamId,
+    expiresAt: expMoved ? expIso(f.exp) : orig.expiresAt }) : [];
 
   const preview = { connectionId: f.connectionId, databaseId: f.databaseId, scope: f.scope, schema: f.schema, table: f.table, column: picked[0] || f.column };
   const runPreview = () => {
@@ -490,16 +622,17 @@ function MxForm({ st, seed, norms, onDone }) {
   const save = () => {
     if (why || busy) return;
     setBusy(true); setErr(null);
-    const settings = { strength: f.strength, survivesJoin: f.survivesJoin, audience: f.audience, reason: f.reason.trim() };
+    const settings = { strength: f.strength, survivesJoin: f.survivesJoin, audience: mxAudBody(f), reason: f.reason.trim() };
     if (sameReach) {
-      st.updateMaskExemption(orig.id, settings)
+      st.updateMaskExemption(orig.id, expMoved ? { ...settings, expiresAt: expIso(f.exp) } : settings)
         .then(() => { setBusy(false); onDone(); })
         .catch(e => { setBusy(false); setErr({ msg: (e && e.message) || 'Could not save the settings.', code: e && e.code }); });
       return;
     }
+    const fresh = { ...settings, expiresAt: expIso(f.exp) };
     const bodies = f.scope === 'column'
-      ? picked.map(c => ({ ...preview, column: c, ...settings }))
-      : [{ ...preview, ...settings }];
+      ? picked.map(c => ({ ...preview, column: c, ...fresh }))
+      : [{ ...preview, ...fresh }];
     // One at a time, and it stops at the first refusal: a partial result has to
     // say exactly which ones landed.
     bodies.reduce((chain, b, i) => chain.then(() => st.addMaskExemption(b).catch(e => {
@@ -517,7 +650,7 @@ function MxForm({ st, seed, norms, onDone }) {
 
   // The button says the consequence, in the words of the rung.
   const saveLabel = !readyAll ? (orig ? 'Replace' : 'Add exemption')
-    : sameReach ? 'Save these settings on ' + mxRef(orig.id)
+    : sameReach ? (widens.length ? 'Widen ' : 'Save these settings on ') + mxRef(orig.id)
     : f.scope === 'fleet' ? 'Turn masking off across the whole fleet'
       : f.scope === 'server' ? 'Turn masking off for all of ' + (conn ? conn.name : '')
         : f.scope === 'database' ? 'Turn masking off for ' + (db ? db.name : '')
@@ -532,7 +665,7 @@ function MxForm({ st, seed, norms, onDone }) {
   const showSchema = f.scope === 'column' || f.scope === 'table' || f.scope === 'schema' || isFleet;
   const showTable = f.scope === 'column' || f.scope === 'table';
   const showCols = f.scope === 'column';
-  const pickScope = (k) => set({ scope: k, confirmed: false, typed: '', audience: f.scope === 'fleet' && f.audience === 'super' ? (n.audience || 'everyone') : f.audience,
+  const pickScope = (k) => set({ scope: k, confirmed: false, typed: '', ...(f.scope === 'fleet' && f.audience === 'super' ? mxAudFromKey(n.audience) : {}),
     table: (k === 'column' || k === 'table') ? f.table : '',
     columns: k === 'column' ? (f.columns || []) : [], column: '',
     schema: (k === 'column' || k === 'table' || k === 'schema') ? f.schema : '' });
@@ -559,7 +692,7 @@ function MxForm({ st, seed, norms, onDone }) {
         </div>
         {!isFleet
           ? <button type="button" className="qh-linkbtn qh-mxfleetlink" onClick={() => set({ scope: 'fleet', confirmed: false, typed: '', connectionId: '', databaseId: '', table: '', columns: [], column: '', audience: 'super' })}>…or every server</button>
-          : <button type="button" className="qh-linkbtn qh-mxfleetlink" onClick={() => set({ scope: 'column', typed: '', schema: '', audience: n.audience || 'everyone' })}>back to one server</button>}
+          : <button type="button" className="qh-linkbtn qh-mxfleetlink" onClick={() => set({ scope: 'column', typed: '', schema: '', ...mxAudFromKey(n.audience) })}>back to one server</button>}
       </div>
 
       {/* Every picker the rung needs, visible at once, each disabled until the
@@ -623,11 +756,11 @@ function MxForm({ st, seed, norms, onDone }) {
                 placeholder="e.g. Holds a wallet address, not a postal one." />
 
       <MxStep n="3" t="Settings" />
-      {orig ? <MxOptions f={f} set={set} norms={n} fleet={isFleet} table={f.table} joinStats={prev && prev.joinStats ? { ...prev.joinStats, days: prev.days } : null} /> : <>
+      {orig ? <MxOptions f={f} set={set} norms={n} teams={st.teams} fleet={isFleet} table={f.table} joinStats={prev && prev.joinStats ? { ...prev.joinStats, days: prev.days } : null} /> : <>
       <button type="button" className="qh-mxsum" onClick={() => setMore(m => !m)} aria-expanded={more}>
-        <span className="qh-mxsum-t">{mxSummary(f)}</span><span className="qh-linkbtn">{more ? 'Done' : 'Change settings'}</span>
+        <span className="qh-mxsum-t">{mxSummary(mxFormRow(f), st.teams)}</span><span className="qh-linkbtn">{more ? 'Done' : 'Change settings'}</span>
       </button>
-      {more && <MxOptions f={f} set={set} norms={n} fleet={isFleet} table={f.table} joinStats={prev && prev.joinStats ? { ...prev.joinStats, days: prev.days } : null} />}
+      {more && <MxOptions f={f} set={set} norms={n} teams={st.teams} fleet={isFleet} table={f.table} joinStats={prev && prev.joinStats ? { ...prev.joinStats, days: prev.days } : null} />}
       </>}
 
       {prev && (
@@ -653,11 +786,12 @@ function MxForm({ st, seed, norms, onDone }) {
         </div>
       )}
 
+      {widens.length > 0 && <div className="qh-mxnote is-warn">This edit widens {mxRef(orig.id)}: {widens.join(', ')}.</div>}
       {err && <div className="qh-roleform-err">{err.msg}</div>}
       <div className="qh-mxacts is-form">
         <button className="qh-btn qh-btn-sm" onClick={onDone}>Cancel</button>
         <button className="qh-btn qh-btn-sm" disabled={!readyAll || prevBusy} onClick={runPreview}>{prevBusy ? 'Checking…' : prev ? 'Check again' : 'Show what this changes'}</button>
-        <MxSave label={saveLabel} why={why} danger={wide} busy={busy} onClick={save} />
+        <MxSave label={saveLabel} why={why} danger={wide || widens.length > 0} busy={busy} onClick={save} />
       </div>
     </div>
   );
@@ -737,7 +871,7 @@ function MaskingView({ st, user }) {
     if (!t) return true;
     return [e.schema, e.table, e.column, e.reason, e.connectionName, e.databaseName].filter(Boolean).join(' ').toLowerCase().includes(t);
   };
-  const keeps = { all: () => true, wide: (e) => mxWide(e.scope), off: (e) => !e.enabled, gone: (e) => !!e.missing };
+  const keeps = { all: () => true, wide: (e) => mxWide(e.scope), off: (e) => !e.enabled, ended: (e) => mxEndState(e).kind === 'ended', gone: (e) => !!e.missing };
   const base = all.filter(inPlace).filter(match);
   const count = (k) => base.filter(keeps[k]).length;
   const rows = base.filter(keeps[filter] || keeps.all);
@@ -812,7 +946,7 @@ function MaskingView({ st, user }) {
             <MxCombo small ariaLabel="Database filter" key={'db-' + fServer} disabled={!fServer} value={fDb} placeholder="All databases" options={dbOpts}
               onPick={setFDb} onClear={() => setFDb('')} />
             <div className="qh-seg qh-seg-sm">
-              {[['all', 'All'], ['wide', 'Wider than a column'], ['off', 'Disabled'], ['gone', 'Matching nothing']].map(([v, l]) => (
+              {[['all', 'All'], ['wide', 'Wider than a column'], ['off', 'Disabled'], ['ended', 'Ended'], ['gone', 'Matching nothing']].map(([v, l]) => (
                 <button key={v} className={'qh-seg-opt' + (filter === v ? ' is-active' : '')} onClick={() => setFilter(v)}>{l}<span className="qh-mxseg-n">{count(v)}</span></button>
               ))}
             </div>
@@ -843,4 +977,4 @@ function MaskingView({ st, user }) {
   );
 }
 
-Object.assign(window, { MaskingView, MxReach, QH_MX_RUNGS });
+Object.assign(window, { MaskingView, MxReach, QH_MX_RUNGS, mxEndState, mxAudText, mxWidens, mxNorms, MX_AUDIENCES });

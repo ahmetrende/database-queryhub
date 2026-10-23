@@ -229,11 +229,17 @@ function useAdminState(pushToast, active, isAdminViewer) {
     const ids = queue.filter(x => x.bundleId === bundleId).map(x => x.id);
     if (ids.length) batchApprove(ids);
   };
-  const toggleKill = (on, actor, message) => {
-    qhApi.adminKillSet({ enabled: !!on, message: message || undefined }).then(() => { loadKill(); loadAudit();
-      pushToast && pushToast(on ? 'Kill switch ON — new query traffic paused fleet-wide.' : 'Kill switch released — traffic resumed.'); })
-      .catch(e => fail(e, 'Kill switch change failed.'));
-  };
+  // RETURNS the answer (with `cancelledCount`, PLA-1592 U4b), or null after a
+  // refusal that is already toasted. The screen says the count beside the
+  // switch and reads the history again.
+  const toggleKill = (on, actor, message) =>
+    qhApi.adminKillSet({ enabled: !!on, message: message || undefined }).then(r => { loadKill(); loadAudit();
+      pushToast && pushToast(on ? 'Kill switch ON — new query traffic paused fleet-wide.' : 'Kill switch released — traffic resumed.');
+      return r || {}; })
+      .catch(e => { fail(e, 'Kill switch change failed.'); return null; });
+  // The pauses, newest first (GET /admin/kill/history). A pass-through like
+  // effectiveAccess: only the kill switch screen reads it, so it holds no slot.
+  const killHistory = () => qhApi.adminKillHistory();
   // `subjects` (a list) and `subject` (one) are both accepted and exactly one is
   // used, server-side: with a list the ids are all validated before a row is
   // written and the writes share one transaction, so a refusal leaves nothing
@@ -403,8 +409,11 @@ function useAdminState(pushToast, active, isAdminViewer) {
     // On edit the row's `admin` is a display name; `id` carries the slack id
     // the backend upserts on. On create, `admin` is the typed slack id.
     const adminId = scope.id || scope.admin;
+    // `expiresAt` only when the form chose one (2026-10-23): left out, the
+    // server keeps a stored end that is still ahead.
     qhApi.adminSaveScope({ admin: adminId, role: scope.role,
-      canApprove: scope.canApprove, connections: scope.connections })
+      canApprove: scope.canApprove, connections: scope.connections,
+      ...('expiresAt' in scope ? { expiresAt: scope.expiresAt } : {}) })
       .then(() => { loadScopes(); loadAudit();
         pushToast && pushToast('Admin scope saved: ' + (scope.admin || adminId) + '.'); })
       .catch(e => fail(e, 'Save scope failed.'));
@@ -473,6 +482,21 @@ function useAdminState(pushToast, active, isAdminViewer) {
       .then(() => { loadGrants(); loadAudit(); pushToast && pushToast('Grant updated.'); })
       .catch(e => fail(e, 'Update failed.'));
   };
+  // Move a grant's end in place, and pause or resume an auto-approve rule
+  // (PATCH /admin/grants/{id}, PATCH /admin/auto-grants/{id}, 2026-10-23).
+  // Both RETURN their promise and toast only on success: the caller prints a
+  // refusal beside the row. A 409 means the grant or the rule ended while the
+  // page was open, so the list is read again and shows it as ended.
+  const extendGrant = (id, b) => qhApi.adminExtendGrant(id, { expiresAt: b.expiresAt || null, reason: b.reason || null })
+    .then(r => { loadGrants(); loadAudit();
+      pushToast && pushToast(b.expiresAt ? 'Grant end date changed. It now ends ' + qhFmt(b.expiresAt) + '.' : 'Grant end date removed. It stays until someone revokes it.');
+      return r; })
+    .catch(e => { if (e && e.status === 409) loadGrants(); throw e; });
+  const setAutoGrantEnabled = (id, enabled) => qhApi.adminSetAutoGrant(id, !!enabled)
+    .then(r => { loadAuto(); loadAudit();
+      if (!r || r.changed !== false) pushToast && pushToast(enabled ? 'Auto-approve rule resumed.' : 'Auto-approve rule paused. QueryHub kept the rule.');
+      return r; })
+    .catch(e => { if (e && e.status === 409) loadAuto(); throw e; });
   const updateAutoGrant = (g) => {
     qhApi.adminAddAutoGrant({ user: g.user, connectionId: g.connectionId, databaseId: g.databaseId, tier: g.tier, expiresAt: g.expiresAt || null })
       .then(() => qhApi.adminDelAutoGrant(g.id))
@@ -582,8 +606,8 @@ function useAdminState(pushToast, active, isAdminViewer) {
   return {
     queue, manualRuns, grants, grantsState, autoGrants, autoRequests, scopes, roles, rolesEnforced, maskExemptions, maskMeta, people, teams, endpointReqs, feedback, audit, metrics, connections: primaries, connectionRows: connections, killSwitch, config, pushToast,
     loadError, loading, reload: reloadAll,
-    decide, batchApprove, approveBundle, toggleKill,
-    addGrant, updateGrant, revokeGrant, setSubjectGrants,
+    decide, batchApprove, approveBundle, toggleKill, killHistory,
+    addGrant, updateGrant, revokeGrant, setSubjectGrants, extendGrant, setAutoGrantEnabled,
     effectiveAccess, teamEffectiveAccess, copyAccess, resolvePerson,
     addAutoGrant, addAutoGrants, updateAutoGrant, revokeAutoGrant, decideAutoRequest, closeManualRun,
     reloadGrants: loadGrants,

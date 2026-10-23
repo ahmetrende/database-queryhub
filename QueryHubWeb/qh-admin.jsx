@@ -36,6 +36,28 @@ function qhOriginWhere(o) {
   return QH_ORIGIN_WHERE[k] || k;
 }
 
+// The admin level a section needs (2026-10-23, PLA-1592 U4a and U13). 'dba' is
+// the DBA level of GET /me `admin.isDba`: a super-admin, or an admin role with
+// no end date on every connection. 'super' is a super-admin only. A section not
+// listed opens for every admin. The server enforces the same levels. The nav
+// only stops a click that the server would refuse.
+const QH_ADMIN_NEED = { effective: 'dba', conns: 'dba', grants: 'super', auto: 'super', scopes: 'super', teams: 'super', mask: 'super', config: 'super' };
+// 'super' | 'dba' | 'admin'. `isDba` is false when /me does not send it, so an
+// older server gives a DBA the same nav as before, never a wider one.
+function qhAdminLevel(user) {
+  if (user && user.role === 'super') return 'super';
+  return user && user.isDba === true ? 'dba' : 'admin';
+}
+function qhAdminCanOpen(id, user) {
+  const need = QH_ADMIN_NEED[id], lv = qhAdminLevel(user);
+  if (!need) return true;
+  return need === 'super' ? lv === 'super' : lv === 'super' || lv === 'dba';
+}
+function qhAdminLockReason(id) {
+  return QH_ADMIN_NEED[id] === 'dba' ? 'DBA or super-admin only' : 'Super-admin only';
+}
+const QH_LOCK_ICON = <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>;
+
 function navFromAdminHash() {
   const m = (typeof location !== 'undefined' ? (location.hash || '') : '').match(/^#admin\/([a-z]+)/i);
   // A bookmark to the retired DDL screen lands on the queue, where DDL now is.
@@ -58,7 +80,7 @@ function AdminPanel({ st, user, modeEntry }) {
       ['approvals', 'Approval queue', AdminIcons.approvals, pendCount],
       ['kill', 'Kill switch', AdminIcons.kill, null],
     ]},
-    { label: 'Access', super: true, items: [
+    { label: 'Access', items: [
       // First in the group: "what can this person reach" is the question the
       // other Access screens are each a third of the answer to.
       ['effective', 'Effective access', AdminIcons.effective, null],
@@ -66,13 +88,12 @@ function AdminPanel({ st, user, modeEntry }) {
       ['auto', 'Auto-approve', AdminIcons.auto, (st.autoRequests || []).length || null],
       ['scopes', 'Admin scopes', AdminIcons.scopes, null],
       ['teams', 'Teams', AdminIcons.teams, null],
-      // The one Access section a scoped (non-super) admin may READ: GET
-      // /admin/roles needs any admin, the writes need a super-admin. Marked
-      // 'read' so the locked group still renders it — an admin who cannot find
-      // out who approves their team's requests asks in Slack instead.
-      ['roles', 'Roles', AdminIcons.roles, null, 'read'],
-      // Super-admin only, with no 'read' exception: this is the one screen
-      // whose whole purpose is to reduce protection.
+      // Any admin may READ Roles: GET /admin/roles needs any admin, the writes
+      // need a super-admin. An admin who cannot find out who approves their
+      // team's requests asks in Slack instead.
+      ['roles', 'Roles', AdminIcons.roles, null],
+      // Super-admin only: this is the one screen whose whole purpose is to
+      // reduce protection.
       ['mask', 'Masking exemptions', AdminIcons.mask, null],
       ['conns', 'Connections', AdminIcons.conns, erCount],
     ]},
@@ -81,20 +102,16 @@ function AdminPanel({ st, user, modeEntry }) {
       ['metrics', 'Metrics', AdminIcons.metrics, null],
       ['feedback', 'Feedback', AdminIcons.feedback, null],
     ]},
-    { label: 'System', super: true, items: [
+    { label: 'System', items: [
       ['config', 'System configuration', AdminIcons.config, null],
     ]},
   ];
 
-  const isSuper = !!(user && user.role === 'super');
-  // DBA can't open super-only sections
-  const visibleNav = (id) => {
-    if (['effective', 'grants', 'auto', 'scopes', 'teams', 'conns', 'config', 'mask'].includes(id)) return isSuper;
-    // Roles is readable by any admin; RolesView drops its own controls when
-    // `canWrite` is false rather than offering writes that would 403.
-    if (id === 'roles') return true;
-    return true;
-  };
+  const isSuper = qhAdminLevel(user) === 'super';
+  // A DBA opens the kill switch, Effective access and Connections (read-only).
+  // A section this admin cannot open is a LOCKED row, not a missing one
+  // (2026-10-23, design takeaway 3), so they know it exists and who opens it.
+  const visibleNav = (id) => qhAdminCanOpen(id, user);
   const curNav = visibleNav(nav) ? nav : 'approvals';
 
   // Keep the URL in sync so an admin section is linkable/bookmarkable
@@ -134,25 +151,27 @@ function AdminPanel({ st, user, modeEntry }) {
       <nav className="qh-anav">
         {modeEntry}
         {groups.map(g => {
-          const navBtn = ([id, label, Icon, count]) => (
-            <button key={id} className={'qh-anav-item' + (curNav === id ? ' is-active' : '')} onClick={() => setNav(id)}>
-              <Icon /><span className="qh-anav-text">{label}</span>
-              {count != null && count > 0 && <span className="qh-anav-badge">{count}</span>}
-            </button>
-          );
-          if (g.super && !isSuper) {
-            // A locked group can still hold a section this admin may read. The
-            // items are rendered normally under the note, so "super-admin only"
-            // stays true of the group and false of exactly the listed exception.
-            const readable = g.items.filter(it => it[4] === 'read');
+          const navBtn = ([id, label, Icon, count]) => {
+            if (!visibleNav(id)) {
+              // aria-disabled, not disabled: the row stays in the tab order and
+              // keeps its title, so a keyboard or screen-reader user learns the
+              // reason too. The click does nothing.
+              const why = qhAdminLockReason(id);
+              return (
+                <button key={id} type="button" className="qh-anav-item is-locked" aria-disabled="true" title={why}
+                        aria-label={label + '. ' + why + '.'} onClick={(e) => e.preventDefault()}>
+                  <Icon /><span className="qh-anav-text">{label}</span>
+                  <span className="qh-lock" aria-hidden="true">{QH_LOCK_ICON}</span>
+                </button>
+              );
+            }
             return (
-              <div key={g.label} className="qh-anav-group is-locked">
-                <div className="qh-anav-glabel">{g.label}<span className="qh-lock"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg></span></div>
-                <div className="qh-anav-locked-note">{readable.length ? 'Super-admin only, except:' : 'Super-admin only'}</div>
-                {readable.map(navBtn)}
-              </div>
+              <button key={id} className={'qh-anav-item' + (curNav === id ? ' is-active' : '')} onClick={() => setNav(id)}>
+                <Icon /><span className="qh-anav-text">{label}</span>
+                {count != null && count > 0 && <span className="qh-anav-badge">{count}</span>}
+              </button>
             );
-          }
+          };
           return (
             <div key={g.label} className="qh-anav-group">
               <div className="qh-anav-glabel">{g.label}</div>
@@ -171,7 +190,7 @@ function AdminPanel({ st, user, modeEntry }) {
           </div>
         )}
         {curNav === 'approvals' && <ApprovalsView st={st} user={user} role={isSuper ? 'super' : 'dba'} />}
-        {curNav === 'kill' && <KillView st={st} user={user} canWrite={isSuper} />}
+        {curNav === 'kill' && <KillView st={st} user={user} canWrite={qhAdminLevel(user) !== 'admin'} />}
         {curNav === 'effective' && <EffectiveAccessView st={st} user={user} />}
         {curNav === 'grants' && <GrantsView st={st} user={user} />}
         {curNav === 'auto' && <AutoView st={st} user={user} />}
@@ -179,7 +198,7 @@ function AdminPanel({ st, user, modeEntry }) {
         {curNav === 'teams' && <TeamsView st={st} user={user} />}
         {curNav === 'roles' && <RolesView st={st} user={user} canWrite={isSuper} />}
         {curNav === 'mask' && <MaskingView st={st} user={user} />}
-        {curNav === 'conns' && <ConnectionsView st={st} user={user} />}
+        {curNav === 'conns' && <ConnectionsView st={st} user={user} readOnly={!isSuper} />}
         {curNav === 'audit' && <AuditView st={st} />}
         {curNav === 'metrics' && <MetricsView st={st} />}
         {curNav === 'feedback' && <FeedbackView st={st} />}
@@ -352,6 +371,15 @@ function ApprovalsView({ st, user, role }) {
     return out;
   }, [shown]);
 
+  // Reject and Request changes need a note of QH_NOTE_MIN characters. The first
+  // click opens the note. The second click sends it. Until the note is long
+  // enough, that button is disabled and its title says why.
+  const noteChk = qhNoteCheck(note);
+  // A note belongs to one request. A different card closes it, so a note
+  // written for one submitter never goes to the next.
+  const curId = cur ? cur.id : null;
+  React.useEffect(() => { setNoteMode(null); setNote(''); }, [curId]);
+  
   const act = (decision) => {
     if ((decision === 'reject' || decision === 'changes') && noteMode !== decision) { setNoteMode(decision); return; }
     st.decide(cur.id, decision, actor, note.trim() || undefined);
@@ -509,11 +537,7 @@ function ApprovalsView({ st, user, role }) {
               </div>
             )}
 
-            {noteMode && (
-              <div className="qh-notebox">
-                <input className="qh-input" autoFocus placeholder={noteMode === 'reject' ? 'Why is this rejected? (sent to submitter)' : 'What should they change?'} value={note} onChange={(e) => setNote(e.target.value)} />
-              </div>
-            )}
+            {noteMode && <NoteBox mode={noteMode} value={note} onChange={setNote} onCancel={() => setNoteMode(null)} />}
 
             {/* Approve leads, in its own colour — it is the action taken on
                 the overwhelming majority of requests, so it sits where the
@@ -524,8 +548,10 @@ function ApprovalsView({ st, user, role }) {
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
                 {cur.escalate || cur.tier === 'DDL' ? 'Approve schema change' : 'Approve & run'}
               </button>
-              <button className="qh-btn qh-btn-danger" onClick={() => act('reject')}>{noteMode === 'reject' ? 'Confirm reject' : 'Reject'}</button>
-              <button className="qh-btn qh-btn-ghost" onClick={() => act('changes')}>{noteMode === 'changes' ? 'Send request' : 'Request changes'}</button>
+              <button className="qh-btn qh-btn-danger" disabled={noteMode === 'reject' && !noteChk.ok}
+                      title={noteMode === 'reject' ? noteChk.why : null} onClick={() => act('reject')}>{noteMode === 'reject' ? 'Confirm reject' : 'Reject'}</button>
+              <button className="qh-btn qh-btn-ghost" disabled={noteMode === 'changes' && !noteChk.ok}
+                      title={noteMode === 'changes' ? noteChk.why : null} onClick={() => act('changes')}>{noteMode === 'changes' ? 'Send request' : 'Request changes'}</button>
               <div className="qh-flex1" />
               {cur.escalate && <span className="qh-escalate-tag"><AdminIcons.ddl />Escalated · DDL</span>}
             </div>
@@ -537,36 +563,171 @@ function ApprovalsView({ st, user, role }) {
 }
 
 // ---------- Kill switch ----------
-// Super-admins only, on screen as on the server (CODE 2026-09-23 (j) §2):
-// POST /admin/kill answers 403 to anyone else, and so does /sql kill in Slack.
-// Every admin still READS it — the state, who, why — because "is execution
-// paused, and by whom" is what a DBA is asked first in an incident. What a
-// non-super admin does not get is a button the server would refuse.
+// The DBA level, on screen as on the server (PLA-1592 U4a): POST /admin/kill
+// needs a DBA or a super-admin, and so does /sql kill in Slack. Every admin
+// still READS it — the state, who, why, and the past pauses — because "is
+// execution paused, and by whom" is what a DBA is asked first in an incident.
+// What an admin below the DBA level does not get is a button the server would
+// refuse.
+
+// How long a pause lasted, from two ISO times. '' when a time is missing or the
+// order is wrong: an absent fact shows as absent, never as "0s".
+function qhKillLasted(fromIso, toIso) {
+  const a = new Date(fromIso || '').getTime(), b = new Date(toIso || '').getTime();
+  if (isNaN(a) || isNaN(b) || b < a) return '';
+  const s = Math.floor((b - a) / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '');
+  const d = Math.floor(h / 24);
+  return d + 'd' + (h % 24 ? ' ' + (h % 24) + 'h' : '');
+}
+// The sentence after a switch to ON. `cancelledCount` from POST /admin/kill is
+// a number, or null when the server could not count. Null is said as unknown,
+// never as zero. Writes keep running on purpose, so every case says why.
+const QH_KILL_WRITES = 'Writes and schema changes continue, because a cancel can leave a change half done.';
+function qhKillCancelSay(n) {
+  if (typeof n !== 'number') return 'QueryHub could not count the cancelled reads. ' + QH_KILL_WRITES;
+  if (n === 0) return 'No read was running, so QueryHub cancelled nothing. ' + QH_KILL_WRITES;
+  return 'QueryHub cancelled ' + n + ' running read' + (n === 1 ? '' : 's') + '. ' + QH_KILL_WRITES;
+}
+function qhKillCountCell(n) {
+  if (typeof n !== 'number') return { text: 'Not counted', title: 'This pause is older than the count, or QueryHub could not count.', muted: true };
+  if (n === 0) return { text: 'None', title: 'No read was running.', muted: true };
+  return { text: n + ' read' + (n === 1 ? '' : 's'), title: null, muted: false };
+}
+
+function KillHistory({ rows, onRetry }) {
+  if (rows === null) return <div className="qh-kill-hist-state" aria-busy="true">Loading the pauses…</div>;
+  if (rows === 'error') return (
+    <div className="qh-kill-hist-state" role="alert">Could not load the pauses.
+      <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onRetry}>Try again</button></div>);
+  if (!rows.length) return <div className="qh-kill-hist-state">No pauses on record.</div>;
+  return (
+    <div className="qh-tablewrap">
+      <table className="qh-atable qh-kill-hist">
+        <thead><tr><th>When</th><th>By</th><th>Why</th><th>Lasted</th><th>Cancelled</th></tr></thead>
+        <tbody>{rows.map((p, i) => {
+          const c = qhKillCountCell(p.cancelledCount);
+          const lasted = p.endedAt ? qhKillLasted(p.startedAt, p.endedAt) : null;
+          return (
+            <tr key={(p.startedAt || '') + ':' + i}>
+              <td title={p.startedAt || ''}>{p.startedAt ? qhFmt(p.startedAt) : '—'}<div className="qh-muted qh-kill-hist-sub">{qhAgo(p.startedAt)}</div></td>
+              <td title={qhIsHandleName(p.by) ? p.by : null}>{p.by ? qhPersonName(p.by) : <span className="qh-muted">Not recorded</span>}</td>
+              <td className="qh-kill-hist-why">{p.message ? p.message : <span className="qh-muted">No reason given</span>}</td>
+              <td>{p.endedAt
+                ? <>{lasted || '—'}<div className="qh-muted qh-kill-hist-sub" title={p.endedAt}>released{p.endedBy ? ' by ' + qhPersonName(p.endedBy) : ''}</div></>
+                : <span className="qh-kill-hist-open">Still on</span>}</td>
+              <td title={c.title}>{c.muted ? <span className="qh-muted">{c.text}</span> : c.text}</td>
+            </tr>
+          );
+        })}</tbody>
+      </table>
+    </div>
+  );
+}
+
 function KillView({ st, user, canWrite }) {
   const k = st.killSwitch;
   const actor = 'dba.' + user.name.split(' ')[0].toLowerCase();
   const [msg, setMsg] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [said, setSaid] = React.useState(null);     // the sentence after a switch to ON
+  // null = loading, 'error' = the read failed, [] = no pause on record.
+  const [hist, setHist] = React.useState(null);
+  const loadHist = React.useCallback(() => {
+    setHist(null);
+    st.killHistory().then(r => setHist(Array.isArray(r) ? r : [])).catch(() => setHist('error'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  React.useEffect(() => { loadHist(); }, [loadHist]);
+  const flip = () => {
+    if (busy) return;
+    const on = !k.enabled;
+    setBusy(true); setSaid(null);
+    st.toggleKill(on, actor, msg).then(r => {
+      setBusy(false);
+      if (r) { setMsg(''); if (on) setSaid(qhKillCancelSay(r.cancelledCount)); }
+      loadHist();
+    });
+  };
+  const by = k.by ? qhPersonName(k.by) : null;
   return (
     <div className="qh-apad">
-      <div className="qh-aview-head"><div><div className="qh-aview-title">Kill switch</div><div className="qh-aview-sub">Emergency stop — pause all query execution fleet-wide. Mirrors Slack <code>/sql kill</code>. Super-admin only.</div></div></div>
+      <div className="qh-aview-head"><div><div className="qh-aview-title">Kill switch</div><div className="qh-aview-sub">Emergency stop for all query execution on every server. Same as <code>/sql kill</code> in Slack. A DBA or a super-admin can engage it.</div></div></div>
       <div className={'qh-kill-card' + (k.enabled ? ' is-on' : '')}>
         <div className="qh-kill-ic">
           <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M18.4 6.6a9 9 0 11-12.8 0M12 2v10"/></svg>
         </div>
         <div className="qh-kill-body">
           <div className="qh-kill-status">{k.enabled ? 'Execution PAUSED' : 'Execution normal'}</div>
-          <div className="qh-kill-note">{k.enabled ? ('Paused by ' + k.by + ' · ' + qhAgo(k.at) + (k.message ? ' · “' + k.message + '”' : '') + '. Runs in progress finish. QueryHub blocks new submissions.') : 'All targets accepting queries. Approvals and runs proceed normally.'}</div>
-          {!k.enabled && canWrite && <input className="qh-input qh-kill-msg" value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Optional reason shown to developers (e.g. incident #4821)" />}
+          <div className="qh-kill-note">{k.enabled
+            ? ('Paused' + (by ? ' by ' + by : '') + (k.at ? ' · ' + qhAgo(k.at) : '') + (k.message ? ' · “' + k.message + '”' : '') + '. QueryHub blocks new submissions. Running reads stop. Running writes and schema changes continue.')
+            : 'All targets accept queries. Approvals and runs continue as usual.'}</div>
+          {!k.enabled && canWrite && <input className="qh-input qh-kill-msg" value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Optional reason for developers, for example an incident number" />}
+          {said && <div className="qh-kill-said" role="status">{said}</div>}
         </div>
         {canWrite
-          ? <button className={'qh-btn qh-btn-lg ' + (k.enabled ? 'qh-btn-primary' : 'qh-btn-danger')} onClick={() => { st.toggleKill(!k.enabled, actor, msg); setMsg(''); }}>
+          ? <button className={'qh-btn qh-btn-lg ' + (k.enabled ? 'qh-btn-primary' : 'qh-btn-danger')} disabled={busy} onClick={flip}>
               {k.enabled ? 'Release kill switch' : 'Engage kill switch'}
             </button>
-          : <span className="qh-kill-ro">Only a super-admin can {k.enabled ? 'release' : 'engage'} it</span>}
+          : <span className="qh-kill-ro">Only a DBA or a super-admin can {k.enabled ? 'release' : 'engage'} it</span>}
       </div>
-      <div className="qh-kill-hint">While engaged: developers see a banner and a disabled Submit, auto-approve is suspended, and scheduled runs hold. Use for incidents (runaway query, credential leak, target under load). Every toggle is audited.</div>
+      <div className="qh-kill-hint">While engaged: developers see a banner and a disabled Submit, auto-approve is suspended, and scheduled runs hold. Engaging it cancels the running reads. Use it for incidents: a runaway query, a credential leak, a target under load. QueryHub audits every change.</div>
+      <div className="qh-kill-hist-h">Past pauses</div>
+      <KillHistory rows={hist} onRetry={loadHist} />
     </div>
   );
 }
 
-Object.assign(window, { AdminPanel, AdminIcons });
+// ---------- The note on Reject and Request changes (2026-10-23) ----------
+// Design takeaway 2: a note shorter than this does not tell the submitter what
+// to change. Web only. The server and Slack keep their own rule (not empty), so
+// nothing that Slack accepts is refused there.
+const QH_NOTE_MIN = 15;
+// Sentence-case chips. Each one adds a full sentence that alone meets the
+// minimum, so one click is enough, and a second chip adds to the first.
+const QH_NOTE_CHIPS = [
+  { label: 'Try on test first', text: 'Run this on a test database first.' },
+  { label: 'Add a WHERE clause', text: 'Add a WHERE clause to limit the rows.' },
+  { label: 'Link an incident', text: 'Add the incident number to the reason.' },
+  { label: 'Inside change freeze', text: 'A change freeze is active. Submit this again after the freeze.' },
+];
+// Counts trimmed characters (code points, so "\u015f" is one). `why` is the title
+// of the disabled send button, and null once the note is long enough.
+function qhNoteCheck(text) {
+  const n = Array.from(String(text == null ? '' : text).trim()).length;
+  const ok = n >= QH_NOTE_MIN;
+  return { n, ok, count: ok ? n + ' characters' : n + ' of ' + QH_NOTE_MIN,
+    why: ok ? null : 'Write at least ' + QH_NOTE_MIN + ' characters. The submitter reads this note.' };
+}
+// A chip adds its sentence. It never adds the same sentence twice.
+function qhNoteAdd(text, add) {
+  const t = String(text == null ? '' : text).trim();
+  if (!t) return add;
+  if (t.indexOf(add) >= 0) return t;
+  return t + (/[.!?]$/.test(t) ? ' ' : '. ') + add;
+}
+function NoteBox({ mode, value, onChange, onCancel }) {
+  const chk = qhNoteCheck(value);
+  const id = 'qh-note-' + mode;
+  return (
+    <div className="qh-notebox">
+      <label className="qh-notebox-l" htmlFor={id}>{mode === 'reject' ? 'Why do you reject it? The submitter reads this note.' : 'What must they change? The submitter reads this note.'}</label>
+      <textarea id={id} className="qh-input qh-notebox-in" autoFocus rows={3} value={value}
+                aria-describedby={id + '-n'} onChange={(e) => onChange(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); }} />
+      <div className="qh-notebox-foot">
+        <div className="qh-notebox-chips">{QH_NOTE_CHIPS.map(c => (
+          <button key={c.label} type="button" className="qh-notechip" title={c.text}
+                  onClick={() => onChange(qhNoteAdd(value, c.text))}>{c.label}</button>))}</div>
+        <span id={id + '-n'} className={'qh-notebox-n' + (chk.ok ? ' is-ok' : '')}>{chk.count}</span>
+        <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { AdminPanel, AdminIcons, qhAdminLevel, qhAdminCanOpen, qhAdminLockReason, qhKillLasted, qhKillCancelSay, qhNoteCheck, qhNoteAdd, QH_NOTE_MIN });

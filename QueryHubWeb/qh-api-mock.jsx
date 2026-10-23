@@ -306,21 +306,28 @@ function mockDirectory(principal) { return MOCK_SLACK_DIR[principal] || MOCK_SLA
 // neither people table, so the column has to fall back to the id.
 // `databaseId: null` is "every database on the connection" — '*' normalises to
 // NULL server-side now (§3).
+// `enabled` and `runCount` (2026-10-23): a paused rule stays listed, and the
+// run count is the queries the rule approved. One row of each kind the screen
+// draws: on and running (a_1), paused (a_2), on but never ran and ending soon
+// (a_3), and ended (a_4). The server leaves ended rules out of its list, so
+// a_4 stands for a rule that ended while the page was open. Its PATCH is 409.
 const MOCK_AUTO = [
-  { id: 'a_1', user: 'data-eng (team)', userName: null, tier: 'RO', connectionId: 'prod-replica', databaseId: null, expiresAt: isoIn(1000 * 86400 * 30), createdBy: 'dba.amara', createdByName: 'Amara Osei' },
-  { id: 'a_2', user: 'amara.osei', userName: 'Amara Osei', tier: 'RO', connectionId: 'prod-main', databaseId: 'users', expiresAt: null, createdBy: 'dba.marco', createdByName: 'Marco Young' },
-  { id: 'a_3', user: 'backend (team)', userName: null, tier: 'RW', connectionId: 'staging', databaseId: 'app_stg', expiresAt: isoIn(1000 * 86400 * 14), createdBy: 'dba.amara', createdByName: 'Amara Osei' },
+  { id: 'a_1', user: 'data-eng (team)', userName: null, tier: 'RO', connectionId: 'prod-replica', databaseId: null, expiresAt: isoIn(1000 * 86400 * 30), createdBy: 'dba.amara', createdByName: 'Amara Osei', enabled: true, runCount: 214 },
+  { id: 'a_2', user: 'amara.osei', userName: 'Amara Osei', tier: 'RO', connectionId: 'prod-main', databaseId: 'users', expiresAt: null, createdBy: 'dba.marco', createdByName: 'Marco Young', enabled: false, runCount: 37 },
+  { id: 'a_3', user: 'backend (team)', userName: null, tier: 'RW', connectionId: 'staging', databaseId: 'app_stg', expiresAt: isoIn(1000 * 86400 * 5), createdBy: 'dba.amara', createdByName: 'Amara Osei', enabled: true, runCount: 0 },
+  { id: 'a_4', user: 'ben.donnelly', userName: 'Ben Donnelly', tier: 'RO', connectionId: 'prod-main', databaseId: 'users', expiresAt: isoAgo(1000 * 60 * 60 * 3), createdBy: 'dba.marco', createdByName: 'Marco Young', enabled: true, runCount: 9 },
 ];
 
 const MOCK_SCOPES = [
-  { id: 's_1', admin: 'dba.amara', role: 'super', canApprove: ['RO', 'RW', 'DDL'], connections: ['*'] },
-  { id: 's_2', admin: 'dba.marco', role: 'super', canApprove: ['RO', 'RW', 'DDL'], connections: ['*'] },
+  { id: 's_1', admin: 'dba.amara', role: 'super', canApprove: ['RO', 'RW', 'DDL'], connections: ['*'], expiresAt: null },
+  { id: 's_2', admin: 'dba.marco', role: 'super', canApprove: ['RO', 'RW', 'DDL'], connections: ['*'], expiresAt: null },
   // `clara.alvarez` is deliberately a handle from the PEOPLE directory: a team
   // lead who is also a requester is the common case, and it is the only way the
   // approver-standing block on a person's access page has anything to show.
   // `dba.*` stay admin-only principals (no requesters row) — g_8 depends on it.
-  { id: 's_3', admin: 'clara.alvarez', role: 'dba', canApprove: ['RO', 'RW'], connections: ['prod-main', 'prod-replica'], teams: ['payments'] },
-  { id: 's_4', admin: 'oncall.eli', role: 'dba', canApprove: ['RO'], connections: ['prod-replica'] },
+  { id: 's_3', admin: 'clara.alvarez', role: 'dba', canApprove: ['RO', 'RW'], connections: ['prod-main', 'prod-replica'], teams: ['payments'], expiresAt: null },
+  // An end date (migration 147, 2026-10-23): this cover ends within the week.
+  { id: 's_4', admin: 'oncall.eli', role: 'dba', canApprove: ['RO'], connections: ['prod-replica'], expiresAt: isoIn(1000 * 60 * 60 * 52) },
 ];
 
 // `enabled` is the server's field (CODE brief 2026-09-01 §4) — a disabled person
@@ -568,6 +575,14 @@ const ADMIN = {
   endpointReqs: MOCK_ENDPOINT_REQS.slice(), feedback: MOCK_FEEDBACK.slice(),
   audit: MOCK_AUDIT.slice(), config: JSON.parse(JSON.stringify(MOCK_CONFIG)),
   kill: { enabled: false, message: '', by: null, at: null },
+  killHistory: [
+    { startedAt: isoAgo(1000 * 86400 * 2), by: 'dana.kaur', message: 'Replica lag on prod-main. Incident INC-0042.',
+      endedAt: isoAgo(1000 * 86400 * 2 - 1000 * 60 * 47), endedBy: 'dana.kaur', cancelledCount: 3 },
+    { startedAt: isoAgo(1000 * 86400 * 9), by: 'U0EXAMPLE002', message: null,
+      endedAt: isoAgo(1000 * 86400 * 9 - 1000 * 60 * 6), endedBy: 'dana.kaur', cancelledCount: 0 },
+    { startedAt: isoAgo(1000 * 86400 * 40), by: 'dana.kaur', message: 'Credential rotation on reporting-mssql.',
+      endedAt: isoAgo(1000 * 86400 * 40 - 1000 * 60 * 60 * 3), endedBy: null, cancelledCount: null },
+  ],
   connections: null,   // built lazily from QH_CONNECTIONS (registry shape)
   mask: null,          // masking exemptions, built lazily by maskSeed()
 };
@@ -662,9 +677,9 @@ function mockFleet() {
   // One mirrored row (no Remove) and one with reads auto-approved and an end date.
   ADMIN.fleet = [
     { id: 'fg_1', subjectType: 'team', subject: t.name, subjectName: t.name, tier: 'RO', autoApprove: true,
-      reason: 'Fleet-wide read access for on-call analysis.', expiresAt: D(45), createdAt: D(-20), syncedFrom: null },
+      reason: 'Fleet-wide read access for on-call analysis.', expiresAt: D(45), createdAt: D(-20), syncedFrom: null, enabled: true },
     { id: 'fg_2', subjectType: 'user', subject: p.handle, subjectName: p.name, tier: 'RO', autoApprove: false,
-      reason: 'Migrated from the old fleet-reader list.', expiresAt: null, createdAt: D(-90), syncedFrom: 'fleet_readers' },
+      reason: 'Migrated from the old fleet-reader list.', expiresAt: null, createdAt: D(-90), syncedFrom: 'fleet_readers', enabled: true },
   ];
   return ADMIN.fleet;
 }
@@ -1907,7 +1922,10 @@ const qhApi = {
       // three strings in the UI used to claim approvals run there regardless.
       // Flip it (or Tweaks → Access → "No Slack") to see the other copy.
       slackEnabled: true,
-      admin: { canApprove: u.role !== 'developer', role: u.role, connections: ['*'] } };
+      // `isDba` (PR 260): true for a super-admin and for a DBA. A session saved
+      // with `isDba: false` stands for a scoped or temporary admin.
+      admin: { canApprove: u.role !== 'developer', role: u.role, connections: ['*'],
+        isDba: u.role === 'super' || (u.role === 'dba' && (mockSession() || {}).isDba !== false) } };
   }),
   providers: () => mockDelay({
     // Three kinds, on purpose: Slack, a company IdP (`kind:'oauth'`, its own
@@ -2316,11 +2334,26 @@ const qhApi = {
     return { approved: items.length };
   }, 320),
   adminKillGet: () => mockDelay(() => ({ ...ADMIN.kill }), 140),
+  // POST /admin/kill needs the DBA level (PLA-1592 U4a) and answers
+  // `cancelledCount`. The mock cancels 2 reads, so the sentence after the
+  // switch has a number to say. Each switch also writes the history below.
   adminKillSet: (b) => mockDelay(() => {
-    ADMIN.kill = { enabled: !!b.enabled, message: b.enabled ? (b.message || '') : '', by: b.enabled ? 'dba.amara' : null, at: b.enabled ? isoNow() : null };
+    const me = mockUser(), s = mockSession() || {};
+    if (!me || !(me.role === 'super' || (me.role === 'dba' && s.isDba !== false))) return mockFail('Refused: you need DBA access.', 403, 'forbidden');
+    const who = me.handle || me.name;
+    if (b.enabled) {
+      ADMIN.killHistory.unshift({ startedAt: isoNow(), by: who, message: b.message || 'Paused from the web app.', endedAt: null, endedBy: null, cancelledCount: 2 });
+    } else {
+      ADMIN.killHistory.forEach(p => { if (!p.endedAt) { p.endedAt = isoNow(); p.endedBy = who; } });
+    }
+    ADMIN.kill = { enabled: !!b.enabled, message: b.enabled ? (b.message || '') : '', by: b.enabled ? who : null, at: b.enabled ? isoNow() : null };
     mockAudit(b.enabled ? 'Engaged kill switch — all execution paused' : 'Released kill switch', 'global · fleet-wide', b.enabled ? 'reject' : 'approve');
-    return { ...ADMIN.kill };
+    return { enabled: !!b.enabled, message: ADMIN.kill.message, cancelledCount: b.enabled ? 2 : 0 };
   }, 220),
+  // GET /admin/kill/history: a bare list, newest first. Seeded with one pause
+  // that cancelled reads, one that cancelled none, and one from before the
+  // count (null). A switch to ON adds the open pause at the top.
+  adminKillHistory: () => mockDelay(() => ADMIN.killHistory.map(p => ({ ...p })), 160),
 
   // ---- admin: access (grants / auto-approve / scopes) ----
   adminGrants: () => mockDelay(() => ({ grants: ADMIN.grants.slice() }), 200),
@@ -2453,6 +2486,31 @@ const qhApi = {
     return row;
   }, 220),
   adminDelAutoGrant: (id) => mockDelay(() => { ADMIN.auto = ADMIN.auto.filter(x => x.id !== id); mockAudit('Revoked auto-approve grant', '', 'reject'); return null; }, 180),
+  // ---- 2026-10-23: extend a grant, pause or resume a rule ----
+  // PATCH /admin/grants/{id}: `expiresAt` is required (null = no end), a past
+  // time is a 400, and an ENDED grant is a 409 `grant_ended`: moving its end
+  // would give access again, and that is a new grant. Earlier is accepted too.
+  adminExtendGrant: (id, b) => mockDelay(() => {
+    const g = ADMIN.grants.find(x => x.id === id);
+    if (!g) return mockFail('No active grant to extend.', 404, 'not_found');
+    if (!b || !('expiresAt' in b)) return mockFail('Send expiresAt: an ISO-8601 time, or null for no end.', 400, 'bad_request');
+    if (g.expiresAt && new Date(g.expiresAt) <= new Date()) return mockFail('This grant ended on ' + g.expiresAt.slice(0, 16).replace('T', ' ') + ' UTC. Readers already treat it as no access, so it cannot be extended. Grant the access again with POST /admin/grants.', 409, 'grant_ended');
+    if (b.expiresAt && new Date(b.expiresAt) <= new Date()) return mockFail('expiresAt is in the past. Send a later time, or null for no end.', 400, 'bad_request');
+    const longer = !b.expiresAt || (g.expiresAt && b.expiresAt > g.expiresAt);
+    g.expiresAt = b.expiresAt || null;
+    mockAudit((longer ? 'Extended' : 'Shortened') + ' grant to ' + (g.expiresAt ? g.expiresAt.slice(0, 10) : 'no end'), g.subject + ' → ' + g.connectionId + (b.reason ? ' · ' + b.reason : ''), 'grant');
+    return { ...g };
+  }, 220),
+  // PATCH /admin/auto-grants/{id}: `{enabled}` only. An ended rule is a 409
+  // `rule_ended`. A no-op answers `changed: false` and writes no audit row.
+  adminSetAutoGrant: (id, enabled) => mockDelay(() => {
+    const a = ADMIN.auto.find(x => x.id === id);
+    if (!a) return mockFail('No such auto-grant.', 404, 'not_found');
+    if (a.expiresAt && new Date(a.expiresAt) <= new Date()) return mockFail('This auto-approve rule ended. Switching it on or off changes nothing. Create a new rule instead.', 409, 'rule_ended');
+    const changed = (a.enabled !== false) !== !!enabled;
+    if (changed) { a.enabled = !!enabled; mockAudit((enabled ? 'Resumed' : 'Paused') + ' auto-approve rule', a.user + ' → ' + (a.connectionId || 'every server'), enabled ? 'auto' : 'reject'); }
+    return { ...a, changed };
+  }, 200),
   // POST /admin/auto-grants/bulk (CODE 2026-09-23 §4): one subject — a person OR
   // a team — many targets, ONE tier, ONE window, ALL OR NOTHING. Any refusal is
   // a 409 listing every refused target, and nothing is written.
@@ -2514,9 +2572,17 @@ const qhApi = {
   }, 220),
   adminScopes: () => mockDelay(() => ({ scopes: ADMIN.scopes.slice() }), 180),
   adminSaveScope: (b) => mockDelay(() => {
+    // `expiresAt` (migration 147, 2026-10-23), as the server reads it: sent,
+    // it is the new end (null = none). Left out, a stored end that is still
+    // ahead is kept. A past date is a 400, and so is a super-admin with an end.
+    const sent = 'expiresAt' in b;
+    if (sent && b.expiresAt && new Date(b.expiresAt) <= new Date()) return mockFail('expiresAt is in the past. Send a later time, or null for no end.', 400, 'bad_request');
     const ex = ADMIN.scopes.find(s => s.id === b.admin || s.admin === b.admin);
-    if (ex) { Object.assign(ex, { role: b.role, canApprove: b.canApprove, connections: b.connections }); mockAudit('Updated admin scope', ex.admin, 'scope'); return ex; }
-    const row = { id: mockId('s'), admin: b.admin, role: b.role, canApprove: b.canApprove, connections: b.connections };
+    const kept = ex && ex.expiresAt && new Date(ex.expiresAt) > new Date() ? ex.expiresAt : null;
+    const end = sent ? (b.expiresAt || null) : kept;
+    if (b.role === 'super' && end) return mockFail('A super-admin has no end date. Send expiresAt: null to make this role permanent, or keep role dba with the end date.', 400, 'bad_request');
+    if (ex) { Object.assign(ex, { role: b.role, canApprove: b.canApprove, connections: b.connections, expiresAt: end }); mockAudit('Updated admin scope', ex.admin, 'scope'); return ex; }
+    const row = { id: mockId('s'), admin: b.admin, role: b.role, canApprove: b.canApprove, connections: b.connections, expiresAt: end };
     ADMIN.scopes = [row, ...ADMIN.scopes];
     mockAudit('Added admin', b.admin + ' · ' + b.role, 'scope');
     return row;
@@ -2930,7 +2996,10 @@ const qhApi = {
     // The roster is wider than the requesters table (§4), so an admin-only or
     // grant-only principal has to resolve too — it is exactly the identity whose
     // reach nobody can otherwise see.
-    const p = ADMIN.people.find(x => x.id === id || x.handle === id)
+    // A DBA opens a person by the Slack id of a queue card (2026-10-23), so the
+    // id of a submitter resolves to the person of the same name.
+    const sub = ADMIN.queue.map(q => q.submitter).find(x => x && x.slackId === id);
+    const p = ADMIN.people.find(x => x.id === id || x.handle === id || x.slackId === id || (sub && x.name === sub.name))
       || (ADMIN.scopes.some(s => s.admin === id) || ADMIN.grants.some(g => g.subject === id)
         ? { id, handle: id, name: (ADMIN.grants.find(g => g.subject === id && g.subjectName) || {}).subjectName || id }
         : null);
@@ -3297,5 +3366,143 @@ function qhScheduleToISO(when) {
     return r;
   });
 });
+
+// ---------- 2026-10-23 Live APIs, round C: one block on purpose ----------
+// The fields the server sends since 2026-10-22, added to the answers above:
+//   GET /admin/connections  `health` and `inRotation`. A DBA who is not a
+//                           super-admin gets no `credentials`,
+//                           `secretsProvider` or `notes`.
+//   GET /admin/people       `lastQueryAt` (null: never sent a query).
+//   mask exemptions         `audience` (everyone, super, dba, team),
+//                           `audienceTeamId`, `audienceTeamName`, `expiresAt`,
+//                           `expired`. POST and PATCH take `expiresAt` and
+//                           `audience` as a string or {kind, teamId}.
+// Each branch a screen draws has a row: healthy, failing with an error, not
+// checked, a replica in and out of rotation, each audience, an exemption that
+// ended, one that ends soon, one with no end, a person with and without a query.
+(() => {
+  const ago = (min) => new Date(Date.now() - min * 60000).toISOString();
+  const ahead = (days) => new Date(Date.now() + days * 86400000).toISOString();
+  const isSuper = () => !!(mockUser() && mockUser().role === 'super');
+  // routes_admin.DBA_CONNECTION_FIELDS: what a DBA who is not a super-admin reads.
+  const DBA_FIELDS = ['id', 'name', 'engine', 'engineId', 'env', 'enabled', 'host', 'port', 'defaultDatabase', 'tags', 'replicaOf',
+    'deleted', 'deletedAt', 'deletedReason', 'superAdminOnly', 'databases', 'owners', 'health', 'inRotation'];
+  const HEALTH = {
+    'svc-prod-billing': { ok: false, checkedAt: ago(3), failingSince: ago(95), error: 'connection to server failed: timeout expired after 5 s <no answer>' },
+    'reporting-mssql': { ok: false, checkedAt: ago(6), failingSince: ago(60 * 26), error: null },
+    'svc-prod-billing-r2': { ok: false, checkedAt: ago(3), failingSince: ago(12), error: 'the database system is starting up' },
+    // Enabled, and the job has not reached it yet.
+    'staging': null,
+  };
+  const healthOf = (c) => {
+    if (c.id in HEALTH) return HEALTH[c.id];
+    // Not checked: the job skips ClickHouse here (connection_health_exclude_engines),
+    // and it has not reached a retired target.
+    if (c.engineId === 'clickhouse' || c.enabled === false) return null;
+    return { ok: true, checkedAt: ago(2 + maskHash(c.id) % 9), failingSince: null, error: null };
+  };
+  // replicas.in_rotation: a replica of a PostgreSQL primary that is enabled.
+  const rotationOf = (c, all) => {
+    if (!c.replicaOf) return null;
+    const p = all.find(x => x.name === c.replicaOf);
+    return c.enabled !== false && !!p && p.engineId === 'postgres';
+  };
+  const conns0 = qhApi.adminConnections;
+  qhApi.adminConnections = () => conns0().then(r => {
+    const all = r.connections || [];
+    const rows = all.map(c => ({ ...c, health: healthOf(c), inRotation: rotationOf(c, all) }));
+    if (isSuper()) return { connections: rows };
+    return { connections: rows.map(c => { const o = {}; DBA_FIELDS.forEach(k => { if (k in c) o[k] = c[k]; }); return o; }) };
+  });
+
+  const people0 = qhApi.adminPeople;
+  qhApi.adminPeople = () => people0().then(r => ({ people: (r.people || []).map(p => {
+    const h = maskHash(p.handle || p.id);
+    return { ...p, lastQueryAt: h % 4 === 0 ? null : ago(5 + h % (60 * 24 * 20)) };
+  }) }));
+
+  // The seed rows of maskSeed() that carry the new fields. Set once, on the
+  // stored rows, so an edit reads and writes the same state.
+  const decorate = () => {
+    if (!ADMIN.mask) ADMIN.mask = maskSeed();
+    if (ADMIN.maskRoundC) return;
+    ADMIN.maskRoundC = true;
+    const team = (ADMIN.teams || [])[0];
+    const set = (id, v) => { const r = ADMIN.mask.find(x => x.id === id); if (r) Object.assign(r, v); };
+    set('mx_2', { audience: 'dba' });
+    if (team) set('mx_5', { audience: 'team', audienceTeamId: String(team.id) });
+    set('mx_6', { expiresAt: ahead(6) });
+    set('mx_7', { expiresAt: ahead(40) });
+    set('mx_8', { expiresAt: ago(60 * 24 * 3) });
+  };
+  const teamName = (id) => { const t = (ADMIN.teams || []).find(x => String(x.id) === String(id)); return t ? t.name : null; };
+  const wire = (r) => ({ ...r, audience: r.audience || 'everyone',
+    audienceTeamId: r.audience === 'team' && r.audienceTeamId != null ? String(r.audienceTeamId) : null,
+    audienceTeamName: r.audience === 'team' ? teamName(r.audienceTeamId) : null,
+    expiresAt: r.expiresAt || null, expired: !!r.expiresAt && Date.parse(r.expiresAt) <= Date.now() });
+  const list0 = qhApi.adminMaskExemptions;
+  qhApi.adminMaskExemptions = () => { decorate(); return list0().then(r => ({ ...r, exemptions: (r.exemptions || []).map(wire) })); };
+
+  // _mask_audience: either wire form, or a 400.
+  const audienceOf = (v) => {
+    const kind = String((v && typeof v === 'object' ? v.kind : v) || '').trim().toLowerCase();
+    const teamId = v && typeof v === 'object' && v.teamId != null && v.teamId !== '' ? String(v.teamId) : null;
+    if (['everyone', 'super', 'dba', 'team'].indexOf(kind) < 0) return { err: 'audience must be everyone, super, dba or team.' };
+    if (kind !== 'team' && teamId) return { err: 'teamId is only for the team audience.' };
+    if (teamId && !teamName(teamId)) return { err: 'No team with id ' + teamId + '.', status: 404 };
+    return { kind, teamId };
+  };
+  const pastEnd = (v) => !!v && !(Date.parse(v) > Date.now());
+  const bad = (msg, status) => mockDelay(() => mockFail(msg, status || 400, status === 404 ? 'not_found' : 'bad_request'), 120);
+
+  const add0 = qhApi.adminAddMaskExemption;
+  qhApi.adminAddMaskExemption = (b) => {
+    decorate();
+    const aud = audienceOf((b && b.audience) || 'everyone');
+    if (aud.err) return bad(aud.err, aud.status);
+    if (aud.kind === 'team' && !aud.teamId) return bad('A team audience needs teamId: {"kind": "team", "teamId": ...}.');
+    if (pastEnd(b.expiresAt)) return bad('expiresAt is in the past. Send a later time, or null for no end.');
+    const { expiresAt, ...rest } = b;
+    return add0({ ...rest, audience: aud.kind === 'super' ? 'super' : 'everyone' }).then(row => {
+      const r = ADMIN.mask.find(x => x.id === row.id) || row;
+      Object.assign(r, { audience: aud.kind, audienceTeamId: aud.teamId, expiresAt: expiresAt || null });
+      return wire(r);
+    });
+  };
+
+  const upd0 = qhApi.adminUpdateMaskExemption;
+  qhApi.adminUpdateMaskExemption = (id, patch) => {
+    decorate();
+    const p = { ...(patch || {}) };
+    const hasExp = Object.prototype.hasOwnProperty.call(p, 'expiresAt');
+    const exp = p.expiresAt || null;
+    delete p.expiresAt;
+    const aud = p.audience !== undefined ? audienceOf(p.audience) : null;
+    delete p.audience;
+    if (aud && aud.err) return bad(aud.err, aud.status);
+    if (hasExp && pastEnd(exp)) return bad('expiresAt is in the past. Send a later time, or null for no end.');
+    return upd0(id, p).then(res => {
+      const r = ADMIN.mask.find(x => x.id === id);
+      if (!r) return res;
+      let moved = false;
+      if (aud) {
+        // A team sent without its id keeps the team the row names.
+        const teamId = aud.kind === 'team' ? (aud.teamId || (r.audience === 'team' ? r.audienceTeamId : null)) : null;
+        if (aud.kind === 'team' && !teamId) return mockFail('A team audience needs teamId: {"kind": "team", "teamId": ...}.', 400, 'bad_request');
+        if (aud.kind !== (r.audience || 'everyone') || String(teamId || '') !== String(r.audienceTeamId || '')) {
+          Object.assign(r, { audience: aud.kind, audienceTeamId: teamId }); moved = true;
+        }
+      }
+      if (hasExp && (r.expiresAt || null) !== exp) { r.expiresAt = exp; moved = true; }
+      if (!moved) return res && res.changed === false ? { ...wire(r), changed: false } : wire(r);
+      if (res && res.changed === false) {
+        r.updatedBy = (mockUser() || {}).handle || 'you';
+        r.updatedAt = isoNow();
+        mockAudit('Changed masking exemption', maskAuditTarget(r), 'scope');
+      }
+      return wire(r);
+    });
+  };
+})();
 
 Object.assign(window, { qhApi, qhSignInWithSlack, qhTimeAgo, qhScheduleToISO, API_BASE });
