@@ -85,6 +85,9 @@ names, no rows.
 | Authorization-event outbox | drained continuously, then pruned | the retention job |
 | **Requests, audit log, ratings, failures** | **forever** | no built-in expiry — see below |
 
+QueryHub keeps the audit log for at least 2 years. [OPERATIONS.md](OPERATIONS.md)
+section 31 states the policy and the checks.
+
 The last row is a deliberate design decision, not an oversight. The audit trail
 is the product's central promise. A gateway that quietly forgets who ran what is
 worse than no gateway. But "forever" is a choice *you* make about personal data,

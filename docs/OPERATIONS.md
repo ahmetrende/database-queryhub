@@ -47,6 +47,8 @@ you need.
 28. [Splitting the metadata database roles](#28-splitting-the-metadata-database-roles)
 29. [Connection health](#29-connection-health)
 30. [A permanent auto-approve rule: manual SQL only](#30-a-permanent-auto-approve-rule-manual-sql-only)
+31. [Audit log retention](#31-audit-log-retention)
+32. [An approver never approves DDL: manual SQL only](#32-an-approver-never-approves-ddl-manual-sql-only)
 
 ---
 
@@ -2370,3 +2372,81 @@ SELECT id, slack_user_id, max_tier, target_server_id, database_name, granted_at
  WHERE expires_at IS NULL AND enabled
  ORDER BY granted_at;
 ```
+
+## 31. Audit log retention
+
+QueryHub keeps the audit log for at least 2 years. No job deletes or archives
+audit rows today. A row stays after its second year until an operator deletes
+it. The 2 years are a floor, not a limit.
+
+The policy covers two tables: `audit_log` and `requests`. The retention table in
+[COMPLIANCE.md](COMPLIANCE.md) section 3 lists the other kinds of data.
+
+Check what the log holds. Both statements only read.
+
+```sql
+SELECT count(*) AS audit_rows, min(created_at) AS oldest, max(created_at) AS newest
+  FROM audit_log;
+SELECT count(*) AS older_than_2_years
+  FROM audit_log
+ WHERE created_at < NOW() - INTERVAL '2 years';
+```
+
+A deployment that writes about 7,000 audit rows a month adds about 5 MB a
+month. The size is small, so the log does not need a purge for disk space.
+
+**No supported tool deletes audit rows yet.** If your policy needs a limit,
+decide these points before you write a job:
+
+- Delete or archive. A delete is permanent and shortens the record of who ran
+  what.
+- `audit_log.request_id` has `ON DELETE SET NULL`. Deleting old `requests` rows
+  alone leaves audit rows that point to nothing. Treat a request and its audit
+  rows as one unit.
+- Make the number of days a `bot_config` key with a range check and a default of
+  off, as the other retention settings are.
+
+Run the job with the DB change rule: show a dry run first, apply in a
+transaction, write an audit row for the purge itself, and paste the SQL in the
+chat.
+
+## 32. An approver never approves DDL: manual SQL only
+
+An approver that the app creates can approve RO or RW. A schema change always
+needs a super-admin. Two paths in the app write an approver's tier ceiling, and
+both refuse DDL with HTTP 400 and the code `tier_not_allowed`:
+
+- a DBA scope: `POST` and `PUT /api/admin/scopes`
+- a role `approver`: `POST` and `PATCH /api/admin/roles`. A role `approver` with
+  no ceiling is refused too, because no ceiling means every tier.
+
+A role `admin` is not an approver here. An admin with no ceiling is a
+super-admin, and a super-admin approves DDL. Code:
+`src/queryhub/approver_limits.py`.
+
+**The database does not enforce this.** There is no CHECK and no trigger on
+`admins.max_tier` or `role_assignment.max_tier`. A row that SQL writes with a DDL
+ceiling works, and every reader honours it. This is deliberate, as for an
+auto-approve rule (section 30). A temporary admin grant is written with SQL too
+(`admins.grant_temp_admin` has no caller in the app), so it stays outside the
+rule. Rows that existed before the rule keep working.
+
+Check who holds a DDL ceiling. Both statements only read. Read
+`role_assignment` as well, because `access_model_v2` reads that table.
+
+```sql
+SELECT slack_user_id, max_tier, expires_at
+  FROM admins
+ WHERE enabled
+   AND NOT (max_tier IS NULL AND scope_team_ids IS NULL AND scope_target_ids IS NULL)
+   AND (max_tier IS NULL OR max_tier = 'ddl');
+
+SELECT id, principal_id, role, max_tier, any_tier, valid_until
+  FROM role_assignment
+ WHERE role = 'approver' AND revoked_at IS NULL AND NOT is_deleted
+   AND (any_tier OR max_tier = 'ddl');
+```
+
+To give an approver a DDL ceiling, follow the DB change rule: show the dry run,
+apply in a transaction, write an audit row, and paste the SQL in the chat.
+

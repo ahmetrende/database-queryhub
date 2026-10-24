@@ -1577,6 +1577,9 @@ const MOCK_AUTO_MAX_DAYS = 90;
 // (`access_grant_default_days`, 2026-10-24).
 const MOCK_ACCESS_DEFAULT_DAYS = 90;
 const MOCK_AUTO_TIER_SAY = 'An auto-approve rule can be RO or RW. Schema changes always need a DBA.';
+// The same rule for an approver (2026-10-24): RO or RW, never DDL, as the server says it.
+const MOCK_APPROVER_SCOPE_SAY = 'An admin scope can approve RO or RW. Schema changes need a super-admin.';
+const MOCK_APPROVER_ROLE_SAY = 'An approver needs a tier ceiling of RO or RW. Schema changes need a super-admin.';
 function mockAutoEndRefusal(expiresAt, minutes) {
   const days = MOCK_AUTO_MAX_DAYS, now = Date.now();
   if (minutes) {
@@ -2732,6 +2735,7 @@ const qhApi = {
     const ex = ADMIN.scopes.find(s => s.id === b.admin || s.admin === b.admin);
     const kept = ex && ex.expiresAt && new Date(ex.expiresAt) > new Date() ? ex.expiresAt : null;
     const end = sent ? (b.expiresAt || null) : kept;
+    if (b.role !== 'super' && (b.canApprove || []).some(t => String(t).toUpperCase() === 'DDL')) return mockFail(MOCK_APPROVER_SCOPE_SAY, 400, 'tier_not_allowed');
     if (b.role === 'super' && end) return mockFail('A super-admin has no end date. Send expiresAt: null to make this role permanent, or keep role dba with the end date.', 400, 'bad_request');
     if (ex) { Object.assign(ex, { role: b.role, canApprove: b.canApprove, connections: b.connections, expiresAt: end }); mockAudit('Updated admin scope', ex.admin, 'scope'); return ex; }
     const row = { id: mockId('s'), admin: b.admin, role: b.role, canApprove: b.canApprove, connections: b.connections, expiresAt: end };
@@ -2771,6 +2775,7 @@ const qhApi = {
     const until = b.clearValidUntil ? null : has('validUntil') ? b.validUntil : r.validUntil;
     if (role === 'admin' && (teamId || targetId || tier)) return mockFail('An admin is fleet-wide. Use approver for a scoped role.', 400, 'admin_scope');
     if (tier && role !== 'admin' && role !== 'approver') return mockFail('A tier ceiling only applies to admin and approver.', 400, 'tier_scope');
+    if (role === 'approver' && ['RO', 'RW'].indexOf(tier) < 0) return mockFail(MOCK_APPROVER_ROLE_SAY, 400, 'tier_not_allowed');
     const team = teamId ? (ADMIN.teams || []).find(t => t.id === teamId) : null;
     if (teamId && !team) return mockFail('No such team.', 404, 'no_team');
     // The alias — what the form holds — is accepted as well as the id.
@@ -2802,6 +2807,7 @@ const qhApi = {
     if (tier && b.role !== 'admin' && b.role !== 'approver') {
       return mockFail('A tier ceiling only applies to admin and approver — nothing reads it on a ' + b.role + '. Leave it empty.', 400, 'tier_scope');
     }
+    if (b.role === 'approver' && ['RO', 'RW'].indexOf(tier) < 0) return mockFail(MOCK_APPROVER_ROLE_SAY, 400, 'tier_not_allowed');
     const known = ADMIN.people.find(p => p.handle === b.subject || p.id === b.subject)
       || ADMIN.scopes.find(s => s.admin === b.subject || s.id === b.subject);
     if (!known) {

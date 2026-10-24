@@ -143,6 +143,8 @@ function RoleRow({ r, people, canWrite, enforced, onRevoke, onEdit }) {
 // answers 400 for an admin role with any scope) — leaving three enabled
 // controls that will be refused is a form that lies.
 const ROL_RANK = { RO: 0, RW: 1, DDL: 2 };
+// The tiers an approver may have as a ceiling (2026-10-24). Schema changes need a super-admin.
+const ROL_APPROVER_TIERS = ['RO', 'RW'];
 function rolChanges(a, b, teams, conns) {
   const tName = (id) => id ? ((teams.find(t => t.id === id) || {}).name || id) : 'everyone';
   const cName = (id) => id ? ((conns.find(c => c.id === id) || {}).name || id) : 'all connections';
@@ -162,14 +164,18 @@ function RoleForm({ st, onDone, init }) {
   const teams = st.teams || [];
   const editing = !!init;
   const [f, setF] = useRol(() => init
-    ? { subject: init.subject, role: init.role, scopeTeamId: init.scopeTeamId || '', scopeTargetId: init.scopeTargetId || '', maxTier: init.maxTier || '', ...expForm(init.validUntil), reason: init.reason || '' }
-    : { subject: '', role: 'approver', scopeTeamId: '', scopeTargetId: '', maxTier: '', ttl: 'none', expDate: '', reason: '' });
+    ? { subject: init.subject, role: init.role, scopeTeamId: init.scopeTeamId || '', scopeTargetId: init.scopeTargetId || '', maxTier: ROL_APPROVER_TIERS.indexOf(init.maxTier) >= 0 ? init.maxTier : '', ...expForm(init.validUntil), reason: init.reason || '' }
+    : { subject: '', role: 'approver', scopeTeamId: '', scopeTargetId: '', maxTier: 'RO', ttl: 'none', expDate: '', reason: '' });
   const [busy, setBusy] = useRol(false);
   const [err, setErr] = useRol(null);
   const set = (patch) => { setF(x => ({ ...x, ...patch })); setErr(null); };
   const fleetWide = f.role === 'admin';
   const tierOn = rolTierApplies(f.role) && !fleetWide;
-  const bad = !f.subject.trim() || expBad(f);
+  // An approver's ceiling is RO or RW (2026-10-24): "No ceiling" and DDL are gone
+  // from the list. A row that has one of them (written with SQL) opens on the
+  // placeholder, and Save waits for a pick.
+  const tierBad = tierOn && ROL_APPROVER_TIERS.indexOf(f.maxTier) < 0;
+  const bad = !f.subject.trim() || expBad(f) || tierBad;
   const nextRow = { role: f.role, scopeTeamId: fleetWide ? null : (f.scopeTeamId || null), scopeTargetId: fleetWide ? null : (f.scopeTargetId || null),
     maxTier: tierOn ? (f.maxTier || null) : null, validUntil: expIso(f), reason: f.reason.trim() || null };
   const changes = editing ? rolChanges(init, nextRow, teams, conns) : [];
@@ -259,8 +265,8 @@ function RoleForm({ st, onDone, init }) {
             the control is absent there instead of being refused on Save. */}
         {tierOn && <label className="qh-rolefield"><span className="qh-rolefield-l">Tier ceiling</span>
           <select className="qh-select" value={f.maxTier} onChange={e => set({ maxTier: e.target.value })}>
-            <option value="">No ceiling</option>
-            <option value="RO">Read (RO)</option><option value="RW">Write (RW)</option><option value="DDL">Schema change (DDL)</option>
+            <option value="" disabled>Pick RO or RW</option>
+            <option value="RO">Read (RO)</option><option value="RW">Write (RW)</option>
           </select></label>}
         <label className="qh-rolefield"><span className="qh-rolefield-l">Ends</span>
           {/* The same expiry control every grant uses (2026-08-16): a role that
@@ -350,7 +356,7 @@ function RolesEmpty({ canWrite, onStart, teams, enforced }) {
       <dl className="qh-roledefs">
         <div><dt>Team</dt><dd>Whose requests they may approve. Left empty, everyone’s.</dd></div>
         <div><dt>Connection</dt><dd>Which server. Left empty, all of them.</dd></div>
-        <div><dt>Tier ceiling</dt><dd>The highest of Read / Write / Schema they may approve. Left empty, no ceiling. Only approvers and admins have one — nothing reads a ceiling on a granter.</dd></div>
+        <div><dt>Tier ceiling</dt><dd>The highest of Read / Write an approver may approve. An approver never approves a schema change: that needs a super-admin. Only approvers have a ceiling here — nothing reads one on a granter.</dd></div>
         {/* The one place roles are not a plain union, and the reason is worth
             stating: an admin could grant themselves the access anyway, a scoped
             approver waving through their own query removes the review. */}
@@ -466,4 +472,4 @@ function RolesView({ st, user, canWrite }) {
   );
 }
 
-Object.assign(window, { RolesView, RoleSentence, QH_ROLE_DEFS });
+Object.assign(window, { RolesView, RoleForm, RoleSentence, QH_ROLE_DEFS, ROL_APPROVER_TIERS });

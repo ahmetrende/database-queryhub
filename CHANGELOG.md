@@ -9,6 +9,19 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+### Changed
+
+- **An approver can approve RO or RW, never DDL.** A DBA scope (`POST` and `PUT
+  /api/admin/scopes`) with DDL as its highest tier answers HTTP 400 with the code
+  `tier_not_allowed`. So does a role `approver` (`POST` and `PATCH
+  /api/admin/roles`) with a DDL ceiling or with no ceiling, because no ceiling
+  means every tier. The scope form shows RO and RW. The role form offers RO and
+  RW and has no "No ceiling". A super-admin and a role `admin` are not
+  affected. The database has no constraint, so a row that SQL writes still works.
+  Rows that exist keep working: none holds DDL on the live system today, and a
+  stored row with DDL opens in the form with Save off until you pick RO or RW.
+  Code: `src/queryhub/approver_limits.py`. `docs/OPERATIONS.md` section 32.
+
 ## [1.0.37] — 2026-10-24
 
 The web editor shows where a request stands and what ran. The admin screens work from the keyboard and show the state of the kill switch and of failing connections. A new DBA level opens three admin pages. The kill switch stops approvals as well as runs. Auto-approve rules and grants from access requests now end, and a rule is never DDL. Connections report their health. The release adds migrations 145 to 150, 160 and 190 to 194. Patch bump.

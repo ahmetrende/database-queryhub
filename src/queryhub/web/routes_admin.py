@@ -23,6 +23,7 @@ from .. import (
     access_grant_default,
     access_requests,
     admins,
+    approver_limits,
     audit,
     auto_approve,
     auto_approve_limits,
@@ -4895,6 +4896,10 @@ def _apply_scope(body: ScopeIn, uid: str, actor_name: str | None) -> dict:
             raise deps._error(400, "bad_request",
                               "A DBA needs at least one approvable tier (RO/RW/DDL).")
         max_tier = max(tiers, key=lambda t: _TIER_ORDER[t])
+        try:
+            approver_limits.check_scope_tier(max_tier)      # never DDL (tier_not_allowed)
+        except approver_limits.TierRefused as e:
+            raise deps._error(400, e.code, e.message) from e
         conns = [c for c in (body.connections or []) if c and c != "*"]
         target_ids = None
         if conns:
@@ -5134,6 +5139,11 @@ def _check_role_spec(role: str, scope_team_id, scope_target_id, max_tier) -> str
             400, "tier_scope",
             f"A tier ceiling applies only to {' and '.join(_ROLES_WITH_CEILING)}. "
             f"Nothing reads it on a {role}. Leave it empty.")
+    if role == "approver":
+        try:
+            approver_limits.check_approver_ceiling(tier)    # RO or RW (tier_not_allowed)
+        except approver_limits.TierRefused as e:
+            raise deps._error(400, e.code, e.message) from e
     return tier
 
 

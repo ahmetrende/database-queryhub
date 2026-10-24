@@ -1602,7 +1602,14 @@ function ScopeForm({ init, actor, st, onDone }) {
   const takenByName = {};
   allConns.forEach(c => { if (picked.indexOf(c.name) >= 0) takenByName[c.id] = 'Already added'; });
   const setPicked = (list) => setF(s => ({ ...s, connections: list.length ? list.join(', ') : '*' }));
-  const why = !f.admin.trim() ? 'Pick the admin first.' : (f.role !== 'super' && expBad(f)) ? 'Pick a date from today on.' : null;
+  // A DBA scope approves RO or RW, never DDL (2026-10-24, K7). DDL shows only when a
+  // stored scope still has it, so the box can be unticked. A super-admin approves all.
+  const isDba = f.role !== 'super';
+  const tierList = isDba ? QH_TIERS.filter(t => t !== 'DDL' || f.canApprove.includes('DDL')) : QH_TIERS;
+  const why = !f.admin.trim() ? 'Pick the admin first.'
+    : (isDba && f.canApprove.includes('DDL')) ? 'An admin scope can approve RO or RW. Untick DDL, or make this person a super-admin.'
+    : (isDba && !f.canApprove.length) ? 'Pick RO or RW.'
+    : (isDba && expBad(f)) ? 'Pick a date from today on.' : null;
   const save = () => {
     if (why) return;
     const connections = picked.length ? picked : ['*'];
@@ -1615,7 +1622,7 @@ function ScopeForm({ init, actor, st, onDone }) {
     <div className="qh-addrow wrap">
       <div className="qh-scopeform-who"><PersonPick people={st && st.people} value={f.admin} onChange={v => setF(s => ({ ...s, admin: v }))} resolve={st && st.resolvePerson} /></div>
       <div className="qh-seg qh-seg-sm">{['dba', 'super'].map(v => <button key={v} className={'qh-seg-opt' + (f.role === v ? ' is-active' : '')} onClick={() => setF({ ...f, role: v })}>{v === 'super' ? 'super-admin' : 'DBA'}</button>)}</div>
-      <div className="qh-tierchecks">{QH_TIERS.map(t => <button key={t} className={'qh-tierchk' + (f.canApprove.includes(t) ? ' is-on' : '')} onClick={() => toggleTier(t)}><TierBadge tier={t} sm />{f.canApprove.includes(t) ? '✓' : ''}</button>)}</div>
+      <div className="qh-tierchecks">{tierList.map(t => <button key={t} className={'qh-tierchk' + (f.canApprove.includes(t) ? ' is-on' : '')} onClick={() => toggleTier(t)}><TierBadge tier={t} sm />{f.canApprove.includes(t) ? '✓' : ''}</button>)}</div>
       <div className="qh-scopeform-conns">
         <div className="qh-scopeform-chips">
           {picked.length === 0 && <span className="qh-scopeform-all">Every connection</span>}
