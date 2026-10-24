@@ -907,10 +907,16 @@ function MaskingView({ st, user }) {
   // and wait in Schema. No filter, no seed.
   const startFromFilter = () => start(fServer && fDb ? { connectionId: fServer, databaseId: fDb, scope: 'column', focus: 'schema' }
     : fServer ? { connectionId: fServer, scope: 'column', focus: 'database' } : null);
-  const remove = (e) => {
-    if (!window.confirm('Remove this exemption? QueryHub masks ' + (e.column ? e.table + '.' + e.column : e.connectionName) + ' again, and the reason goes with the row. To keep the record, disable it.')) return;
-    st.removeMaskExemption(e.id);
-  };
+  // The first click opens an inline row. A second click on the same button closes it.
+  const [removeId, setRemoveId] = React.useState(null);
+  const remove = (e) => setRemoveId(x => (x === e.id ? null : e.id));
+  const removeRow = (e) => removeId === e.id && (
+    <div key={'rm-' + e.id} className="qh-revokeconfirm" role="group" aria-label="Confirm remove">
+      <span className="qh-revokeconfirm-say">{'Remove this exemption? QueryHub masks ' + (e.column ? e.table + '.' + e.column : e.connectionName) + ' again, and the reason goes with the row. To keep the record, disable it.'}</span>
+      <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setRemoveId(null)}>Keep exemption</button>
+      <button type="button" className="qh-btn qh-btn-danger qh-btn-sm" onClick={() => { setRemoveId(null); st.removeMaskExemption(e.id); }}>Remove exemption</button>
+    </div>
+  );
   // Replace = the same target, pre-filled, with the original attached: Save
   // patches it while the reach is unchanged, and disables it after a new reach.
   const replace = (e) => start({ connectionId: e.connectionId, databaseId: e.databaseId, scope: e.scope, schema: e.schema, table: e.table, column: e.column, strength: e.strength, survivesJoin: e.survivesJoin, replaceOf: e });
@@ -965,10 +971,13 @@ function MaskingView({ st, user }) {
                 )}
               </div>
               <div className="qh-mxlist">{g.rows.map(e => (
-                <MxItem key={e.id} e={e} canWrite={canWrite} moot={moot} norms={norms} st={st}
+                <React.Fragment key={e.id}>
+                <MxItem e={e} canWrite={canWrite} moot={moot} norms={norms} st={st}
                         open={openId === e.id} onToggleOpen={() => setOpenId(x => (x === e.id ? null : e.id))}
                         onRemove={remove} onReplace={replace} onAddHere={addHere}
                         onAlso={(row, a) => start({ connectionId: a.connectionId, databaseId: a.databaseId, scope: 'column', schema: row.schema, table: row.table, column: row.column, strength: row.strength, survivesJoin: row.survivesJoin })} />
+                {removeRow(e)}
+                </React.Fragment>
               ))}</div>
             </div>
           ))}

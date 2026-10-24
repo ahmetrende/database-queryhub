@@ -23,6 +23,19 @@ const AIcon = {
   alert: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7.5v5.5M12 16.5v.01" /></svg>,
 };
 
+// An inline "are you sure" row (2026-10-24). DESIGN.md section 3: a destructive
+// admin action asks in a row, never in a browser confirm(). The caller keeps
+// its own open state, so one row is open per list. Cancel only closes.
+function InlineConfirm({ say, confirmLabel, cancelLabel, danger, busy, onConfirm, onCancel }) {
+  return (
+    <div className="qh-revokeconfirm" role="alert">
+      <span className="qh-revokeconfirm-say">{say}</span>
+      <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" disabled={!!busy} onClick={onCancel}>{cancelLabel || 'Keep'}</button>
+      <button type="button" className={'qh-btn qh-btn-sm ' + (danger ? 'qh-btn-danger' : 'qh-btn-primary')} disabled={!!busy} onClick={onConfirm}>{confirmLabel || 'Confirm'}</button>
+    </div>
+  );
+}
+
 function TierSelect({ value, onChange, tiers }) {
   return (
     <div className="qh-seg qh-seg-sm">
@@ -1230,14 +1243,16 @@ function AutoView({ st, user }) {
   const subjects = autoSubjects(rows, st.people);
   const [busyId, setBusyId] = useAcc(null);
   const [rowErr, setRowErr] = useAcc(null);
+  const [askId, setAskId] = useAcc(null);   // the rule whose inline confirm is open
 
   // Pause and resume (PATCH /admin/auto-grants/{id}, 2026-10-23). A paused rule
   // approves nothing and stays on this list with its reason and run count. An
   // ended rule gets no switch: the server answers 409 for it. Edit is off on a
   // paused rule, because an edit writes a NEW rule, and a new rule is on.
-  const toggle = (a) => {
+  const toggle = (a) => { setAskId(x => (x === a.id ? null : a.id)); setRowErr(null); };
+  const doToggle = (a) => {
     const on = a.enabled === false;
-    if (!window.confirm(autoToggleSay(a, on))) return;
+    setAskId(null);
     setBusyId(a.id); setRowErr(null);
     st.setAutoGrantEnabled(a.id, on)
       .then(() => setBusyId(null))
@@ -1253,7 +1268,14 @@ function AutoView({ st, user }) {
       </div>
     );
   };
-  const errFor = (a) => rowErr && rowErr.id === a.id ? <div className="qh-roleform-err qh-autosub-err">{rowErr.msg}</div> : null;
+  const errFor = (a) => (
+    <>
+      {askId === a.id && (() => { const resume = a.enabled === false; return (
+        <InlineConfirm say={autoToggleSay(a, resume)} cancelLabel={resume ? 'Keep paused' : 'Keep running'} confirmLabel={resume ? 'Resume rule' : 'Pause rule'}
+          busy={busyId === a.id} onCancel={() => setAskId(null)} onConfirm={() => doToggle(a)} />); })()}
+      {rowErr && rowErr.id === a.id ? <div className="qh-roleform-err qh-autosub-err">{rowErr.msg}</div> : null}
+    </>
+  );
 
   return (
     <div className="qh-apad">
@@ -1776,6 +1798,7 @@ function TeamsView({ st, user }) {
   const [adding, setAdding] = useAcc(false);
   const [editId, setEditId] = useAcc(null);
   const [accessId, setAccessId] = useAcc(null);
+  const [delId, setDelId] = useAcc(null);   // the team whose inline delete confirm is open
   const [editPerson, setEditPerson] = useAcc(null);
   const [pdraft, setPdraft] = useAcc([]);
 
@@ -1847,11 +1870,13 @@ function TeamsView({ st, user }) {
                             ? <span className="qh-team-none">No access granted to this team</span>
                             : tgts.map(g => <span key={g.id} className="qh-acctarget"><span className="qh-acctarget-t">{qhGrantTarget(g)}</span><TierBadge tier={g.tier} sm /></span>)}
                     </div>
+                    {delId === t.id && <InlineConfirm say={'Delete team “' + t.name + '”? The members stay. QueryHub deletes only the team.'} cancelLabel="Keep" confirmLabel="Delete team" danger
+                      onCancel={() => setDelId(null)} onConfirm={() => { setDelId(null); st.removeTeam(t.id, actor); }} />}
                   </div>
                   <div className="qh-teamcard-acts">
                     <button className="qh-rowbtn" onClick={() => { setAccessId(t.id); setEditId(null); setAdding(false); }}><AIcon.edit />Edit access</button>
                     <button className="qh-rowbtn" onClick={() => { setEditId(t.id); setAccessId(null); setAdding(false); }}><AIcon.edit />Edit team</button>
-                    <button className="qh-revoke" onClick={() => { if (window.confirm('Delete team “' + t.name + '”? The members stay. QueryHub deletes only the team.')) st.removeTeam(t.id, actor); }}>Delete</button>
+                    <button className="qh-revoke" aria-expanded={delId === t.id} onClick={() => setDelId(x => (x === t.id ? null : t.id))}>Delete</button>
                   </div>
                 </div>
               );
@@ -2316,8 +2341,10 @@ function ConnOwnersForm({ st, conn, onDone }) {
     const team = choices.find(t => String(t.id) === pick);
     if (team) run(qhApi.adminAddConnectionOwner(conn.id, team.id));
   };
-  const remove = (o) => {
-    if (!window.confirm('Remove ' + o.displayName + ' as an owner of ' + conn.name + '? QueryHub then updates the approvers of this connection.')) return;
+  const [askOwner, setAskOwner] = React.useState(null);   // the owner whose inline confirm is open
+  const remove = (o) => setAskOwner(x => (x === o.id ? null : o.id));
+  const doRemove = (o) => {
+    setAskOwner(null);
     run(qhApi.adminRemoveConnectionOwner(conn.id, o.id));
   };
   return (
@@ -2335,12 +2362,16 @@ function ConnOwnersForm({ st, conn, onDone }) {
           <div className="qh-owner-list">
             {owners.length === 0 && <div className="qh-muted">No team owns this connection. No team lead approves its requests.</div>}
             {owners.map(o => (
-              <div key={o.id} className="qh-owner-row">
+              <React.Fragment key={o.id}>
+              <div className="qh-owner-row">
                 <b>{o.displayName}</b>{' '}
                 {o.syncedFrom
                   ? <span className="qh-muted" title={'The ' + o.syncedFrom + ' sync maintains this owner. Change it in that sync.'}>synced from {o.syncedFrom}</span>
-                  : <button className="qh-btn qh-btn-sm" disabled={busy} onClick={() => remove(o)}>Remove</button>}
+                  : <button className="qh-btn qh-btn-sm" disabled={busy} aria-expanded={askOwner === o.id} onClick={() => remove(o)}>Remove</button>}
               </div>
+              {askOwner === o.id && <InlineConfirm say={'Remove ' + o.displayName + ' as an owner of ' + conn.name + '? QueryHub then updates the approvers of this connection.'}
+                cancelLabel="Keep owner" confirmLabel="Remove owner" danger busy={busy} onCancel={() => setAskOwner(null)} onConfirm={() => doRemove(o)} />}
+              </React.Fragment>
             ))}
           </div>
           <div className="qh-field-lbl">Approvers through ownership</div>
@@ -2465,10 +2496,17 @@ function ConnectionsView({ st, user, readOnly }) {
       .then(() => { setBulkBusy(false); setSel([]); setBulk(null); })
       .catch(e => { setBulkBusy(false); setRefused({ body, list: (e && e.refused) || [], msg: (e && e.message) || 'QueryHub changed nothing.' }); });
   };
-  const bulkDisable = () => {
-    if (!window.confirm('Disable ' + selRows.length + ' connection' + (selRows.length === 1 ? '' : 's') + '? Developers lose access to them until you enable them again. Running queries continue.')) return;
-    runBulk({ enabled: false });
-  };
+  // Disable of the selection and of one connection ask in an inline row (2026-10-24).
+  const [askBulk, setAskBulk] = React.useState(false);
+  const [askConn, setAskConn] = React.useState(null);   // { id, kind: 'disable' | 'delete' }
+  const bulkDisable = () => { setAskConn(null); setAskBulk(b => !b); };
+  const doBulkDisable = () => { setAskBulk(false); runBulk({ enabled: false }); };
+  const connAskSay = (c, kind) => kind === 'delete'
+    ? 'Delete “' + c.name + '”? If any query history or live grants still refer to it, QueryHub disables it and does not delete it.'
+    : c.replicaOf
+      ? 'Take “' + c.name + '” out of rotation? Read-only queries on ' + c.replicaOf + ' run on the primary until you enable it again. Nobody loses access.'
+      : 'Disable “' + c.name + '”? Developers lose access to it until you enable it again. Running queries continue.';
+  const askAbout = (c, kind) => { setAskBulk(false); setAskConn(x => (x && x.id === c.id && x.kind === kind ? null : { id: c.id, kind })); };
   const bulkCredSave = () => {
     const b = bulk;
     if (!b || !b.username.trim() || !b.password) return;
@@ -2513,15 +2551,10 @@ function ConnectionsView({ st, user, readOnly }) {
   const toggleEnabled = (c) => {
     // Disabling pulls a target out of every picker mid-flight, so it asks
     // first; enabling is the reversible direction and does not.
-    if (c.enabled && !window.confirm(c.replicaOf
-      ? 'Take “' + c.name + '” out of rotation? Read-only queries on ' + c.replicaOf + ' run on the primary until you enable it again. Nobody loses access.'
-      : 'Disable “' + c.name + '”? Developers lose access to it until you enable it again. Running queries continue.')) return;
+    if (c.enabled) { askAbout(c, 'disable'); return; }
     st.setConnectionEnabled(c.id, !c.enabled);
   };
-  const removeConnection = (c) => {
-    if (!window.confirm('Delete “' + c.name + '”? If any query history or live grants still refer to it, QueryHub disables it and does not delete it.')) return;
-    st.removeConnection(c.id);
-  };
+  const removeConnection = (c) => askAbout(c, 'delete');
   return (
     <div className="qh-apad">
       <div className="qh-aview-head">
@@ -2635,11 +2668,13 @@ function ConnectionsView({ st, user, readOnly }) {
                 <span className="qh-connbulk-n">{sel.length} selected{hidden ? ' · ' + hidden + ' hidden by the filter' : ''}</span>
                 <div className="qh-flex1" />
                 <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={bulkBusy} onClick={() => { setBulk(null); runBulk({ enabled: true }); }}>Enable</button>
-                <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={bulkBusy} onClick={() => { setBulk(null); bulkDisable(); }}>Disable</button>
+                <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={bulkBusy} aria-expanded={askBulk} onClick={() => { setBulk(null); bulkDisable(); }}>Disable</button>
                 <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={bulkBusy} onClick={() => { setRefused(null); setBulk({ enable: false, tier: 'ro', username: '', password: '' }); }}>Set a credential…</button>
-                <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={bulkBusy} onClick={() => { setSel([]); setBulk(null); setRefused(null); }}>Clear</button>
+                <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={bulkBusy} onClick={() => { setSel([]); setBulk(null); setRefused(null); setAskBulk(false); }}>Clear</button>
                 {bulkBusy && <span className="qh-spin" />}
               </div>
+              {askBulk && <InlineConfirm say={'Disable ' + selRows.length + ' connection' + (selRows.length === 1 ? '' : 's') + '? Developers lose access to them until you enable them again. Running queries continue.'}
+                cancelLabel="Keep enabled" confirmLabel="Disable" danger busy={bulkBusy} onCancel={() => setAskBulk(false)} onConfirm={doBulkDisable} />}
               {refused && (
                 <div className="qh-connbulk-refused" role="alert">
                   <div className="qh-connbulk-refused-h">{refused.list.length ? 'QueryHub changed nothing. The server would refuse ' + refused.list.length + ' of ' + nSel + ':' : refused.msg}</div>
@@ -2679,7 +2714,8 @@ function ConnectionsView({ st, user, readOnly }) {
               {rows.map(c => {
                 const probe = tested[c.id];
                 return (
-                <tr key={c.id} className={(sel.indexOf(c.id) >= 0 ? 'is-sel' : '') + (refusedNames.indexOf(c.name) >= 0 ? ' is-refused' : '') + (c.replicaOf ? ' is-replica' : '')}>
+                <React.Fragment key={c.id}>
+                <tr className={(sel.indexOf(c.id) >= 0 ? 'is-sel' : '') + (refusedNames.indexOf(c.name) >= 0 ? ' is-refused' : '') + (c.replicaOf ? ' is-replica' : '')}>
                   {!readOnly && <td className="qh-conn-selcol"><ConnCheck on={sel.indexOf(c.id) >= 0} onChange={() => toggleSel(c.id)} label={'Select ' + c.name} /></td>}
                   <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b><span className={'qh-envtag env-' + c.env}>{c.env}</span></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}{!c.replicaOf && <div className="qh-muted qh-conn-owners" title="The lead of each owner team approves requests to this connection.">{(c.owners || []).length ? 'Owners: ' + c.owners.map(o => o.displayName).join(', ') : 'No owner'}</div>}{!c.replicaOf && c.superAdminOnly && <span className="qh-sao-chip" title="Only super-admins, and grants that name this connection, reach it.">super-admin only</span>}</td>
                   {/* Engine over hosting in ONE column, and the environment beside
@@ -2729,6 +2765,13 @@ function ConnectionsView({ st, user, readOnly }) {
                     ].filter(Boolean)} />}
                   </div></td>
                 </tr>
+                {askConn && askConn.id === c.id && <tr className="qh-editrow qh-revokerow"><td colSpan={nCols}>
+                  <InlineConfirm say={connAskSay(c, askConn.kind)} danger
+                    cancelLabel={askConn.kind === 'delete' ? 'Keep' : 'Keep enabled'} confirmLabel={askConn.kind === 'delete' ? 'Delete connection' : 'Disable'}
+                    onCancel={() => setAskConn(null)}
+                    onConfirm={() => { const k = askConn.kind; setAskConn(null); if (k === 'delete') st.removeConnection(c.id); else st.setConnectionEnabled(c.id, !c.enabled); }} />
+                </td></tr>}
+                </React.Fragment>
                 );
               })}
               {gone.length > 0 && <tr><td colSpan={nCols} className="qh-conn-empty">Deleted. The instance does not exist now. QueryHub keeps the row for the record. You cannot enable it.</td></tr>}
@@ -2767,6 +2810,6 @@ function ConnectionsView({ st, user, readOnly }) {
 // segmented control would be a second grouping idiom on one page.
 // `QH_TIER_WORD` / `qhTierWord` too (2026-10-21): the Roles screen and the
 // access editor say Read, Write and Schema from one table.
-Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, FleetGrantsBlock, connHealthState, connBannerSay, scopeConnList, ScopeForm, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, EndChip, EndPick, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord,
+Object.assign(window, { InlineConfirm, GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, FleetGrantsBlock, connHealthState, connBannerSay, scopeConnList, ScopeForm, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, EndChip, EndPick, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord,
   // The end of an auto-approve rule (2026-10-24).
   AUTO_TIER_SAY, autoMaxOf, endPicks, endDefault, endKeepable, expMaxDay, autoEndWhy, autoEndInit });

@@ -230,13 +230,20 @@ test('pause says the rule is kept before it runs, then sends enabled false', opt
   const ui = mount('AutoView', { autoGrants: RULES });
   ui.click(ui.button('Pause', ui.rowOf('Jordan Ray')));
   await ui.settle();
-  assert.equal(ui.asked.length, 1);
-  assert.match(ui.asked[0], /QueryHub does not revoke the rule\./);
-  assert.match(ui.asked[0], /A DBA then reviews the queries of Jordan Ray on prod-main/);
+  assert.equal(ui.asked.length, 0, 'no browser confirm');
+  assert.deepEqual(ui.rec.toggled, [], 'the first click sends nothing');
+  const say1 = ui.rowOf('Jordan Ray').querySelector('.qh-revokeconfirm').textContent;
+  assert.match(say1, /QueryHub does not revoke the rule\./);
+  assert.match(say1, /A DBA then reviews the queries of Jordan Ray on prod-main/);
+  ui.click(ui.button('Pause rule', ui.rowOf('Jordan Ray')));
+  await ui.settle();
   assert.deepEqual(ui.rec.toggled, [['11', false]]);
   ui.click(ui.button('Resume', ui.rowOf('Casey Lin')));
   await ui.settle();
-  assert.match(ui.asked[1], /run without a DBA again, up to RO, with no end date\./);
+  assert.match(ui.rowOf('Casey Lin').querySelector('.qh-revokeconfirm').textContent, /run without a DBA again, up to RO, with no end date\./);
+  assert.equal(ui.rec.toggled.length, 1);
+  ui.click(ui.button('Resume rule', ui.rowOf('Casey Lin')));
+  await ui.settle();
   assert.deepEqual(ui.rec.toggled[1], ['12', true]);
 });
 

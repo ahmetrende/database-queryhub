@@ -181,7 +181,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
       qhApi.adminMaskExemptions().then(r => { setMaskExemptions(r.exemptions || []); setMaskMeta({ maskingEnabled: r.maskingEnabled !== false, nameRules: r.nameRules || 0, valueDetectors: r.valueDetectors || [] }); }),
       qhApi.adminEndpointReqs().then(readEndpointReqs),
       qhApi.adminFeedback().then(r => setFeedback(r.feedback || [])),
-      qhApi.adminMetrics().then(r => setMetrics(r || {})),
+      qhApi.adminMetrics('30d').then(r => setMetrics(r || {})),
       qhApi.adminConnections().then(r => setConnections(r.connections || [])),
       qhApi.adminConfig().then(r => setConfig(r.config || { groups: [], values: {} })),
       qhApi.adminPeople().then(r => setPeople(r.people || [])),

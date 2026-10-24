@@ -390,10 +390,18 @@ function RolesView({ st, user, canWrite }) {
   const rows = direct.filter(r => (roleF === 'all' || r.role === roleF)).filter(match);
   const mRows = mirrored.filter(r => (roleF === 'all' || r.role === roleF)).filter(match);
 
-  const revoke = (r) => {
-    if (!window.confirm('Revoke ' + (r.name || r.subject) + '’s ' + (QH_ROLE_DEFS[r.role] || {}).label + ' role? They keep their own database access — only what they may do to other people’s changes.')) return;
-    st.removeRole(r.id);
-  };
+  // The first click opens an inline row. A second click on the same button closes it.
+  const [revokeId, setRevokeId] = useRol(null);
+  const revoke = (r) => setRevokeId(x => (x === r.id ? null : r.id));
+  const revokeSay = (r) => 'Revoke ' + (r.name || r.subject) + '’s ' + (QH_ROLE_DEFS[r.role] || {}).label + ' role? They keep their own database access — only what they may do to other people’s changes.';
+  // Local helper: the row that replaces the browser confirm.
+  const revokeRow = (r) => revokeId === r.id && (
+    <div key={'rc-' + r.id} className="qh-revokeconfirm" role="group" aria-label="Confirm revoke">
+      <span className="qh-revokeconfirm-say">{revokeSay(r)}</span>
+      <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setRevokeId(null)}>Keep role</button>
+      <button type="button" className="qh-btn qh-btn-danger qh-btn-sm" onClick={() => { setRevokeId(null); st.removeRole(r.id); }}>Revoke role</button>
+    </div>
+  );
 
   // "Who can approve my team's requests?" is the first question the list has to
   // answer, and it is a grouping question: by team, an approver whose scope is
@@ -454,7 +462,10 @@ function RolesView({ st, user, canWrite }) {
               {k && <div className="qh-section-label">{k} · {list.length}</div>}
               <div className="qh-rolelist">{list.map(r => editId === r.id
                 ? <RoleForm key={r.id} st={st} init={r} onDone={() => setEditId(null)} />
-                : <RoleRow key={r.id} r={r} people={st.people} canWrite={canWrite} enforced={enforced} onRevoke={revoke} onEdit={(x) => { setEditId(x.id); setAdding(false); }} />)}</div>
+                : <React.Fragment key={r.id}>
+                    <RoleRow r={r} people={st.people} canWrite={canWrite} enforced={enforced} onRevoke={revoke} onEdit={(x) => { setEditId(x.id); setAdding(false); }} />
+                    {revokeRow(r)}
+                  </React.Fragment>)}</div>
             </div>
           ))}
           {rows.length === 0 && <div className="qh-conn-empty">No roles match your filter.</div>}
@@ -465,7 +476,11 @@ function RolesView({ st, user, canWrite }) {
         <>
           <div className="qh-section-label">Mirrored from the admins table · {mRows.length}</div>
           <div className="qh-aview-sub" style={{ marginBottom: 10 }}>{enforced ? 'Shown because this is what the system enforces.' : 'These are the rows in force today.'} They are changed in {canWrite ? <a href="#admin/scopes">Admin scopes</a> : 'Admin scopes'}, not here.</div>
-          <div className="qh-rolelist">{mRows.map(r => <RoleRow key={r.id} r={r} people={st.people} canWrite={canWrite} enforced={enforced} onRevoke={revoke} />)}</div>
+          <div className="qh-rolelist">{mRows.map(r => (
+            <React.Fragment key={r.id}>
+              <RoleRow r={r} people={st.people} canWrite={canWrite} enforced={enforced} onRevoke={revoke} />
+              {revokeRow(r)}
+            </React.Fragment>))}</div>
         </>
       )}
     </div>

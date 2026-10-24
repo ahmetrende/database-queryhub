@@ -696,7 +696,16 @@ function qhKillCountCell(n) {
   return { text: n + ' read' + (n === 1 ? '' : 's'), title: null, muted: false };
 }
 
-function KillHistory({ rows, onRetry }) {
+// A name for an id: look it up by id or handle in the people list the admin state holds.
+// The raw value stays when nobody matches. A value that already is a name stays as well.
+function qhKillWho(v, people) {
+  if (!v) return v;
+  const s = String(v);
+  const p = (people || []).find(x => x && (x.id === s || x.handle === s));
+  return qhPersonName((p && p.name) || s);
+}
+
+function KillHistory({ rows, onRetry, people }) {
   if (rows === null) return <div className="qh-kill-hist-state" aria-busy="true">Loading the pauses…</div>;
   if (rows === 'error') return (
     <div className="qh-kill-hist-state" role="alert">Could not load the pauses.
@@ -712,10 +721,10 @@ function KillHistory({ rows, onRetry }) {
           return (
             <tr key={(p.startedAt || '') + ':' + i}>
               <td title={p.startedAt || ''}>{p.startedAt ? qhFmt(p.startedAt) : '—'}<div className="qh-muted qh-kill-hist-sub">{qhAgo(p.startedAt)}</div></td>
-              <td title={qhIsHandleName(p.by) ? p.by : null}>{p.by ? qhPersonName(p.by) : <span className="qh-muted">Not recorded</span>}</td>
+              <td title={qhIsHandleName(p.by) ? p.by : null}>{p.by ? qhKillWho(p.by, people) : <span className="qh-muted">Not recorded</span>}</td>
               <td className="qh-kill-hist-why">{p.message ? p.message : <span className="qh-muted">No reason given</span>}</td>
               <td>{p.endedAt
-                ? <>{lasted || '—'}<div className="qh-muted qh-kill-hist-sub" title={p.endedAt}>released{p.endedBy ? ' by ' + qhPersonName(p.endedBy) : ''}</div></>
+                ? <>{lasted || '—'}<div className="qh-muted qh-kill-hist-sub" title={p.endedAt}>released{p.endedBy ? ' by ' + qhKillWho(p.endedBy, people) : ''}</div></>
                 : <span className="qh-kill-hist-open">Still on</span>}</td>
               <td title={c.title}>{c.muted ? <span className="qh-muted">{c.text}</span> : c.text}</td>
             </tr>
@@ -779,7 +788,7 @@ function KillView({ st, user, canWrite }) {
       </div>
       <div className="qh-kill-hint">While engaged: developers see a banner and a disabled Submit, auto-approve is suspended, and scheduled runs hold. Engaging it cancels the running reads. Use it for incidents: a runaway query, a credential leak, a target under load. QueryHub audits every change.</div>
       <div className="qh-kill-hist-h">Past pauses</div>
-      <KillHistory rows={hist} onRetry={loadHist} />
+      <KillHistory rows={hist} onRetry={loadHist} people={st.people} />
     </div>
   );
 }
@@ -832,4 +841,4 @@ function NoteBox({ mode, value, onChange, onCancel }) {
   );
 }
 
-Object.assign(window, { AdminPanel, AdminIcons, qhExpiresIn, qhRequesterHolds, qhFailingConnCount, qhAdminLevel, qhAdminCanOpen, qhAdminLockReason, qhKillLasted, qhKillCancelSay, qhNoteCheck, qhNoteAdd, QH_NOTE_MIN });
+Object.assign(window, { AdminPanel, AdminIcons, qhExpiresIn, qhRequesterHolds, qhFailingConnCount, qhAdminLevel, qhAdminCanOpen, qhAdminLockReason, qhKillLasted, qhKillCancelSay, qhKillWho, KillHistory, qhNoteCheck, qhNoteAdd, QH_NOTE_MIN });

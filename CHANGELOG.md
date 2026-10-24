@@ -48,6 +48,11 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **Destructive admin actions ask inline.** Removing a team, an owner, a role, a
+  mask exemption or a connection, disabling a connection, and pausing or resuming
+  an auto-approve rule now open a row with the same sentence and two buttons. The
+  browser dialog is gone. The kill switch history shows a name in "By" and in
+  "released by" when the people list knows the id.
 - **An approver can approve RO or RW, never DDL.** A DBA scope (`POST` and `PUT
   /api/admin/scopes`) with DDL as its highest tier answers HTTP 400 with the code
   `tier_not_allowed`. So does a role `approver` (`POST` and `PATCH
