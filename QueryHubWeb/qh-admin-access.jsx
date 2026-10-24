@@ -881,6 +881,7 @@ function FleetGrantsBlock({ st, canWrite }) {
   const [busyId, setBusyId] = useAcc(null);
   const [rowErr, setRowErr] = useAcc(null);
   const [askId, setAskId] = useAcc(null);   // the row whose inline confirm is open (2026-10-24)
+  const [askWhy, setAskWhy] = useAcc('');    // the optional reason typed in that row
   const blankF = { subjectType: 'user', subject: '', autoApprove: false, reason: '', ttl: 'none', expDate: '' };
   // Reads that skip review are an auto-approve rule: they need an end, at most
   // `maxDays` from now (2026-10-24). The grant alone keeps its optional end.
@@ -905,9 +906,10 @@ function FleetGrantsBlock({ st, canWrite }) {
   };
   const remove = (g) => {
     const name = grantName(g, people);
-    setAskId(null);
+    const reason = askWhy.trim();
+    setAskId(null); setAskWhy('');
     setBusyId(g.id); setRowErr(null);
-    st.revokeFleetGrant(g.id, name)
+    st.revokeFleetGrant(g.id, name, reason ? { reason } : undefined)
       .then(() => { setBusyId(null); load(); })
       .catch(e => { setBusyId(null); setRowErr({ id: g.id, msg: (e && e.message) || 'QueryHub could not revoke the grant.' }); });
   };
@@ -962,12 +964,13 @@ function FleetGrantsBlock({ st, canWrite }) {
           <span className="qh-fleet-end">
             {g.syncedFrom
               ? <span className="qh-fleet-kind" title={'QueryHub copies this row from ' + g.syncedFrom + '. Change it there.'}>synced from {g.syncedFrom}</span>
-              : canWrite && <button className="qh-revoke" aria-expanded={askId === g.id} disabled={busyId === g.id} onClick={() => setAskId(askId === g.id ? null : g.id)}>Remove</button>}
+              : canWrite && <button className="qh-revoke" aria-expanded={askId === g.id} disabled={busyId === g.id} onClick={() => { setAskId(askId === g.id ? null : g.id); setAskWhy(''); }}>Remove</button>}
           </span>
           {askId === g.id && (
             <div className="qh-revokeconfirm qh-fleet-confirm" role="alert">
               <span className="qh-revokeconfirm-say">{grantName(g, people)} loses read-only access to every server.{g.autoApprove ? ' QueryHub also revokes the auto-approve on every server.' : ''} Grants that name a connection stay. A query that is running finishes.</span>
-              <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setAskId(null)}>Keep access</button>
+              <input className="qh-input qh-input-sm qh-revoke-why" type="text" maxLength={500} placeholder="Reason (optional)" aria-label="Reason for revoking (optional)" value={askWhy} onChange={e => setAskWhy(e.target.value)} />
+              <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => { setAskId(null); setAskWhy(''); }}>Keep access</button>
               <button className="qh-btn qh-btn-danger qh-btn-sm" onClick={() => remove(g)}>Revoke access</button>
             </div>
           )}
@@ -993,6 +996,7 @@ function GrantsView({ st, user }) {
   const [editId, setEditId] = useAcc(null);
   const [extendId, setExtendId] = useAcc(null);
   const [revokeId, setRevokeId] = useAcc(null);   // the grant whose inline confirm is open
+  const [revokeWhy, setRevokeWhy] = useAcc('');     // the optional reason typed in that row
   const c0 = (st.connections || [])[0] || { id: '' };
   const blank = { subjectType: 'user', subject: '', connectionId: c0.id, databases: ['*'], tier: 'RO' };
 
@@ -1078,13 +1082,14 @@ function GrantsView({ st, user }) {
                   <td className="qh-muted"><span className="qh-grantby" title={grantByLabel(g)}>{grantByLabel(g)}</span>{g.grantedByName && g.grantedByName !== g.grantedBy && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{g.grantedBy}</div>}</td>
                   <td className="qh-tright"><div className="qh-rowacts">
                     {canExtend && <button className="qh-rowbtn" aria-expanded={extendId === g.id} onClick={() => { setExtendId(x => x === g.id ? null : g.id); setEditId(null); setAdding(false); }}>Extend</button>}
-                    <button className="qh-rowbtn" onClick={() => { setEditId(g.id); setExtendId(null); setAdding(false); }}><AIcon.edit />Edit</button><button className="qh-revoke" aria-expanded={revokeId === g.id} onClick={() => { setRevokeId(x => x === g.id ? null : g.id); setExtendId(null); }}>Revoke</button></div></td>
+                    <button className="qh-rowbtn" onClick={() => { setEditId(g.id); setExtendId(null); setAdding(false); }}><AIcon.edit />Edit</button><button className="qh-revoke" aria-expanded={revokeId === g.id} onClick={() => { setRevokeId(x => x === g.id ? null : g.id); setRevokeWhy(''); setExtendId(null); }}>Revoke</button></div></td>
                 </tr>
                 {revokeId === g.id && <tr className="qh-editrow qh-revokerow"><td colSpan={6}>
                   <div className="qh-revokeconfirm" role="alert">
                     <span className="qh-revokeconfirm-say">{grantName(g, st.people)} loses {g.tier} on {qhGrantTarget(g)}. A query that is running finishes.</span>
-                    <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setRevokeId(null)}>Keep access</button>
-                    <button className="qh-btn qh-btn-danger qh-btn-sm" onClick={() => { setRevokeId(null); st.revokeGrant(g.id, actor); }}>Revoke access</button>
+                    <input className="qh-input qh-input-sm qh-revoke-why" type="text" maxLength={500} placeholder="Reason (optional)" aria-label="Reason for revoking (optional)" value={revokeWhy} onChange={e => setRevokeWhy(e.target.value)} />
+                    <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => { setRevokeId(null); setRevokeWhy(''); }}>Keep access</button>
+                    <button className="qh-btn qh-btn-danger qh-btn-sm" onClick={() => { const reason = revokeWhy.trim(); setRevokeId(null); setRevokeWhy(''); st.revokeGrant(g.id, actor, reason ? { reason } : undefined); }}>Revoke access</button>
                   </div>
                 </td></tr>}
                 {extendId === g.id && canExtend && <tr className="qh-editrow"><td colSpan={6}><ExtendForm g={g} st={st} people={st.people} onDone={() => setExtendId(null)} /></td></tr>}

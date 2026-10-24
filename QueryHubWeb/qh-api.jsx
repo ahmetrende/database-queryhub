@@ -58,6 +58,13 @@ async function qhFetch(path, opts = {}, _retried = false) {
   return body;
 }
 
+// A revoke may carry an optional reason (2026-10-24). The JSON body goes out only
+// for a non-empty reason, so a revoke with no reason stays the no-body call.
+function qhRevokeBody(o) {
+  const reason = o && typeof o.reason === 'string' ? o.reason.trim() : '';
+  return reason ? { body: JSON.stringify({ reason: reason.slice(0, 500) }) } : {};
+}
+
 // The Slack SSO entry point — a full-page navigation (server builds the
 // authorize URL with state + openid/email/profile scopes, sets the cookie
 // on callback, then redirects back here).
@@ -199,6 +206,9 @@ const qhApi = {
   // choices and the caller's own asks, so the modal can mark a database that
   // already has one waiting (design 2026-09-23).
   autoApproveRequests:() => qhFetch('/auto-approve-requests'),
+  // Withdraw the caller's own pending ask (2026-10-24). 200 {id, status:'withdrawn'},
+  // 404 not_found, 409 already_decided.
+  autoApproveRequestWithdraw:(id) => qhFetch('/auto-approve-requests/' + encodeURIComponent(id) + '/withdraw', { method: 'POST' }),
   feedback:    (b)     => qhFetch('/feedback', { method: 'POST', body: JSON.stringify(b) }),
   // Developer notifications (approval decisions, scheduled runs, endpoint
   // grants, kill switch). Read state mirrors server-side.
@@ -231,7 +241,8 @@ const qhApi = {
   adminKillHistory:()     => qhFetch('/admin/kill/history'),
   adminGrants:     ()     => qhFetch('/admin/grants'),
   adminAddGrant:   (b)    => qhFetch('/admin/grants', { method: 'POST', body: JSON.stringify(b) }),
-  adminDelGrant:   (id)   => qhFetch('/admin/grants/' + encodeURIComponent(id), { method: 'DELETE' }),
+  // The second argument {reason} is optional. The body goes out only for a non-empty reason.
+  adminDelGrant:   (id, o) => qhFetch('/admin/grants/' + encodeURIComponent(id), { method: 'DELETE', ...qhRevokeBody(o) }),
   adminAutoGrants: ()     => qhFetch('/admin/auto-grants'),
   adminAddAutoGrant:(b)   => qhFetch('/admin/auto-grants', { method: 'POST', body: JSON.stringify(b) }),
   // One subject -- a person or a team -- on many targets, all or nothing: a 409
@@ -319,7 +330,7 @@ const qhApi = {
   // Grants on every server, and the super-admin-only switch (CODE 2026-10-06 (c)).
   adminFleetGrants:()           => qhFetch('/admin/grants/fleet'),
   adminAddFleetGrant:(b)        => qhFetch('/admin/grants/fleet', { method: 'POST', body: JSON.stringify(b) }),
-  adminRevokeFleetGrant:(id)    => qhFetch('/admin/grants/fleet/' + encodeURIComponent(id), { method: 'DELETE' }),
+  adminRevokeFleetGrant:(id, o) => qhFetch('/admin/grants/fleet/' + encodeURIComponent(id), { method: 'DELETE', ...qhRevokeBody(o) }),
   adminSetSuperAdminOnly:(conn, on) => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/super-admin-only', { method: 'PUT', body: JSON.stringify({ on: !!on }) }),
   adminAddConnectionOwner:(conn, teamId) => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/owners', { method: 'POST', body: JSON.stringify({ teamId }) }),
   adminRemoveConnectionOwner:(conn, teamId) => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/owners/' + encodeURIComponent(teamId), { method: 'DELETE' }),
@@ -362,6 +373,9 @@ const qhApi = {
   // synchronously inside the view's effect: a 404 lands in its own .catch and
   // the screen says "Could not load the trail" instead of unmounting the panel.
   adminAuditSearch:(body) => qhFetch('/admin/audit/search', { method: 'POST', body: JSON.stringify(body || {}) }),
+  // The audit insight (2026-10-24): which one rule produced most of the auto-approved
+  // queries in the window. `insights` is empty when there is nothing to say.
+  adminAuditInsight: () => qhFetch('/admin/audit/insight'),
   // `window` is '7d' or '30d' (PLA-1592 U8). Without it, every request counts.
   adminMetrics:    (window) => qhFetch('/admin/metrics' + (window ? '?window=' + encodeURIComponent(window) : '')),
   adminFeedback:   ()     => qhFetch('/admin/feedback'),
@@ -390,4 +404,4 @@ function qhScheduleToISO(when) {
   return d.toISOString();
 }
 
-Object.assign(window, { qhApi, qhSignInWithSlack, qhTimeAgo, qhScheduleToISO, API_BASE });
+Object.assign(window, { qhApi, qhRevokeBody, qhSignInWithSlack, qhTimeAgo, qhScheduleToISO, API_BASE });

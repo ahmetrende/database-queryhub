@@ -111,7 +111,7 @@ test('revoke: a confirm row says what changes and the DELETE waits for it', () =
   assert.match(src, /loses \{g\.tier\} on \{qhGrantTarget\(g\)\}\. A query that is running finishes\./);
   // The first Revoke click opens the row. It does not call revokeGrant.
   assert.doesNotMatch(src, /className="qh-revoke" onClick=\{\(\) => st\.revokeGrant\(g\.id, actor\)\}/);
-  assert.match(src, /setRevokeId\(null\); st\.revokeGrant\(g\.id, actor\)/);
+  assert.match(src, /setRevokeId\(null\); setRevokeWhy\(''\); st\.revokeGrant\(g\.id, actor, /);
 });
 
 // ---------- 18: scope form ----------

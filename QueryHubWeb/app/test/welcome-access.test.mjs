@@ -29,7 +29,8 @@ test('the rule: read-only on an auto-approving database runs at once; the rest g
   assert.equal(sum.everything, false);
   assert.deepEqual(sum.once.map(r => r.key), ['a/orders', 'b/events']);
   assert.deepEqual(sum.dba.map(r => r.key), ['a/billing', 'a/audit', 'b/users', 'b/schema_dev']);
-  assert.deepEqual(sum.once[0], { key: 'a/orders', server: 'alpha-main', db: 'orders', tier: 'RO' });
+  // `grantEndsAt` is null when the database entry carries no end (2026-10-24).
+  assert.deepEqual(sum.once[0], { key: 'a/orders', server: 'alpha-main', db: 'orders', tier: 'RO', grantEndsAt: null });
 });
 
 test('read/write and schema changes go to a DBA even where reads auto-approve', () => {

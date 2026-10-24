@@ -1224,6 +1224,50 @@ def status_messages(row: dict, audit_rows: list[dict] | None = None,
     return msgs
 
 
+def timeline(row: dict, audit_rows: list[dict] | None = None,
+             name_of: Callable[[str], str | None] | None = None,
+             requester_slack_id: str | None = None) -> list[dict]:
+    """The steps of one request: sent, decided, started, finished.
+
+    A step is present when its timestamp is set, in that order. Every value is
+    a string. `decided` carries `outcome` (`approved`, or the value of
+    `request_outcome`) and `by`, a person's name. QueryHub is the name when it
+    approved the request by itself. `finished` carries `completed` or `failed`.
+    The list holds no SQL text, no row count and no result value.
+
+    The detail route serves it. The list routes do not, to keep them small."""
+    steps: list[dict] = []
+    if row.get("created_at"):
+        steps.append({"step": "sent", "at": iso(row["created_at"])})
+    if row.get("decided_at"):
+        status = row.get("status")
+        actions = {a.get("action") for a in (audit_rows or [])}
+        auto = auto_approval(row, audit_rows)
+        step = {"step": "decided", "at": iso(row["decided_at"])}
+        outcome = request_outcome(status, actions)
+        if outcome is None and status != "cancelled":
+            outcome = "approved"
+        if outcome:
+            step["outcome"] = outcome
+        if auto and outcome == "approved":
+            step["by"] = "QueryHub"
+        else:
+            who = approver_label(row.get("decided_by_slack_id"),
+                                 row.get("decided_by_name"), name_of,
+                                 requester_slack_id)
+            if who and who != row.get("decided_by_slack_id"):
+                step["by"] = str(who)
+        steps.append(step)
+    if row.get("executed_at"):
+        steps.append({"step": "started", "at": iso(row["executed_at"])})
+    if row.get("completed_at"):
+        step = {"step": "finished", "at": iso(row["completed_at"])}
+        if row.get("status") in ("completed", "failed"):
+            step["outcome"] = row["status"]
+        steps.append(step)
+    return steps
+
+
 # ---- schema tree (SSMS-style) -----------------------------------------------
 
 import re as _re

@@ -49,6 +49,15 @@ const MOCK_KILL_APPROVE_SAY = 'Kill switch is on. Resume queries first.';
 const isoNow = () => new Date().toISOString();
 const isoAgo = (ms) => new Date(Date.now() - ms).toISOString();
 const isoIn = (ms) => new Date(Date.now() + ms).toISOString();
+// MOCK: when the access to a database ends, in the four states the UI draws.
+// soon = 2 days, live = 45 days, past = 3 days ago. Every other database has none.
+function mockGrantEnd(key) {
+  const day = 86400000;
+  if (key === 'prod-replica/users_ro') return isoIn(2 * day);
+  if (key === 'prod-replica/analytics_ro') return isoIn(45 * day);
+  if (key === 'prod-main/users') return new Date(Date.now() - 3 * day).toISOString();
+  return null;
+}
 const clock = () => new Date().toLocaleTimeString('en-GB', { hour12: false });
 let MOCK_SEQ = 900;
 const mockId = (p) => p + '_' + (++MOCK_SEQ);
@@ -728,7 +737,8 @@ function connRegistry() {
       tags: { ...(c.tags || {}) },
       host: c.id.replace(/[^a-z0-9-]/g, '-') + '.db.internal', port: DEFAULT_PORT[eid] || 5432,
       defaultDatabase: (c.databases[0] || {}).name || 'postgres', notes: '',
-      databases: c.databases.map(d => ({ id: d.id, name: d.name, tier: d.tier })),
+      // `grantEndsAt` is seeded for four states: soon, far, none and past.
+      databases: c.databases.map(d => ({ id: d.id, name: d.name, tier: d.tier, grantEndsAt: mockGrantEnd(c.id + '/' + d.id) })),
       autoApproveRO: !!c.autoApproveRO,
       // Super-admin-only (CODE 2026-10-06 (c), migration 141): one connection on,
       // so the chip and the switch render in both states.
@@ -1754,7 +1764,32 @@ function seededStatus(rec) {
     messages: [first, { kind: 'err', time, text: 'Rejected by ' + sd.by + ': ' + sd.note }] };
 }
 
+// MOCK of the server's `timeline` (GET /queries/{id}): only the steps that
+// happened, in order. Each mock status maps to the steps it implies.
+function mockTimeline(rec, s) {
+  const at = (ms) => new Date(rec.t0 + ms).toISOString();
+  const gap = rec.auto ? 0 : (rec.seed ? 120000 : APPROVAL_MS);
+  const out = [{ step: 'sent', at: at(0) }];
+  if (s.status === 'pending' || s.status === 'scheduled') return out;
+  if (s.status === 'rejected') {
+    const by = rec.seed ? rec.seed.by : (rec.rejected ? 'dba.amara' : null);
+    const d = { step: 'decided', at: at(gap), outcome: s.outcome || 'denied' };
+    if (by && s.outcome !== 'withdrawn' && s.outcome !== 'expired') d.by = by;
+    out.push(d);
+    return out;
+  }
+  out.push({ step: 'decided', at: at(gap), outcome: 'approved', ...(rec.auto ? {} : { by: 'dba.amara' }) });
+  out.push({ step: 'started', at: at(gap + 600) });
+  if (s.status === 'done' || (s.status === 'failed' && !s.awaitingDba)) {
+    out.push({ step: 'finished', at: at(gap + 600 + (s.runMs || 800)), outcome: s.status === 'done' ? 'completed' : 'failed' });
+  }
+  return out;
+}
 function statusOf(rec) {
+  const s = statusOfBase(rec);
+  return { ...s, timeline: mockTimeline(rec, s) };
+}
+function statusOfBase(rec) {
   if (rec.seed) return seededStatus(rec);
   const el = Date.now() - rec.t0;
   const msg = [];
@@ -2409,6 +2444,19 @@ const qhApi = {
     if (!me) return mockFail('Not signed in.', 401, 'unauthenticated');
     return { windowOptions: MOCK_AUTO_WINDOWS.map(o => ({ ...o })), tiers: ['RO', 'RW'], requests: ADMIN.autoReqs.filter(r => r.requester === me.handle).map(mockOwnAsk) };
   }, 160),
+  // POST /auto-approve-requests/{id}/withdraw: the caller's own pending ask becomes
+  // withdrawn. A decided one answers 409 already_decided, an unknown id 404.
+  autoApproveRequestWithdraw: (id) => mockDelay(() => {
+    const me = mockUser();
+    if (!me) return mockFail('Not signed in.', 401, 'unauthenticated');
+    const r = ADMIN.autoReqs.find(x => String(x.id) === String(id) && x.requester === me.handle);
+    if (!r) return mockFail('No such request.', 404, 'not_found');
+    if (r.status !== 'submitted') return mockFail('A DBA already decided this request.', 409, 'already_decided');
+    r.status = 'withdrawn';
+    mockAudit('Withdrew auto-approve request', me.handle + ' → ' + r.connectionId + '/' + (r.databaseId || 'all databases'), 'auto');
+    // The server answers an INTEGER id. The mock row ids are strings, so keep the digits.
+    return { id: Number(String(r.id).replace(/\D/g, '')), status: 'withdrawn' };
+  }, 200),
   requestEndpoint: (b) => mockDelay(() => {
     // A picked row is AUTHORITATIVE and there is NO fallback to the free text
     // (§2): falling back is what produced requests nobody could resolve. Unknown
@@ -2599,10 +2647,11 @@ const qhApi = {
     mockAudit((one.updated ? 'Updated grant · ' : 'Granted ') + b.tier + expNote, b.subject + ' → ' + b.connectionId, 'grant');
     return { id: one.id, autoApprove: writeAuto([b.subject]) };
   }, 240),
-  adminDelGrant: (id) => mockDelay(() => {
+  adminDelGrant: (id, o) => mockDelay(() => {
     const g = ADMIN.grants.find(x => x.id === id);
     ADMIN.grants = ADMIN.grants.filter(x => x.id !== id);
-    if (g) mockAudit('Revoked grant', g.subject + ' → ' + g.connectionId, 'reject');
+    const why = o && typeof o.reason === 'string' ? o.reason.trim() : '';
+    if (g) mockAudit('Revoked grant', g.subject + ' → ' + g.connectionId + (why ? ' · reason: ' + why : ''), 'reject');
     return null;
   }, 200),
   adminAutoGrants: () => mockDelay(() => ({ autoGrants: ADMIN.auto.slice(), maxDays: MOCK_AUTO_MAX_DAYS }), 180),
@@ -2961,13 +3010,14 @@ const qhApi = {
     mockAudit('Granted RO on every server', row.subjectName + (row.autoApprove ? ' · reads auto-approved' : ''), 'grant');
     return { id: row.id, waiverId: row.autoApprove ? mockId('fw') : null, subjectName: row.subjectName, tier: 'RO', autoApprove: row.autoApprove };
   }, 260),
-  adminRevokeFleetGrant: (id) => mockDelay(() => {
+  adminRevokeFleetGrant: (id, o) => mockDelay(() => {
     if (!mockUser() || mockUser().role !== 'super') return mockFail('Super-admin access required.', 403, 'forbidden');
     const r = mockFleet().find(g => g.id === id);
     if (!r) return mockFail('No such grant.', 404, 'not_found');
     if (r.syncedFrom) return mockFail('This grant comes from ' + r.syncedFrom + '. Change it there.', 409, 'mirrored');
     ADMIN.fleet = ADMIN.fleet.filter(g => g.id !== id);
-    mockAudit('Revoked RO on every server', r.subjectName + (r.autoApprove ? ' · and its waiver' : ''), 'reject');
+    const why = o && typeof o.reason === 'string' ? o.reason.trim() : '';
+    mockAudit('Revoked RO on every server', r.subjectName + (r.autoApprove ? ' · and its waiver' : '') + (why ? ' · reason: ' + why : ''), 'reject');
     return null;
   }, 220),
   adminSetSuperAdminOnly: (conn, on) => mockDelay(() => {
@@ -3501,6 +3551,11 @@ const qhApi = {
   // paged, faceted and searches the whole table server-side.
   adminAuditSearch: (params) => mockDelay(() => audSearch(params), 280),
   adminAudit: () => mockDelay(() => ({ audit: ADMIN.audit.slice() }), 220),
+  // The audit insight. Set `window.QH_MOCK_INSIGHT_EMPTY = true` for the branch
+  // with nothing to say. A test flips the flag, nothing in the UI reads it.
+  adminAuditInsight: () => mockDelay(() => (window.QH_MOCK_INSIGHT_EMPTY
+    ? { windowDays: 30, insights: [] }
+    : { windowDays: 30, insights: [{ tier: 'RO', total: 500, ruleId: 'ag:101', ruleLabel: 'Jordan Ray on prod-main (RO)', count: 310, percent: 62 }] }), 180),
   // `window` '7d' | '30d' adds the window label and the decision time. The
   // seven-day answer is the smaller one. No window keeps the old shape.
   adminMetrics: (window) => mockDelay(() => {

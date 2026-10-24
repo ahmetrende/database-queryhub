@@ -1440,11 +1440,46 @@ function qhAccessSummary(conns, isSuper) {
   (conns || []).forEach(c => {
     if (!c || c.disabled) return;
     (c.databases || []).forEach(d => {
-      const row = { key: c.id + '/' + d.id, server: c.name || c.id, db: d.name || d.id, tier: d.tier || 'RO' };
+      const row = { key: c.id + '/' + d.id, server: c.name || c.id, db: d.name || d.id, tier: d.tier || 'RO', grantEndsAt: d.grantEndsAt || null };
       (row.tier === 'RO' && qhAutoApproveRO(c, d) ? once : dba).push(row);
     });
   });
   return { everything: false, once, dba };
+}
+
+// When the access to one database ends (2026-10-24). `grantEndsAt` is an ISO
+// string or null. Null means no end (or no grant) and gives null, so a row with
+// no end prints nothing. Uses `qhEndState`, so "soon" is the same seven days as
+// everywhere. Returns { state, text, short, tone, title }. Tone is calm for live,
+// amber for soon, muted for ended. `short` is the tree chip text. `now` is for tests.
+function qhGrantEnd(grantEndsAt, now) {
+  const e = qhEndState(grantEndsAt, now);
+  if (e.state === 'none') return null;
+  const d = new Date(grantEndsAt);
+  const full = isNaN(d.getTime()) ? String(grantEndsAt)
+    : (typeof qhFmt === 'function' ? qhFmt(grantEndsAt) : d.toLocaleString());
+  const span = e.label.indexOf('· ') >= 0 ? e.label.split('· ')[1].replace(/ left$/, '') : '';
+  if (e.state === 'ended') return { state: 'ended', text: 'Ended', short: 'Ended', tone: 'muted', title: 'Ended ' + full };
+  if (e.state === 'soon') return { state: 'soon', text: e.label, short: 'Ends in ' + span, tone: 'amber', title: 'Ends ' + full };
+  return { state: 'live', text: e.label, short: '', tone: 'calm', title: 'Ends ' + full };
+}
+
+// The step list of one request (2026-10-24). `timeline` is the server's list of
+// { step, at, outcome?, by? }. Steps that the UI does not know are dropped. No
+// list, or an empty one, gives []. The last row is the strong one.
+const QH_STEP_WORDS = { sent: 'Sent', decided: 'Decided', started: 'Started', finished: 'Finished' };
+const QH_STEP_OUTCOMES = { approved: 'Approved', denied: 'Denied', changes_requested: 'Changes requested',
+  withdrawn: 'Withdrawn', expired: 'Expired', completed: 'Completed', failed: 'Failed' };
+function qhTimelineRows(timeline) {
+  if (!Array.isArray(timeline)) return [];
+  const rows = timeline.filter(s => s && QH_STEP_WORDS[s.step]).map((s, i) => {
+    const o = (s.step === 'decided' || s.step === 'finished') && s.outcome ? String(s.outcome) : '';
+    const word = QH_STEP_OUTCOMES[o] || (o ? o.charAt(0).toUpperCase() + o.slice(1).replace(/_/g, ' ').toLowerCase() : '');
+    return { key: s.step + i, step: s.step, label: QH_STEP_WORDS[s.step], outcome: word,
+      by: s.by ? qhPersonName(String(s.by)) : '', ago: qhAgo(s.at), title: s.at ? new Date(s.at).toLocaleString() : '', strong: false };
+  });
+  if (rows.length) rows[rows.length - 1].strong = true;
+  return rows;
 }
 
 Object.assign(window, {
@@ -1466,5 +1501,5 @@ Object.assign(window, {
   QH_OUTCOMES, qhOutcomeInfo, qhOutcomeMessages, qhHistoryRow, qhHistoryKind, QH_HIST_FILTERS, qhHistoryFilter, qhSqlStart,
   qhPendingRequests, qhResubmitOver, qhNotifSubject, qhEndNote,
   qhBrowserNotifStored, qhBrowserNotifStore, qhRaisedLoad, qhRaisedSave, qhBrowserNotifPermission, qhBrowserNotifEnable, qhRaiseBrowserNotifs,
-  qhAccessSummary,
+  qhAccessSummary, qhGrantEnd, qhTimelineRows, QH_STEP_WORDS, QH_STEP_OUTCOMES,
 });

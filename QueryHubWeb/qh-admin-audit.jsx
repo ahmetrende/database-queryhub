@@ -298,6 +298,39 @@ function AudDetail({ row, onClose, pushToast }) {
   );
 }
 
+// ---------- The insight callout (2026-10-24) ----------
+// One calm line per insight, above the filters. It is a bonus: while it loads, when
+// the call fails and when the list is empty it renders null, so it never pushes the
+// list down and never shows an error.
+function audInsightLine(i, days) {
+  const what = i.tier === 'RW' ? 'write queries' : (i.tier || 'RO') + ' queries';
+  return 'One rule produced ' + i.percent + '% of the ' + what + ' that QueryHub approved by itself in the last '
+    + days + ' days: ' + i.ruleLabel + ', ' + i.count + ' of ' + i.total + '.';
+}
+function AuditInsight() {
+  const [data, setData] = useAud(null);
+  useAudEf(() => {
+    let live = true;
+    try {
+      Promise.resolve(window.qhApi.adminAuditInsight())
+        .then(r => { if (live) setData(r); })
+        .catch(() => {});
+    } catch (e) { /* a bonus, never an error */ }
+    return () => { live = false; };
+  }, []);
+  const list = data && Array.isArray(data.insights) ? data.insights : [];
+  if (!list.length) return null;
+  const days = data.windowDays || 30;
+  return (
+    <div className="qh-audinsight" role="note">
+      <div className="qh-audinsight-lines">
+        {list.map((i, n) => <div key={(i.ruleId || '') + ':' + n} className="qh-audinsight-line">{audInsightLine(i, days)}</div>)}
+      </div>
+      <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => { window.location.hash = '#admin/auto'; }}>Review rule</button>
+    </div>
+  );
+}
+
 // ---------- The view ----------
 function AuditView({ st }) {
   const [q, setQ] = useAud('');
@@ -408,6 +441,8 @@ function AuditView({ st }) {
           ))}
         </div>
       </div>
+
+      <AuditInsight />
 
       {/* Search first and full width. It reaches the whole table server-side and
           is the main way people find things, so it is sized like the primary
@@ -633,4 +668,4 @@ function AuditView({ st }) {
   );
 }
 
-Object.assign(window, { AuditView, QH_AUD_CATS, QH_AUD_EFFECTS, QH_AUD_ACTORS, QH_AUD_OUTCOMES });
+Object.assign(window, { AuditView, AuditInsight, audInsightLine,QH_AUD_CATS, QH_AUD_EFFECTS, QH_AUD_ACTORS, QH_AUD_OUTCOMES });

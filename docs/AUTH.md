@@ -260,6 +260,14 @@ these fields:
 | `queryhub.access_request_decided` | An admin approves or rejects an access request. | The requester. | `requestId`, `decision`, `target`, `database`, `tier`, `deciderName`, `note`, `grantApplied` |
 | `queryhub.window_request_pending` | A person asks for an auto-approve window. | The admins that the Slack fan-out DMs. | `requestId`, `requesterName`, `target`, `database`, `tier`, `reason`, `windowLabel` |
 | `queryhub.window_request_decided` | An admin approves or rejects a window request. | The requester. | `requestId`, `decision`, `target`, `database`, `tier`, `deciderName`, `note`, `windowLabel` |
+| `queryhub.request_decided` | An admin approves, rejects or asks for changes on a SQL request. | The requester. | `requestId`, `decision`, `target`, `tier`, `decidedBy`, `note` |
+| `queryhub.request_withdrawn` | The requester withdraws a SQL request. | The requester. | `requestId`, `target`, `tier`, `decidedBy`, `note` |
+| `queryhub.request_expired` | The stale-pending job expires a SQL request. | The requester. | `requestId`, `target`, `tier`, `decidedBy`, `note` |
+
+The three SQL request events above fill the top-level `requestId` with the
+id of the SQL request. For `queryhub.request_decided`, `decision` is
+`approved`, `rejected` or `changes_requested`. `note` is the admin's reason,
+or `""`. No SQL request event holds the SQL text or a result value.
 
 The values:
 

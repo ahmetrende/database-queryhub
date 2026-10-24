@@ -407,7 +407,10 @@ def withdraw(request_id: int, by_id: str | None, by_name: str | None) -> bool:
             return False
         audit.log_in(cur, request_id, by_id, by_name, "withdrawn",
                      {"by": by_id})
-        return True
+    # After the commit: a lost outbox row must never undo the withdrawal.
+    from . import idp_outbox
+    idp_outbox.write_request_withdrawn(request_id, by_name or by_id)
+    return True
 
 
 def sweep_runaways() -> int:

@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from queryhub import audit, db, pending_expiry  # noqa: E402
+from queryhub import audit, db, idp_outbox, pending_expiry  # noqa: E402
 from queryhub.config import ENV  # noqa: E402
 
 log = logging.getLogger("pending-expiry")
@@ -39,7 +39,8 @@ log = logging.getLogger("pending-expiry")
 def find_stale(hours: int) -> list[dict]:
     """Pending requests older than `hours`."""
     return db.fetch_all(
-        "SELECT r.id, r.requester_slack_id, r.target_server_id, ts.alias, r.created_at "
+        "SELECT r.id, r.requester_slack_id, r.target_server_id, ts.alias, r.created_at, "
+        "       r.required_tier "
         "  FROM requests r "
         "  JOIN target_servers ts ON ts.id = r.target_server_id "
         " WHERE r.status = 'pending' "
@@ -98,6 +99,9 @@ def main() -> int:
                          {"target": r["alias"], "target_id": r["target_server_id"],
                           "idle_hours": hours})
         expired += 1
+        idp_outbox.write_request_expired(
+            r["id"], r["requester_slack_id"], r["alias"], r.get("required_tier"),
+            note=reason)
         try:
             notifications.dm_requester(
                 client, r["requester_slack_id"],

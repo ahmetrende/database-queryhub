@@ -36,7 +36,8 @@ def test_a_user_override_wins(monkeypatch):
                  "allowed_databases": ["a"], "expired": False}],
           team=[{"target_server_id": 1, "mode": "ddl", "allowed_databases": None}])
     g = teams.effective_grants_for_user("U1", [1])[1]
-    assert g == {"mode": "ro", "allowed_databases": {"a"}, "source": "user"}
+    assert {k: v for k, v in g.items() if k != "grant_rows"} == {
+        "mode": "ro", "allowed_databases": {"a"}, "source": "user"}
 
 
 def test_an_expired_override_does_not_fall_through(monkeypatch):

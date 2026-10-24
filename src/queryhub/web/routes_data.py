@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import timezone
 
 import psycopg
 from fastapi import APIRouter, Depends
@@ -234,6 +235,15 @@ def _catalog_table_refs_map(pairs: list[tuple]) -> dict[tuple, list[dict]]:
     return out
 
 
+def _iso_utc(at) -> str | None:
+    """A grant end as an ISO-8601 UTC string, or None."""
+    if at is None:
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 @router.get("/connections")
 def connections(claims: dict = Depends(deps.current_user)):
     deps.require_whitelisted(claims)
@@ -354,6 +364,10 @@ def connections(claims: dict = Depends(deps.current_user)):
                 "functions": [r["n"] for r in fns],
                 "functionRefs": fns,
                 "autoApproveRO": aa,
+                # When the access to this database ends: UTC ISO string, or
+                # null for permanent access and for an admin bypass.
+                "grantEndsAt": _iso_utc(
+                    teams.grant_end_for(grant.get("grant_rows"), d)),
             })
         entry = {
             "id": t.alias,

@@ -517,6 +517,7 @@ def resolve_many(principal_id: str,
         "SELECT ts.id AS target_id, (g.principal_id IS NOT NULL) AS mine, "
         "       g.tier, t.rank, g.auto_approve, g.merge_with_team, "
         "       g.all_targets, g.all_databases, g.database_name, g.db_role, "
+        "       g.valid_until, "
         "       (g.valid_until IS NOT NULL AND g.valid_until <= NOW()) AS expired, "
         "       (g.valid_from > NOW()) AS not_started "
         "  FROM access_grant g "
@@ -553,6 +554,15 @@ def resolve_many(principal_id: str,
             if r["database_name"]:
                 names.add(r["database_name"])
         decided["databases"] = None if unrestricted_dbs else names
+        # The live grants that decide access, with their ends, so the
+        # connections payload can say when access to each database ends.
+        # Waivers are not grants and are not in `pool`.
+        decided["grant_rows"] = [
+            {"mode": r["tier"],
+             "allowed_databases": (None if r["all_databases"]
+                                   else {r["database_name"]}),
+             "ends_at": r.get("valid_until")}
+            for r in pool]
         out[tid] = decided
     return out
 
@@ -901,9 +911,12 @@ def legacy_shape(resolved: dict | None) -> dict | None:
         source = "admin_or_bypass"
     else:
         source = "user" if resolved["source"] == "principal" else "team"
-    return {"mode": resolved["tier"],
-            "allowed_databases": resolved.get("databases"),
-            "source": source}
+    out = {"mode": resolved["tier"],
+           "allowed_databases": resolved.get("databases"),
+           "source": source}
+    if "grant_rows" in resolved:
+        out["grant_rows"] = resolved["grant_rows"]
+    return out
 
 
 def list_admins() -> list[dict]:

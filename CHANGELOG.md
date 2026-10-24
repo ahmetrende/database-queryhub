@@ -9,6 +9,43 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+### Added
+
+- **The audit screen says when one rule does most of the auto-approving.** `GET
+  /api/admin/audit/insight` looks at the queries that QueryHub approved by itself
+  in the last 30 days and groups them by rule and by the tier of the query: RO,
+  or RW for writes. For a tier with at least 20 such queries, where one rule
+  produced at least half of them, the answer names that rule, its count and its
+  share. Otherwise the list is empty. The audit screen shows the answer in a
+  callout with a "Review rule" button that opens the Auto-approve screen. The
+  route uses the same gate as the audit search.
+- **Access shows when it ends.** `GET /api/connections` adds `grantEndsAt` to each
+  database entry: an ISO time, or null for no end. The value is the end of the
+  access the person holds at the highest tier there. When two grants give the same
+  tier, the one that ends last counts. A grant with no end makes it null. The
+  Welcome lists show "44d left" or "Ends soon · 47h left" on each row. The tree
+  shows an amber "Ends in 47h" chip when the end is within seven days.
+- **A request shows its steps.** `GET /api/queries/{id}` adds `timeline`: the steps
+  sent, decided, started and finished, with the time of each. Only the steps that
+  happened appear. A decided step carries the outcome and the name of the person
+  who decided. The Messages tab shows them in a "Steps" list. The list endpoints
+  do not carry it.
+- **A person can withdraw an auto-approve window request.** `POST
+  /api/auto-approve-requests/{id}/withdraw` withdraws a request that nobody has
+  decided. A request of another person answers 404 `not_found`. A request that is
+  decided answers 409 `already_decided`. Migration 195 adds the status `withdrawn`.
+  The request dialog has a Withdraw button. A DBA decision on a withdrawn request
+  answers 409 "The person withdrew this request."
+- **A grant revoke can carry a reason.** `DELETE /api/admin/grants/{gid}` and
+  `DELETE /api/admin/grants/fleet/{gid}` accept an optional body `{"reason": ...}`
+  with at most 500 characters. The reason goes into the audit row and nowhere
+  else. A request with no body still works. Both revoke rows have an optional
+  "Reason" field.
+- **Three outbox events for SQL requests.** `queryhub.request_decided`,
+  `queryhub.request_withdrawn` and `queryhub.request_expired` go to the requester.
+  The setting `idp_outbox_enabled` (default off) gates them, as it gates the
+  other events. `docs/AUTH.md` section 1.3 lists the payload keys.
+
 ### Changed
 
 - **An approver can approve RO or RW, never DDL.** A DBA scope (`POST` and `PUT

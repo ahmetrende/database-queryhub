@@ -25,6 +25,7 @@ from .. import (
     admins,
     approver_limits,
     audit,
+    audit_insight,
     auto_approve,
     auto_approve_limits,
     connection_health,
@@ -2377,13 +2378,35 @@ def admin_add_fleet_grant(body: FleetGrantIn,
             "tier": "RO", "autoApprove": ids["waiver"] is not None}
 
 
+_REVOKE_REASON_MAX = 500
+
+
+class RevokeIn(BaseModel):
+    """The optional body of a grant revoke. A DELETE with no body still works."""
+    reason: str | None = None
+
+
+def _revoke_reason(body: "RevokeIn | None") -> str | None:
+    """The trimmed reason of a revoke. Empty or missing is None. More than
+    500 characters is a 400. The reason goes into the audit row only."""
+    reason = ((body.reason if body else None) or "").strip()
+    if len(reason) > _REVOKE_REASON_MAX:
+        raise deps._error(400, "bad_request",
+                          f"The reason can have at most {_REVOKE_REASON_MAX} characters.")
+    return reason or None
+
+
 @router.delete("/grants/fleet/{gid}", status_code=204)
-def admin_revoke_fleet_grant(gid: int, claims: dict = Depends(deps.current_user)):
+def admin_revoke_fleet_grant(gid: int, claims: dict = Depends(deps.current_user),
+                             body: RevokeIn | None = None):
     """Revoke one fleet-wide row. Revoking a GRANT also revokes the same
     subject's fleet-wide waivers written here: a waiver on access that is gone
-    decides nothing, and a stale row only misleads the next reader."""
+    decides nothing, and a stale row only misleads the next reader.
+
+    An optional body `{"reason": ...}` goes into the audit row."""
     uid = admin.require_admin(claims, "access")
     _require_super(uid, "revoke access on every server")
+    reason = _revoke_reason(body)
     with db.transaction() as cur:
         cur.execute("SELECT id, principal_id, team_id, auto_approve, mirrored_from "
                     "  FROM access_grant WHERE id = %s AND all_targets "
@@ -2406,7 +2429,7 @@ def admin_revoke_fleet_grant(gid: int, claims: dict = Depends(deps.current_user)
         cur.execute("UPDATE access_grant SET revoked_at = NOW(), revoked_by = "
                     + _caller_principal_sql() + " WHERE id = ANY(%s)", (uid, ids))
         audit.log_in(cur, None, uid, claims.get("name"), "fleet_grant_revoked",
-                     {"ids": ids})
+                     {"ids": ids, **({"reason": reason} if reason else {})})
     return
 
 
@@ -2432,8 +2455,10 @@ def admin_set_super_admin_only(conn: str, body: SuperAdminOnlyIn,
 
 
 @router.delete("/grants/{gid}", status_code=204)
-def admin_delete_grant(gid: str, claims: dict = Depends(deps.current_user)):
+def admin_delete_grant(gid: str, claims: dict = Depends(deps.current_user),
+                       body: RevokeIn | None = None):
     uid = admin.require_admin(claims, "access")
+    reason = _revoke_reason(body)
     parsed = _parse_grant_id(gid)
     if parsed is None:
         raise deps._error(400, "bad_request", "Bad grant id.")
@@ -2470,11 +2495,12 @@ def admin_delete_grant(gid: str, claims: dict = Depends(deps.current_user)):
                 raise deps._error(404, "not_found", "No team grant to revoke.")
             audit.log_in(cur, None, uid, claims.get("name"), "team_grant_removed",
                          {"team_id": team_id, "target_id": parsed["target_id"],
-                          "rows": len(rows)})
+                          "rows": len(rows),
+                          **({"reason": reason} if reason else {})})
         return
     row = grants.revoke(granter_id=uid, granter_name=claims.get("name"),
                         grantee_id=parsed["subject"], target_id=parsed["target_id"],
-                        notify=True)
+                        reason=reason, notify=True)
     if row is None:
         raise deps._error(404, "not_found", "No active grant to revoke.")
 
@@ -6765,6 +6791,70 @@ def _audit_where(body: AuditSearchIn) -> tuple[str, dict]:
         where.append("al.created_at <= %(until)s")
         params["until"] = body.until
     return " AND ".join(where), params
+
+
+_AUDIT_INSIGHT_SQL = (
+    "SELECT CASE WHEN q.required_tier = 'ro' THEN 'RO' ELSE 'RW' END AS tier, "
+    "       a.details->>'grant_id' AS grant_id, count(*) AS n "
+    "  FROM audit_log a "
+    "  JOIN requests q ON q.id = a.request_id "
+    " WHERE a.action = 'auto_approved' "
+    "   AND a.details->>'grant_id' IS NOT NULL "
+    "   AND q.required_tier IN ('ro', 'rw', 'ddl') "
+    "   AND a.created_at > NOW() - INTERVAL '30 days' "
+    " GROUP BY 1, 2")
+
+
+def _auto_rule_label(rule_id: str, tier: str) -> str:
+    """A short name for a rule: `<person or team> on <connection> (<tier>)`.
+
+    A rule that no longer exists, or an id that cannot be read, gives
+    `rule <id>`. This function never raises. It returns no SQL text and no
+    email.
+    """
+    fallback = f"rule {rule_id}"
+    try:
+        if rule_id.startswith("ag:"):
+            rows = db.fetch_all(
+                "SELECT COALESCE(t.display_name, t.name) AS team_name, "
+                "       p.display_name AS user_name, g.target_id "
+                "  FROM access_grant g "
+                "  LEFT JOIN team t ON t.id = g.team_id "
+                "  LEFT JOIN principal p ON p.id = g.principal_id "
+                " WHERE g.id = %s", (int(rule_id[3:]),))
+            target = rows[0]["target_id"] if rows else None
+            who = (rows[0]["team_name"] or rows[0]["user_name"]) if rows else None
+        else:
+            rows = db.fetch_all(
+                "SELECT COALESCE(r.name, a.name) AS user_name, "
+                "       g.slack_user_id, g.target_server_id "
+                "  FROM auto_approve_grants g "
+                "  LEFT JOIN requesters r ON r.slack_user_id = g.slack_user_id "
+                "  LEFT JOIN admins a ON a.slack_user_id = g.slack_user_id "
+                " WHERE g.id = %s", (int(rule_id),))
+            target = rows[0]["target_server_id"] if rows else None
+            who = (rows[0]["user_name"] or rows[0]["slack_user_id"]) if rows else None
+        if not rows:
+            return fallback
+        conn = (_alias_of(target) if target else None) or "any connection"
+        return f"{who or 'unknown'} on {conn} ({tier})"
+    except Exception:  # noqa: BLE001 - a label must never break the screen
+        return fallback
+
+
+@router.get("/audit/insight")
+def admin_audit_insight(claims: dict = Depends(deps.current_user)):
+    """Say when one auto-approve rule approved most of the recent queries.
+
+    Read-only. One grouped read of the audit trail, then a label read for the
+    top rule of each tier that qualifies. `insights` is empty when there is
+    nothing to say. Same gate as the audit search.
+    """
+    admin.require_admin(claims, "review")
+    rows = db.fetch_all(_AUDIT_INSIGHT_SQL)
+    insights = audit_insight.pick_insights(
+        rows, label_of=lambda tier, rid: _auto_rule_label(rid, tier))
+    return {"windowDays": audit_insight.WINDOW_DAYS, "insights": insights}
 
 
 @router.post("/audit/search")

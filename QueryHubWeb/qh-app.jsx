@@ -1029,6 +1029,7 @@ function App() {
       ...x, status: sres.status, awaitingDba: !!sres.awaitingDba, runMs: sres.runMs,
       messages: qhOutcomeMessages(msgs, sres.outcome || null), audit: sres.audit || [],
       ranOn: sres.ranOn || null, outcome: sres.outcome || null, expiresAt: sres.expiresAt || null,
+      timeline: Array.isArray(sres.timeline) ? sres.timeline : null,
     } : x));
     if (sres.scheduledFor && sres.status !== 'running' && sres.status !== 'done'
         && new Date(sres.scheduledFor) > new Date()) { setResTab('messages'); return true; }
@@ -1636,7 +1637,7 @@ function App() {
                   audit={tab.audit} status={tab.status} awaitingDba={tab.awaitingDba} runMs={tab.runMs} onExport={exportResult} plan={tab.plan} onToast={pushToast} reqId={tab.reqId}
                   unmasked={resUnmasked} conn={resConn} onStatement={pickStatement} ranOn={tab.ranOn}
                   pending={tab.status === 'pending' ? { since: tab.submittedAt || null, expiresAt: tab.expiresAt || null } : null}
-                  onWithdraw={cancelRun} outcome={tab.outcome || null} endNote={qhEndNote(tab.messages, tab.outcome)} onResubmit={() => resubmitFrom(tab)} slackEnabled={slackOn} />
+                  onWithdraw={cancelRun} outcome={tab.outcome || null} endNote={qhEndNote(tab.messages, tab.outcome)} onResubmit={() => resubmitFrom(tab)} slackEnabled={slackOn} timeline={tab.timeline || null} />
               </div>
             </>
           )}

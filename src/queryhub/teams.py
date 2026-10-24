@@ -15,7 +15,7 @@ Authorization rules:
 """
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from . import access, admins, db, requesters
@@ -439,7 +439,7 @@ def effective_grants_for_user(
     user_rows = {
         r["target_server_id"]: r
         for r in db.fetch_all(
-            "SELECT target_server_id, mode, allowed_databases, "
+            "SELECT target_server_id, mode, allowed_databases, expires_at, "
             "       (expires_at IS NOT NULL AND expires_at <= NOW()) AS expired "
             "  FROM user_target_grants "
             " WHERE slack_user_id = %s AND revoked_at IS NULL "
@@ -449,7 +449,8 @@ def effective_grants_for_user(
 
     team_rows: dict[int, list[dict]] = {}
     for r in db.fetch_all(
-            "SELECT g.target_server_id, g.mode, g.allowed_databases "
+            "SELECT g.target_server_id, g.mode, g.allowed_databases, "
+            "       g.expires_at "
             "  FROM team_target_grants g "
             "  JOIN team_members tm ON tm.team_id = g.team_id "
             " WHERE tm.slack_user_id = %s AND g.revoked_at IS NULL "
@@ -474,6 +475,8 @@ def effective_grants_for_user(
                     else None
                 ),
                 "source": "user",
+                "grant_rows": [_grant_row(u["mode"], u["allowed_databases"],
+                                          u.get("expires_at"))],
             }
             continue
         rows = team_rows.get(tid) or []
@@ -492,8 +495,52 @@ def effective_grants_for_user(
             "mode": _max_mode(r["mode"] for r in rows),
             "allowed_databases": None if unrestricted else allowed,
             "source": "team",
+            "grant_rows": [_grant_row(r["mode"], r["allowed_databases"],
+                                      r.get("expires_at")) for r in rows],
         }
     return out
+
+
+def _grant_row(mode, allowed_databases, ends_at) -> dict:
+    """One live grant, in the shape `grant_end_for` reads.
+
+    An empty or NULL database list means every database, as everywhere else."""
+    dbs = (set(allowed_databases)
+           if allowed_databases is not None and len(allowed_databases) > 0
+           else None)
+    return {"mode": mode, "allowed_databases": dbs, "ends_at": ends_at}
+
+
+def grant_end_for(grant_rows, database_name: str, now=None):
+    """When the access a person holds on one database ends, or None.
+
+    `grant_rows` are the live grants of one connection (key `grant_rows` of
+    `effective_grants_for_user`). Only a grant that covers the database counts,
+    and a grant that already ended is skipped. Among the covering grants, only
+    those at the TOP tier count: a lower tier that ends later does not extend
+    the access the person really has. The top-tier grant that ends LAST wins.
+    One top-tier grant without an end makes the answer None (permanent).
+    None also answers "no grants" and "no end date anywhere".
+    """
+    now = now or datetime.now(timezone.utc)
+    covering = []
+    for g in grant_rows or ():
+        dbs = g.get("allowed_databases")
+        if dbs is not None and len(dbs) > 0 and database_name not in dbs:
+            continue
+        end = g.get("ends_at")
+        if end is not None:
+            cmp_end = end if end.tzinfo else end.replace(tzinfo=timezone.utc)
+            if cmp_end <= now:
+                continue
+        covering.append(g)
+    if not covering:
+        return None
+    top = _max_mode(g["mode"] for g in covering)
+    ends = [g.get("ends_at") for g in covering if g["mode"] == top]
+    if any(e is None for e in ends):
+        return None
+    return max(ends, key=lambda e: e if e.tzinfo else e.replace(tzinfo=timezone.utc))
 
 
 def effective_mode_for_database(

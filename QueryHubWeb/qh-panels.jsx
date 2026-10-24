@@ -299,6 +299,8 @@ function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, r
     const eng = qhEngineId(c.engine);
     const qi = (x) => qhQuoteIdentFor(x, eng);
     const did = sid + '/' + db.id;
+    // Only an end within seven days shows in the tree. Other states stay quiet.
+    const dbEnd = qhGrantEnd(db.grantEndsAt);
     const act = active && active.conn === c.id && active.db === db.id;
     const sch = schemaCache ? schemaCache[c.id + '/' + db.id] : null;
     const loaded = !!sch;
@@ -366,7 +368,7 @@ function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, r
           icon={rightExtra !== undefined ? <img className="qh-engine-logo" src={qhEngineLogo(c)} alt={qhEngine(c).label} draggable={false} /> : TICN.db()}
           label={db.name} sub={sub} tier={db.tier} active={act} drag={qhQuoteIdent(db.name)} dbDrag={dbDragKey} nodeId={did}
           title={(rightExtra !== undefined ? [db.name, c.name + ' · ' + c.engine, c.host ? c.host + (c.port ? ':' + c.port : '') : '', qhHosting(c)] : [db.name]).concat(['Click uses it in a blank tab.', 'Double-click opens a new query.', 'Right-click shows more.']).filter(Boolean).join('\n')}
-          right={rightExtra}
+          right={dbEnd && dbEnd.state === 'soon' ? <><span className="qh-tr-endsoon" title={dbEnd.title}>{dbEnd.short}</span>{rightExtra}</> : rightExtra}
           onCtx={(e) => openMenu(e, c, db)} onDbl={() => newQ(c, db)} />
         {isOpen(did) && (
           <>
@@ -1335,6 +1337,18 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
   const { rwOk, reason: rwReason } = qhAutoTierState(tiers, held);
   const eff = !rwOk && tier === 'RW' ? 'RO' : tier;
   const waiting = conn && db ? waitingOn(conn.id, db) : null;
+  // Withdraw the ask that is waiting, then read the list again (2026-10-24). No
+  // confirm: asking again undoes it. A refusal prints the server's own words.
+  const [wdBusy, setWdBusy] = React.useState(false);
+  const [wdSaid, setWdSaid] = React.useState(false);
+  const withdraw = () => {
+    if (!waiting || wdBusy) return;
+    setWdBusy(true); setErr(null); setWdSaid(false);
+    Promise.resolve(qhApi.autoApproveRequestWithdraw(waiting.id))
+      .then(() => Promise.resolve(load ? load() : null).catch(() => null))
+      .then(r => { if (r && r.requests) setMine(r.requests); else setMine(m => m.map(x => x.id === waiting.id ? { ...x, status: 'withdrawn' } : x)); setWdSaid(true); setWdBusy(false); })
+      .catch(e => { setErr((e && e.message) || 'The request was not withdrawn.'); setWdBusy(false); });
+  };
   const valid = conn && db && reason.trim() && !busy && !waiting;
   const send = () => {
     if (!valid) return;
@@ -1394,8 +1408,11 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
         </label>
 
         {waiting && (
-          <div className="qh-req-wait">You asked for this{qhAgo(qhAskAt(waiting)) ? ' ' + qhAgo(qhAskAt(waiting)) : ''}{qhAskWindowLabel(waiting) ? ' — ' + qhAskWindowLabel(waiting) : ''}, and it is still waiting for a DBA. You get a DM when they decide.</div>
+          <div className="qh-req-wait">You asked for this{qhAgo(qhAskAt(waiting)) ? ' ' + qhAgo(qhAskAt(waiting)) : ''}{qhAskWindowLabel(waiting) ? ' — ' + qhAskWindowLabel(waiting) : ''}, and it is still waiting for a DBA. You get a DM when they decide.
+            {' '}<button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" disabled={wdBusy} onClick={withdraw}>Withdraw</button>
+          </div>
         )}
+        {wdSaid && !waiting && <div className="qh-req-note" role="status">Withdrawn.</div>}
         {conn && db && !waiting && (
           <div className="qh-autoreq-say">If granted, for <b>{win.label}</b> from the moment a DBA grants it, your {eff === 'RO' ? <b>reads</b> : <b>reads and writes</b>} on <b className="qh-mono">{conn.name || conn.id} · {db}</b> run the moment you submit them, with nobody reviewing. Each run is still logged and still masked.</div>
         )}
@@ -1413,7 +1430,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
 }
 
 // ---------- Bottom results panel ----------
-function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement, ranOn, pending, onWithdraw, outcome, endNote, onResubmit, slackEnabled }) {
+function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement, ranOn, pending, onWithdraw, outcome, endNote, onResubmit, slackEnabled, timeline }) {
   const [exp, setExp] = React.useState(false);
   // Click-away / Escape, not mouse-out: the 6px gap between the button and the
   // menu used to close it mid-reach. See qhUseDismiss.
@@ -1584,7 +1601,7 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
         {tab === 'results' && !result && !pending && status === 'rejected' && qhOutcomeInfo(outcome) && <EndedCard outcome={outcome} note={endNote} onResubmit={onResubmit} />}
         {tab === 'results' && !(!result && (pending || (status === 'rejected' && qhOutcomeInfo(outcome)))) && <ResultsView key={'st' + stN} result={result} status={status} onToast={onToast} colMeta={colMeta} unmasked={unmasked} />}
         {tab === 'plan' && <PlanView plan={plan} />}
-        {tab === 'messages' && <MessagesView messages={messages} />}
+        {tab === 'messages' && <MessagesView messages={messages} timeline={timeline} />}
         {tab === 'audit' && <RunAuditView audit={audit} />}
       </div>
     </div>
@@ -2179,15 +2196,37 @@ function ResultsView({ result, status, onToast, colMeta, unmasked }) {
   );
 }
 
-function MessagesView({ messages }) {
-  if (!messages.length) return <div className="qh-empty"><div>No messages.</div></div>;
-  return <div className="qh-msgs">
-    {messages.map((m, i) => (
-      <div key={i} className={'qh-msg msg-' + m.kind}>
-        <span className="qh-msg-time">{m.time}</span>
-        <span className="qh-msg-text">{m.text}</span>
+// The step list sits under the first line and above the rest (2026-10-24). It
+// renders nothing when the server sends no timeline or an empty one.
+function StepsList({ timeline }) {
+  const rows = qhTimelineRows(timeline);
+  if (!rows.length) return null;
+  return <div className="qh-steps" role="list" aria-label="Steps">
+    <div className="qh-steps-title">Steps</div>
+    {rows.map(r => (
+      <div key={r.key} role="listitem" className={'qh-step' + (r.strong ? ' is-last' : '')} data-step={r.step}>
+        <span className="qh-step-dot" aria-hidden="true" />
+        <span className="qh-step-word">{r.label}</span>
+        {r.outcome && <span className="qh-step-outcome">{r.outcome}</span>}
+        {r.by && <span className="qh-step-by">by {r.by}</span>}
+        <span className="qh-step-time" title={r.title}>{r.ago}</span>
       </div>
     ))}
+  </div>;
+}
+function MessagesView({ messages, timeline }) {
+  const hasSteps = qhTimelineRows(timeline).length > 0;
+  if (!messages.length && !hasSteps) return <div className="qh-empty"><div>No messages.</div></div>;
+  const line = (m, i) => (
+    <div key={i} className={'qh-msg msg-' + m.kind}>
+      <span className="qh-msg-time">{m.time}</span>
+      <span className="qh-msg-text">{m.text}</span>
+    </div>
+  );
+  return <div className="qh-msgs">
+    {messages.slice(0, 1).map((m, i) => line(m, i))}
+    <StepsList timeline={timeline} />
+    {messages.slice(1).map((m, i) => line(m, i + 1))}
   </div>;
 }
 
@@ -2220,4 +2259,4 @@ const DBIcons = {
   calendar: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>,
 };
 
-Object.assign(window, { Sidebar, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });
+Object.assign(window, { Sidebar, MessagesView, StepsList, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });

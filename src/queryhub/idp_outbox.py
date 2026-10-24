@@ -91,6 +91,94 @@ def _lost(event_type: str, request_id) -> None:
         "get this event.", event_type, request_id)
 
 
+REQUEST_DECIDED = "queryhub.request_decided"
+REQUEST_WITHDRAWN = "queryhub.request_withdrawn"
+REQUEST_EXPIRED = "queryhub.request_expired"
+
+# The decision word of `queryhub.request_decided`, by `core_decide` decision.
+_DECISION_WORDS = {"approve": "approved", "reject": "rejected",
+                   "changes": "changes_requested"}
+
+
+def _insert_for_request(event_type: str, request_id, requester: str | None,
+                        payload: dict) -> None:
+    """Insert one row of a SQL request event. `request_id` is `requests.id`,
+    like `queryhub.request_pending`. The requester is the only recipient.
+    The caller catches every error."""
+    if not requester:
+        return
+    db.execute(
+        "INSERT INTO notification_outbox "
+        "(event_type, request_id, recipients, payload) "
+        "VALUES (%s, %s, %s, %s)",
+        (event_type, request_id, [requester],
+         json.dumps({key: _text(value) for key, value in payload.items()})),
+    )
+
+
+def _alias_of(target_id) -> str:
+    from . import targets
+    target = targets.get(target_id) if target_id else None
+    return target.alias if target is not None else ""
+
+
+def write_request_decided(row: dict, decision: str) -> None:
+    """An admin approved, rejected or asked for changes on a SQL request.
+    `row` is the decided row that `core_decide` returns, after its transaction
+    commits. `decision` is the `core_decide` word: approve, reject or changes.
+    The payload never holds the SQL text or a result value."""
+    if not enabled():
+        return
+    try:
+        _insert_for_request(
+            REQUEST_DECIDED, row["id"], row.get("requester_slack_id"),
+            {"requestId": row["id"],
+             "decision": _DECISION_WORDS[decision],
+             "target": _alias_of(row.get("target_server_id")),
+             "tier": row.get("required_tier"),
+             "decidedBy": row.get("decided_by_name") or row.get("decided_by_slack_id"),
+             "note": row.get("decision_reason")})
+    except Exception:
+        _lost(REQUEST_DECIDED, row.get("id"))
+
+
+def write_request_withdrawn(request_id: int, by_name: str | None) -> None:
+    """The requester withdrew a SQL request. Call it after the row is
+    withdrawn and the transaction commits."""
+    if not enabled():
+        return
+    try:
+        row = db.fetch_one(
+            "SELECT requester_slack_id, target_server_id, required_tier "
+            "FROM requests WHERE id = %s", (request_id,))
+        if not row:
+            return
+        _insert_for_request(
+            REQUEST_WITHDRAWN, request_id, row.get("requester_slack_id"),
+            {"requestId": request_id,
+             "target": _alias_of(row.get("target_server_id")),
+             "tier": row.get("required_tier"),
+             "decidedBy": by_name,
+             "note": ""})
+    except Exception:
+        _lost(REQUEST_WITHDRAWN, request_id)
+
+
+def write_request_expired(request_id: int, requester: str | None, alias: str | None,
+                          tier: str | None, note: str = "") -> None:
+    """The stale-pending job expired a SQL request. Call it after the row is
+    expired and the transaction commits."""
+    if not enabled():
+        return
+    try:
+        _insert_for_request(
+            REQUEST_EXPIRED, request_id, requester,
+            {"requestId": request_id, "target": alias, "tier": tier,
+             "decidedBy": "", "note": note})
+    except Exception:
+        _lost(REQUEST_EXPIRED, request_id)
+
+
 def _access_target(row: dict, target) -> str:
     """The alias of the target. For a server that QueryHub does not have yet,
     the name that the requester typed. "" when QueryHub knows neither.

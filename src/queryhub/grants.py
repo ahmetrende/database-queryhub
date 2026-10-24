@@ -696,7 +696,8 @@ def revoke(
             "VALUES (%s, %s, 'access_revoked', %s::jsonb)",
             (granter_id, granter_name, json.dumps({
                 "grantee": grantee_id, "target_id": target_id,
-                "mode": row["mode"], "reason": reason,
+                "mode": row["mode"],
+                **({"reason": reason} if reason else {}),
             })),
         )
     log.info("access_revoked: %s revoked %s on target=%s",

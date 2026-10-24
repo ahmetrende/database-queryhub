@@ -109,6 +109,35 @@ def decide(
                          decided_by_name=decided_by_name, granted_id=granted_id)
 
 
+_WITHDRAW_SQL = (
+    "UPDATE auto_approve_requests "
+    "   SET status = 'withdrawn', decided_at = NOW() "
+    " WHERE id = %s AND requester_slack_id = %s AND status = 'pending' "
+    "RETURNING id, requester_slack_id, target_server_id, database_name, "
+    "          max_tier, window_minutes, status")
+
+
+def withdraw(request_id: int, by_id: str, by_name: str | None = None) -> dict | None:
+    """The requester withdraws their own pending window request.
+
+    One atomic UPDATE with the requester and the pending status in its WHERE,
+    and the audit row in the same transaction. Nobody decided, so the decided_by
+    columns stay empty. Returns the row, or None when the request is not the
+    caller's or is not pending any more."""
+    with db.transaction() as cur:
+        cur.execute(_WITHDRAW_SQL, (request_id, by_id))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        audit.log_in(cur, None, by_id, by_name, "window_request_withdrawn",
+                     {"request_id": row["id"],
+                      "target_server_id": row["target_server_id"],
+                      "database_name": row["database_name"],
+                      "max_tier": row["max_tier"],
+                      "window_minutes": row["window_minutes"]})
+        return dict(row)
+
+
 class WindowRequestRefused(Exception):
     """A window request that cannot be made, with the field it is about and
     the HTTP status a web caller should answer with."""
@@ -131,6 +160,7 @@ RW_OFF_MESSAGE = ("Auto-approve for writes (RW) is not available. "
                   "You can ask for read-only (RO) auto-approve.")
 RW_OFF_DECISION_MESSAGE = ("Auto-approve for writes (RW) is not available, so "
                            "this window cannot be approved. You can reject it.")
+WITHDRAWN_MESSAGE = "The person withdrew this request."
 DDL_MESSAGE = "Schema changes are always reviewed and cannot be auto-approved."
 PRODUCTION_WRITE_MESSAGE = ("Only a super-admin can decide a window that covers "
                             "writes on a production connection.")
@@ -385,6 +415,8 @@ def decide_window(request_id: int, *, approve: bool, actor_id: str,
     if req is None:
         raise WindowDecisionRefused("No such request.", 404)
     if req["status"] != "pending":
+        if req["status"] == "withdrawn":
+            raise WindowDecisionRefused(WITHDRAWN_MESSAGE)
         raise WindowDecisionRefused(f"Already {req['status']}.")
     t = targets.get(req["target_server_id"])
     alias = t.alias if t else f"target #{req['target_server_id']}"

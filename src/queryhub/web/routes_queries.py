@@ -1184,6 +1184,9 @@ def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
         # audit rows above: no second read.
         "outcome": mapping.request_outcome(
             row.get("status"), {a.get("action") for a in audit_rows}),
+        # The steps that happened: sent, decided, started, finished.
+        "timeline": mapping.timeline(row, audit_rows, people.display_name,
+                                     claims["sub"]),
     }
 
 

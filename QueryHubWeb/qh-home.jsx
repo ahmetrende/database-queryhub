@@ -40,9 +40,14 @@ function HomeEmpty({ text }) {
 // What happens to a statement of this person (2026-10-24): two lists built from
 // the connections they hold. "Runs at once" is read-only on a database that
 // auto-approves. "Goes to a DBA first" is everything else. Six rows each, then
-// "+N more". A super-admin runs everything at once and gets one line. The API
-// sends no grant end dates, so none is shown. The loading and empty states say so.
+// "+N more". A super-admin runs everything at once and gets one line. A row
+// shows the end of its grant when `grantEndsAt` is set, and nothing when it is null.
 const QH_ACCESS_MAX = 6;
+function GrantEndChip({ iso }) {
+  const e = qhGrantEnd(iso);
+  if (!e) return null;
+  return <span className={'qh-grantend is-' + e.tone} data-end={e.state} title={e.title}>{e.text}</span>;
+}
 function AccessList({ title, hint, rows, loading, emptyText, tone }) {
   const shown = rows.slice(0, QH_ACCESS_MAX);
   return (
@@ -59,6 +64,7 @@ function AccessList({ title, hint, rows, loading, emptyText, tone }) {
                 <TierBadge tier={r.tier} sm />
                 <span className="qh-home-row-name qh-mono">{r.db}</span>
                 <span className="qh-home-row-meta">{r.server}</span>
+                <GrantEndChip iso={r.grantEndsAt} />
               </div>
             ))}
             {rows.length > shown.length && <div className="qh-access-more">+{rows.length - shown.length} more</div>}
@@ -203,4 +209,4 @@ function HomeScreen({ user, loading, openTabs, slackEnabled, onFocusTab, onNewQu
   );
 }
 
-Object.assign(window, { HomeScreen, AccessSummary });
+Object.assign(window, { HomeScreen, AccessSummary, GrantEndChip });

@@ -33,7 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from . import audit, auto_approve, core_submit, db
+from . import audit, auto_approve, core_submit, db, idp_outbox
 
 _VALID = ("approve", "reject", "changes")
 
@@ -94,8 +94,12 @@ def decide(request_id: int, decision: str, *, by_id: str,
             if pending is None:
                 return None
             sched = pending.get("scheduled_for")
-        return _write(cur, request_id, decision, by_id=by_id, by_name=by_name,
-                      reason=reason, sched=sched)
+        out = _write(cur, request_id, decision, by_id=by_id, by_name=by_name,
+                     reason=reason, sched=sched)
+    # After the commit: a lost outbox row must never undo the decision.
+    if out is not None:
+        idp_outbox.write_request_decided(out.row, out.decision)
+    return out
 
 
 def _write(cur, request_id: int, decision: str, *, by_id: str,
@@ -228,7 +232,10 @@ def decide_bundle(bundle_id: int, decision: str, *, by_id: str,
                 raise BundleConflict(f"batch {bundle_id} changed under the lock",
                                      [r["id"]])
             outcomes.append(out)
-        return outcomes
+    # After the commit: one row per decided item.
+    for out in outcomes:
+        idp_outbox.write_request_decided(out.row, out.decision)
+    return outcomes
 
 
 def apply_effects(client, outcome: Outcome) -> None:

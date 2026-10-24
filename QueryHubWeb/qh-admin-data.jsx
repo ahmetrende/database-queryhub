@@ -279,8 +279,8 @@ function useAdminState(pushToast, active, isAdminViewer) {
       .then(r => { loadGrants(); if (r && r.autoApprove) loadAuto(); loadAudit(); pushToast && pushToast('Grant added: ' + who + ' → ' + g.connectionId + ' (' + g.tier + ').' + qhGrantAutoSay(r)); return r; })
       .catch(e => { fail(e, 'Add grant failed.'); throw e; });
   };
-  const revokeGrant = (id) => {
-    qhApi.adminDelGrant(id).then(() => { loadGrants(); loadAudit(); pushToast && pushToast('Grant revoked.'); })
+  const revokeGrant = (id, actor, o) => {
+    qhApi.adminDelGrant(id, o).then(() => { loadGrants(); loadAudit(); pushToast && pushToast('Grant revoked.'); })
       .catch(e => fail(e, 'Revoke failed.'));
   };
   const addAutoGrant = (g) => {
@@ -593,7 +593,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
   // which prints the server's words beside the control.
   const addFleetGrant = (b) => qhApi.adminAddFleetGrant(b)
     .then(r => { loadAudit(); pushToast && pushToast('Read-only access to every server granted to ' + ((r && r.subjectName) || b.subject) + '.'); return r; });
-  const revokeFleetGrant = (id, name) => qhApi.adminRevokeFleetGrant(id)
+  const revokeFleetGrant = (id, name, o) => qhApi.adminRevokeFleetGrant(id, o)
     .then(r => { loadAudit(); pushToast && pushToast('Access to every server revoked' + (name ? ' for ' + name : '') + '.'); return r; });
   const setSuperAdminOnly = (conn, on) => qhApi.adminSetSuperAdminOnly(conn, on)
     .then(r => { loadConnections(); loadAudit();

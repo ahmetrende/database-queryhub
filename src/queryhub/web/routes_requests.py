@@ -372,6 +372,32 @@ def my_window_requests(claims: dict = Depends(deps.current_user)):
     }
 
 
+@router.post("/auto-approve-requests/{request_id}/withdraw")
+def withdraw_window_request(request_id: int,
+                            claims: dict = Depends(deps.current_user)):
+    """Withdraw one of your own pending window requests.
+
+    404 `not_found` for an id that is unknown or that belongs to another
+    person. 409 `already_decided` when the request is not pending any more.
+    The status change and its audit row commit in one transaction
+    (`auto_approve_requests.withdraw`). The id in the answer has the type that
+    `GET /auto-approve-requests` uses."""
+    uid = claims["sub"]
+    from .. import auto_approve_requests
+    row = auto_approve_requests.get(request_id)
+    if row is None or row["requester_slack_id"] != uid:
+        raise deps._error(404, "not_found", "No such window request.")
+    if row["status"] != "pending":
+        raise deps._error(409, "already_decided",
+                          f"This request is already {row['status']}.")
+    done = auto_approve_requests.withdraw(request_id, uid, claims.get("name"))
+    if done is None:
+        # Lost the race: an admin decided it between the read and the UPDATE.
+        raise deps._error(409, "already_decided",
+                          "This request is not pending any more.")
+    return {"id": done["id"], "status": "withdrawn"}
+
+
 @router.post("/auto-approve-requests", status_code=201)
 def create_window_request(body: WindowRequestIn,
                           claims: dict = Depends(deps.current_user)):
