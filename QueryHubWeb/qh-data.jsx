@@ -977,7 +977,7 @@ function qhAgo(t) {
 // (2026-10-23). ONE rule for every screen that shows an end date, so "ends
 // soon" means the same seven days everywhere. `now` is for tests. It defaults
 // to the clock. Returns `{ state, label }`:
-//   none  -- no end date. The caller picks the word ("No expiry", "Permanent").
+//   none  -- no end date. The caller picks the word ("No end date", "Permanent").
 //   live  -- ends later than seven days from now: "45d left".
 //   soon  -- ends within seven days: "Ends soon · 2d left".
 //   ended -- the end has passed: "Ended 6d ago". Readers treat it as gone.

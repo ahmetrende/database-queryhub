@@ -9,6 +9,10 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.37] — 2026-10-24
+
+The web editor shows where a request stands and what ran. The admin screens work from the keyboard and show the state of the kill switch and of failing connections. A new DBA level opens three admin pages. The kill switch stops approvals as well as runs. Auto-approve rules and grants from access requests now end, and a rule is never DDL. Connections report their health. The release adds migrations 145 to 150, 160 and 190 to 194. Patch bump.
+
 ### Added
 
 - **The kill switch stops approvals too.** While it is on, every approval that
@@ -196,6 +200,12 @@ frontend and the endpoints it calls are explicitly outside it.
   person picker and the connections are chips. The saved payload does not change.
 - **Masking exemptions have an "Ends soon" filter.** It keeps the rows that end
   within seven days and shows a count. The chips use sentence case.
+
+- **Removing a grant on every server asks first, and "No end date" is one word.** The
+  Remove button opens an inline row that says who loses read-only access and that a
+  running query finishes. The end pickers and the rows say "No end date" where they
+  said "No expiry". The masking screen uses the same seven-day line as the other
+  screens for "Ends soon".
 
 ### Changed
 

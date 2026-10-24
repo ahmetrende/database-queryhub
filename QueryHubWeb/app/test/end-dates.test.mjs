@@ -151,7 +151,7 @@ test('only a grant that has an end it has not reached offers Extend', opts, () =
   assert.equal(extendIn('Riley Park'), false, 'an ended grant is not extended');
   assert.match(ui.rowOf('Riley Park').textContent, /Ended 6d ago/);
   assert.match(ui.rowOf('Casey Lin').textContent, /Ends soon · \d+h left/);
-  assert.match(ui.rowOf('Jordan Ray').textContent, /No expiry/);
+  assert.match(ui.rowOf('Jordan Ray').textContent, /No end date/);
 });
 
 test('Extend counts from the current end, says what changes, and sends expiresAt with the reason', opts, async () => {

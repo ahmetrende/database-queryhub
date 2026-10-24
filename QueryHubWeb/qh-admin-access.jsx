@@ -37,13 +37,13 @@ function TierSelect({ value, onChange, tiers }) {
 // screens now need the same seven days. `none` is the caller's word.
 function expiryLabel(iso, none) {
   const e = qhEndState(iso);
-  if (e.state === 'none') return { text: none || 'No expiry', cls: '', state: 'none' };
+  if (e.state === 'none') return { text: none || 'No end date', cls: '', state: 'none' };
   return { text: e.label, cls: e.state === 'ended' ? 'is-exp' : e.state === 'soon' ? 'is-soon' : '', state: e.state };
 }
 // Standing grants can expire as of migration 096 (CODE brief 2026-08-15 (c)) —
 // until then only auto-approve was time-bounded and this control was removed
 // from here on that word. NULL stays the common case (every live grant has it),
-// so "No expiry" is the default and the date field only appears when an end is
+// so "No end date" is the default and the date field only appears when an end is
 // actually wanted. A picked day is read as THROUGH that day (23:59 local):
 // "until Friday" includes Friday, and expiring at 00:00 would cut a day short.
 const expDay = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
@@ -73,7 +73,7 @@ function expBad(f) { return f.ttl === 'date' && (!f.expDate || f.expDate < expTo
 // ---- An auto-approve rule needs an end (2026-10-24) ----
 // The server refuses a rule with no end and one that ends later than
 // `auto_approve_max_days` from now (HTTP 400 `end_required`, `end_too_far`). So
-// every form that makes a rule picks an end, hides "No expiry", and stops at
+// every form that makes a rule picks an end, hides "No end date", and stops at
 // that limit. `maxDays` is `st.autoMaxDays` (GET /admin/auto-grants `maxDays`).
 const AUTO_MAX_DEFAULT = 90;
 // A rule is RO or RW. The server refuses DDL with `tier_not_allowed`.
@@ -114,7 +114,7 @@ function ExpiryNote({ f, subjectType }) {
   if (!f.ttl || f.ttl === 'none') return null;
   return <div className="qh-exp-note">Access stops on this date{subjectType === 'user' ? ' — it does not use a team grant instead' : ''}. Re-granting later replaces the date, or clears it.</div>;
 }
-// `required` (2026-10-24): the end cannot be empty, so there is no "No expiry",
+// `required` (2026-10-24): the end cannot be empty, so there is no "No end date",
 // the picks stop at `maxDays` and the date field has a `max`. `keepLabel` adds
 // "Keep the current end" for an edit. Without `required` nothing changes.
 // `defaultDays` (2026-10-24) adds that many days to the quick picks when they
@@ -132,7 +132,7 @@ function ExpiryPick({ f, onChange, required, maxDays, keepLabel, defaultDays }) 
     <div className="qh-exppick">
       <select className="qh-select" aria-label={required ? 'End date, required' : undefined} value={ttl} onChange={e => onChange({ ttl: e.target.value, expDate: e.target.value === 'date' ? (f.expDate || expToday()) : f.expDate })}>
         {keepLabel && <option value="keep">{keepLabel}</option>}
-        {!required && <option value="none">No expiry</option>}
+        {!required && <option value="none">No end date</option>}
         {required && ttl === 'none' && <option value="none" disabled>Pick an end…</option>}
         {picks.map(d => <option key={d} value={String(d)}>{d} days</option>)}
         <option value="date">Until a date…</option>
@@ -144,7 +144,7 @@ function ExpiryPick({ f, onChange, required, maxDays, keepLabel, defaultDays }) 
 function ExpiryChip({ iso }) { return iso ? <EndChip iso={iso} /> : null; }
 // The end of a grant, a rule or a scope as one chip (2026-10-23). Text, never
 // colour alone: "Ends soon · 2d left", "Ended 6d ago", "45d left", or the
-// caller's word for no end ("No expiry", "Permanent"). The exact moment is on
+// caller's word for no end ("No end date", "Permanent"). The exact moment is on
 // hover, in the fleet's time zone.
 function EndChip({ iso, none }) {
   const ex = expiryLabel(iso, none);
@@ -880,6 +880,7 @@ function FleetGrantsBlock({ st, canWrite }) {
   const [adding, setAdding] = useAcc(false);
   const [busyId, setBusyId] = useAcc(null);
   const [rowErr, setRowErr] = useAcc(null);
+  const [askId, setAskId] = useAcc(null);   // the row whose inline confirm is open (2026-10-24)
   const blankF = { subjectType: 'user', subject: '', autoApprove: false, reason: '', ttl: 'none', expDate: '' };
   // Reads that skip review are an auto-approve rule: they need an end, at most
   // `maxDays` from now (2026-10-24). The grant alone keeps its optional end.
@@ -904,7 +905,7 @@ function FleetGrantsBlock({ st, canWrite }) {
   };
   const remove = (g) => {
     const name = grantName(g, people);
-    if (!window.confirm('Revoke read-only access to every server for ' + name + '?' + (g.autoApprove ? ' QueryHub also revokes the auto-approve on every server.' : '') + ' Grants that name a connection stay.')) return;
+    setAskId(null);
     setBusyId(g.id); setRowErr(null);
     st.revokeFleetGrant(g.id, name)
       .then(() => { setBusyId(null); load(); })
@@ -956,13 +957,20 @@ function FleetGrantsBlock({ st, canWrite }) {
             : <span className="qh-fleet-auto" title="Reads on every server run without a DBA.">auto-approve</span>)}
           {/* Read-only end (2026-10-23): the API has no PATCH for a grant on
               every server. To move the end, remove the grant and add it again. */}
-          <EndChip iso={g.expiresAt} none="No expiry" />
+          <EndChip iso={g.expiresAt} none="No end date" />
           {g.reason && <span className="qh-fleet-reason-t" title={g.reason}>{g.reason}</span>}
           <span className="qh-fleet-end">
             {g.syncedFrom
               ? <span className="qh-fleet-kind" title={'QueryHub copies this row from ' + g.syncedFrom + '. Change it there.'}>synced from {g.syncedFrom}</span>
-              : canWrite && <button className="qh-revoke" disabled={busyId === g.id} onClick={() => remove(g)}>Remove</button>}
+              : canWrite && <button className="qh-revoke" aria-expanded={askId === g.id} disabled={busyId === g.id} onClick={() => setAskId(askId === g.id ? null : g.id)}>Remove</button>}
           </span>
+          {askId === g.id && (
+            <div className="qh-revokeconfirm qh-fleet-confirm" role="alert">
+              <span className="qh-revokeconfirm-say">{grantName(g, people)} loses read-only access to every server.{g.autoApprove ? ' QueryHub also revokes the auto-approve on every server.' : ''} Grants that name a connection stay. A query that is running finishes.</span>
+              <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setAskId(null)}>Keep access</button>
+              <button className="qh-btn qh-btn-danger qh-btn-sm" onClick={() => remove(g)}>Revoke access</button>
+            </div>
+          )}
           {rowErr && rowErr.id === g.id && <div className="qh-roleform-err qh-fleet-rowerr">{rowErr.msg}</div>}
         </div>
       ))}
@@ -2400,7 +2408,7 @@ function ConnectionsView({ st, user, readOnly }) {
   // "Access ends" on each pending request (2026-10-24). It opens on the
   // server's default (`st.accessDefaultDays`, from GET /admin/endpoint-requests)
   // and sends nothing while untouched, so the server applies the same default.
-  // "No expiry" sends noEnd: the admin can still give a grant with no end.
+  // "No end date" sends noEnd: the admin can still give a grant with no end.
   const accessDays = Math.floor(Number(st.accessDefaultDays)) >= 1 ? Math.floor(Number(st.accessDefaultDays)) : 90;
   const [ends, setEnds] = React.useState({});
   const endOf = (id) => ends[id] || { ttl: String(accessDays), expDate: '' };
@@ -2747,6 +2755,6 @@ function ConnectionsView({ st, user, readOnly }) {
 // segmented control would be a second grouping idiom on one page.
 // `QH_TIER_WORD` / `qhTierWord` too (2026-10-21): the Roles screen and the
 // access editor say Read, Write and Schema from one table.
-Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, connHealthState, connBannerSay, scopeConnList, ScopeForm, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, EndChip, EndPick, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord,
+Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, FleetGrantsBlock, connHealthState, connBannerSay, scopeConnList, ScopeForm, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, EndChip, EndPick, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord,
   // The end of an auto-approve rule (2026-10-24).
   AUTO_TIER_SAY, autoMaxOf, endPicks, endDefault, endKeepable, expMaxDay, autoEndWhy, autoEndInit });

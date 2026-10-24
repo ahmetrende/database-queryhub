@@ -179,7 +179,7 @@ test('autoEndWhy gives the reason an end cannot be saved, and null for a good on
 test('a rule with no end opens with the end required, 30 days picked, and says so', opts, () => {
   const { ui, form, select, save, saveWrap } = edit(rule());
   assert.match(form.textContent, /This rule has no end\. Pick one to save\./);
-  assert.deepEqual(optionValues(select), ['7', '30', '90', 'date'], 'no "No expiry" and no "Keep"');
+  assert.deepEqual(optionValues(select), ['7', '30', '90', 'date'], 'no "No end date" and no "Keep"');
   assert.equal(select.value, '30');
   assert.equal(save().disabled, false);
   assert.equal(saveWrap().title, '');
@@ -303,7 +303,7 @@ test('the Auto-approve form offers RO and RW only', opts, async () => {
 
 test('the Auto-approve screen still lists a rule with no end', opts, () => {
   const ui = mount('AutoView', { autoGrants: [rule()] });
-  assert.match(ui.doc.querySelector('.qh-autosub-row').textContent, /No expiry/);
+  assert.match(ui.doc.querySelector('.qh-autosub-row').textContent, /No end date/);
   assert.match(ui.doc.querySelector('.qh-autosub-sum').textContent, /1 with no end date/);
 });
 
@@ -326,7 +326,7 @@ test('a grant may have no end, until the auto-approve box is ticked', opts, () =
   assert.ok(optionValues(select()).includes('none'));
   assert.equal(select().value, 'none');
   ui.click(box);
-  assert.deepEqual(optionValues(select()), ['7', '30', '90', 'date'], 'the box hides "No expiry"');
+  assert.deepEqual(optionValues(select()), ['7', '30', '90', 'date'], 'the box hides "No end date"');
   assert.equal(select().value, '30', 'and starts the end on 30 days');
   ui.click(box);
   assert.ok(optionValues(select()).includes('none'), 'unticked, the grant may have no end again');

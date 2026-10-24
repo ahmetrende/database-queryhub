@@ -2,7 +2,7 @@
 //
 //   * The Provision card has an "Access ends" picker. It opens on the server's
 //     default days (`accessDefaultDays` of GET /admin/endpoint-requests).
-//   * "No expiry" stays a choice: the admin can still give a grant with no end.
+//   * "No end date" stays a choice: the admin can still give a grant with no end.
 //   * An untouched picker sends nothing, so the server applies the same default.
 //   * The mock and the API client carry the choice the way the server reads it.
 import test from 'node:test';
@@ -66,12 +66,12 @@ function mount(st, props) {
 
 const optionLabels = (sel) => [...sel.options].map(o => o.textContent.trim());
 
-test('the picker opens on the default days, with No expiry still a choice', opts, () => {
+test('the picker opens on the default days, with No end date still a choice', opts, () => {
   const ui = mount({ accessDefaultDays: 90 });
   const sel = ui.select();
   assert.ok(sel, 'the card has an Access ends picker');
   assert.equal(sel.value, '90');
-  assert.deepEqual(optionLabels(sel), ['No expiry', '7 days', '30 days', '90 days', 'Until a date…']);
+  assert.deepEqual(optionLabels(sel), ['No end date', '7 days', '30 days', '90 days', 'Until a date…']);
   assert.match(ui.doc.querySelector('.qh-ercard-end').textContent, /^Access ends/);
   assert.ok(!sel.hasAttribute('required'), 'not required for a grant');
 });
@@ -80,7 +80,7 @@ test('a default that is not a quick pick is added and selected', opts, () => {
   const ui = mount({ accessDefaultDays: 45 });
   const sel = ui.select();
   assert.equal(sel.value, '45');
-  assert.deepEqual(optionLabels(sel), ['No expiry', '7 days', '30 days', '45 days', '90 days', 'Until a date…']);
+  assert.deepEqual(optionLabels(sel), ['No end date', '7 days', '30 days', '45 days', '90 days', 'Until a date…']);
 });
 
 test('a missing or bad default counts as 90', opts, () => {
@@ -99,7 +99,7 @@ test('an untouched picker sends no end, so the server applies its default', opts
   assert.equal(end, null);
 });
 
-test('No expiry sends noEnd', opts, () => {
+test('No end date sends noEnd', opts, () => {
   const ui = mount({ accessDefaultDays: 90 });
   ui.choose(ui.select(), 'none');
   ui.click(ui.provision());

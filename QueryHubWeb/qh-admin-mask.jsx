@@ -113,13 +113,15 @@ const mxAudBody = (f) => (f.audience === 'team' ? { kind: 'team', teamId: f.audi
 // The end of an exemption. `expired` is the server's word. The clock decides
 // only for a row whose end passed after the list was read.
 function mxEndState(e, now) {
-  const at = e && e.expiresAt ? Date.parse(e.expiresAt) : NaN;
   if (e && e.expired) return { kind: 'ended', text: 'Ended' };
+  const at = e && e.expiresAt ? Date.parse(e.expiresAt) : NaN;
   if (isNaN(at)) return { kind: 'none', text: 'No end date' };
-  const ms = at - (now == null ? Date.now() : now);
-  if (ms <= 0) return { kind: 'ended', text: 'Ended' };
-  const d = Math.ceil(ms / 86400000);
-  return { kind: d <= 7 ? 'soon' : 'ends', text: 'Ends in ' + d + ' day' + (d === 1 ? '' : 's') };
+  // The clock and the seven-day line are qhEndState's, so "ends soon" means
+  // the same on every screen (2026-10-24). Only the words are local.
+  const state = qhEndState(e.expiresAt, now).state;
+  if (state === 'ended') return { kind: 'ended', text: 'Ended' };
+  const d = Math.ceil((at - (now == null ? Date.now() : now)) / 86400000);
+  return { kind: state === 'soon' ? 'soon' : 'ends', text: 'Ends in ' + d + ' day' + (d === 1 ? '' : 's') };
 }
 const mxDay = (iso) => (iso ? String(iso).slice(0, 10) : '');
 

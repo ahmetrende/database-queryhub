@@ -304,8 +304,8 @@ what it runs because a shared tag moved. To skip the build, pull a released
 image. Then name it in the `up` command:
 
 ```bash
-docker pull ghcr.io/ahmetrende/database-queryhub:1.0.36
-QH_IMAGE=ghcr.io/ahmetrende/database-queryhub:1.0.36 docker compose -f docker-compose.install.yml up -d
+docker pull ghcr.io/ahmetrende/database-queryhub:1.0.37
+QH_IMAGE=ghcr.io/ahmetrende/database-queryhub:1.0.37 docker compose -f docker-compose.install.yml up -d
 ```
 
 Every release publishes its own immutable tag alongside `:latest`. Reference the
