@@ -871,7 +871,7 @@ function MaskingView({ st, user }) {
     if (!t) return true;
     return [e.schema, e.table, e.column, e.reason, e.connectionName, e.databaseName].filter(Boolean).join(' ').toLowerCase().includes(t);
   };
-  const keeps = { all: () => true, wide: (e) => mxWide(e.scope), off: (e) => !e.enabled, ended: (e) => mxEndState(e).kind === 'ended', gone: (e) => !!e.missing };
+  const keeps = { all: () => true, wide: (e) => mxWide(e.scope), off: (e) => !e.enabled, ended: (e) => mxEndState(e).kind === 'ended', soon: (e) => mxEndState(e).kind === 'soon', gone: (e) => !!e.missing };
   const base = all.filter(inPlace).filter(match);
   const count = (k) => base.filter(keeps[k]).length;
   const rows = base.filter(keeps[filter] || keeps.all);
@@ -946,7 +946,7 @@ function MaskingView({ st, user }) {
             <MxCombo small ariaLabel="Database filter" key={'db-' + fServer} disabled={!fServer} value={fDb} placeholder="All databases" options={dbOpts}
               onPick={setFDb} onClear={() => setFDb('')} />
             <div className="qh-seg qh-seg-sm">
-              {[['all', 'All'], ['wide', 'Wider than a column'], ['off', 'Disabled'], ['ended', 'Ended'], ['gone', 'Matching nothing']].map(([v, l]) => (
+              {[['all', 'All'], ['wide', 'Wider than a column'], ['off', 'Disabled'], ['soon', 'Ends soon'], ['ended', 'Ended'], ['gone', 'Matching nothing']].map(([v, l]) => (
                 <button key={v} className={'qh-seg-opt' + (filter === v ? ' is-active' : '')} onClick={() => setFilter(v)}>{l}<span className="qh-mxseg-n">{count(v)}</span></button>
               ))}
             </div>

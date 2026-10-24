@@ -13,7 +13,9 @@ auto-grant is deliberately least-privilege and conservative:
     upgraded nor downgraded) — the auto-grant is skipped and flagged so the
     admin applies the change deliberately. Same-tier grants merge databases.
   - a revoked grant, or a grant past its end date, is dead. The approval
-    starts a fresh grant with no end date. An ACTIVE same-tier grant keeps its
+    starts a fresh grant. The fresh grant ends in `access_grant_default_days`
+    days (default 90), unless the approver picked an end or picked no end
+    (`access_grant_default.approval_end`). An ACTIVE same-tier grant keeps its
     end date: an approval never lengthens or removes a limit that an admin
     set.
 
@@ -28,7 +30,7 @@ from __future__ import annotations
 
 import psycopg
 
-from . import audit, db, idp_outbox
+from . import access_grant_default, audit, db, idp_outbox
 from . import config as cfg
 
 _TIER_RANK = {"ro": 0, "rw": 1, "ddl": 2}
@@ -221,7 +223,8 @@ def withdraw(access_request_id: int, by_id: str,
 
 
 def _auto_grant(cur, row: dict, decided_by_slack_id: str,
-                decided_by_name: str | None) -> dict:
+                decided_by_name: str | None, *,
+                end=None, end_source: str = "default") -> dict:
     """Create/extend the per-user grant an approved request asks for, inside
     the caller's transaction. Returns a summary dict:
 
@@ -232,7 +235,9 @@ def _auto_grant(cur, row: dict, decided_by_slack_id: str,
     skipped. An active grant at a different tier is skipped: the code never
     upgrades or downgrades one silently. A same-tier grant gets the databases
     merged (None = all absorbs) and keeps its end date. A revoked or lapsed
-    grant is replaced by a fresh one with no end date."""
+    grant is replaced by a fresh one that ends at `end`. `end` is the answer of
+    `access_grant_default.approval_end` (None is no end), and `end_source` says
+    where it came from for the audit row: default, chosen or no_end."""
     # Refused here as a REASON, not an exception. The approve button already
     # renders "auto-grant skipped, and why", and a request created before this
     # guard existed must stay decidable -- an admin has to be able to reject
@@ -292,14 +297,16 @@ def _auto_grant(cur, row: dict, decided_by_slack_id: str,
         # The limit that is already there stays. An approval must not lengthen
         # it, and it must not remove it.
         expires_at = existing["expires_at"]
+        end_source = "kept"
     else:
         # There is no grant, or it is revoked, or it has lapsed. This approval
         # starts a fresh grant. The old end date must not carry over. The
         # upsert below used to leave `expires_at` alone. A person who asked
         # again after a lapse got an approval and a "your access is active"
-        # message, and the system still refused them.
+        # message, and the system still refused them. The fresh grant gets the
+        # end that the approval chose, or the default.
         dbs = new_dbs
-        expires_at = None
+        expires_at = end
 
     cur.execute(
         "INSERT INTO user_target_grants "
@@ -319,7 +326,8 @@ def _auto_grant(cur, row: dict, decided_by_slack_id: str,
                  "access_request_auto_grant",
                  {"access_request_id": row["id"], "grantee": uid,
                   "target_server_id": tid, "mode": tier, "databases": dbs,
-                  "expires_at": expires_at.isoformat() if expires_at else None})
+                  "expires_at": expires_at.isoformat() if expires_at else None,
+                  "end_source": end_source})
     return {"applied": True, "reason": "granted", "mode": tier,
             "databases": dbs, "expires_at": expires_at}
 
@@ -330,9 +338,19 @@ def decide(
     decided_by_slack_id: str,
     decided_by_name: str | None,
     decision_reason: str | None,
+    *,
+    expires_at=None,
+    no_end: bool = False,
 ) -> dict | None:
     """Mark a pending request as approved/rejected. Returns the updated row,
     or None if it was already decided (so a second admin clicking is a no-op).
+
+    On APPROVE the new grant ends at `expires_at` (a datetime or an ISO-8601
+    string), has no end when `no_end` is true, and otherwise ends in
+    `access_grant_default_days` days. The Slack button sends neither, so it
+    takes the default. A bad end raises `access_grant_default.EndRefused`
+    before anything is written. `expires_at` and `no_end` mean nothing on a
+    reject.
 
     On APPROVE the per-user grant is auto-created from the request in the
     same transaction (see _auto_grant); the returned row carries the summary
@@ -344,6 +362,12 @@ def decide(
     `queryhub.access_request_decided` row, after the commit."""
     if new_status not in ("approved", "rejected"):
         raise ValueError(f"invalid status: {new_status}")
+    end, end_source = None, "default"
+    if new_status == "approved":
+        # Checked before the transaction, so a bad end writes nothing.
+        end = access_grant_default.approval_end(expires_at, no_end=no_end)
+        end_source = ("no_end" if no_end
+                      else "chosen" if expires_at not in (None, "") else "default")
     with db.transaction() as conn:
         cur = conn.execute(
             "UPDATE access_requests SET status = %s, "
@@ -363,7 +387,8 @@ def decide(
         row = dict(row)
         if new_status == "approved":
             row["auto_grant"] = _auto_grant(conn, row, decided_by_slack_id,
-                                            decided_by_name)
+                                            decided_by_name, end=end,
+                                            end_source=end_source)
     # Outside the transaction: the decision commits first, and a lost outbox
     # row can never undo it.
     if idp_outbox.enabled():

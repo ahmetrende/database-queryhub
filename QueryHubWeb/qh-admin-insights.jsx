@@ -64,12 +64,82 @@ function TrendBars({ data, valKey, fmtTitle }) {
   );
 }
 
+// "6 min" style time for the decision-time panel. '—' for a missing value.
+function qhDecisionSec(s) {
+  if (s == null || isNaN(s)) return '—';
+  if (s < 60) return Math.round(s) + ' s';
+  if (s < 3600) return Math.max(1, Math.round(s / 60)) + ' min';
+  const h = s / 3600;
+  return (h < 10 ? Math.round(h * 10) / 10 : Math.round(h)) + ' h';
+}
+function qhBandLabel(b) {
+  if (b.toSec == null) return 'Over ' + qhDecisionSec(b.fromSec);
+  return qhDecisionSec(b.fromSec) + ' to ' + qhDecisionSec(b.toSec);
+}
+const QH_METRIC_WINDOWS = [['7d', 'Last 7 days'], ['30d', 'Last 30 days']];
+
+// How long a person took to decide, for the chosen window. `state` is
+// 'loading', 'error' or a decisionTime object. At most five rows per list.
+function DecisionTime({ win, state }) {
+  const label = (QH_METRIC_WINDOWS.find(w => w[0] === win) || [0, win])[1];
+  if (state === 'loading') return <div className="qh-mcard qh-dec" aria-busy="true"><div className="qh-mcard-title">Decision time · {label}</div><div className="qh-metric-sub">Loading…</div></div>;
+  if (state === 'error' || !state) return <div className="qh-mcard qh-dec" role="alert"><div className="qh-mcard-title">Decision time · {label}</div><div className="qh-metric-sub">Could not load the decision time for this window.</div></div>;
+  if (!state.requests) return <div className="qh-mcard qh-dec"><div className="qh-mcard-title">Decision time · {label}</div><div className="qh-metric-sub">No request was decided in this window.</div></div>;
+  const bands = state.bands || [];
+  const bMax = Math.max(1, ...bands.map(b => b.count || 0));
+  const list = (rows) => (rows || []).slice(0, 5);
+  const rowsOf = (rows) => list(rows).length === 0
+    ? <div className="qh-metric-sub">No data yet.</div>
+    : <div className="qh-dec-rows">{list(rows).map(r => (
+        <div key={r.name} className="qh-dec-row"><span className="qh-dec-name" title={r.name}>{r.name}</span>
+          <span className="qh-dec-n">{r.requests} requests</span>
+          <span className="qh-dec-v">{qhDecisionSec(r.p50Sec)} median · {qhDecisionSec(r.p90Sec)} p90</span></div>))}</div>;
+  return (
+    <div className="qh-mcard qh-dec">
+      <div className="qh-mcard-title">Decision time · {label}</div>
+      <div className="qh-kpi-grid qh-kpi-flush">
+        <Stat k="Median" v={qhDecisionSec(state.p50Sec)} />
+        <Stat k="Slowest 10% take over" v={qhDecisionSec(state.p90Sec)} sub={_fmtNum(state.requests) + ' decided'} />
+      </div>
+      <div className="qh-dec-bands">{bands.map(b => (
+        <div key={b.fromSec} className="qh-dec-band"><span className="qh-dec-bl">{qhBandLabel(b)}</span>
+          <div className="qh-toptrack"><div className="qh-topfill" style={{ width: ((b.count || 0) / bMax * 100) + '%' }} /></div>
+          <span className="qh-topn">{_fmtNum(b.count)}</span></div>))}</div>
+      <div className="qh-mcards">
+        <div><div className="qh-dec-h">By server</div>{rowsOf(state.byServer)}</div>
+        <div><div className="qh-dec-h">By team</div>{rowsOf(state.byTeam)}</div>
+      </div>
+    </div>
+  );
+}
+
 function MetricsView({ st }) {
-  const m = st.metrics || {};
+  const [win, setWin] = useIns('30d');
+  // { win, data } once a window answered, { win, error } when it failed.
+  const [res, setRes] = useIns(null);
+  const [tick, setTick] = useIns(0);
+  React.useEffect(() => {
+    let live = true;
+    qhApi.adminMetrics(win)
+      .then(r => { if (live) setRes({ win, data: r || {} }); })
+      .catch(() => { if (live) setRes({ win, error: true }); });
+    return () => { live = false; };
+  }, [win, tick]);
+  const fresh = res && res.win === win ? res : null;
+  const decState = !fresh ? 'loading' : fresh.error ? 'error' : (fresh.data.decisionTime || 'error');
+  const m = (fresh && fresh.data) || st.metrics || {};
+  const tabs = (
+    <div className="qh-seg qh-seg-sm qh-mwin" role="tablist" aria-label="Metrics window">
+      {QH_METRIC_WINDOWS.map(([v, l]) => (
+        <button key={v} type="button" role="tab" aria-selected={win === v} className={'qh-seg-opt' + (win === v ? ' is-active' : '')} onClick={() => setWin(v)}>{l}</button>))}
+      {fresh && fresh.error && <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setTick(tick + 1)}>Try again</button>}
+    </div>
+  );
   if (!m.headline) return (
     <div className="qh-apad"><div className="qh-aview-head"><div>
       <div className="qh-aview-title">Metrics</div><div className="qh-aview-sub">Loading…</div>
-    </div></div></div>
+    </div>{tabs}</div>
+    <DecisionTime win={win} state={decState} /></div>
   );
   const h = m.headline, cost = m.costSavings || {};
   const vol = m.volumeWeekly || [];
@@ -85,14 +155,16 @@ function MetricsView({ st }) {
     <div className="qh-apad">
       <div className="qh-aview-head"><div>
         <div className="qh-aview-title">Metrics</div>
-        <div className="qh-aview-sub">From p_metrics_* (self-test excluded){m.reportStart ? ' · since ' + m.reportStart : ''} · {m.timezone || 'UTC'}</div>
-      </div></div>
+        <div className="qh-aview-sub">From p_metrics_* (self-test excluded){m.reportStart ? ' · since ' + m.reportStart : ''} · {m.timezone || 'UTC'}{fresh && fresh.data.windowStart ? ' · window starts ' + qhFmt(fresh.data.windowStart) : ''}</div>
+      </div>{tabs}</div>
+
+      <DecisionTime win={win} state={decState} />
 
       <div className="qh-kpi-grid">
         <Stat k="Total requests" v={_fmtNum(h.total)} />
         <Stat k="Completed" v={_fmtNum(h.completed)} sub={_pctStr(h.successRate) + ' success'} />
         <Stat k="Failed" v={_fmtNum(h.failed)} />
-        <Stat k="Rejected" v={_fmtNum(h.rejected)} />
+        <Stat k="Denied" v={_fmtNum(h.rejected)} />
         <Stat k="Cancelled" v={_fmtNum(h.cancelled)} />
         <Stat k="Auto-approved" v={_pctStr(h.autoApproveRate)} sub="less DBA load" />
         <Stat k="Unique users" v={_fmtNum(h.uniqueUsers)} />
@@ -254,4 +326,4 @@ function FeedbackView({ st }) {
 
 // qhDurMs is exported because the audit screen (qh-admin-audit.jsx) formats the
 // same durations and a second copy of the rounding rules would drift.
-Object.assign(window, { MetricsView, FeedbackView, qhDurMs });
+Object.assign(window, { MetricsView, FeedbackView, qhDurMs, qhDecisionSec, qhBandLabel, DecisionTime });

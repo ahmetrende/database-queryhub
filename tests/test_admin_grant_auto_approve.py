@@ -19,6 +19,8 @@ from queryhub.web import routes_admin as ra
 CLAIMS = {"sub": "U0EXAMPLE001", "name": "Example Admin"}
 TEAM = {"id": 7, "name": "Team Alpha"}
 PAST = datetime.now(timezone.utc) - timedelta(days=1)
+# A waiver needs an end, at most 90 days from now (auto_approve_limits).
+END = datetime.now(timezone.utc) + timedelta(days=30)
 
 
 class Cur:
@@ -75,7 +77,7 @@ def env(monkeypatch):
 
 def _post(**kw):
     body = {"subjectType": "user", "subject": "U0EXAMPLE002", "connectionId": "prod-ledger",
-            "tier": "rw"}
+            "tier": "rw", "expiresAt": END.isoformat()}
     body.update(kw)
     return ra.admin_create_grant(ra.GrantIn(**body), claims=CLAIMS)
 
@@ -130,7 +132,7 @@ def _team(**kw):
 
 
 def test_a_team_waiver_is_written_in_the_grants_own_transaction(env):
-    out = _team(autoApprove=True, databases=["ledger"], expiresAt="2099-01-01T00:00:00Z")
+    out = _team(autoApprove=True, databases=["ledger"])
     assert env.txns == 1
     inserts = [(q, p) for q, p in env.cur.sql if q.startswith("INSERT INTO access_grant")]
     assert len(inserts) == 2
@@ -140,12 +142,12 @@ def test_a_team_waiver_is_written_in_the_grants_own_transaction(env):
     assert "mirrored_from" not in waiver_q                      # left NULL: nobody's copy
     team_id, tid, dbn, all_dbs, tier, until, reason, uid = waiver_p
     assert (team_id, tid, dbn, all_dbs, tier) == (7, 53, "ledger", False, "ro")
-    assert until == datetime(2099, 1, 1, tzinfo=timezone.utc)   # the grant's own expiry
+    assert until == END                                         # the grant's own expiry
     assert reason == "auto-approve with the grant" and uid == CLAIMS["sub"]
     assert out["autoApprove"]["written"] == 1 and out["autoApprove"]["ids"][0].startswith("ag:")
     assert ("auto_approve_granted", {"subject_type": "team", "team_id": 7, "target_id": 53,
             "database": "ledger", "tier": "ro", "grant_id": out["autoApprove"]["ids"][0],
-            "with_grant": True, "expires_at": "2099-01-01T00:00:00+00:00"}) in env.audit
+            "with_grant": True, "expires_at": END.isoformat()}) in env.audit
 
 
 def test_a_team_waiver_the_team_already_holds_is_skipped(env):

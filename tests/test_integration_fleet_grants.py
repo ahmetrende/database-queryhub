@@ -8,6 +8,7 @@ Every row is keyed to names no real target, team or person has, and only those
 rows are removed. The audit log is append-only, so its rows stay behind.
 """
 import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -78,12 +79,17 @@ def _status(fn, *args):
     return e.value.status_code
 
 
+def _END():
+    """A rule made through the app needs an end (auto_approve_max_days)."""
+    return (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+
+
 def _mine(subject_name):
     return [g for g in ra.admin_fleet_grants(SUPER)["grants"] if g["subjectName"] == subject_name]
 
 
 def test_a_person_gets_ro_everywhere_but_the_flagged_server(world):
-    r = ra.admin_add_fleet_grant(ra.FleetGrantIn(subject="U0FLTPER", autoApprove=True), SUPER)
+    r = ra.admin_add_fleet_grant(ra.FleetGrantIn(subject="U0FLTPER", autoApprove=True, expiresAt=_END()), SUPER)
     assert r["id"] and r["waiverId"] and r["tier"] == "RO"
     open_ = access.resolve_target("U0FLTPER", world["t"][OPEN])
     assert open_["tier"] == "ro" and open_["auto_tier"] == "ro"
@@ -103,7 +109,7 @@ def test_refusals_write_nothing(world):
 
 
 def test_revoking_the_grant_takes_its_waiver_with_it(world):
-    r = ra.admin_add_fleet_grant(ra.FleetGrantIn(subject="U0FLTPER", autoApprove=True), SUPER)
+    r = ra.admin_add_fleet_grant(ra.FleetGrantIn(subject="U0FLTPER", autoApprove=True, expiresAt=_END()), SUPER)
     assert _status(ra.admin_revoke_fleet_grant, r["id"], ADMIN) == 403
     ra.admin_revoke_fleet_grant(r["id"], SUPER)
     assert _mine("IT FLT Person") == []

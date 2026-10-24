@@ -390,12 +390,21 @@ function effQueuePeople(st) {
   (st.manualRuns || []).forEach(it => it.requester && add(it.requester.slackId, it.requester.name, null));
   return out;
 }
+// The person named in `#admin/effective?person=<id>` (the queue's "View
+// access" button). '' when the hash names nobody.
+function effHashPerson() {
+  const h = typeof location !== 'undefined' ? (location.hash || '') : '';
+  const m = h.match(/^#admin\/effective\?(?:.*&)?person=([^&]+)/i);
+  if (!m) return '';
+  try { return decodeURIComponent(m[1]); } catch (e) { return ''; }
+}
+Object.assign(window, { effHashPerson });
 function EffectiveAccessView({ st, user }) {
   const full = !!(user && user.role === 'super');
   const [kind, setKind] = useEff('person');
   const [q, setQ] = useEff('');
-  const [pick, setPick] = useEff(null);   // { kind, key }
-  const [typed, setTyped] = useEff(null); // a person a DBA opened by id
+  const [pick, setPick] = useEff(() => { const id = effHashPerson(); return id ? { kind: 'person', key: id } : null; });   // { kind, key }
+  const [typed, setTyped] = useEff(() => { const id = effHashPerson(); return id && !(user && user.role === 'super') ? { id, handle: id, slackId: id, name: null, initials: null } : null; }); // a person a DBA opened by id
   const people = full ? (st.people || []) : effQueuePeople(st).concat(typed && !effQueuePeople(st).some(p => p.id === typed.id) ? [typed] : []);
   const teams = full ? (st.teams || []) : [];
   const t = q.trim().toLowerCase();

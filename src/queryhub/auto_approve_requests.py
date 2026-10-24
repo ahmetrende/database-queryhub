@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from . import audit, db, idp_outbox, window_options
+from . import audit, auto_approve_limits, db, idp_outbox, window_options
 from . import config as cfg
 
 log = logging.getLogger(__name__)
@@ -346,7 +346,8 @@ def list_for(principal_id: str, limit: int = 50) -> list[dict]:
 
 class WindowDecisionRefused(Exception):
     """A decision that cannot be made. `code` names a rule of the window
-    itself (`super_admin`, `ddl`, `rw_off`, `rw_not_held`, `no_window`), so
+    itself (`super_admin`, `ddl`, `rw_off`, `rw_not_held`, `no_window`,
+    `window_too_long`), so
     that a surface can say that rule. It is None for the older refusals:
     not an admin, no such request, already decided, outside the scope."""
 
@@ -432,6 +433,15 @@ def decide_window(request_id: int, *, approve: bool, actor_id: str,
         # is never written from a window request.
         raise WindowDecisionRefused("This request has no window length, so it "
                                     "cannot be approved.", 409, code="no_window")
+    # A window always ends, and it ends within the limit of every rule made in
+    # the app. The offered windows are at most 30 days. `auto_approve_max_days`
+    # can be lower than that, and then a longer window is refused here, not
+    # written. The admin can reject it.
+    try:
+        auto_approve_limits.check_end(expires_in_minutes=minutes)
+    except auto_approve_limits.EndRefused as e:
+        raise WindowDecisionRefused(f"{e.message} You can reject the request.",
+                                    409, code="window_too_long")
     with db.connection() as conn:
         with conn.cursor() as cur:
             # The requester is told by the caller, in words about the window;

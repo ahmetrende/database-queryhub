@@ -17,6 +17,15 @@ the exact same notification/dispatch code both surfaces run.
     apply_effects(client, outcome)
         Slack mirror (admin messages + requester card) + executor.submit
         on approve. Safe to call from either process.
+    require_kill_switch_off()
+        The ONE check for every action that approves and runs a request.
+
+The kill switch stops approvals too (operator decision, 2026-10-24). While it
+is on, an approve is refused. Deny and request-changes stay open. `decide` and
+`decide_bundle` make the check themselves for an approve, so a caller cannot
+skip it. A path that approves without them (the Slack "Approve all remaining"
+button, the CSV import approval) calls `require_kill_switch_off` directly.
+tests/test_kill_switch_approve_guard.py fails when a new path skips it.
 """
 from __future__ import annotations
 
@@ -27,6 +36,30 @@ from datetime import datetime, timezone
 from . import audit, auto_approve, core_submit, db
 
 _VALID = ("approve", "reject", "changes")
+
+KILL_SWITCH_APPROVE_MESSAGE = "Kill switch is on. Resume queries first."
+KILL_SWITCH_APPROVE_CODE = "kill_switch_on"
+
+
+class KillSwitchOn(Exception):
+    """An approval that the kill switch refuses. Nothing was written.
+
+    `code` is the web error code. `message` is the text for the person."""
+
+    code = KILL_SWITCH_APPROVE_CODE
+
+    def __init__(self, message: str = KILL_SWITCH_APPROVE_MESSAGE):
+        super().__init__(message)
+        self.message = message
+
+
+def require_kill_switch_off() -> None:
+    """Raise `KillSwitchOn` while the kill switch is on. Else do nothing.
+
+    Every action that approves and runs a request calls this before it writes
+    anything. A deny or a request for changes never calls it."""
+    if core_submit.kill_switch_on():
+        raise KillSwitchOn()
 
 
 @dataclass
@@ -47,8 +80,11 @@ def decide(request_id: int, decision: str, *, by_id: str,
            by_name: str | None, reason: str | None = None) -> Outcome | None:
     """Atomically move a pending request to its decided state + write the
     audit row. Returns None if the request wasn't pending (already decided
-    / raced). `reason` is required for reject/changes."""
+    / raced). `reason` is required for reject/changes. An approve raises
+    `KillSwitchOn` while the kill switch is on."""
     _check(decision, reason)
+    if decision == "approve":
+        require_kill_switch_off()
     with db.transaction() as cur:
         sched = None
         if decision == "approve":
@@ -158,8 +194,11 @@ def decide_bundle(bundle_id: int, decision: str, *, by_id: str,
     person, so the decision skips it. Each decided item gets its own audit
     row on the same cursor, with the bundle id in the details. A raised
     BundleRefused rolls the transaction back, so it writes nothing. The
-    caller runs `apply_effects` for each outcome after the commit."""
+    caller runs `apply_effects` for each outcome after the commit. An approve
+    raises `KillSwitchOn` while the kill switch is on, and writes nothing."""
     _check(decision, reason)
+    if decision == "approve":
+        require_kill_switch_off()
     with db.transaction() as cur:
         cur.execute(
             f"SELECT {_BUNDLE_COLS} FROM requests WHERE bundle_id = %s "

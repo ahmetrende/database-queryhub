@@ -260,7 +260,7 @@ function RoleForm({ st, onDone, init }) {
         {tierOn && <label className="qh-rolefield"><span className="qh-rolefield-l">Tier ceiling</span>
           <select className="qh-select" value={f.maxTier} onChange={e => set({ maxTier: e.target.value })}>
             <option value="">No ceiling</option>
-            <option value="RO">Read (RO)</option><option value="RW">Write (RW)</option><option value="DDL">Schema (DDL)</option>
+            <option value="RO">Read (RO)</option><option value="RW">Write (RW)</option><option value="DDL">Schema change (DDL)</option>
           </select></label>}
         <label className="qh-rolefield"><span className="qh-rolefield-l">Ends</span>
           {/* The same expiry control every grant uses (2026-08-16): a role that

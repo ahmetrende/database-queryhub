@@ -1081,6 +1081,72 @@ def query_cancel(request_id: int, claims: dict = Depends(deps.current_user)):
     }
 
 
+#: A script can store many statements. The Messages line names the masked
+#: columns of the first few, which keeps the read of the headers small.
+_MASKED_NAMES_STATEMENTS = 20
+
+
+def _status_masked_columns(row: dict) -> list[str] | None:
+    """NAMES of the columns that the stored result masked, for the success line
+    of the Messages tab. None when they cannot be told: the request has no
+    stored result (a write, or the file expired), or the run was unmasked, or
+    anything fails. The success line then keeps its plain wording.
+
+    Only the header line of each statement's table is read, never a row, so a
+    masked value cannot reach the line. It asks `_masked_pii_cols`, the same
+    function that gives the result its masked-column dots, so the line and the
+    dots always agree."""
+    if row.get("status") != "completed" or not row.get("csv_file_path"):
+        return None
+    try:
+        if _ran_unmasked(row["id"]):
+            return None
+        p = Path(row["csv_file_path"])
+        if not p.is_file():
+            return None
+        names: list[str] = []
+        members = _statement_members(p)
+        for i in range(1, min(len(members), _MASKED_NAMES_STATEMENTS) + 1):
+            with _open_statement(p, i) as fh:
+                raw_cols = next(csv.reader(fh), [])
+            for n in _masked_pii_cols(row, raw_cols, _dedup_cols(raw_cols)):
+                if n not in names:
+                    names.append(n)
+        return names
+    except Exception:
+        log.warning("request %s: could not read the masked columns for the "
+                    "Messages line", row.get("id"), exc_info=True)
+        return None
+
+
+def _status_replica_name(row: dict, uid: str) -> str | None:
+    """The name of the replica that an AUTOMATIC route used, for a reader who
+    may see replica names. Only a super-admin is shown them anywhere
+    (GET /connections), so everybody else keeps the unnamed line.
+
+    The run record says so itself: the executor writes `run_notes.replica`
+    for an automatic route and never for a chosen one (the client words a
+    chosen replica from `ranOn`). A request with no such note costs no read."""
+    if row.get("status") != "completed" or not row.get("executed_target_id"):
+        return None
+    notes = row.get("run_notes")
+    if isinstance(notes, str):
+        try:
+            notes = json.loads(notes)
+        except Exception:
+            return None
+    if not isinstance(notes, dict) or not isinstance(notes.get("replica"), dict):
+        return None
+    try:
+        if not admins.is_super_admin(uid):
+            return None
+        return _alias_of(row["executed_target_id"]) or None
+    except Exception:
+        log.warning("request %s: could not name the replica", row.get("id"),
+                    exc_info=True)
+        return None
+
+
 @router.get("/queries/{request_id}")
 def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
     deps.require_whitelisted(claims)
@@ -1104,7 +1170,10 @@ def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
         "runMs": mapping.run_ms(row),
         "rowCount": row.get("row_count"),
         "audit": mapping.audit_entries(audit_rows, claims["sub"]),
-        "messages": mapping.status_messages(row, audit_rows),
+        "messages": mapping.status_messages(
+            row, audit_rows,
+            masked_columns=_status_masked_columns(row),
+            replica_name=_status_replica_name(row, claims["sub"])),
         # Where it ran: {kind, name, forced, lagSeconds}, null until it has.
         "ranOn": mapping.ran_on(row, audit_rows, _alias_of),
         # When the expiry job may close it: null unless it is pending and

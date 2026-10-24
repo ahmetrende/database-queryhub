@@ -329,9 +329,24 @@
   .qh-conn-head:hover { background: var(--adaptive-medium); }
   .qh-caret { display: inline-flex; color: var(--fg-tertiary); transition: transform var(--d-fast-02) var(--ease-standard); }
   .qh-caret.is-open { transform: rotate(90deg); }
-  .qh-envtag-sm { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; line-height: 1.4; padding: 1px 5px; border-radius: var(--r-2xs); flex-shrink: 0; }
-  .qh-envtag-sm.env-production { background: var(--danger-adaptive-light); color: var(--fg-danger); }
-  .qh-envtag-sm.env-staging { background: var(--warning-adaptive-light); color: var(--fg-warning); }
+  /* 2026-10-24 · Env chip: a solid pill, 11px bold, so it reads at a glance.
+     PROD is the orange pill with dark ink. Every other environment (STG, TEST)
+     is the calm neutral pill. Only PROD, STG and TEST are upper case, and the
+     words come from qhEnvChipWord in qh-data.jsx. An environment the app does
+     not know is set in sentence case (::first-letter). Colours are tokens only.
+     Contrast, computed by hand with the WCAG formula from the token hex values
+     in theme-vendor/colors_and_type.css (not measured in a browser yet):
+       light PROD  ink #1F2229 on --warning-solid-medium #D97706  5.00
+       dark  PROD  ink #1F2229 on --warning-solid-light  #F59E0B  7.41
+       light STG   white       on --system-solid-light   #5A6170  6.22
+       dark  STG   ink #181A20 on --system-solid-light   #BFC4CF  9.95
+       (white on the PROD orange is 3.19 and fails, so PROD takes dark ink). */
+  .qh-envtag-sm { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; line-height: 1.4; padding: 1px 8px; border-radius: 999px; flex-shrink: 0; white-space: nowrap;
+    background: var(--system-solid-light); color: var(--fg-fix-white); }
+  .qh-envtag-sm::first-letter { text-transform: uppercase; }
+  .qh-envtag-sm.env-production { background: var(--warning-solid-medium); color: var(--fg-fix-dark); }
+  [data-theme='dark'] .qh-envtag-sm { color: var(--bg-fix-dark); }
+  [data-theme='dark'] .qh-envtag-sm.env-production { background: var(--warning-solid-light); color: var(--fg-fix-dark); }
   .qh-engine-logo { width: 17px; height: 17px; object-fit: contain; border-radius: 3px; display: block; }
   /* Provider marks are the official logos, so they are files that carry their own
      colour (like the engine logos). One is a wordmark and one a glyph, so the box
@@ -360,8 +375,8 @@
   .qh-row-del:hover { background: var(--danger-adaptive-light); color: var(--fg-danger); }
   .qh-saved-top { display: flex; align-items: center; gap: 8px; }
   .qh-saved-top .qh-saved-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
-  .qh-origin { flex-shrink: 0; display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px 1px 5px; border-radius: 999px; font-size: 9.5px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; }
-  .qh-origin.is-server { color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  .qh-origin { flex-shrink: 0; display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px 1px 5px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+  .qh-origin.is-server { color: var(--brand-solid-strong); background: var(--brand-adaptive-light); }
   .qh-origin.is-local { color: var(--fg-secondary); background: var(--adaptive-medium); }
   .qh-side-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 7px; padding: 40px 24px 24px; color: var(--fg-tertiary); }
   .qh-side-empty svg { color: var(--fg-tertiary); opacity: 0.45; margin-bottom: 3px; }
@@ -498,12 +513,15 @@
      read before pressing Run. */
   /* 2026-10-23 · The hint on a blank, unpicked tab: how a database gets used here. Tertiary text, the same token as .qh-accnote-hint. */
   .qh-target-hint { font-size: 12px; color: var(--fg-tertiary); min-width: 0; overflow: hidden; text-overflow: ellipsis; margin-left: 4px; }
+  /* 2026-10-23 · Provider and engine logos on the target strip. The provider mark is wider than tall, so it keeps its own box; both stay put when the strip is narrow. */
+  .qh-target-prov { width: 24px; height: 14px; object-position: center; }
+  .qh-target-eng { width: 16px; height: 16px; flex-shrink: 0; }
   .qh-target-db { font-weight: 500; color: var(--fg-secondary); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .qh-target-tier { display: inline-flex; align-items: center; flex-shrink: 0; }
   .qh-ab-spacer { flex: 1 1 8px; min-width: 8px; }
   /* Under 1120px of bar the secondary actions are icons. They keep their titles,
      and the Run button never loses its word — it is the one whose label changes
-     with state (“Submit for approval”, “Awaiting DBA approval…”). */
+     with state (“Submit for DBA approval”, “Awaiting DBA approval…”). */
   .qh-actionbar.is-tight .qh-ab-blabel { display: none; }
   .qh-actionbar.is-tight .qh-ab-actions .qh-btn { padding: 0 9px; }
 
@@ -575,9 +593,13 @@
   .qh-batch-note { margin-bottom: 10px; padding: 8px 11px; border-radius: var(--r-sm); font-size: 12px; line-height: 1.45; color: var(--fg-secondary); background: var(--adaptive-medium); }
 
   /* tier color tokens */
-  .tier-ro { color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  /* 2026-10-24 · Tier text reaches 4.5:1 on its tint (hand-computed, light then
+     dark): RO --brand-solid-strong 5.2 / #E08A68 8.9, RW #15688C 5.4 / #7FD2F5 6.9,
+     DDL --danger-solid-medium 4.99 / #FF5151 4.98. --fg-accent was 3.2 and
+     --fg-danger 3.6. */
+  .tier-ro { color: var(--brand-solid-strong); background: var(--brand-adaptive-light); }
   .tier-rw { color: #15688C; background: var(--sup-blue-light); }
-  .tier-ddl { color: var(--fg-danger); background: var(--danger-adaptive-light); }
+  .tier-ddl { color: var(--danger-solid-medium); background: var(--danger-adaptive-light); }
   [data-theme='dark'] .tier-rw { color: #7FD2F5; background: rgba(102,204,255,0.12); }
   .qh-tab-dot.tier-ro { background: var(--brand-green); }
   .qh-tab-dot.tier-rw { background: #66CCFF; }
@@ -689,11 +711,18 @@
 
   /* status pills */
   .qh-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: var(--r-full); }
-  .st-pending { color: var(--fg-warning); background: var(--warning-adaptive-light); }
-  .st-approved { color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  /* 2026-10-24 · Status chips: 11px, sentence-case words (the JSX sends them so),
+     text colours that reach 4.5:1 on the tint. --fg-warning, --fg-accent and
+     --fg-danger measured 3.2:1, 3.2:1 and 3.6:1 on their tints, so the chips
+     use the strong tokens (hand-computed, light then dark): Pending
+     --warning-solid-strong 6.4 / #FCD34D 12; Done and Approved
+     --brand-solid-strong 5.2 / #E08A68 8.9; Denied and Failed
+     --danger-solid-medium 4.99 / #FF5151 4.98. */
+  .st-pending { color: var(--warning-solid-strong); background: var(--warning-adaptive-light); }
+  .st-approved { color: var(--brand-solid-strong); background: var(--brand-adaptive-light); }
   .st-running { color: #15688C; background: var(--sup-blue-light); }
-  .st-done { color: var(--fg-accent); background: var(--brand-adaptive-light); }
-  .st-rejected { color: var(--fg-danger); background: var(--danger-adaptive-light); }
+  .st-done { color: var(--brand-solid-strong); background: var(--brand-adaptive-light); }
+  .st-rejected { color: var(--danger-solid-medium); background: var(--danger-adaptive-light); }
   [data-theme='dark'] .st-running { color: #7FD2F5; background: rgba(102,204,255,0.12); }
   .qh-pulse { width: 7px; height: 7px; border-radius: 999px; background: currentColor; animation: qhpulse 1.2s ease infinite; }
   @keyframes qhpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
@@ -702,9 +731,11 @@
   @keyframes qhspin { to { transform: rotate(360deg); } }
 
   /* tier badge */
-  .qh-tier { display: inline-flex; align-items: center; font-size: 10px; font-weight: 700; font-family: var(--qh-mono);
+  /* 2026-10-24 · Tier chip text is 11px (was 10px and 9px). RO, RW and DDL stay
+     upper case: they are the badge names. */
+  .qh-tier { display: inline-flex; align-items: center; font-size: 11px; font-weight: 700; font-family: var(--qh-mono);
     padding: 2px 7px; border-radius: var(--r-2xs); letter-spacing: 0.02em; flex-shrink: 0; }
-  .qh-tier.is-sm { font-size: 9px; padding: 1px 5px; }
+  .qh-tier.is-sm { font-size: 11px; padding: 1px 5px; }
 
   /* results table */
   .qh-table-scroll { width: 100%; height: 100%; overflow: auto; }
@@ -800,7 +831,8 @@
   .qh-reqrow-dbs { font-size: 11px; color: var(--fg-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* "You already query this server" — without it the row implies no access at
      all to a target the person uses daily. */
-  .qh-reqrow-partial { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 5px; border-radius: var(--r-2xs); color: var(--fg-accent); background: var(--brand-adaptive-light); flex-shrink: 0; }
+  .qh-reqrow-partial { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: var(--r-2xs); color: var(--brand-solid-strong); background: var(--brand-adaptive-light); flex-shrink: 0; }
+  .qh-reqrow-partial::first-letter { text-transform: uppercase; }
   .qh-reqlist-none { padding: 14px 10px; font-size: 12.5px; color: var(--fg-tertiary); text-align: center; text-wrap: pretty; }
   .qh-reqpicked { display: flex; align-items: center; gap: 9px; padding: 9px 11px; border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); font-size: 13px; }
   .qh-reqpicked b { font-weight: 600; color: var(--fg-primary); }
@@ -817,14 +849,12 @@
      server's own sentences, so they get room to be read: one block each, full
      width, nothing clipped. */
   .qh-conf-modal { width: 520px; }
-  .qh-conf-target { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--fg-primary); }
-  .qh-conf-tgt { font-family: var(--qh-mono); font-size: 12.5px; }
+  .qh-conf-target { display: flex; align-items: center; gap: 8px; align-self: flex-start; max-width: 100%; min-width: 0; box-sizing: border-box; padding: 6px 12px; border: 1px solid var(--stroke-medium); border-radius: 999px; background: var(--bg-light); font-size: 13px; font-weight: 600; color: var(--fg-primary); }
+  .qh-conf-tgt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--qh-mono); font-size: 12.5px; }
   .qh-conf-reasons { list-style: none; display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; }
   .qh-conf-reason { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border-radius: var(--r-sm);
-    background: var(--danger-adaptive-light); color: var(--fg-danger); font-size: 13px; line-height: 1.5; text-wrap: pretty; }
+    background: var(--danger-adaptive-light); color: var(--danger-solid-medium); font-size: 13px; line-height: 1.5; text-wrap: pretty; }
   .qh-conf-reason > svg { flex-shrink: 0; margin-top: 2px; }
-  .qh-conf-go { font-weight: 700; background: var(--danger-adaptive-light); border-color: var(--danger-adaptive-strong); }
-  .qh-conf-go:hover:not(:disabled) { background: var(--danger-adaptive-medium); border-color: var(--stroke-danger); }
   .qh-closelist { display: flex; flex-direction: column; gap: 2px; max-height: 190px; overflow-y: auto; border: 1px solid var(--stroke-light); border-radius: var(--r-md); padding: 6px; }
   .qh-closelist-row { display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: var(--r-xs); }
   .qh-closelist-row:hover { background: var(--adaptive-light); }
@@ -1089,8 +1119,9 @@
   .qh-exp-note { flex-basis: 100%; font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); }
   /* A saved query or history row whose target is out of reach. Quiet: it is a
      fact about the row, not an error — the query still opens. */
-  .qh-conn-state { margin-left: 6px; padding: 1px 6px; border-radius: var(--r-2xs); font-size: 9.5px; font-weight: 700;
-    letter-spacing: 0.03em; text-transform: uppercase; color: var(--fg-tertiary); background: var(--adaptive-strong); white-space: nowrap; }
+  .qh-conn-state { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: var(--r-2xs); font-size: 11px; font-weight: 700;
+    color: var(--fg-tertiary); background: var(--adaptive-strong); white-space: nowrap; }
+  .qh-conn-state::first-letter { text-transform: uppercase; }
   /* The target strip names an unreachable alias instead of a dash. */
   .qh-target-conn.is-gone, .qh-target-db.is-gone { color: var(--fg-tertiary); text-decoration: line-through; text-decoration-thickness: 1px; }
   /* Cannot run here, said where Run is. Sits between the action bar and the
@@ -1496,7 +1527,7 @@
   .qh-mxdetail { display: flex; flex-direction: column; gap: 5px; padding: 2px 14px 13px 33px; }
   .qh-mxrowacts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 7px; }
   .qh-mxrowacts .qh-rowmenu-btn { height: 32px; }
-  .qh-mxchip { white-space: nowrap; padding: 2px 8px; border-radius: var(--r-2xs); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-secondary); background: var(--adaptive-strong); }
+  .qh-mxchip { display: inline-block; white-space: nowrap; padding: 2px 8px; border-radius: var(--r-2xs); font-size: 11px; font-weight: 700; letter-spacing: 0; color: var(--fg-secondary); background: var(--adaptive-strong); }
   .qh-mxchip.is-server, .qh-mxchip.is-database, .qh-mxchip.is-fleet, .qh-mxchip.is-full { color: var(--fg-danger); background: var(--danger-adaptive-light); }
   .qh-mxchip.is-schema, .qh-mxchip.is-gone, .qh-mxchip.is-soft, .qh-mxchip.is-join { color: var(--fg-warning); background: var(--warning-adaptive-light); }
   .qh-mxchip.is-off { color: var(--fg-tertiary); background: var(--adaptive-medium); }
@@ -1735,6 +1766,7 @@
   .qh-ertarget { font-size: 13px; font-weight: 600; color: var(--fg-primary); }
   .qh-ercard-reason { font-size: 13px; color: var(--fg-secondary); margin-top: 6px; }
   .qh-ercard-by { font-size: 12px; color: var(--fg-tertiary); margin-top: 4px; }
+  .qh-ercard-end { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--fg-secondary); }
   .qh-ercard-actions { display: flex; gap: 8px; flex-shrink: 0; }
   .qh-connlist { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
   .qh-conncard { border: 1px solid var(--stroke-medium); border-radius: var(--r-lg); padding: 14px 16px; }
@@ -1825,14 +1857,15 @@
   /* "disabled" marker on a connection. Deliberately reads as a warning rather
      than a neutral chip: it appears where the env tag used to sit, and the
      mistake it prevents is picking a retired instance that still answers. */
-  .qh-conn-off { font-size: 9.5px; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.04em; padding: 2px 5px; border-radius: var(--r-xs);
-    color: var(--fg-warning); background: var(--warning-adaptive-light);
+  .qh-conn-off { display: inline-block; font-size: 11px; font-weight: 700;
+    padding: 2px 6px; border-radius: var(--r-xs);
+    color: var(--warning-solid-strong); background: var(--warning-adaptive-light);
     white-space: nowrap; flex-shrink: 0; }
+  .qh-conn-off::first-letter { text-transform: uppercase; }
   /* In a tree row the marker is icon-only: as a word it is 65px of chip, which
      outranked the row's own name at every sidebar width. The glyph keeps the
      warning colour, costs 15px, and the sentence stays in the row's hover title. */
-  .qh-conn-off.is-icon { display: inline-flex; align-items: center; padding: 0;
+  .qh-conn-off.is-icon { display: inline-flex; align-items: center; padding: 0; color: var(--fg-warning);
     background: transparent; border-radius: 0; }
   /* And the rest of the row follows the badge: a retired target still ANSWERS,
      with stale data, so the one thing its row must not look like is a live one —
@@ -1848,7 +1881,10 @@
   .qh-conntable tr:has(.qh-expiry.is-exp) .qh-conn-namecell b { color: var(--fg-tertiary); font-weight: 400; }
   /* Chips in a tree row yield width to the name too (see .qh-tr-label). Both are
      short, so in practice they collapse only where the name would otherwise die. */
-  .qh-tr .qh-pgchip, .qh-tr .qh-envtag-sm { flex: 0 1000 auto; min-width: 0; overflow: hidden; }
+  .qh-tr .qh-pgchip { flex: 0 1000 auto; min-width: 0; overflow: hidden; }
+  /* 2026-10-24 · The provider logo and the env chip never shrink: the NAME
+     ellipsizes first (the .qh-tr-label rule above), so a row keeps its identity. */
+  .qh-tr > .qh-prov-logo, .qh-tr > .qh-envtag-sm { flex: 0 0 auto; }
   .qh-auditreq { font-family: var(--qh-mono); font-size: 11.5px;
     color: var(--fg-secondary); white-space: nowrap; }
   .qh-auditline.is-head { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-tertiary); background: var(--bg-light); }
@@ -2565,6 +2601,46 @@
   .qh-kill-hist { min-width: 640px; }
   .qh-kill-hist td { vertical-align: top; }
   .qh-kill-hist-sub { font-size: 11.5px; margin-top: 2px; }
+  /* 2026-10-24 · Admin batch 3: queue, kill switch, nav, metrics.
+     Queue: a "Requester holds" line, an expiry line, a View access button and a
+     key hint under the buttons. Kill switch: a state banner (green running, red
+     paused) above the card, a solid red Pause button and a calm Resume button.
+     Nav: 14px items, a second line on a locked row, a red count badge for
+     failing connections. Group labels are sentence case, not upper case.
+     Metrics: 7 and 30 day tabs and a decision-time card. Every colour is a
+     token, so dark mode and the Warm theme follow. */
+  .qh-adetail-holds, .qh-adetail-expires { font-size: 12.5px; color: var(--fg-secondary); margin-top: 2px; }
+  .qh-adetail-expires { color: var(--fg-primary); font-weight: 600; }
+  .qh-adetail-viewacc { margin-left: auto; align-self: flex-start; }
+  .qh-adetail-keys { margin-top: 8px; font-size: 12px; color: var(--fg-tertiary); }
+  .qh-adetail-keys kbd { font-family: inherit; font-size: 11px; font-weight: 600; padding: 1px 6px; border: 1px solid var(--stroke-medium); border-radius: 4px; color: var(--fg-secondary); }
+  .qh-kill-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 12px 16px; margin-bottom: 14px; border-radius: var(--r-lg); border: 1px solid var(--stroke-medium); font-size: 14px; color: var(--fg-primary); }
+  .qh-kill-banner-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--brand-green); flex-shrink: 0; }
+  .qh-kill-banner-t { font-weight: 700; }
+  .qh-kill-banner-d { color: var(--fg-secondary); font-size: 13px; }
+  .qh-kill-banner.is-paused { border-color: var(--danger-solid-light); background: var(--danger-adaptive-light); }
+  .qh-kill-banner.is-paused .qh-kill-banner-dot { background: var(--danger-solid-light); }
+  /* 2026-10-24 · The Pause button is the one solid red button on the page. Ink on it:
+     white on --danger-solid-medium 5.69 in light, dark ink on #FF5151 4.95 in dark. */
+  .qh-btn.qh-kill-pause { background: var(--danger-solid-medium); border-color: var(--danger-solid-medium); color: #fff; }
+  .qh-btn.qh-kill-pause:hover:not(:disabled) { background: var(--danger-solid-strong); border-color: var(--danger-solid-strong); }
+  [data-theme='dark'] .qh-btn.qh-kill-pause { color: #1F2229; }
+  [data-theme='dark'] .qh-btn.qh-kill-pause:hover:not(:disabled) { background: var(--danger-solid-light); border-color: var(--danger-solid-light); color: #1F2229; }
+  .qh-kill-pause { font-weight: 700; }
+  .qh-anav-glabel { text-transform: none; font-size: 12px; letter-spacing: 0; font-weight: 600; }
+  .qh-anav-item { font-size: 14px; }
+  .qh-anav-text { display: flex; flex-direction: column; text-align: left; }
+  .qh-anav-ask { font-size: 11.5px; font-weight: 400; color: var(--fg-tertiary); }
+  .qh-anav-badge.is-fail { background: var(--danger-solid-light); margin-left: auto; }
+  .qh-anav-badge.is-fail + .qh-anav-badge { margin-left: 4px; }
+  .qh-mwin { margin-left: auto; align-self: center; }
+  .qh-dec { margin-bottom: 16px; }
+  .qh-dec-bands { display: grid; gap: 6px; margin: 12px 0 16px; }
+  .qh-dec-band { display: grid; grid-template-columns: 120px 1fr 48px; align-items: center; gap: 10px; font-size: 12.5px; }
+  .qh-dec-h { font-size: 12.5px; font-weight: 600; color: var(--fg-secondary); margin-bottom: 6px; }
+  .qh-dec-row { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 5px 0; font-size: 12.5px; border-top: 1px solid var(--stroke-light, var(--stroke-medium)); }
+  .qh-dec-name { font-weight: 600; flex: 1 1 100px; overflow: hidden; text-overflow: ellipsis; }
+  .qh-dec-n, .qh-dec-v { color: var(--fg-secondary); }
   .qh-kill-hist-why { max-width: 360px; overflow-wrap: anywhere; }
   .qh-kill-hist-open { display: inline-flex; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; color: var(--fg-primary); background: var(--danger-adaptive-light); }
   .qh-kill-hist-state { display: flex; align-items: center; gap: 10px; padding: 16px 0; font-size: 13px; color: var(--fg-tertiary); }
@@ -2639,6 +2715,137 @@
   .qh-health-errtext { max-width: 280px; margin-top: 2px; font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
   .qh-percard-last { font-size: 11px; color: var(--fg-secondary); }
   .qh-percard-last.is-none { color: var(--fg-tertiary); }
+
+  /* ---------- 2026-10-24 · Identity, dialogs and focus (batch 1) ----------
+     Provider logos are 24x14 like the target strip's. Colours are tokens only, so
+     the dark theme follows without a partner rule, except where the ink flips
+     (the red button and its icon tile: white on #C32A2A is 5.70 in light, and
+     white on #FF5151 is 3.21 in dark, which fails, so dark takes ink #181A20
+     for 5.42). Numbers are hand-computed, not measured in a browser yet. */
+  .qh-tr-prov, .qh-req-prov, .qh-conf-prov { width: 24px; height: 14px; object-position: center; flex: 0 0 auto; }
+  .qh-conf-eng { width: 16px; height: 16px; flex-shrink: 0; }
+  /* Focus in a dialog: the brand ring (DESIGN.md) and never the browser's heavy
+     default. The panel takes focus when nothing else should. */
+  .qh-modal:focus { outline: none; }
+  .qh-modal :focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-seg-opt:disabled { opacity: 0.5; cursor: not-allowed; }
+  .qh-seg-opt:disabled:hover { background: var(--bg-light); }
+  /* Confirm before run: a red icon tile, a code box that shows 8 lines and then
+     scrolls, and a solid red primary button. */
+  .qh-conf-headrow { display: flex; align-items: flex-start; gap: 14px; }
+  .qh-conf-ic { flex: 0 0 auto; width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--r-md); background: var(--danger-solid-medium); color: var(--fg-fix-white); }
+  [data-theme='dark'] .qh-conf-ic { color: var(--bg-fix-dark); }
+  .qh-conf-sql { margin: 0; padding: 10px 12px; box-sizing: border-box; max-height: calc(8 * 1.5em + 22px); overflow: auto; background: var(--qh-rail); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); font-family: var(--qh-mono); font-size: 12.5px; line-height: 1.5; color: var(--fg-primary); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .qh-conf-sql code { font: inherit; }
+  .qh-conf-go { font-weight: 700; background: var(--danger-solid-medium); color: var(--fg-fix-white); border-color: transparent; }
+  [data-theme='dark'] .qh-conf-go { color: var(--bg-fix-dark); }
+  .qh-conf-go:hover:not(:disabled) { box-shadow: inset 0 0 0 999px var(--adaptive-strong); }
+  /* Request access: a wider dialog, the three tiers each with one sentence. */
+  .qh-req-modal { width: 540px; }
+  .qh-tierpick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .qh-tierpick-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .qh-tierpick-col .qh-seg-opt { flex: none; width: 100%; padding: 0 6px; white-space: nowrap; }
+  .qh-tierpick-d { font-size: 11.5px; line-height: 1.4; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-tierpick-col.is-locked .qh-tierpick-d { color: var(--fg-tertiary); }
+  .qh-autoreq-ends { display: block; }
+
+  /* ---------- 2026-10-24 · Smaller env chip (operator request) ----------
+     SEPARATE BLOCK. The solid orange PROD pill was too big in the sidebar tree
+     and tired the eyes. Only the SIZE changes here: 10px text, weight 600,
+     padding 1px 6px, still a pill. The colours stay the tokens set above, so
+     contrast does not move (hand-computed from the token hex values, and pinned
+     by app/test/chip-styles.test.mjs):
+       light PROD  ink #1F2229 on #D97706  5.00
+       dark  PROD  ink #1F2229 on #F59E0B  7.41
+     This block replaces the 11px / 700 / 1px 8px size of the batch 1 rule
+     above, and it replaces the 24x14 provider logo of the tree rows with 20x12.
+     The chip never wraps (nowrap, no shrink), so the NAME ellipsizes first.
+     The old admin table chip (.qh-envtag) is not touched. */
+  .qh-envtag-sm { font-size: 10px; font-weight: 600; letter-spacing: 0.02em; line-height: 1.4; padding: 1px 6px; white-space: nowrap; flex-shrink: 0; }
+  .qh-tr > .qh-tr-prov { width: 20px; height: 12px; }
+
+  /* ---------- 2026-10-24 · Admin batch 3b: connections banner, revoke confirm, scope form, masking filter ----------
+     SEPARATE BLOCK. Tokens only, so dark follows. The banner uses the danger
+     tint and ink tokens already used by .qh-roleform-err. The masking chips lose
+     the upper-case transform: the first letter is raised by ::first-letter, so
+     "soft" reads "Soft". RO, RW and DDL are tier badges and are not touched. */
+  .qh-connbanner { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; padding: 10px 14px; border-radius: var(--r-sm); background: var(--danger-adaptive-light); color: var(--fg-primary); border: 1px solid var(--danger-solid-light); font-size: 13px; }
+  .qh-connbanner-say { flex: 1; }
+  .qh-conn-provtd { white-space: nowrap; }
+  .qh-revokeconfirm { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 2px; font-size: 13px; }
+  .qh-revokeconfirm-say { flex: 1; min-width: 220px; }
+  .qh-scopeform-who { min-width: 260px; }
+  .qh-scopeform-conns { min-width: 260px; display: flex; flex-direction: column; gap: 6px; }
+  .qh-scopeform-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .qh-scopeform-chip, .qh-scopeform-all { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: var(--r-2xs); font-size: 12px; background: var(--adaptive-strong); color: var(--fg-secondary); }
+  .qh-scopeform-x { border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+  .qh-mxchip::first-letter { text-transform: uppercase; }
+
+  /* ---------- 2026-10-24 · Request lifecycle, outcomes, Welcome lists, bell (batch 2) ----------
+     Colours are tokens only, so dark follows without a partner rule. Contrast,
+     hand-computed with the WCAG formula from the token hex values (the tint is
+     blended over the panel; the test app/test/request-lifecycle.test.mjs computes
+     the same numbers). Light, then dark:
+       Waiting pill, Changes requested  --warning-solid-strong on the amber tint
+                                         6.56 on white, 6.32 on #F9FAFB; #FCD34D 10.22 / 9.31
+       Withdrawn, Expired               --system-solid-light on the neutral tint
+                                         5.75 / 5.50;  #BFC4CF 8.98 / 8.11
+       Denied                           --danger-solid-medium on the red tint (st-rejected)
+                                         4.98;  #FF5151 4.95
+     A state is never colour alone: each pill has its own word. */
+  .qh-wait-pill { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; box-sizing: border-box; border-radius: var(--r-full); font-size: 13px; font-weight: 600; white-space: nowrap; cursor: default; flex-shrink: 0;
+    color: var(--warning-solid-strong); background: var(--warning-adaptive-light); box-shadow: inset 0 0 0 1px var(--warning-adaptive-strong); }
+  .st-withdrawn { color: var(--system-solid-light); background: var(--adaptive-medium); }
+  .st-expired { color: var(--system-solid-light); background: var(--adaptive-medium); box-shadow: inset 0 0 0 1px var(--stroke-strong); }
+  .st-changes { color: var(--warning-solid-strong); background: var(--warning-adaptive-light); box-shadow: inset 0 0 0 1px var(--warning-adaptive-strong); }
+  /* The amber card in Results, and the plain card for a request that ended. */
+  .qh-pend-card, .qh-end-card { margin: 16px; padding: 14px 16px; max-width: 520px; box-sizing: border-box; border-radius: var(--r-md); display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  .qh-pend-card { background: var(--warning-adaptive-light); border: 1px solid var(--warning-adaptive-strong); }
+  .qh-end-card { background: var(--bg-light); border: 1px solid var(--stroke-medium); }
+  .qh-pend-head { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; color: var(--warning-solid-strong); }
+  .qh-end-head { display: flex; align-items: center; gap: 8px; }
+  .qh-pend-text { margin: 0; font-size: 13px; line-height: 1.5; color: var(--fg-primary); text-wrap: pretty; }
+  .qh-pend-meta { margin: 0; font-size: 12px; line-height: 1.5; color: var(--fg-secondary); }
+  .qh-end-note { margin: 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--bg-white); border: 1px solid var(--stroke-medium); font-size: 12.5px; line-height: 1.5; color: var(--fg-primary); overflow-wrap: anywhere; }
+  .qh-pend-withdraw, .qh-end-resub { margin-top: 6px; }
+  /* Sidebar, History: the Waiting group on top, one amber row per request. */
+  .qh-wait-group { margin: 0 0 10px; padding: 8px; border-radius: var(--r-sm); background: var(--warning-adaptive-light); border: 1px solid var(--warning-adaptive-strong); display: flex; flex-direction: column; gap: 4px; }
+  .qh-wait-title { display: flex; align-items: center; gap: 7px; padding: 0 4px 2px; font-size: 12px; font-weight: 700; color: var(--warning-solid-strong); }
+  .qh-wait-n { font-size: 11px; font-weight: 700; padding: 0 7px; border-radius: 999px; background: var(--warning-adaptive-medium); }
+  .qh-wait-row { width: 100%; text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 7px 8px; border: 0; border-radius: var(--r-xs); background: var(--bg-white); cursor: pointer; font-family: inherit; }
+  .qh-wait-row:hover { background: var(--bg-light); box-shadow: inset 0 0 0 1px var(--warning-adaptive-strong); }
+  .qh-wait-name { font-size: 12.5px; font-weight: 600; color: var(--fg-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qh-wait-meta { font-size: 11px; color: var(--fg-secondary); font-family: var(--qh-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* History filter chips: All / Approved / Denied / Expired / Withdrawn. */
+  .qh-hfilters { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 10px; }
+  .qh-hfilter { height: 24px; padding: 0 10px; border-radius: var(--r-full); border: 1px solid var(--stroke-strong); background: transparent; color: var(--fg-secondary); font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .qh-hfilter:hover { background: var(--adaptive-medium); }
+  .qh-hfilter.is-on { background: var(--brand-adaptive-light); border-color: var(--brand-adaptive-strong); color: var(--brand-solid-strong); }
+  .qh-hfilter:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-hist-item.is-flash .qh-hist { background: var(--brand-adaptive-light); border-color: var(--brand-adaptive-strong); }
+  .qh-hist-resub { margin: 0 0 6px 10px; }
+  /* Welcome: what runs at once and what goes to a DBA first. */
+  .qh-access-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 18px; }
+  .qh-access-card .qh-home-card-body { padding-bottom: 6px; }
+  .qh-access-hint { margin: 0 0 4px; font-size: 12.5px; line-height: 1.5; color: var(--fg-secondary); }
+  .qh-access-row { cursor: default; padding-right: 10px; }
+  .qh-access-row:hover { background: transparent; }
+  .qh-access-more { padding: 6px 10px 8px; font-size: 12px; color: var(--fg-tertiary); }
+  .qh-access-card.is-once .qh-home-card-count { color: var(--brand-solid-strong); background: var(--brand-adaptive-light); }
+  .qh-access-card.is-dba .qh-home-card-count { color: var(--warning-solid-strong); background: var(--warning-adaptive-light); }
+  .qh-access-all { margin-bottom: 18px; padding: 12px 16px; border-radius: var(--r-md); background: var(--brand-adaptive-light); border: 1px solid var(--brand-adaptive-strong); font-size: 13.5px; font-weight: 600; color: var(--fg-primary); }
+  .qh-access-all.is-none { background: var(--bg-light); border-color: var(--stroke-medium); font-weight: 500; color: var(--fg-secondary); }
+  @media (max-width: 820px) { .qh-access-grid { grid-template-columns: minmax(0, 1fr); } }
+  /* Bell menu footer: the browser notifications switch. */
+  .qh-notif-foot { border-top: 1px solid var(--stroke-light); padding: 10px 14px 11px; display: flex; flex-direction: column; gap: 4px; }
+  .qh-notif-switch { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--fg-primary); }
+  .qh-notif-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
+  .qh-notif-switch-track { position: relative; flex: 0 0 auto; width: 34px; height: 20px; border-radius: 999px; background: var(--system-solid-light); transition: background var(--d-fast-02) var(--ease-standard); }
+  .qh-notif-switch-knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 999px; background: var(--bg-white); transition: transform var(--d-fast-02) var(--ease-standard); }
+  .qh-notif-switch input:checked + .qh-notif-switch-track { background: var(--brand-solid-strong); }
+  .qh-notif-switch input:checked + .qh-notif-switch-track .qh-notif-switch-knob { transform: translateX(14px); }
+  .qh-notif-switch input:focus-visible + .qh-notif-switch-track { box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-notif-switch-hint { font-size: 12px; line-height: 1.45; color: var(--fg-secondary); }
 </style>
 </head>
 <body>

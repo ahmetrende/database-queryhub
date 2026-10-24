@@ -1,4 +1,4 @@
-"""A disabled connection must be visibly disabled, and env tags stay hidden.
+"""A disabled connection must be visibly disabled, and env tags stay behind a flag.
 
 Both come from the same afternoon. A target was disabled because its data had
 moved to another cloud — and it kept appearing in the admin's picker looking
@@ -11,11 +11,12 @@ routes_data.connections): their saved queries and history can reference a
 disabled alias, and without the target in the list those tabs cannot resolve it.
 So the fix is to LABEL, not to hide.
 
-Env tags are the opposite call: the fleet is prod-first, so PROD sat on nearly
-every row and carried no information there. Hidden behind a flag rather than
-deleted, because "keep it in case we need it later" was the ask and a flag is
-the version of that which cannot rot. The TOOLBAR keeps its tag — that line is
-what you read just before pressing Run.
+Env tags were hidden first, because the fleet is prod-first and PROD sat on
+nearly every row. On 2026-10-24 the operator asked for the chip on every
+connection, like the portal design, and the flag went to true. It stays a flag
+so the old behaviour is one edit away, and every list chip is still behind it.
+The TOOLBAR keeps its tag whatever the flag says — that line is what you read
+just before pressing Run.
 """
 import re
 from pathlib import Path
@@ -63,10 +64,10 @@ def test_the_marker_has_a_style_that_reads_as_a_warning():
                               "is to interrupt a habit")
 
 
-def test_env_tags_are_hidden_in_the_list_but_kept_in_the_code():
+def test_env_tags_are_shown_in_the_list_behind_one_flag():
     data, panels = _read("qh-data.jsx"), _read("qh-panels.jsx")
-    assert "const QH_SHOW_ENV_TAGS = false;" in data, \
-        "the flag is the whole 'hidden, not deleted' contract"
+    assert "const QH_SHOW_ENV_TAGS = true;" in data, \
+        "the flag is on since 2026-10-24; set it to false to hide the list chips again"
     assert "QH_SHOW_ENV_TAGS," in data.split("Object.assign(window,")[-1], \
         "not exported to window, so the other files cannot read it"
     # every env tag in the LIST is behind the flag

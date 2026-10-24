@@ -259,12 +259,23 @@ test('a scope without an end reads Permanent, and one that ends soon says so', o
   assert.match(ui.rowOf('Casey Lin').textContent, /Ends soon · \d+h left/);
 });
 
+// The admin of a new scope is chosen in PersonPick (2026-10-24), not typed.
+const PEOPLE = [{ id: 'U0EXAMPLE009', handle: 'sam.new', name: 'Sam New', initials: 'SN' }];
+function pickAdmin(ui, form) {
+  const input = form.querySelector('.qh-pcombo-in');
+  React.act(() => { input.dispatchEvent(new ui.win.FocusEvent('focusin', { bubbles: true })); });
+  React.act(() => { input.focus(); });
+  const opt = ui.all('.qh-pcombo-opt', form)[0];
+  assert.ok(opt, 'the person list opens');
+  React.act(() => { opt.dispatchEvent(new ui.win.MouseEvent('mousedown', { bubbles: true, cancelable: true })); });
+}
+
 test('a new DBA scope starts on No end date, and a pick sends expiresAt', opts, () => {
-  const ui = mount('ScopesView', { scopes: SCOPES });
+  const ui = mount('ScopesView', { scopes: SCOPES, people: PEOPLE });
   ui.click(ui.button('Add admin'));
   const form = ui.doc.querySelector('.qh-addrow');
   assert.equal(form.querySelector('.qh-endpick [aria-pressed="true"]').textContent, 'No end date');
-  ui.type(form.querySelector('input[placeholder="admin handle"]'), 'U0EXAMPLE009');
+  pickAdmin(ui, form);
   ui.click(ui.button('+30 days', form));
   assert.match(form.textContent, /After this date the scope stops\. The admin can no longer approve requests through it\./);
   ui.click(ui.button('Add', form));
@@ -273,10 +284,10 @@ test('a new DBA scope starts on No end date, and a pick sends expiresAt', opts, 
 });
 
 test('a super-admin is offered no end date and sends null', opts, () => {
-  const ui = mount('ScopesView', { scopes: SCOPES });
+  const ui = mount('ScopesView', { scopes: SCOPES, people: PEOPLE });
   ui.click(ui.button('Add admin'));
   const form = ui.doc.querySelector('.qh-addrow');
-  ui.type(form.querySelector('input[placeholder="admin handle"]'), 'U0EXAMPLE009');
+  pickAdmin(ui, form);
   ui.click(ui.button('super-admin', form));
   assert.equal(form.querySelector('.qh-endpick'), null);
   assert.match(form.textContent, /A super-admin has no end date\./);

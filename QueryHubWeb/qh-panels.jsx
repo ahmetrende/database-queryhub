@@ -40,16 +40,24 @@ function RanOnBadge({ ranOn, long }) {
   return <span className="qh-ranon" title={qhRanOnLine(ranOn)}>{long ? 'Chosen: ' + where : 'on ' + where}</span>;
 }
 
-function StatusPill({ status, awaitingDba }) {
+// 2026-10-24: `outcome` (withdrawn, expired, denied, changes_requested) tells the
+// four ends of a `rejected` request apart. Each has its own word and tone, and a
+// title that says what happened. No outcome (an older server, or another status)
+// gives the old pill: `rejected` reads as Denied.
+function StatusPill({ status, awaitingDba, outcome }) {
   if (status === 'failed' && awaitingDba) {
     return <span className="qh-status st-dba" title="The bot may not run this statement itself, so a DBA runs it by hand.">Needs a DBA</span>;
   }
+  const ended = status === 'rejected' ? qhOutcomeInfo(outcome) : null;
+  if (ended) return <span className={'qh-status ' + ended.cls} title={ended.title} data-outcome={outcome}>{ended.label}</span>;
   const map = {
     pending:  ['Pending',  'st-pending'],
     approved: ['Approved', 'st-approved'],
     running:  ['Running',  'st-running'],
     done:     ['Done',     'st-done'],
-    rejected: ['Rejected', 'st-rejected'],
+    // The label says "Denied" (2026-10-24, the portal's word). The status value
+    // `rejected` and the class `st-rejected` are the server's and stay as they are.
+    rejected: ['Denied',   'st-rejected'],
     failed:   ['Failed',   'st-rejected'],
   };
   const [label, cls] = map[status] || ['—', ''];
@@ -93,6 +101,24 @@ const TICN = {
   off: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.9 5.9l12.2 12.2"/></svg>,
   sys: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6h.09A1.65 1.65 0 0010 3.09V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>,
 };
+
+// 2026-10-24 · The identity of a connection in a tree row, in the row's right
+// zone: the cloud it runs on (the logo, nothing at all when the connection has no
+// provider tag), then its environment chip (PROD, STG or TEST, the same chip as
+// the target strip). It sits on the server row and on the flat database row. The
+// logo and the chip never shrink, so in a narrow sidebar the NAME is what gives
+// way and ellipsizes. The env chip is gated by QH_SHOW_ENV_TAGS like every other
+// list chip. The row's hover label already names the hosting, so neither element
+// carries a title of its own: two tooltips on one row would fight.
+function qhConnIdentity(c) {
+  const prov = qhProvider(c);
+  return (
+    <>
+      {prov && <img className="qh-prov-logo qh-tr-prov" src={qhProviderLogo(qhTags(c).provider)} alt={prov.label} draggable={false} />}
+      {QH_SHOW_ENV_TAGS && c.env && <span className={'qh-envtag-sm env-' + c.env}>{qhEnvChipWord(c.env)}</span>}
+    </>
+  );
+}
 
 function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, right, active, muted, strong, pii, drag, connDrag, dbDrag, onClick, onCtx, onDbl, title, nodeId }) {
   const handle = onClick || (expandable ? onToggle : undefined);
@@ -389,11 +415,7 @@ function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, r
               // it just holds stale data. That is the accident this label exists
               // to prevent: a target retired the same day was still sitting in
               // the picker looking exactly like the live one.
-              right={c.disabled
-                ? <span className="qh-conn-off is-icon" aria-label="Disabled" title="Disabled — retired or parked. It would still answer, with stale data. Pick it only deliberately.">{TICN.off()}</span>
-                : (QH_SHOW_ENV_TAGS
-                    ? <span className={'qh-envtag-sm env-' + c.env}>{c.env === 'production' ? 'PROD' : c.env === 'staging' ? 'STG' : c.env}</span>
-                    : null)}
+              right={<>{qhConnIdentity(c)}{c.disabled && <span className="qh-conn-off is-icon" aria-label="Disabled" title="Disabled — retired or parked. It would still answer, with stale data. Pick it only deliberately.">{TICN.off()}</span>}</>}
               onCtx={(e) => openConnMenu(e, c)} onDbl={() => { newQ(c, c.databases[0]); }} />
             {isOpen(sid) && (<>
             {c.databases.map(db => dbNode(c, db, 1))}
@@ -437,10 +459,10 @@ function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, r
     flatDbs.forEach(({ db }) => { if (seen[db.name]) dup.add(db.name); seen[db.name] = 1; });
     return dup;
   }, [flatDbs]);
+  // `rightExtra` must stay defined (never undefined): dbNode reads that as "this
+  // is the flat database list" and draws the engine logo as the row icon.
   const dbRow = (row) => dbNode(row.c, row.db, 0, (
-    row.c.disabled
-      ? <span className="qh-conn-off is-icon" aria-label="Disabled" title="Disabled — retired or parked. It would still answer, with stale data. Pick it only deliberately.">{TICN.off()}</span>
-      : null
+    <>{qhConnIdentity(row.c)}{row.c.disabled && <span className="qh-conn-off is-icon" aria-label="Disabled" title="Disabled — retired or parked. It would still answer, with stale data. Pick it only deliberately.">{TICN.off()}</span>}</>
   ), dbKey(row.c, row.db), dupDbNames.has(row.db.name) ? srvLabel(row.c) : null);
   const favDbs = flatDbs.filter(r => isDbFav(dbKey(r.c, r.db)));
   const ungroupedDbs = flatDbs.filter(r => !dbFolderOf(dbKey(r.c, r.db)));
@@ -705,8 +727,24 @@ function QhConnSkeleton() {
   );
 }
 
-function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
+function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, pending, onOpenPending, onResubmit, histFocus, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
   const [open, setOpen] = React.useState(() => ({ 'prod-main': true, 'prod-replica': true }));
+  // History (2026-10-24): which group the chips show, and the row that a bell
+  // item points at. `histFocus` is { id, n }: the parent bumps `n` for each ask.
+  const [hfilter, setHfilter] = React.useState('all');
+  const [hflash, setHflash] = React.useState(null);
+  React.useEffect(() => {
+    if (!histFocus || mode !== 'history') return;
+    setHfilter('all');
+    const id = String(histFocus.id);
+    const t = setTimeout(() => {
+      const el = Array.from(document.querySelectorAll('.qh-side [data-hist-id]')).find(x => x.getAttribute('data-hist-id') === id);
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center' });
+      setHflash(el ? id : null);
+    }, 0);
+    const t2 = setTimeout(() => setHflash(null), 2600);
+    return () => { clearTimeout(t); clearTimeout(t2); };
+  }, [histFocus, mode]);
   const [q, setQ] = React.useState('');
   const sqlFileRef = React.useRef(null);
   const onSqlFileChosen = (e) => {
@@ -900,7 +938,7 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
                 <button key={m.kind + m.c.id + m.db.id + (m.table || '') + (m.col || '')} className={'qh-ac-opt' + (i === hi ? ' is-hi' : '')}
                   title={qhHosting(m.c) || undefined}
                   onMouseEnter={() => setHi(i)} onMouseDown={(e) => { e.preventDefault(); choose(m); }}>
-                  {m.kind === 'db' && <><img className="qh-engine-logo qh-ac-logo" src={qhEngineLogo(m.c)} alt="" draggable={false} /><span className="qh-ac-text"><b>{m.c.name}</b><span className="qh-ac-slash">/</span>{m.db.name}</span>{m.c.disabled ? <span className="qh-conn-off">disabled</span> : (QH_SHOW_ENV_TAGS ? <span className={'qh-envtag-sm env-' + m.c.env}>{m.c.env === 'production' ? 'PROD' : m.c.env === 'staging' ? 'STG' : m.c.env}</span> : null)}<TierBadge tier={m.db.tier} sm /></>}
+                  {m.kind === 'db' && <><img className="qh-engine-logo qh-ac-logo" src={qhEngineLogo(m.c)} alt="" draggable={false} /><span className="qh-ac-text"><b>{m.c.name}</b><span className="qh-ac-slash">/</span>{m.db.name}</span>{m.c.disabled ? <span className="qh-conn-off">disabled</span> : (QH_SHOW_ENV_TAGS ? <span className={'qh-envtag-sm env-' + m.c.env}>{qhEnvChipWord(m.c.env)}</span> : null)}<TierBadge tier={m.db.tier} sm /></>}
                   {m.kind === 'table' && <><span className="qh-ac-ic">{m.view ? TICN.view() : TICN.table()}</span><span className="qh-ac-text">{(m.tsch || qhSchemaFor(m.c, m.db)) + '.' + m.table}<span className="qh-ac-loc">{m.c.name}/{m.db.name}</span></span><span className="qh-ac-kind">{m.view ? 'view' : 'table'}</span></>}
                   {m.kind === 'column' && <><span className="qh-ac-ic">{TICN.col({}, !!m.pii)}</span><span className="qh-ac-text">{m.col}<span className="qh-ac-loc">{m.db.name}.{m.table}</span></span><span className="qh-ac-kind">col</span></>}
                 </button>
@@ -974,19 +1012,50 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
           </div>
         ))}
 
-        {mode === 'history' && history.map(h => {
+        {/* 2026-10-24 · Requests that wait for a DBA sit on top, one amber row each.
+            A click opens the tab that holds the request, or a tab that tracks it. */}
+        {mode === 'history' && pending && pending.length > 0 && (
+          <div className="qh-wait-group" role="group" aria-label="Waiting for a DBA">
+            <div className="qh-wait-title"><span className="qh-pulse" />Waiting<span className="qh-wait-n">{pending.length}</span></div>
+            {pending.map(p => (
+              <button key={p.id} className="qh-wait-row" data-pending-id={p.id} onClick={() => onOpenPending && onOpenPending(p)} title="Open this request">
+                <span className="qh-wait-name">{p.title}</span>
+                <span className="qh-wait-meta">{p.conn} · {p.db}{p.since ? ' · ' + qhAgo(p.since) : ''}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {mode === 'history' && history.length > 0 && (
+          <div className="qh-hfilters" role="group" aria-label="Filter history by how the request ended">
+            {QH_HIST_FILTERS.map(([key, label]) => (
+              <button key={key} className={'qh-hfilter' + (hfilter === key ? ' is-on' : '')} aria-pressed={hfilter === key} onClick={() => setHfilter(key)}>{label}</button>
+            ))}
+          </div>
+        )}
+        {mode === 'history' && history.length > 0 && qhHistoryFilter(history, hfilter).length === 0 && (
+          <div className="qh-side-empty">
+            <div className="qh-side-empty-title">Nothing here</div>
+            <div className="qh-side-empty-sub">No request in your history ended this way. Pick All to see every request.</div>
+          </div>
+        )}
+        {mode === 'history' && qhHistoryFilter(history, hfilter).map(h => {
           const cs = qhConnState(h.state);
           return (
-          <button key={h.id} className="qh-hist" onClick={() => onLoadHistory(h)}>
-            <div className="qh-hist-top">
-              <TierBadge tier={h.tier} sm />
-              <StatusPill status={h.status} awaitingDba={h.awaitingDba} />
-              <RanOnBadge ranOn={h.ranOn} />
-              <span className="qh-hist-when">{h.when}</span>
-            </div>
-            <div className="qh-hist-sql">{h.sql}</div>
-            <div className="qh-hist-meta">{h.conn} · {h.db}{h.approver ? ' · ' + qhPersonName(h.approver) : ''}{cs && <span className="qh-conn-state" title={cs.why + ' The query still opens.'}>{cs.word}</span>}</div>
-          </button>
+          <div key={h.id} className={'qh-hist-item' + (hflash === String(h.id) ? ' is-flash' : '')} data-hist-id={h.id}>
+            <button className="qh-hist" onClick={() => onLoadHistory(h)}>
+              <div className="qh-hist-top">
+                <TierBadge tier={h.tier} sm />
+                <StatusPill status={h.status} awaitingDba={h.awaitingDba} outcome={h.outcome} />
+                <RanOnBadge ranOn={h.ranOn} />
+                <span className="qh-hist-when">{h.when}</span>
+              </div>
+              <div className="qh-hist-sql">{h.sql}</div>
+              <div className="qh-hist-meta">{h.conn} · {h.db}{h.approver ? ' · ' + qhPersonName(h.approver) : ''}{cs && <span className="qh-conn-state" title={cs.why + ' The query still opens.'}>{cs.word}</span>}</div>
+            </button>
+            {h.outcome === 'changes_requested' && onResubmit && (
+              <button className="qh-btn qh-btn-ghost qh-btn-sm qh-hist-resub" onClick={() => onResubmit(h)} title="Open a new tab with this SQL and this target">Edit and resubmit</button>
+            )}
+          </div>
           );
         })}
       </div>
@@ -1021,6 +1090,9 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
 // display. The free-text path survives as the SECONDARY route, because a server
 // QueryHub does not have yet is a real ask — it is just not the common one.
 // The list is 30–41 rows for a real developer, so it is searchable, not short.
+// The server refuses a reason shorter than this (EndpointRequestIn.reason,
+// min_length 5). The dialog says so before Send, not after a 422.
+const QH_REQ_REASON_MIN = 5;
 function RequestAccessModal({ onClose, onSubmit, load }) {
   const [rows, setRows] = React.useState(null);      // null = still loading
   const [loadErr, setLoadErr] = React.useState(null);
@@ -1051,8 +1123,13 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
   // rendering PROD/STG while `QH_SHOW_ENV_TAGS` says hide them — the picker
   // would have been the one place in the app disagreeing with the flag. Fixed
   // at source so the next port cannot revert it (CODE port brief, PR #28).
-  const envTag = (c) => (QH_SHOW_ENV_TAGS
-    ? <span className={'qh-envtag-sm env-' + c.env}>{c.env === 'production' ? 'PROD' : c.env === 'staging' ? 'STG' : c.env}</span>
+  const envTag = (c) => (QH_SHOW_ENV_TAGS && c.env
+    ? <span className={'qh-envtag-sm env-' + c.env}>{qhEnvChipWord(c.env)}</span>
+    : null);
+  // The cloud the target runs on. /requestable sends narrowed tags (provider and
+  // service only). A row with no provider tag shows no logo.
+  const provLogo = (c) => (qhProvider(c)
+    ? <img className="qh-prov-logo qh-req-prov" src={qhProviderLogo(qhTags(c).provider)} alt={qhProvider(c).label} draggable={false} />
     : null);
   // A brand-new server has no catalogue snapshot yet and is still requestable,
   // so the row says so rather than reading as a server with no databases.
@@ -1063,8 +1140,15 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
   };
   // One database on the connection IS the answer; making it a one-option select
   // asks a question that has already been answered.
-  const choose = (c) => { setPick(c); setDatabase((c.databases || []).length === 1 ? c.databases[0] : ''); };
-  const valid = free ? (server.trim() && database.trim() && reason.trim()) : (pick && database.trim() && reason.trim());
+  // A read-only engine has no RW or DDL credential: a choice made on an earlier
+  // row falls back to read-only when the new row cannot take it.
+  const choose = (c) => {
+    setPick(c); setDatabase((c.databases || []).length === 1 ? c.databases[0] : '');
+    if (qhTierLockWhy(c, tier)) setTier('RO');
+  };
+  const lockWhy = (v) => (free || !pick ? '' : qhTierLockWhy(pick, v));
+  const reasonOk = reason.trim().length >= QH_REQ_REASON_MIN;
+  const valid = (free ? (server.trim() && database.trim()) : (pick && database.trim())) && reasonOk && !lockWhy(tier);
   const send = () => {
     if (!valid) return;
     onSubmit({ connectionId: free ? null : pick.connectionId, server: free ? server.trim() : pick.name,
@@ -1072,7 +1156,7 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
   };
 
   return (
-    <QhModal onClose={onClose}>
+    <QhModal onClose={onClose} panelClass="qh-req-modal">
       <div className="qh-modal-head">
         <div>
           <div className="qh-modal-title">{free ? 'Ask for a new endpoint' : 'Request access to a database'}</div>
@@ -1109,7 +1193,7 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
                           </span>
                           <span className="qh-reqrow-dbs">{dbLine(c)}</span>
                         </span>
-                        {envTag(c)}
+                        {provLogo(c)}{envTag(c)}
                       </button>
                     ))}
                     {!matches.length && <div className="qh-reqlist-none">{rows.length
@@ -1131,7 +1215,7 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
             <div className="qh-reqpicked">
               <img className="qh-engine-logo" src={qhEngineLogo(pick)} alt="" draggable={false} />
               <b>{pick.name}</b>
-              {envTag(pick)}
+              {provLogo(pick)}{envTag(pick)}
               {pick.partial && <span className="qh-reqrow-partial">partial</span>}
               <button className="qh-reqalt" onClick={() => { setPick(null); setDatabase(''); }}>Change</button>
             </div>
@@ -1162,27 +1246,37 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
 
         {(free || pick) && (
           <div className="qh-field">
-            <span className="qh-field-lbl">Access tier</span>
-            <div className="qh-seg">
-              {[['RO', 'Read-only'], ['RW', 'Read/Write'], ['DDL', 'Schema']].map(([v, l]) => (
-                <button key={v} className={'qh-seg-opt' + (tier === v ? ' is-active' : '')} onClick={() => setTier(v)}>
-                  <TierBadge tier={v} sm />{l}
-                </button>
-              ))}
+            <span className="qh-field-lbl" id="qh-req-tier-l">Access tier</span>
+            <div className="qh-tierpick" role="group" aria-labelledby="qh-req-tier-l">
+              {['RO', 'RW', 'DDL'].map((v) => {
+                const why = lockWhy(v);
+                return (
+                  <div key={v} className={'qh-tierpick-col' + (why ? ' is-locked' : '')}>
+                    <button type="button" className={'qh-seg-opt' + (tier === v ? ' is-active' : '')} disabled={!!why}
+                      title={why || undefined} aria-pressed={tier === v} onClick={() => setTier(v)}>
+                      <TierBadge tier={v} sm />{qhTierProse(v)}
+                    </button>
+                    <span className="qh-tierpick-d">{QH_TIER_BLURB[v]}</span>
+                  </div>
+                );
+              })}
             </div>
+            {lockWhy('RW') && <span className="qh-req-note">{lockWhy('RW')}</span>}
           </div>
         )}
 
         {(free || pick) && (
           <label className="qh-field">
             <span className="qh-field-lbl">Reason for access</span>
-            <textarea className="qh-input qh-textarea" rows="3" placeholder="What do you need this for? Helps the DBA approve faster." value={reason} onChange={(e) => setReason(e.target.value)} />
+            <textarea className="qh-input qh-textarea" rows="3" placeholder="What do you need it for?" value={reason} onChange={(e) => setReason(e.target.value)} />
+            <span className="qh-req-note">Say why you need it. A DBA reads this.</span>
           </label>
         )}
       </div>
       <div className="qh-modal-foot">
         <button className="qh-btn qh-btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="qh-btn qh-btn-primary is-approval" disabled={!valid} onClick={send}>
+        <button className="qh-btn qh-btn-primary is-approval" disabled={!valid} onClick={send}
+          title={!valid && (free || pick) && !reasonOk ? 'Write at least ' + QH_REQ_REASON_MIN + ' characters in the reason.' : undefined}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>
           Send request
         </button>
@@ -1228,7 +1322,10 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
     return () => { live = false; };
   }, []);
   // An ask already waiting for this database is said before Send, not met as a 409.
-  const waitingOn = (cid, dbid) => mine.find(r => r.status === 'submitted' && r.connectionId === cid && (r.databaseId || null) === (dbid || null));
+  // GET /auto-approve-requests sends status 'pending' and `createdAt`; the admin
+  // list sends 'submitted' and `requestedAt`. qhAskFor reads both (2026-10-24: this
+  // line read only 'submitted', so the hint never showed).
+  const waitingOn = (cid, dbid) => qhAskFor(mine, cid, dbid);
   const [reason, setReason] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState(null);
@@ -1288,6 +1385,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
         <div className="qh-field">
           <span className="qh-field-lbl">For how long</span>
           <div className="qh-seg qh-seg-wrap">{opts.map(o => <button key={o.minutes} className={'qh-seg-opt' + (win.minutes === o.minutes ? ' is-active' : '')} onClick={() => setWin(o)}>{o.label}</button>)}</div>
+          {qhAskWindowEnds(win.minutes) && <span className="qh-req-note qh-autoreq-ends">{qhAskWindowEnds(win.minutes)} if a DBA grants it now.</span>}
         </div>
 
         <label className="qh-field">
@@ -1296,7 +1394,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
         </label>
 
         {waiting && (
-          <div className="qh-req-wait">You asked for this {qhAgo(waiting.requestedAt)}{waiting.windowLabel ? ' — ' + waiting.windowLabel : ''}, and it is still waiting for a DBA. You get a DM when they decide.</div>
+          <div className="qh-req-wait">You asked for this{qhAgo(qhAskAt(waiting)) ? ' ' + qhAgo(qhAskAt(waiting)) : ''}{qhAskWindowLabel(waiting) ? ' — ' + qhAskWindowLabel(waiting) : ''}, and it is still waiting for a DBA. You get a DM when they decide.</div>
         )}
         {conn && db && !waiting && (
           <div className="qh-autoreq-say">If granted, for <b>{win.label}</b> from the moment a DBA grants it, your {eff === 'RO' ? <b>reads</b> : <b>reads and writes</b>} on <b className="qh-mono">{conn.name || conn.id} · {db}</b> run the moment you submit them, with nobody reviewing. Each run is still logged and still masked.</div>
@@ -1315,7 +1413,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
 }
 
 // ---------- Bottom results panel ----------
-function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement, ranOn }) {
+function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement, ranOn, pending, onWithdraw, outcome, endNote, onResubmit, slackEnabled }) {
   const [exp, setExp] = React.useState(false);
   // Click-away / Escape, not mouse-out: the 6px gap between the button and the
   // menu used to close it mid-reach. See qhUseDismiss.
@@ -1444,7 +1542,7 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
             </span>
           )}
           {reqId && <span className="qh-res-req" title="Request id — reserved when this tab opened">#{reqId}</span>}
-          {status && <StatusPill status={status} awaitingDba={awaitingDba} />}
+          {status && <StatusPill status={status} awaitingDba={awaitingDba} outcome={outcome} />}
           {runMs != null && <span className="qh-res-time">{runMs} ms</span>}
           {total != null && <span className="qh-res-rows">{total.toLocaleString()} rows</span>}
           {result && result.kind === 'table' && (
@@ -1480,11 +1578,61 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
             widths all describe ONE table, and statement 2 is a different table
             with different columns — carrying page 4 into it would ask the server
             for rows past the end. */}
-        {tab === 'results' && <ResultsView key={'st' + stN} result={result} status={status} onToast={onToast} colMeta={colMeta} unmasked={unmasked} />}
+        {/* 2026-10-24: a request that waits, or ended without a result, says so
+            here instead of "Run a query to see results here." */}
+        {tab === 'results' && !result && pending && <PendingCard since={pending.since} expiresAt={pending.expiresAt} onWithdraw={onWithdraw} slackEnabled={slackEnabled} />}
+        {tab === 'results' && !result && !pending && status === 'rejected' && qhOutcomeInfo(outcome) && <EndedCard outcome={outcome} note={endNote} onResubmit={onResubmit} />}
+        {tab === 'results' && !(!result && (pending || (status === 'rejected' && qhOutcomeInfo(outcome)))) && <ResultsView key={'st' + stN} result={result} status={status} onToast={onToast} colMeta={colMeta} unmasked={unmasked} />}
         {tab === 'plan' && <PlanView plan={plan} />}
         {tab === 'messages' && <MessagesView messages={messages} />}
         {tab === 'audit' && <RunAuditView audit={audit} />}
       </div>
+    </div>
+  );
+}
+
+// The request waits for a DBA (2026-10-24). An amber card: what happens next,
+// since when, and the one action the person has (Withdraw). It shows a time left
+// ONLY when the request carries `expiresAt`: the dev routes send none today, so
+// the card says nothing about minutes then.
+function PendingCard({ since, expiresAt, onWithdraw, slackEnabled }) {
+  const ago = qhAgo(since);
+  const ends = expiresAt && !isNaN(new Date(expiresAt).getTime()) ? new Date(expiresAt).toLocaleString() : null;
+  return (
+    <div className="qh-pend-card" role="status">
+      <div className="qh-pend-head"><span className="qh-pulse" />Waiting for a DBA</div>
+      <p className="qh-pend-text">{slackEnabled === false
+        ? 'A DBA decides this. You get a bell item when they do.'
+        : 'A DBA decides this. You get a Slack message and a bell item when they do.'}</p>
+      {ago && <p className="qh-pend-meta">Submitted {ago}.</p>}
+      {ends && <p className="qh-pend-meta">If nobody decides, the request expires on {ends}.</p>}
+      {onWithdraw && <button className="qh-btn qh-btn-ghost qh-pend-withdraw" onClick={() => onWithdraw()} title="Withdraw this request before it runs">Withdraw</button>}
+    </div>
+  );
+}
+
+// A request that ended without a result: what happened, and what to do next.
+// "Changes requested" carries the one new action, a new tab with the same SQL and
+// target (client side only, nothing is sent until the person submits).
+const QH_ENDED_TEXT = {
+  denied: 'A DBA denied this request. Nothing ran.',
+  withdrawn: 'You withdrew this request before it ran. Nothing ran.',
+  expired: 'Nobody decided in time, so the request closed. Nothing ran. Submit it again if you still need it.',
+  changes_requested: 'A DBA asked for changes. Nothing ran. Edit the SQL and submit it again.',
+};
+// `note` is the DBA's own line from Messages ("Rejected by <name>: <note>"), for the
+// two outcomes where a DBA wrote one. Nothing is invented here: no line, no note.
+function EndedCard({ outcome, note, onResubmit }) {
+  const info = qhOutcomeInfo(outcome);
+  if (!info) return null;
+  return (
+    <div className="qh-end-card" role="status" data-outcome={outcome}>
+      <div className="qh-end-head"><span className={'qh-status ' + info.cls}>{info.label}</span></div>
+      <p className="qh-pend-text">{QH_ENDED_TEXT[outcome]}</p>
+      {note && <p className="qh-end-note">{note}</p>}
+      {outcome === 'changes_requested' && onResubmit && (
+        <button className="qh-btn qh-btn-primary qh-end-resub" onClick={() => onResubmit()} title="Open a new tab with this SQL and this target">Edit and resubmit</button>
+      )}
     </div>
   );
 }
@@ -2072,4 +2220,4 @@ const DBIcons = {
   calendar: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>,
 };
 
-Object.assign(window, { Sidebar, ResultsPanel, ResultsView, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText });
+Object.assign(window, { Sidebar, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });

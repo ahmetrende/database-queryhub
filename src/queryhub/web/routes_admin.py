@@ -20,10 +20,12 @@ from pydantic import BaseModel, Field
 
 from .. import (
     access as access_model,
+    access_grant_default,
     access_requests,
     admins,
     audit,
     auto_approve,
+    auto_approve_limits,
     connection_health,
     connection_probe,
     core_decide,
@@ -123,6 +125,11 @@ def _slack_client():
         return None
     from slack_sdk import WebClient
     return WebClient(token=cfg.ENV.slack_bot_token)
+
+
+def _kill_switch_refusal(e: "core_decide.KillSwitchOn"):
+    """The 409 for an approval that the kill switch refuses."""
+    return deps._error(409, e.code, e.message)
 
 
 # ---- Review: approval queue -------------------------------------------------
@@ -246,9 +253,12 @@ def admin_decision(request_id: int, body: DecisionIn,
     if decision in ("reject", "changes") and not reason:
         raise deps._error(400, "bad_request",
                           "Enter a note to reject or to request changes.")
-    outcome = core_decide.decide(
-        request_id, decision, by_id=uid, by_name=claims.get("name"),
-        reason=reason or None)
+    try:
+        outcome = core_decide.decide(
+            request_id, decision, by_id=uid, by_name=claims.get("name"),
+            reason=reason or None)
+    except core_decide.KillSwitchOn as e:
+        raise _kill_switch_refusal(e)
     if outcome is None:
         raise deps._error(409, "conflict",
                           "This request already has a decision.")
@@ -268,8 +278,13 @@ def admin_batch_approve(body: BatchIn,
                         claims: dict = Depends(deps.current_user)):
     """Approve several requests at once. Silently skips anything the caller
     can't approve, doesn't exist, or was already decided — returns the count
-    actually approved."""
+    actually approved. While the kill switch is on it refuses the whole call
+    with 409 `kill_switch_on` and approves nothing."""
     uid = admin.require_admin(claims, "review")
+    try:
+        core_decide.require_kill_switch_off()
+    except core_decide.KillSwitchOn as e:
+        raise _kill_switch_refusal(e)
     client = _slack_client()
     approved = 0
     for raw in body.ids:
@@ -281,8 +296,11 @@ def admin_batch_approve(body: BatchIn,
             f"SELECT {_SCOPE_COLS} FROM requests WHERE id = %s", (rid,))
         if row is None or not admins.can_approve(uid, row):
             continue
-        outcome = core_decide.decide(rid, "approve", by_id=uid,
-                                     by_name=claims.get("name"))
+        try:
+            outcome = core_decide.decide(rid, "approve", by_id=uid,
+                                         by_name=claims.get("name"))
+        except core_decide.KillSwitchOn:
+            break   # the switch went on during the loop: stop, keep the count
         if outcome is not None:
             core_decide.apply_effects(client, outcome)
             approved += 1
@@ -320,6 +338,8 @@ def admin_bundle_decision(bundle_id: int, body: DecisionIn,
             bundle_id, decision, by_id=uid, by_name=claims.get("name"),
             reason=reason or None,
             may_decide=lambda row: admins.can_approve(uid, row))
+    except core_decide.KillSwitchOn as e:
+        raise _kill_switch_refusal(e)
     except core_decide.BundleNotFound:
         raise deps._error(404, "not_found", "No such batch.")
     except core_decide.BundleOutOfScope:
@@ -647,7 +667,10 @@ def admin_auto_grants(claims: dict = Depends(deps.current_user)):
     runs = _auto_grant_run_counts([e["id"] for e in out])
     for e in out:
         e["runCount"] = runs.get(e["id"], 0)
-    return {"autoGrants": out}
+    # `maxDays`: the most days a rule made in the app may last
+    # (`auto_approve_max_days`). The forms cap their end pickers at it. A rule in
+    # this list may be older than the limit, or have no end at all.
+    return {"autoGrants": out, "maxDays": auto_approve_limits.max_days()}
 
 
 def _auto_grant_run_counts(ids: list[str]) -> dict[str, int]:
@@ -1781,6 +1804,9 @@ def admin_endpoint_requests(status: str | None = None,
     admin.require_admin(claims, "access")
     cols = ("id, requester_slack_id, requester_name, target_server_id, "
             "database_name, requested_tier, reason, status, created_at")
+    # What the Provision form pre-fills. Additive: a client that does not read
+    # it works as before.
+    default_days = access_grant_default.default_days()
     if status:
         stored = {"submitted": "pending", "provisioned": "approved"}.get(status, status)
         rows = db.fetch_all(
@@ -1792,7 +1818,8 @@ def admin_endpoint_requests(status: str | None = None,
     name_of = people.namer([r.get("requester_name") or r.get("requester_slack_id")
                             for r in rows])
     return {"requests": [mapping.endpoint_request_entry(r, _alias_of, name_of)
-                         for r in rows]}
+                         for r in rows],
+            "accessDefaultDays": default_days}
 
 
 # ---- Access control (super-admin only): mutations ---------------------------
@@ -1964,6 +1991,8 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
     if body.autoApprove:
         try:
             auto_tier = grants.check_waiver_tier(tier, body.autoApproveTier or "ro")
+        except auto_approve_limits.RuleRefused as e:
+            raise deps._error(400, e.code, e.message) from e      # tier_not_allowed
         except ValueError as e:
             raise deps._error(400, "bad_request", str(e))
     # Expiry (migration 096). Parsed here, before either branch writes, so a
@@ -1984,6 +2013,12 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
             raise deps._error(400, "bad_request",
                               "expiresAt is in the past. That grant would "
                               "never apply.")
+    # A grant may have no end. A waiver written with it may not: it takes the
+    # grant's end, and an auto-approve rule needs one, at most
+    # `auto_approve_max_days` from now. Checked before either branch writes, for
+    # a person's waiver and for a team's.
+    if auto_tier is not None:
+        _checked_end(expires_at)
 
     if stype == "team":
         # A team is already a set of people, so `subjects` has no meaning here
@@ -2088,6 +2123,10 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
             grantees=[(sid, _slack_profile(sid)) for sid in ordered],
             target_id=tid, mode=tier, databases=dbs, reason=body.reason,
             notify=True, expires_at=expires_at, auto_approve_tier=auto_tier)
+    except auto_approve_limits.RuleRefused as e:
+        # The waiver's end or tier, refused by grants before anything was
+        # written. The checks above refuse it first, so this is the backstop.
+        raise deps._error(400, e.code, e.message) from e
     except ValueError as e:
         # The waiver tier, refused by grants before anything was written.
         raise deps._error(400, "bad_request", str(e))
@@ -2274,6 +2313,8 @@ def admin_add_fleet_grant(body: FleetGrantIn,
     if not teams_mod.use_v2():
         raise deps._error(409, "conflict",
                           "A grant on every server needs access_model_v2.")
+    if body.autoApprove:
+        _checked_tier(body.tier or "ro")        # never DDL (tier_not_allowed)
     if (body.tier or "ro").lower() != "ro":
         raise deps._error(400, "bad_request",
                           "A grant on every server can only be RO. "
@@ -2292,6 +2333,10 @@ def admin_add_fleet_grant(body: FleetGrantIn,
         if valid_until <= datetime.now(timezone.utc):
             raise deps._error(400, "bad_request",
                               "expiresAt is in the past. That grant would never apply.")
+    # The fleet-wide waiver takes the grant's end, and an auto-approve rule
+    # needs one (`auto_approve_limits`). The grant alone may still have none.
+    if body.autoApprove:
+        _checked_end(valid_until)
     reason = (body.reason or "").strip() or None
     with db.transaction() as cur:
         if stype == "team":
@@ -3315,17 +3360,24 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
               # line from it, and an absent field draws silence — which reads
               # as "none" for the one option that skips human review.
               would_auto = 0
+              would_skip = 0
               if body.includeAutoApprove:
                   # Switched-off rules are not copied (migration 146), so they
-                  # are not counted either.
+                  # are not counted either. A DDL rule is not copied: the app
+                  # makes no auto-approve rule for DDL, and it counts apart.
                   cur.execute(
-                      "SELECT count(*) AS n FROM auto_approve_grants "
+                      "SELECT count(*) FILTER (WHERE max_tier <> 'ddl') AS n, "
+                      "       count(*) FILTER (WHERE max_tier = 'ddl') AS skipped "
+                      "  FROM auto_approve_grants "
                       " WHERE slack_user_id = %s AND enabled "
                       "   AND (expires_at IS NULL OR expires_at > NOW())",
                       (body.source,))
-                  would_auto = int((cur.fetchone() or {}).get("n") or 0)
+                  got = cur.fetchone() or {}
+                  would_auto = int(got.get("n") or 0)
+                  would_skip = int(got.get("skipped") or 0)
               raise _CopyPreview({
                   "wouldCopyAutoApprove": would_auto,
+                  "wouldSkipAutoApprove": would_skip,
                   "dryRun": True, "slackId": slack_id, "copiedFrom": body.source,
                   "mode": "replace" if replace else "merge",
                   "wouldWrite": [
@@ -3369,6 +3421,7 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
           # Auto-approve is a separate table and a separate decision: it skips
           # human review, so it is copied only when asked for.
           auto_copied: list[str] = []
+          auto_skipped: list[tuple] = []
           if body.includeAutoApprove:
               # A rule the source has switched off approves nothing for them,
               # so it must not arrive switched on for the new person.
@@ -3381,13 +3434,22 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
               for r in cur.fetchall():
                   if r["target_server_id"] in forbidden:
                       continue
+                  if r["max_tier"] == "ddl":
+                      # The app makes no auto-approve rule for DDL, so a copied
+                      # DDL rule is skipped, and the result says so.
+                      auto_skipped.append((r["target_server_id"], r["database_name"]))
+                      continue
+                  # A copy of a rule is a new rule, so it needs an end too. The
+                  # source's end is kept when it is within the limit. A source
+                  # with no end (a legacy permanent rule) gets the limit itself.
                   cur.execute(
                       "INSERT INTO auto_approve_grants "
                       "  (slack_user_id, target_server_id, database_name, "
                       "   max_tier, granted_by, expires_at) "
                       "VALUES (%s, %s, %s, %s, %s, %s)",
                       (slack_id, r["target_server_id"], r["database_name"],
-                       r["max_tier"], uid, r["expires_at"]))
+                       r["max_tier"], uid,
+                       auto_approve_limits.copied_end(r["expires_at"])))
                   auto_copied.append((r["target_server_id"], r["database_name"]))
 
           # Every id the response will name, resolved in one query.
@@ -3406,6 +3468,7 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
                         "targets_granted": written,
                         "targets_revoked": [r["targetId"] for r in revoked],
                         "auto_approve_copied": auto_names,
+                        "auto_approve_skipped_ddl": len(auto_skipped),
                         "teams_joined": teams_joined,
                         "include_teams": body.includeTeams,
                         "tier_override": tier,
@@ -3428,6 +3491,9 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
             "revoked": revoked,
             "autoApproveCopied": len(auto_names),
             "autoApproveCopiedTargets": auto_names,
+            # DDL rules that were not copied. The app makes no auto-approve
+            # rule for DDL (tier_not_allowed).
+            "autoApproveSkippedDdl": len(auto_skipped),
             "tier": tier}
 
 
@@ -4203,9 +4269,42 @@ class AutoGrantIn(BaseModel):
     expiresInMinutes: int | None = None
 
 
+def _checked_end(expires_at, expires_in_minutes=None) -> datetime:
+    """The end of a new auto-approve rule, or HTTP 400.
+
+    The one place the routes ask `auto_approve_limits.check_end`. No end, an end
+    in the past and an end later than `auto_approve_max_days` days from now are
+    all refused, with the code `end_required`, `end_in_past` or `end_too_far`.
+    A route that writes an auto-approve row calls this before it writes, and
+    the two helpers below call it again where the row is written."""
+    try:
+        return auto_approve_limits.check_end(
+            expires_at, expires_in_minutes=expires_in_minutes)
+    except auto_approve_limits.RuleRefused as e:
+        raise deps._error(400, e.code, e.message) from e
+
+
+def _checked_tier(tier) -> str:
+    """The tier of a new auto-approve rule, or HTTP 400 `tier_not_allowed`.
+
+    RO or RW. Never DDL: "An auto-approve rule can be RO or RW. Schema changes
+    always need a DBA." Called beside `_checked_end` on every path that writes
+    a rule. A row that a person inserts with SQL may still be DDL."""
+    try:
+        return auto_approve_limits.check_tier(tier)
+    except auto_approve_limits.RuleRefused as e:
+        raise deps._error(400, e.code, e.message) from e
+
+
 def _insert_user_waiver(cur, user, tier, tid, db_scope, expires_at, expires_in_minutes,
                         reason, uid) -> int:
-    """One person's waiver, in the table the migration-109 mirror projects."""
+    """One person's waiver, in the table the migration-109 mirror projects.
+
+    A rule made here needs an end (`_checked_end`). A person who inserts the row
+    with SQL can still leave the end empty: the rule is in the application, not
+    in the database."""
+    _checked_tier(tier)
+    _checked_end(expires_at, expires_in_minutes)
     if expires_in_minutes:
         cur.execute(
             "INSERT INTO auto_approve_grants (slack_user_id, max_tier, "
@@ -4226,7 +4325,10 @@ def _insert_team_waiver(cur, team_id, tier, tid, db_scope, expires_at, expires_i
                         reason, uid) -> int:
     """A team's waiver. It has no legacy home -- `auto_approve_grants` is keyed
     on one person -- so it is an `access_grant` row, which the submit path reads
-    since team waivers were made to reach their members."""
+    since team waivers were made to reach their members. It needs an end, as a
+    person's does (`_checked_end`)."""
+    _checked_tier(tier)
+    _checked_end(expires_at, expires_in_minutes)
     until_sql = "NOW() + make_interval(mins => %s)" if expires_in_minutes else "%s"
     cur.execute(
         "INSERT INTO access_grant (team_id, target_id, all_targets, database_name, "
@@ -4248,7 +4350,8 @@ def admin_create_auto_grant(body: AutoGrantIn,
     uid = admin.require_admin(claims, "access")
     tier = (body.tier or "ro").lower()
     if tier not in ("ro", "rw", "ddl"):
-        raise deps._error(400, "bad_request", "tier must be RO, RW, or DDL.")
+        raise deps._error(400, "bad_request", "tier must be RO or RW.")
+    _checked_tier(tier)         # never DDL (tier_not_allowed)
     if not _valid_principal(body.user):
         raise deps._error(400, "bad_request", "user must be a principal id: a Slack user id or local:<username>.")
     tid = _target_id_of(body.connectionId)
@@ -4269,6 +4372,9 @@ def admin_create_auto_grant(body: AutoGrantIn,
         "label": body.connectionId + (f"/{db_scope}" if db_scope else "")}])
     if refused:
         raise deps._error(409, "conflict", refused[0]["reason"], refused=refused)
+    # A rule made in the app needs an end, at most `auto_approve_max_days` from
+    # now. Refused before anything is written.
+    _checked_end(body.expiresAt, body.expiresInMinutes)
     # NOT suppressing app.auth_dm_suppress: the auth-event trigger DMs the user.
     with db.transaction() as cur:
         new_id = _insert_user_waiver(cur, body.user, tier, tid, db_scope,
@@ -4533,7 +4639,8 @@ def admin_bulk_create_auto_grants(body: BulkAutoGrantIn,
         raise deps._error(400, "bad_request", "subjectType must be user or team.")
     tier = (body.tier or "ro").lower()
     if tier not in ("ro", "rw", "ddl"):
-        raise deps._error(400, "bad_request", "tier must be RO, RW, or DDL.")
+        raise deps._error(400, "bad_request", "tier must be RO or RW.")
+    _checked_tier(tier)         # never DDL (tier_not_allowed)
     if not body.targets:
         raise deps._error(400, "bad_request", "Name at least one connection.")
     if len(body.targets) > _BULK_AUTO_GRANTS_MAX:
@@ -4602,6 +4709,10 @@ def admin_bulk_create_auto_grants(body: BulkAutoGrantIn,
             409, "conflict",
             f"{len(refused)} of {len(body.targets)} targets cannot take this waiver. "
             "QueryHub wrote nothing.", refused=refused)
+    # The end is checked BEFORE the dry run, so a preview refuses what a real
+    # save would refuse. A rule made in the app needs an end, at most
+    # `auto_approve_max_days` from now.
+    _checked_end(body.expiresAt, body.expiresInMinutes)
     # `applied` is a count, as on the connections bulk route: 0 for a dry run.
     if body.dryRun:
         return {"applied": 0, "targets": [p["label"] for p in plan]}
@@ -4632,6 +4743,12 @@ def admin_bulk_create_auto_grants(body: BulkAutoGrantIn,
 class EndpointDecisionIn(BaseModel):
     approve: bool
     note: str | None = None
+    # Approve only. When the new grant ends: an ISO-8601 time, or `noEnd: true`
+    # for a grant with no end. Send neither and the grant ends in
+    # `access_grant_default_days` days (default 90). Both together is a 400. An
+    # old client that sends neither gets the default, which is the point.
+    expiresAt: str | None = None
+    noEnd: bool = False
 
 
 def _announce_endpoint_decision(row: dict, approved: bool, uid: str,
@@ -4690,7 +4807,13 @@ def admin_decide_endpoint(req_id: int, body: EndpointDecisionIn,
         raise deps._error(409, "conflict", "This request already has a decision.")
 
     status = "approved" if body.approve else "rejected"
-    row = access_requests.decide(req_id, status, uid, claims.get("name"), body.note)
+    try:
+        row = access_requests.decide(
+            req_id, status, uid, claims.get("name"), body.note,
+            expires_at=body.expiresAt if body.approve else None,
+            no_end=bool(body.noEnd) and body.approve)
+    except access_grant_default.EndRefused as e:
+        raise deps._error(400, e.code, e.message)
     if row is None:  # lost the race — another admin just decided it
         raise deps._error(409, "conflict", "This request already has a decision.")
 
@@ -4699,7 +4822,12 @@ def admin_decide_endpoint(req_id: int, body: EndpointDecisionIn,
             audit.log_in(cur, None, uid, claims.get("name"), "endpoint_rejected",
                          {"request_id": req_id})
     _announce_endpoint_decision(row, body.approve, uid, claims, body.note)
-    return mapping.endpoint_request_entry(row, _alias_of)
+    entry = mapping.endpoint_request_entry(row, _alias_of)
+    grant = row.get("auto_grant") or {}
+    if grant.get("applied"):
+        # When the grant ends, so the screen can say it. None is no end.
+        entry["expiresAt"] = mapping.iso(grant.get("expires_at"))
+    return entry
 
 
 # ---- Admin scopes: create / update / remove (super-admin) --------------------

@@ -41,8 +41,9 @@ def world(monkeypatch):
         ra.access_requests, "get",
         lambda rid: dict(PENDING) if rid == 17 else None)
 
-    def fake_decide(rid, status, uid, name, note):
+    def fake_decide(rid, status, uid, name, note, **end):
         calls.decided.append((rid, status, uid, name, note))
+        calls.ends = end
         row = dict(PENDING, status=status)
         if status == "approved":
             row["auto_grant"] = {"applied": True, "reason": "granted",

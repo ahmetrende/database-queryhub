@@ -236,6 +236,7 @@ def test_a_switched_off_team_waiver_covers_nothing_when_access_is_granted(world)
         (team, tid, REASON))["id"]
     out = ra.admin_create_grant(ra.GrantIn(subjectType="team", subject=TEAM,
                                            connectionId=ALIAS, databases=["app"],
+                                           expiresAt=(datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
                                            autoApprove=True), claims=SUPER)
     assert out["autoApprove"]["written"] == 1 and out["autoApprove"]["skipped"] == []
     assert auto_approve.decision(MEMBER, "ro", world["target"], "app")["id"] != f"ag:{waiver}"

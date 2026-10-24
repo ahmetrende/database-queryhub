@@ -410,11 +410,19 @@ def _chosen(target, replica_id: int | None, mode: str, user: str,
     return Decision(route=Route(row["id"], row["alias"], row["host"], row["port"], lag))
 
 
-def served_note(lag_s: float | None) -> str:
+def served_note(lag_s: float | None, name: str | None = None) -> str:
     """What the requester is told when a read replica ran their query: the
-    Messages tab on the web, one line in the Slack result. No replica name --
-    people pick one connection, and that is the name they know it by."""
-    if lag_s is None or lag_s < 0.05:
+    Messages tab on the web, one line in the Slack result.
+
+    No replica name by default -- people pick one connection, and that is the
+    name they know it by. A caller that may show the name (the web Messages tab
+    for a super-admin, the one reader who is shown replica names anywhere)
+    passes it: "Ran on <name>, about 2.3 s behind." """
+    caught_up = lag_s is None or lag_s < 0.05
+    if name:
+        return (f"Ran on {name}, caught up with the primary." if caught_up
+                else f"Ran on {name}, about {lag_s:.1f} s behind.")
+    if caught_up:
         return "Ran on a read replica, caught up with the primary."
     return f"Ran on a read replica, about {lag_s:.1f} s behind the primary."
 

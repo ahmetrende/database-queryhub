@@ -58,6 +58,8 @@ def env(monkeypatch):
 def _bulk(**kw):
     kw.setdefault("targets", [{"connectionId": "prod-ledger", "databaseId": "ledger"},
                               {"connectionId": "prod-orders"}])
+    # A rule made in the app needs an end (auto_approve_limits).
+    kw.setdefault("expiresInMinutes", 60)
     return ra.BulkAutoGrantIn(**kw)
 
 

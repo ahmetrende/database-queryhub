@@ -45,6 +45,7 @@ const mockDelay = (v, ms) => new Promise(res => setTimeout(() => res(typeof v ==
 // parsing the message: matching on wording is how a duplicate once got mistaken
 // for the confirm prompt and re-sent with confirmed:true.
 const mockFail = (message, status, code, extra) => { const e = new Error(message); e.status = status || 400; e.code = code || 'bad_request'; if (extra) Object.assign(e, extra); return Promise.reject(e); };
+const MOCK_KILL_APPROVE_SAY = 'Kill switch is on. Resume queries first.';
 const isoNow = () => new Date().toISOString();
 const isoAgo = (ms) => new Date(Date.now() - ms).toISOString();
 const isoIn = (ms) => new Date(Date.now() + ms).toISOString();
@@ -112,12 +113,16 @@ const MOCK = {
 };
 
 // MOCK: notification feed. Prod = GET /notifications (+ realtime push).
+// 2026-10-24: ids follow the server's rule (q<request id>-dec, q<request id>-sched,
+// er<access request id>, kill<audit id>), so a click can open its subject. `qh2`
+// and `qh1` are history rows of the mock, `qq_e01` is a seeded denied request
+// (MOCK_LIFECYCLE), `er41` and `kill77` open an admin screen for an admin only.
 const MOCK_NOTIFICATIONS = [
-  { id: 'n1', kind: 'approved', title: 'Query approved', body: 'dba.amara approved your RW query on prod-main/payments — 42 rows updated.', createdAt: isoAgo(1000 * 60 * 4) },
-  { id: 'n2', kind: 'endpoint', title: 'Access granted', body: 'RO access to prod-replica/analytics is live. You can query it now.', createdAt: isoAgo(1000 * 60 * 52) },
-  { id: 'n3', kind: 'scheduled', title: 'Scheduled query ran', body: '“Daily signup funnel” completed at 02:00 — 1,284 rows ready.', createdAt: isoAgo(1000 * 60 * 60 * 9) },
-  { id: 'n4', kind: 'rejected', title: 'Query rejected', body: 'dba.marco asked for a WHERE clause before running the invoices cleanup.', createdAt: isoAgo(1000 * 60 * 60 * 26) },
-  { id: 'n5', kind: 'kill', title: 'Kill switch released', body: 'Fleet-wide pause lifted — query traffic resumed.', createdAt: isoAgo(1000 * 60 * 60 * 30) },
+  { id: 'qh2-dec', kind: 'approved', title: 'Query approved', body: 'dba.amara approved your RW query on prod-main/payments — 42 rows updated.', createdAt: isoAgo(1000 * 60 * 4) },
+  { id: 'er41', kind: 'endpoint', title: 'Access granted', body: 'RO access to prod-replica/analytics is live. You can query it now.', createdAt: isoAgo(1000 * 60 * 52) },
+  { id: 'qh1-sched', kind: 'scheduled', title: 'Scheduled query ran', body: '“Daily signup funnel” completed at 02:00 — 1,284 rows ready.', createdAt: isoAgo(1000 * 60 * 60 * 9) },
+  { id: 'qq_e01-dec', kind: 'rejected', title: 'Query rejected', body: 'dba.marco asked for a WHERE clause before running the invoices cleanup.', createdAt: isoAgo(1000 * 60 * 60 * 26) },
+  { id: 'kill77', kind: 'kill', title: 'Kill switch released', body: 'Fleet-wide pause lifted — query traffic resumed.', createdAt: isoAgo(1000 * 60 * 60 * 30) },
 ];
 
 // MOCK: curated changelog. Prod = GET /changelog (the hand-written entries file).
@@ -365,11 +370,37 @@ const MOCK_AUTO_WINDOWS = [
 // `days` is NULL on an ask made in Slack, so both places the admin card prints
 // the window read `windowLabel` — the second seed is that case, or "for null
 // days" is back on screen.
+// GET /auto-approve-requests answers the caller's OWN asks in a different shape
+// from the admin list above (routes_requests.my_window_requests): `status` is
+// 'pending' (not 'submitted'), the time is `createdAt` (not `requestedAt`), the
+// window is `windowMinutes` and `days`, and there is NO `windowLabel`. The mock
+// maps an admin row to that shape so the dialog is tested against what the server
+// really sends. 2026-10-24: the dialog read the admin names and never showed the
+// "already waiting" line.
+const mockOwnAsk = (r) => ({
+  id: r.id, connectionId: r.connectionId, databaseId: r.databaseId, tier: r.tier,
+  windowMinutes: r.windowMinutes != null ? r.windowMinutes : (r.days ? r.days * 1440 : null),
+  days: r.days || null, reason: r.reason,
+  status: r.status === 'submitted' ? 'pending' : r.status,
+  decidedByName: null, decidedAt: null, createdAt: r.requestedAt,
+});
+// Narrowed tags, the way GET /connections and GET /requestable send them to
+// everyone: provider and service only, never the account.
+const mockNarrowTags = (t) => {
+  const o = {};
+  if (t && t.provider) o.provider = t.provider;
+  if (t && t.service) o.service = t.service;
+  return o;
+};
 const MOCK_AUTO_REQS = [
   { id: 'ar_12', requester: 'omar.kane', requesterName: 'Omar Kane', connectionId: 'prod-replica', databaseId: 'analytics_ro', tier: 'RO', days: 14, windowMinutes: null, windowLabel: '14 days',
     reason: 'Funnel refresh for Q4 planning — the same read, twenty times a day, for two weeks.', requestedAt: isoAgo(1000 * 60 * 55), status: 'submitted' },
   { id: 'ar_11', requester: 'sofia.ahmed', requesterName: 'Sofia Ahmed', connectionId: 'prod-replica', databaseId: 'users_ro', tier: 'RO', days: null, windowMinutes: 480, windowLabel: '8h',
     reason: 'KYC backlog review this afternoon — the same lookup for every pending case.', requestedAt: isoAgo(1000 * 60 * 18), status: 'submitted' },
+  // One ask by the mock developer (ben.donnelly) on a database he already holds,
+  // so the "already waiting" line is on screen when he opens the dialog.
+  { id: 'ar_10', requester: 'ben.donnelly', requesterName: 'Ben Donnelly', connectionId: 'prod-main', databaseId: 'users', tier: 'RO', days: 7, windowMinutes: null, windowLabel: '7 days',
+    reason: 'Weekly KYC lookups for the compliance review.', requestedAt: isoAgo(1000 * 60 * 95), status: 'submitted' },
 ];
 
 // MOCK of GET /admin/manual-runs (CODE 2026-09-23 §5): DDL the bot handed to a
@@ -1536,6 +1567,39 @@ function heldScopeFor(handle) {
   return held;
 }
 
+// ---------- MOCK: the end and the tier of an auto-approve rule (2026-10-24) ----------
+// The server (auto_approve_limits.py) refuses a rule made in the app with no end,
+// an end past `auto_approve_max_days` (default 90) and a tier of DDL. A row with
+// no end that was made with SQL still exists in the seeds below, and the readers
+// treat it as permanent. These two answer in the server's words and codes.
+const MOCK_AUTO_MAX_DAYS = 90;
+// How long a grant lasts when an access-request approval picks no end
+// (`access_grant_default_days`, 2026-10-24).
+const MOCK_ACCESS_DEFAULT_DAYS = 90;
+const MOCK_AUTO_TIER_SAY = 'An auto-approve rule can be RO or RW. Schema changes always need a DBA.';
+function mockAutoEndRefusal(expiresAt, minutes) {
+  const days = MOCK_AUTO_MAX_DAYS, now = Date.now();
+  if (minutes) {
+    if (minutes < 0) return mockFail('The end date is in the past. Pick a later date.', 400, 'end_in_past');
+    if (minutes > days * 1440) return mockFail('The end date is too far away. An auto-approve rule can last at most ' + days + ' days from now.', 400, 'end_too_far');
+    return null;
+  }
+  if (!expiresAt) return mockFail('An auto-approve rule needs an end date, at most ' + days + ' days from now.', 400, 'end_required');
+  const end = Date.parse(expiresAt);
+  if (isNaN(end)) return mockFail('expiresAt must be an ISO-8601 timestamp.', 400, 'bad_request');
+  if (end <= now) return mockFail('The end date is in the past. Pick a later date.', 400, 'end_in_past');
+  if (end > now + days * 86400000 + 300000) return mockFail('The end date is too far away. An auto-approve rule can last at most ' + days + ' days from now.', 400, 'end_too_far');
+  return null;
+}
+function mockAutoTierRefusal(tier) {
+  return ['RO', 'RW'].indexOf(String(tier || '').toUpperCase()) < 0 ? mockFail(MOCK_AUTO_TIER_SAY, 400, 'tier_not_allowed') : null;
+}
+// A COPY of a rule keeps its end, never later than the limit; no end gets the limit.
+function mockCopiedEnd(iso) {
+  const cap = new Date(Date.now() + MOCK_AUTO_MAX_DAYS * 86400000).toISOString();
+  return !iso || iso > cap ? cap : iso;
+}
+
 // ---------- Query lifecycle (MOCK: a clock-driven state machine) ----------
 const APPROVAL_MS = 4000;   // MOCK: how long a review "takes"
 const RUN_MS = 1400;        // MOCK: execution time
@@ -1639,7 +1703,56 @@ function newRequest(body, bundleId) {
 
 // Derive the current status from the clock, so a tab that polls sees the
 // request move pending → approved → running → done like the real one.
+// MOCK (2026-10-24, batch 2): requests that wait for a DBA with no clock to end
+// them, and requests that ended without running, one for each `outcome` the server
+// sends (denied, withdrawn, expired, changes_requested). They give the sidebar's
+// Waiting group, the amber card, the history filter and the outcome pills something
+// to show. Texts follow the server: a withdrawal and an expiry both say
+// "Cancelled.", and `outcome` is what tells them apart. Invented SQL.
+const MOCK_LIFECYCLE = [
+  { id: 'q_w01', end: 'pending', ageMin: 7, tier: 'RW', conn: 'prod-main', db: 'payments',
+    sql: "UPDATE accounts SET tier = 'gold' WHERE id = 4121;" },
+  // `expiresInMin` stands for a server with the expiry on: the status then carries
+  // `expiresAt`, and the card names the date. q_w01 has none, like the dev routes today.
+  { id: 'q_w02', end: 'pending', ageMin: 41, tier: 'DDL', conn: 'staging', db: 'app_stg', expiresInMin: 180,
+    sql: 'ALTER TABLE ledger_entries ADD COLUMN memo text;' },
+  { id: 'q_e01', end: 'denied', ageMin: 130, tier: 'RW', conn: 'prod-main', db: 'users', by: 'dba.amara',
+    note: 'Run this on staging first.', sql: 'DELETE FROM sessions WHERE expired = true;' },
+  { id: 'q_e02', end: 'withdrawn', ageMin: 200, tier: 'RW', conn: 'staging', db: 'app_stg',
+    sql: "UPDATE feature_flags SET enabled = true WHERE key = 'beta_checkout';" },
+  { id: 'q_e03', end: 'expired', ageMin: 1500, tier: 'DDL', conn: 'prod-main', db: 'payments',
+    sql: 'CREATE INDEX idx_tx_created ON transactions (created_at);' },
+  { id: 'q_e04', end: 'changes_requested', ageMin: 300, tier: 'RW', conn: 'prod-main', db: 'users', by: 'dba.marco',
+    note: 'Add a WHERE clause on the batch id.', sql: "UPDATE users SET status = 'active' WHERE signup_batch IS NOT NULL;" },
+];
+function mockSeedLifecycle() {
+  if (MOCK.lifecycleSeeded) return;
+  MOCK.lifecycleSeeded = true;
+  MOCK_LIFECYCLE.forEach(sd => {
+    MOCK.requests[sd.id] = { id: sd.id, sql: sd.sql, conn: sd.conn, db: sd.db, tier: sd.tier, auto: false, bundleId: null,
+      justification: null, unmasked: false, runOn: null, replicaId: null, scheduledFor: null, rejected: false, handToDba: null,
+      t0: Date.now() - sd.ageMin * 60000, seed: sd };
+  });
+}
+// The status of a seeded request. A pending one stays pending until it is withdrawn.
+function seededStatus(rec) {
+  const sd = rec.seed, time = clock();
+  const first = { kind: 'info', time, text: 'Submitted ' + rec.tier + ' query as request #' + rec.id + ' for DBA approval.' };
+  const audit = [{ actor: 'you', event: 'Submitted ' + rec.tier + ' query', time }];
+  const end = rec.stopped === 'withdrawn' ? 'withdrawn' : sd.end;
+  if (end === 'pending') return { status: 'pending', runMs: null, messages: [first], audit, outcome: null,
+    expiresAt: sd.expiresInMin ? new Date(Date.now() + sd.expiresInMin * 60000).toISOString() : null };
+  if (end === 'withdrawn' || end === 'expired') {
+    audit.push({ actor: end === 'withdrawn' ? 'you' : 'system', event: end === 'withdrawn' ? 'Withdrew request' : 'Request expired', time });
+    return { status: 'rejected', runMs: null, messages: [first, { kind: 'err', time, text: 'Cancelled.' }], audit, outcome: end, expiresAt: null };
+  }
+  audit.push({ actor: sd.by, event: end === 'denied' ? 'Rejected request' : 'Requested changes', time });
+  return { status: 'rejected', runMs: null, audit, outcome: end, expiresAt: null,
+    messages: [first, { kind: 'err', time, text: 'Rejected by ' + sd.by + ': ' + sd.note }] };
+}
+
 function statusOf(rec) {
+  if (rec.seed) return seededStatus(rec);
   const el = Date.now() - rec.t0;
   const msg = [];
   const push = (kind, text) => msg.push({ kind, text, time: clock() });
@@ -1650,11 +1763,16 @@ function statusOf(rec) {
   // (statement killed mid-flight) are different facts, so the message says
   // which one happened; the status enum has no separate value for either.
   if (rec.stopped) {
-    push(rec.stopped === 'withdrawn' ? 'info' : 'err',
-      rec.stopped === 'withdrawn'
-        ? 'Withdrawn by you — the request left the DBA queue without running.'
-        : 'Stopped on the database. The database cancelled the statement during the run.');
-    aud('you', rec.stopped === 'withdrawn' ? 'Withdrew request' : 'Stopped running query');
+    // A withdrawal is `rejected` with outcome `withdrawn`, and the server's own
+    // line is the generic "Cancelled." (the UI words it from `outcome`).
+    if (rec.stopped === 'withdrawn') {
+      push('info', 'Submitted ' + rec.tier + ' query as request #' + rec.id + ' for DBA approval.');
+      push('err', 'Cancelled.');
+      aud('you', 'Withdrew request');
+      return { status: 'rejected', runMs: null, messages: msg, audit, outcome: 'withdrawn' };
+    }
+    push('err', 'Stopped on the database. The database cancelled the statement during the run.');
+    aud('you', 'Stopped running query');
     return { status: 'failed', runMs: null, messages: msg, audit };
   }
   if (rec.scheduledFor && new Date(rec.scheduledFor).getTime() > Date.now()) {
@@ -1666,7 +1784,7 @@ function statusOf(rec) {
   if (rec.rejected && el >= approvedAt) {
     push('err', 'Rejected by dba.amara — a DROP needs a migration, not an ad-hoc query.');
     aud('dba.amara', 'Rejected request');
-    return { status: 'rejected', runMs: null, messages: msg, audit };
+    return { status: 'rejected', runMs: null, messages: msg, audit, outcome: 'denied' };
   }
   if (el < approvedAt) {
     push('info', 'Submitted ' + rec.tier + ' query as request #' + rec.id + ' for DBA approval' + (rec.bundleId ? ' (batch ' + rec.bundleId + ')' : '') + '.');
@@ -2037,9 +2155,12 @@ const qhApi = {
   // ---- saved / history / sessions / scheduled ----
   saved: () => mockDelay(() => ({ saved: MOCK.savedSrv.map(s => ({ ...s, connectionState: connStateFor(s.connectionId) })) })),
   history: () => mockDelay(() => {
+    mockSeedLifecycle();
     const rows = (window.QH_HISTORY || []).map((h, i) => ({
       id: h.id, sql: h.sql, connectionId: h.conn, databaseId: h.db, tier: h.tier, status: h.status,
       rowCount: h.rows, approver: h.approver, createdAt: isoAgo(1000 * 60 * (2 + i * 37)),
+      // The server sends `outcome` on every row: a refusal is `denied`.
+      outcome: h.status === 'rejected' ? 'denied' : null,
       connectionState: connStateFor(h.conn), awaitingDba: false,
       // One forced run in a super-admin's history, so the badge is on screen.
       ranOn: h.id === 'h1' && mockUser() && mockUser().role === 'super'
@@ -2049,8 +2170,20 @@ const qhApi = {
     // until a DBA closes it — and its stored text has the password hidden.
     const mr = MOCK_HIST_HANDOFF, closed = ADMIN.manualClosed[mr.id];
     rows.splice(1, 0, { ...mr, status: closed ? (closed.completed ? 'done' : 'failed') : 'failed', awaitingDba: !closed,
-      connectionState: connStateFor(mr.connectionId) });
-    return { history: rows };
+      outcome: null, connectionState: connStateFor(mr.connectionId) });
+    // The requests of the lifecycle seed and every request this session submitted
+    // (newest first), with the status and outcome the status call would give now.
+    const live = Object.keys(MOCK.requests).map(k => MOCK.requests[k])
+      .filter(r => !rows.some(x => x.id === r.id))
+      .sort((a, b) => b.t0 - a.t0)
+      .map(r => {
+        const st = statusOf(r);
+        return { id: r.id, sql: r.sql, connectionId: r.conn, databaseId: r.db, tier: r.tier, status: st.status,
+          rowCount: null, approver: st.status === 'pending' || st.status === 'rejected' ? null : 'dba.amara',
+          createdAt: new Date(r.t0).toISOString(), outcome: st.outcome || null, awaitingDba: !!st.awaitingDba,
+          connectionState: connStateFor(r.conn), ranOn: null };
+      });
+    return { history: [...rows, ...live].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)) };
   }),
   saveSnippet: (b) => mockDelay(() => {
     const row = { id: mockId('srv'), name: b.name, connectionId: b.connectionId, databaseId: b.databaseId, sql: b.sql };
@@ -2165,9 +2298,12 @@ const qhApi = {
     }) };
   }, 340),
   status: (id) => mockDelay(() => {
+    mockSeedLifecycle();
     const rec = MOCK.requests[id];
     if (!rec) return mockFail('Unknown request.', 404, 'not_found');
-    return statusOf(rec);
+    // The server always sends both: `outcome` null and `expiresAt` null unless set
+    // (the dev routes send no `expiresAt` today, so the card shows no countdown).
+    return { outcome: null, expiresAt: null, ...statusOf(rec) };
   }, 110),
   result: (id, statement) => mockDelay(() => {
     const rec = MOCK.requests[id];
@@ -2189,6 +2325,7 @@ const qhApi = {
   // the statement; anything terminal is a no-op. Callers must not collapse
   // `outcome` into success/error: which act happened is the point.
   cancelRun: (id) => mockDelay(() => {
+    mockSeedLifecycle();
     const rec = MOCK.requests[id];
     if (!rec) return mockFail('Unknown request.', 404, 'not_found');
     const st = statusOf(rec).status;
@@ -2229,7 +2366,8 @@ const qhApi = {
       // Nothing left to ask for on a catalogued server means the row itself has
       // no reason to be in the list. A server with NO snapshot keeps its row.
       if (snap.length && !dbs.length) return;
-      out.push({ connectionId: c.id, name: c.name, engine: c.engine, env: c.env, databases: dbs, partial: !!mine });
+      out.push({ connectionId: c.id, name: c.name, engine: c.engine, env: c.env, databases: dbs, partial: !!mine,
+        tags: mockNarrowTags(c.tags) });
     });
     return { connections: out };
   }, 320),
@@ -2266,7 +2404,7 @@ const qhApi = {
   autoApproveRequests: () => mockDelay(() => {
     const me = mockUser();
     if (!me) return mockFail('Not signed in.', 401, 'unauthenticated');
-    return { windowOptions: MOCK_AUTO_WINDOWS.map(o => ({ ...o })), tiers: ['RO', 'RW'], requests: ADMIN.autoReqs.filter(r => r.requester === me.handle) };
+    return { windowOptions: MOCK_AUTO_WINDOWS.map(o => ({ ...o })), tiers: ['RO', 'RW'], requests: ADMIN.autoReqs.filter(r => r.requester === me.handle).map(mockOwnAsk) };
   }, 160),
   requestEndpoint: (b) => mockDelay(() => {
     // A picked row is AUTHORITATIVE and there is NO fallback to the free text
@@ -2317,7 +2455,11 @@ const qhApi = {
         bundlePosition: position, bundleSize: it.bundleId ? size[it.bundleId] : null };
     }) };
   }, 200),
+  // While the kill switch is on, an approve is refused (409 kill_switch_on), as
+  // POST /admin/queue/{id}/decision and /queue/batch-approve do. Deny and
+  // Request changes stay open.
   adminDecision: (id, b) => mockDelay(() => {
+    if (b.decision === 'approve' && ADMIN.kill.enabled) return mockFail(MOCK_KILL_APPROVE_SAY, 409, 'kill_switch_on');
     const it = ADMIN.queue.find(x => x.id === id);
     ADMIN.queue = ADMIN.queue.filter(x => x.id !== id);
     if (it) {
@@ -2328,6 +2470,7 @@ const qhApi = {
     return { ok: true };
   }, 260),
   adminBatchApprove: (ids) => mockDelay(() => {
+    if (ADMIN.kill.enabled) return mockFail(MOCK_KILL_APPROVE_SAY, 409, 'kill_switch_on');
     const items = ADMIN.queue.filter(x => ids.includes(x.id));
     ADMIN.queue = ADMIN.queue.filter(x => !ids.includes(x.id));
     items.forEach(it => mockAudit('Approved query (batch)', it.submitter.name + ' · ' + it.connectionId + '/' + it.databaseId, 'approve', { tier: it.tier, query: it.sql, requestId: it.requestId || it.id }));
@@ -2374,12 +2517,14 @@ const qhApi = {
     // write, so a refusal writes nothing. Never DDL, and never above the grant.
     const wantAuto = !!b.autoApprove;
     const autoTier = String(b.autoApproveTier || 'RO').toUpperCase();
-    if (wantAuto && autoTier === 'DDL') return mockFail('QueryHub always reviews schema changes. You cannot auto-approve DDL.', 400, 'ddl_never_auto');
+    if (wantAuto && autoTier === 'DDL') return mockFail(MOCK_AUTO_TIER_SAY, 400, 'tier_not_allowed');
     if (wantAuto && ['RO', 'RW'].indexOf(autoTier) < 0) return mockFail('autoApproveTier must be RO or RW.', 400, 'bad_tier');
     if (wantAuto && EFF_RANK[autoTier] > EFF_RANK[b.tier]) return mockFail('Auto-approve cannot go above the grant. This grant is ' + b.tier + '.', 400, 'bad_tier');
     // A date already past is refused rather than stored inert: the row would
     // read to the admin as access given and grant nothing (server: 400).
     if (b.expiresAt && new Date(b.expiresAt) <= new Date()) return mockFail('That expiry is already in the past — the grant would be dead on arrival.', 400, 'invalid_expiry');
+    // A grant may have no end. A waiver written with it may not (server: 400).
+    if (wantAuto) { const bad = mockAutoEndRefusal(b.expiresAt); if (bad) return bad; }
     const exp = b.expiresAt || null;
     const expNote = exp ? ' · expires ' + exp.slice(0, 10) : '';
     // The three statements a grant is made of, split into one helper both entry
@@ -2457,8 +2602,12 @@ const qhApi = {
     if (g) mockAudit('Revoked grant', g.subject + ' → ' + g.connectionId, 'reject');
     return null;
   }, 200),
-  adminAutoGrants: () => mockDelay(() => ({ autoGrants: ADMIN.auto.slice() }), 180),
+  adminAutoGrants: () => mockDelay(() => ({ autoGrants: ADMIN.auto.slice(), maxDays: MOCK_AUTO_MAX_DAYS }), 180),
   adminAddAutoGrant: (b) => mockDelay(() => {
+    // Never DDL, and an end within the limit (the server checks both, and the
+    // end after the reach; here first, so the refusals do not depend on seeds).
+    const badTier = mockAutoTierRefusal(b.tier || 'RO'); if (badTier) return badTier;
+    const badEnd = mockAutoEndRefusal(b.expiresAt, b.expiresInMinutes); if (badEnd) return badEnd;
     // What the server does with the scope, mirrored so the form cannot drift
     // back to sending a magic string: '*' / '' / all / any mean every database
     // and normalise to NULL, and a database that is not on the connection is a
@@ -2517,7 +2666,7 @@ const qhApi = {
   adminAddAutoGrantsBulk: (b) => mockDelay(() => {
     const type = b.subjectType === 'team' ? 'team' : 'user';
     const tier = String(b.tier || '').toUpperCase();
-    if (tier === 'DDL') return mockFail('Schema changes are always reviewed — DDL cannot be auto-approved.', 400, 'ddl_never_auto');
+    if (tier === 'DDL') return mockFail(MOCK_AUTO_TIER_SAY, 400, 'tier_not_allowed');
     if (['RO', 'RW'].indexOf(tier) < 0) return mockFail('tier must be RO or RW.', 400, 'bad_tier');
     const team = type === 'team' ? ADMIN.teams.find(t => t.name === b.subject || t.id === b.subject) : null;
     if (type === 'team' && !team) return mockFail('No such team.', 404, 'no_team');
@@ -2526,6 +2675,9 @@ const qhApi = {
     const targets = (b.targets || []).map(t => ({ connectionId: t.connectionId,
       databaseId: t.databaseId == null || ['', '*', 'all', 'any'].indexOf(String(t.databaseId).toLowerCase()) >= 0 ? null : String(t.databaseId) }));
     if (!targets.length) return mockFail('Add at least one target.', 400, 'no_targets');
+    // The end is checked before the dry run, so a preview refuses what a save
+    // would refuse (the server does it after the per-target refusals).
+    const badEnd = mockAutoEndRefusal(b.expiresAt, b.expiresInMinutes); if (badEnd) return badEnd;
     const refused = [], seen = {};
     const reach = mockReachOf(type, type === 'team' ? team.name : user);
     const whoSay = mockSubjectName(type, type === 'team' ? team.name : user);
@@ -2785,7 +2937,9 @@ const qhApi = {
   adminAddFleetGrant: (b) => mockDelay(() => {
     if (!mockUser() || mockUser().role !== 'super') return mockFail('Super-admin access required.', 403, 'forbidden');
     const p = b || {};
+    if (p.autoApprove) { const badTier = mockAutoTierRefusal(p.tier || 'RO'); if (badTier) return badTier; }
     if (String(p.tier || 'ro').toLowerCase() !== 'ro') return mockFail('A grant on every server is read-only. Use tier ro.', 400, 'bad_request');
+    if (p.autoApprove) { const badEnd = mockAutoEndRefusal(p.expiresAt); if (badEnd) return badEnd; }
     if (p.subjectType !== 'user' && p.subjectType !== 'team') return mockFail('subjectType must be user or team.', 400, 'bad_request');
     const subject = String(p.subject || '').trim();
     const person = p.subjectType === 'user' ? ADMIN.people.find(x => x.handle === subject || x.slackId === subject) : null;
@@ -2926,18 +3080,34 @@ const qhApi = {
   }, 240),
 
   // ---- admin: endpoint requests, teams & people ----
-  adminEndpointReqs: () => mockDelay(() => ({ requests: ADMIN.endpointReqs.slice() }), 180),
-  adminDecideEndpoint: (id, approve, note) => mockDelay(() => {
+  // `accessDefaultDays` is `access_grant_default_days`: what the Provision form
+  // opens on. The server answers it with the list.
+  adminEndpointReqs: () => mockDelay(() => ({ requests: ADMIN.endpointReqs.slice(), accessDefaultDays: MOCK_ACCESS_DEFAULT_DAYS }), 180),
+  // `end` is { expiresAt } or { noEnd: true } (approve only). Neither: the grant
+  // ends in the default days. Both, or a past end: refused in the server's words.
+  adminDecideEndpoint: (id, approve, note, end) => mockDelay(() => {
     const er = ADMIN.endpointReqs.find(x => String(x.id).replace(/^er_/, '') === String(id).replace(/^er_/, ''));
     if (!er) return mockFail('Unknown request.', 404, 'not_found');
+    let ends = null;
+    if (approve) {
+      const e = end || {};
+      if (e.noEnd && e.expiresAt) return mockFail('Send an end date or noEnd, not both.', 400, 'bad_request');
+      if (e.noEnd) ends = null;
+      else if (e.expiresAt) {
+        const at = new Date(e.expiresAt).getTime();
+        if (isNaN(at)) return mockFail('expiresAt must be an ISO-8601 timestamp.', 400, 'bad_request');
+        if (at <= Date.now()) return mockFail('The end date is in the past. Pick a later date.', 400, 'end_in_past');
+        ends = new Date(at).toISOString();
+      } else ends = new Date(Date.now() + MOCK_ACCESS_DEFAULT_DAYS * 86400000).toISOString();
+    }
     er.status = approve ? 'provisioned' : 'rejected';
     if (approve) {
       // Approval auto-creates the grant it asked for (0.1.0 behaviour).
       ADMIN.grants = [{ id: mockId('g'), subjectType: 'user', subject: er.requester, connectionId: er.server,
-        databases: [er.database], tier: er.tier, grantedBy: 'dba.amara', grantedAt: isoNow() }, ...ADMIN.grants];
+        databases: [er.database], tier: er.tier, grantedBy: 'dba.amara', grantedAt: isoNow(), expiresAt: ends }, ...ADMIN.grants];
     }
     mockAudit(approve ? 'Provisioned endpoint' : 'Rejected endpoint request', er.server + '/' + er.database + ' · ' + er.tier, approve ? 'grant' : 'reject');
-    return { ok: true };
+    return approve ? { ok: true, expiresAt: ends } : { ok: true };
   }, 300),
   // GET /admin/people is EVERY principal an admin can name (CODE brief 2026-09-01
   // §4): requesters, admins with no requesters row, and identities that exist only
@@ -3102,7 +3272,11 @@ const qhApi = {
     const doomed = mode === 'replace'
       ? ADMIN.grants.filter(g => g.subjectType === 'user' && g.subject === p.handle && !keep.has(g.connectionId))
       : [];
-    const autoRows = (b && b.includeAutoApprove) ? ADMIN.auto.filter(a => a.user === src.handle) : [];
+    // A DDL rule is not copied, and the answer counts it. The rest keep their end,
+    // never later than the limit; a rule with no end gets the limit.
+    const srcAuto = (b && b.includeAutoApprove) ? ADMIN.auto.filter(a => a.user === src.handle) : [];
+    const autoRows = srcAuto.filter(a => String(a.tier).toUpperCase() !== 'DDL');
+    const skippedDdl = srcAuto.length - autoRows.length;
     const teamNames = (b && b.includeTeams)
       ? eff.teams.map(t => t.name).filter(name => {
         const t = ADMIN.teams.find(x => x.name === name);
@@ -3113,7 +3287,7 @@ const qhApi = {
       // the things they recognise.
       return { dryRun: true, mode, wouldWrite: [...new Set(rows.map(t => t.connectionId))],
         wouldRevoke: doomed.map(g => ({ targetId: g.id, connectionId: g.connectionId, tier: g.tier })),
-        wouldCopyAutoApprove: autoRows.length, wouldJoinTeams: teamNames };
+        wouldCopyAutoApprove: autoRows.length, wouldSkipAutoApprove: skippedDdl, wouldJoinTeams: teamNames };
     }
     let written = 0;
     rows.forEach(t => {
@@ -3131,8 +3305,8 @@ const qhApi = {
     let autoApproveCopied = 0;
     autoRows.forEach(a => {
       const ex = ADMIN.auto.find(x => x.user === p.handle && x.connectionId === a.connectionId && x.databaseId === a.databaseId);
-      if (ex) { ex.tier = a.tier; ex.expiresAt = a.expiresAt; }
-      else ADMIN.auto = [{ ...a, id: mockId('a'), user: p.handle, userName: p.name, createdByName: 'Amara Osei' }, ...ADMIN.auto];
+      if (ex) { ex.tier = a.tier; ex.expiresAt = mockCopiedEnd(a.expiresAt); }
+      else ADMIN.auto = [{ ...a, expiresAt: mockCopiedEnd(a.expiresAt), id: mockId('a'), user: p.handle, userName: p.name, createdByName: 'Amara Osei' }, ...ADMIN.auto];
       autoApproveCopied++;
     });
     const teams = teamNames.filter(name => {
@@ -3148,7 +3322,7 @@ const qhApi = {
       + (teams.length ? ' · joined ' + teams.join(', ') : ''), 'grant');
     // `written` is a COUNT and always was; `writtenTargets` is the names, which is
     // what a sentence needs (CODE brief 2026-09-01 §2).
-    return { written, writtenTargets: rows.map(t => t.connectionId), revoked, autoApproveCopied, teams, mode };
+    return { written, writtenTargets: rows.map(t => t.connectionId), revoked, autoApproveCopied, autoApproveSkippedDdl: skippedDdl, teams, mode };
   }, 340),
   adminTeams: () => mockDelay(() => ({ teams: ADMIN.teams.map(t => ({ ...t, subteams: [] })) }), 160),
   adminSaveTeam: (t) => mockDelay(() => {
@@ -3321,7 +3495,24 @@ const qhApi = {
   // paged, faceted and searches the whole table server-side.
   adminAuditSearch: (params) => mockDelay(() => audSearch(params), 280),
   adminAudit: () => mockDelay(() => ({ audit: ADMIN.audit.slice() }), 220),
-  adminMetrics: () => mockDelay(() => MOCK_METRICS, 380),
+  // `window` '7d' | '30d' adds the window label and the decision time. The
+  // seven-day answer is the smaller one. No window keeps the old shape.
+  adminMetrics: (window) => mockDelay(() => {
+    if (!window) return MOCK_METRICS;
+    const w7 = window === '7d';
+    const days = w7 ? 7 : 30;
+    return { ...MOCK_METRICS, window, windowStart: new Date(Date.now() - days * 86400000).toISOString(),
+      decisionTime: {
+        requests: w7 ? 212 : 884, p50Sec: w7 ? 41.0 : 55.5, p90Sec: w7 ? 420.0 : 780.0,
+        bands: [{ fromSec: 0, toSec: 300, count: w7 ? 160 : 640 }, { fromSec: 300, toSec: 900, count: w7 ? 36 : 170 },
+                { fromSec: 900, toSec: 3600, count: w7 ? 12 : 58 }, { fromSec: 3600, toSec: null, count: w7 ? 4 : 16 }],
+        byServer: [{ name: 'prod-main', requests: w7 ? 120 : 480, p50Sec: 38.0, p90Sec: 300.0 },
+                   { name: 'prod-replica', requests: w7 ? 60 : 250, p50Sec: 45.0, p90Sec: 500.0 },
+                   { name: 'billing-db', requests: 20, p50Sec: 90.0, p90Sec: 1800.0 }],
+        byTeam: [{ name: 'backend', requests: w7 ? 100 : 400, p50Sec: 40.0, p90Sec: 380.0 },
+                 { name: 'data', requests: w7 ? 50 : 210, p50Sec: 70.0, p90Sec: 900.0 }],
+      } };
+  }, 380),
   adminFeedback: () => mockDelay(() => ({ feedback: ADMIN.feedback.slice() }), 180),
   adminConfig: () => mockDelay(() => ({ config: JSON.parse(JSON.stringify(ADMIN.config)) }), 220),
   adminConfigSave: (changes) => mockDelay(() => {

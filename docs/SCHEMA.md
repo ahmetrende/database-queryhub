@@ -175,6 +175,15 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
 - **192_connection_health_skip_clickhouse** — sets
   `connection_health_exclude_engines` to `clickhouse` where it still holds the
   empty seed of 191.
+- **193_auto_approve_max_days** — new `bot_config`: `auto_approve_max_days`
+  (90). The most days that an auto-approve rule made in the app can last. The
+  application checks it. The database does not: no CHECK, no trigger and no NOT
+  NULL on `auto_approve_grants.expires_at` or `access_grant.valid_until`, so a
+  row that a DBA inserts with SQL can have no end. See OPERATIONS.md §30.
+- **194_access_grant_default_days** — new `bot_config`:
+  `access_grant_default_days` (90). The days that a new grant lasts when an
+  approver approves an access request and picks no other end. The approver can
+  pick an end or no end. Grants that exist keep their end dates.
 
 ---
 
@@ -330,7 +339,7 @@ Current keys:
 | `log_level` | `INFO` | Python logging level. **Read at startup** — restart to apply. |
 | `results_ttl_hours` | `72` | How long Slack file uploads + local CSV results persist before cleanup deletes them. |
 | `max_schedule_days` | `7` | Max days into the future that a /sql query can be scheduled. 0 = scheduling disabled. |
-| `kill_switch` | `off` | When `on`, the bot rejects new `/sql` invocations and shows `kill_switch_message`. When an admin sets it `on` from the web or with `/sql kill on`, the bot sets it first. Then it cancels the running read-only requests and writes a `kill_switch_cancelled` audit row with the count. Running writes and DDL continue. |
+| `kill_switch` | `off` | When `on`, the bot rejects new `/sql` invocations and shows `kill_switch_message`. It also refuses every approval that runs a request. When an admin sets it `on` from the web or with `/sql kill on`, the bot sets it first. Then it cancels the running read-only requests and writes a `kill_switch_cancelled` audit row with the count. Running writes and DDL continue. |
 | `kill_switch_message` | (text) | Message shown to users when the kill switch is on. |
 | `pre_flight_explain` | `on` | When `on`, the bot runs `EXPLAIN` before approval. This shows plan-time errors and (when `query_plan_logging=on`) captures the plan. It plans a single read-only statement with RO credentials. Writes and scripts follow `pre_flight_validate_scripts`. |
 | `pre_flight_validate_scripts` | `on` | When `on`, the bot plans every statement of a write request and of a multi-statement script before approval. Nothing runs. A wrong column or a syntax error is refused at submit. Migration 143. |

@@ -50,7 +50,7 @@ def _kill_switch_message() -> str:
 from slack_bolt import Ack, App
 from slack_sdk.web import WebClient
 
-from .. import access_requests, admins, audit, auto_approve, auto_approve_requests, bundles, csv_import, db, engines, executor, favorites, grants, idp_sync_guard, manual_runs, pre_flight, profile_sync, query_safety, ratings, requesters, schema_catalog, targets, teams, templates
+from .. import access_requests, admins, audit, auto_approve, auto_approve_limits, auto_approve_requests, bundles, csv_import, db, engines, executor, favorites, grants, idp_sync_guard, manual_runs, pre_flight, profile_sync, query_safety, ratings, requesters, schema_catalog, targets, teams, templates
 from .. import config as cfg
 from .. import core_submit
 from .. import core_decide
@@ -1937,14 +1937,37 @@ def _is_bundle_item(request: dict | None) -> bool:
     return bool(request and request.get("bundle_id"))
 
 
+def _refuse_approve_kill_switch(client: WebClient, body: dict,
+                                e: "core_decide.KillSwitchOn") -> None:
+    """Tell the approver that the kill switch refuses the approval.
+
+    An ephemeral message in the channel of the button. A DM when the body has
+    no channel or the call fails. Nothing was written."""
+    user_id = body["user"]["id"]
+    channel = ((body.get("channel") or {}).get("id")
+               or (body.get("container") or {}).get("channel_id"))
+    if channel:
+        try:
+            client.chat_postEphemeral(channel=channel, user=user_id, text=e.message)
+            return
+        except Exception:
+            log.warning("ephemeral kill-switch notice failed. Sending a DM",
+                        exc_info=True)
+    notifications.dm_requester(client, user_id, e.message)
+
+
 def handle_approve(ack: Ack, body: dict, client: WebClient) -> None:
     request_id = int(body["actions"][0]["value"])
     if not _guard_admin(ack, client, body, request_id=request_id):
         return
     ack()
     user = body["user"]
-    outcome = core_decide.decide(request_id, "approve",
-                                 by_id=user["id"], by_name=user.get("name"))
+    try:
+        outcome = core_decide.decide(request_id, "approve",
+                                     by_id=user["id"], by_name=user.get("name"))
+    except core_decide.KillSwitchOn as e:
+        _refuse_approve_kill_switch(client, body, e)
+        return
     if outcome is None:
         notifications.dm_requester(
             client, user["id"],
@@ -2627,6 +2650,11 @@ def handle_bundle_approve_all(ack: Ack, body: dict, client: WebClient) -> None:
         return
     ack()
     user = body["user"]
+    try:
+        core_decide.require_kill_switch_off()
+    except core_decide.KillSwitchOn as e:
+        _refuse_approve_kill_switch(client, body, e)
+        return
 
     items = _bundle_pending_items_in_scope(bundle_id, user["id"])
     if not items:
@@ -2969,6 +2997,11 @@ def handle_import_approve(ack: Ack, body: dict, client: WebClient) -> None:
     admin = body["user"]
     import_id = int(body["actions"][0]["value"])
     if not admins.is_admin(admin["id"]):
+        return
+    try:
+        core_decide.require_kill_switch_off()
+    except core_decide.KillSwitchOn as e:
+        _refuse_approve_kill_switch(client, body, e)
         return
     pending = db.fetch_one(
         "SELECT * FROM csv_imports WHERE id=%s AND status='pending'", (import_id,))
@@ -3649,6 +3682,11 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
             grants.check_waiver_tier(tier, auto_tier)
         except ValueError as e:
             errors[admin_grant.B_AUTO] = str(e)
+    if auto_tier and admin_grant.B_AUTO not in errors:
+        # An auto-approve rule needs an end date, and this modal has no end date
+        # field, so the box cannot make a rule from here. `grants.grant` refuses
+        # it too (`check_waiver_end`). Said beside the box, before any write.
+        errors[admin_grant.B_AUTO] = auto_approve_limits.SLACK_NEEDS_END_MESSAGE
     if errors:
         ack({"response_action": "errors", "errors": errors})
         return

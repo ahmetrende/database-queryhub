@@ -356,26 +356,42 @@ const QH_ENGINES = {
   // No system node: QueryHub refuses `system.*` and `information_schema` here
   // (other users' queries, server internals), so the tree does not offer tables
   // a query cannot read (2026-09-23 (d)). `catalogLabel: null` hides it.
-  clickhouse: { label: 'ClickHouse', badge: 'CH', q: ['`', '`'], foldsLower: false, rolesLabel: 'Users & roles', catalogLabel: null,
+  clickhouse: { label: 'ClickHouse', badge: 'CH', q: ['`', '`'], foldsLower: false, rolesLabel: 'Users & roles', catalogLabel: null, readOnly: true,
     system: {} },
   // An S3 archive read through Athena (Trino SQL: double quotes, unquoted names
   // fold to lower case). No system node for the same reason as ClickHouse:
   // `information_schema` is refused on this engine. Access is the IAM role the
   // gateway assumes; there are no database users.
-  athena: { label: 'Amazon Athena', badge: 'ATHENA', q: ['"', '"'], foldsLower: true, rolesLabel: 'IAM roles', catalogLabel: null,
+  athena: { label: 'Amazon Athena', badge: 'ATHENA', q: ['"', '"'], foldsLower: true, rolesLabel: 'IAM roles', catalogLabel: null, readOnly: true,
     system: {} },
   couchbase: { label: 'Couchbase', badge: 'CB', q: ['`', '`'], foldsLower: false, rolesLabel: 'Users & roles', catalogLabel: 'System keyspaces',
     system: { 'system': ['system:keyspaces', 'system:indexes', 'system:datastores', 'system:dual'] } },
 };
-// Environment tags (PROD / STG) in the connection LIST and the omnibox
-// suggestions. Off by the operator's decision: the fleet is prod-first, so the
-// badge was on almost every row and carried no information there — the toolbar
-// above the editor still shows it, which is where it matters (it is what you
-// read just before pressing Run).
+// Environment tags (PROD / STG / TEST) in the connection LIST, the omnibox
+// suggestions and the request-access picker.
+//
+// 2026-10-24: ON again. The operator asked for an env chip on every connection,
+// the way the portal design draws it: the chip and the cloud logo are how a
+// person tells two servers apart before they open one. It was OFF before this,
+// because the fleet is prod-first and the badge sat on almost every row. Every
+// list chip is still gated by this flag, so the old behaviour is one edit away
+// (set it to false).
 //
 // A flag rather than deleted code: "keep it hidden in case we need it later"
 // was the explicit ask, and a flag is the version of that which cannot rot.
-const QH_SHOW_ENV_TAGS = false;
+const QH_SHOW_ENV_TAGS = true;
+
+// The short word on an env chip. One rule, read by every chip (tree, strip,
+// picker, dialog), so two places never print the same environment two ways.
+// PROD, STG and TEST are the only upper-case chip words. An environment this
+// does not know keeps its own word, and the chip CSS sets it in sentence case.
+function qhEnvChipWord(env) {
+  const e = String(env == null ? '' : env).trim().toLowerCase();
+  if (e === 'production' || e === 'prod') return 'PROD';
+  if (e === 'staging' || e === 'stage' || e === 'stg') return 'STG';
+  if (e === 'test' || e === 'testing') return 'TEST';
+  return e ? String(env).trim() : '';
+}
 
 // Only engines the product can execute or hold a spec for. `oracle`, `mysql` and
 // `couchbase` were dropped 2026-08-15: no engine spec exists for them, so no
@@ -415,6 +431,10 @@ function qhEngineId(engineStr) {
   return 'postgres';
 }
 function qhEngine(conn) { return QH_ENGINES[qhEngineId(conn && conn.engine)] || QH_ENGINES.postgres; }
+// A read-only engine has no read/write or schema credential at all (engines.py
+// `read_only`: ClickHouse and Athena accept SELECT and WITH only). Asking for a
+// higher tier there asks for a thing that does not exist.
+function qhEngineReadOnly(conn) { return !!qhEngine(conn).readOnly; }
 function qhEngineBadge(conn) { const v = (String(conn && conn.engine || '').match(/\d+/) || [''])[0]; return qhEngine(conn).badge + v; }
 // ---------- Where a target lives: connection tags ----------
 // One tag bag per CONNECTION — a server, or a managed instance. Its databases
@@ -786,6 +806,95 @@ function qhAutoTierState(tiers, held) {
   return { rwOk: true, reason: null };
 }
 
+// ---------- Theme (2026-10-24) ----------
+// The theme lives on <html data-theme>, and qhProviderLogo reads it while a
+// component renders. App used to set the attribute in an effect, which runs
+// AFTER its children render, so the first paint after a switch (and the first
+// paint of a dark session) still read the old value: the AWS mark, which is dark
+// ink on a dark surface, stayed invisible until something else re-rendered.
+// qhApplyTheme is the one writer, and App calls it in its render body, before
+// any child reads the attribute. It only writes when the value changes.
+function qhThemeFor(theme, osDark) {
+  if (theme === 'dark') return 'dark';
+  if (theme === 'light') return 'light';
+  return osDark ? 'dark' : 'light';
+}
+function qhApplyTheme(theme) {
+  if (typeof document === 'undefined' || !document.documentElement || !document.documentElement.setAttribute) return 'light';
+  let osDark = false;
+  try { osDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); } catch (e) { osDark = false; }
+  const th = qhThemeFor(theme, osDark);
+  if (document.documentElement.getAttribute('data-theme') !== th) document.documentElement.setAttribute('data-theme', th);
+  return th;
+}
+
+// ---------- Tier words in prose (2026-10-24) ----------
+// The badge says RO, RW or DDL. A sentence says the word. The words match the
+// portal: "Read/write" and "Schema change". `QH_TIER_BLURB` is the one short line
+// under each tier choice in the request-access dialog.
+const QH_TIER_PROSE = { RO: 'Read-only', RW: 'Read/write', DDL: 'Schema change' };
+function qhTierProse(tier) {
+  const t = String(tier == null ? '' : tier).toUpperCase();
+  return QH_TIER_PROSE[t] || String(tier == null ? '' : tier);
+}
+const QH_TIER_BLURB = {
+  RO: 'Runs SELECT statements. Nothing can change.',
+  RW: 'Also changes rows with INSERT, UPDATE and DELETE.',
+  DDL: 'Also changes the schema with CREATE, ALTER and DROP.',
+};
+// Why a tier choice is not on offer for this connection, or '' when it is. A
+// read-only engine has one credential, so RW and DDL are locked there and the
+// title says why. The server refuses the same ask; this only says it first.
+function qhTierLockWhy(conn, tier) {
+  const t = String(tier == null ? '' : tier).toUpperCase();
+  if (!t || t === 'RO') return '';
+  if (!conn || !qhEngineReadOnly(conn)) return '';
+  return qhEngine(conn).label + ' is read-only in QueryHub. Only read-only access exists on it.';
+}
+
+// ---------- Auto-approve asks: one reading of both API shapes (2026-10-24) ----------
+// GET /auto-approve-requests sends the caller's own asks as `status: 'pending'`
+// with `createdAt`, `windowMinutes` and `days`, and no `windowLabel`. The admin
+// list sends `status: 'submitted'` with `requestedAt` and `windowLabel`. The
+// dialog read the admin names, so an ask already waiting never showed. These
+// helpers read either shape, so the two cannot drift apart again.
+function qhAskWaiting(r) {
+  const s = String((r && r.status) || '').toLowerCase();
+  return s === 'pending' || s === 'submitted';
+}
+function qhAskAt(r) { return (r && (r.createdAt || r.requestedAt)) || null; }
+function qhAskWindowLabel(r) {
+  if (!r) return '';
+  if (r.windowLabel) return String(r.windowLabel);
+  const days = Number(r.days);
+  if (Number.isFinite(days) && days > 0) return days + (days === 1 ? ' day' : ' days');
+  const m = Number(r.windowMinutes != null ? r.windowMinutes : r.minutes);
+  if (!Number.isFinite(m) || m <= 0) return '';
+  if (m % 1440 === 0) return (m / 1440) + (m === 1440 ? ' day' : ' days');
+  if (m % 60 === 0) return (m / 60) + 'h';
+  return m + ' min';
+}
+function qhAskFor(list, connId, dbId) {
+  return (list || []).find(r => qhAskWaiting(r) && r.connectionId === connId
+    && (r.databaseId || null) === (dbId || null)) || null;
+}
+// "Ends on 31 Oct 2026" for a window of `minutes` that starts now, in the
+// browser's own calendar. It states no time zone, because it claims none. A
+// window shorter than a day also says the clock time. The window really starts
+// when a DBA grants it, so the dialog words this as "if a DBA grants it now".
+const QH_END_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function qhAskWindowEnds(minutes, now) {
+  const m = Number(minutes);
+  if (!Number.isFinite(m) || m <= 0) return '';
+  const start = now == null ? Date.now() : new Date(now).getTime();
+  if (isNaN(start)) return '';
+  const end = new Date(start + m * 60000);
+  const day = end.getDate() + ' ' + QH_END_MONTHS[end.getMonth()] + ' ' + end.getFullYear();
+  if (m >= 1440) return 'Ends on ' + day;
+  const p = (n) => String(n).padStart(2, '0');
+  return 'Ends on ' + day + ' at ' + p(end.getHours()) + ':' + p(end.getMinutes());
+}
+
 // ---------- Engine-aware helpers (multi-engine; added v4) ----------
 // Whether RO queries auto-approve on this target. Server sends `autoApproveRO`
 // per connection AND per database (db overrides conn); read it, never hardcode.
@@ -1145,6 +1254,199 @@ function qhTabBindsOnClick(tab) {
   return !!tab && !tab.kind && tab.unpicked === true && !String(tab.sql || '').trim();
 }
 
+// ---------- How a request ended, who waits, and where a bell item leads (2026-10-24, batch 2) ----------
+// The server sends `outcome` on GET /history, GET /queries/{id} and the queue:
+// withdrawn, expired, denied, changes_requested, or null. Its `status` shows the
+// first four as `rejected`, so the status alone cannot tell a refusal from a
+// withdrawal. Each outcome has its own word and its own tone here. A `rejected`
+// status with no outcome (an older server) reads as Denied, as it did before.
+const QH_OUTCOMES = {
+  denied:            { label: 'Denied',            cls: 'st-rejected',  title: 'A DBA denied this request.' },
+  withdrawn:         { label: 'Withdrawn',         cls: 'st-withdrawn', title: 'Withdrawn before it ran.' },
+  expired:           { label: 'Expired',           cls: 'st-expired',   title: 'Nobody decided in time, so the request closed.' },
+  changes_requested: { label: 'Changes requested', cls: 'st-changes',   title: 'A DBA asked for changes. Edit the SQL and submit it again.' },
+};
+function qhOutcomeInfo(outcome) { return QH_OUTCOMES[outcome] || null; }
+
+// The generic server line for a request that was cancelled before it ran. The
+// server writes it for a withdrawal AND for an expiry, so the UI words each one
+// from `outcome`. Any other line is left as it came.
+const QH_GENERIC_CANCELLED = /^Cancelled\.?$/i;
+function qhOutcomeMessages(messages, outcome) {
+  if (!Array.isArray(messages) || (outcome !== 'withdrawn' && outcome !== 'expired')) return messages;
+  const text = outcome === 'withdrawn' ? 'Withdrawn by you.' : 'Expired: nobody decided in time.';
+  return messages.map(m => (m && QH_GENERIC_CANCELLED.test(String(m.text == null ? '' : m.text).trim())) ? { ...m, text } : m);
+}
+
+// The DBA's own line for a denial or a request for changes, from the Messages of
+// the tab ("Rejected by <name>: <note>"). A withdrawal and an expiry have no DBA
+// note, and an older server may send no line: the answer is then null.
+function qhEndNote(messages, outcome) {
+  if (outcome !== 'denied' && outcome !== 'changes_requested') return null;
+  const hit = (Array.isArray(messages) ? messages : []).filter(m => m && m.kind === 'err' && /^Rejected by /.test(String(m.text || ''))).pop();
+  return hit ? String(hit.text) : null;
+}
+
+// One history row, as the sidebar and the Welcome page hold it. ONE mapper: the
+// first load and the refresh each carried a copy, and a field added to one was
+// missing from the other.
+function qhHistoryRow(h) {
+  const ago = (typeof window !== 'undefined' && typeof window.qhTimeAgo === 'function') ? window.qhTimeAgo(h.createdAt) : '';
+  return {
+    id: h.id, sql: h.sql, conn: h.connectionId, db: h.databaseId, tier: h.tier,
+    status: h.status, rows: h.rowCount, when: ago, approver: h.approver,
+    awaitingDba: !!h.awaitingDba, ranOn: h.ranOn || null,
+    state: h.connectionState || null,
+    outcome: h.outcome || null, createdAt: h.createdAt || null,
+  };
+}
+
+// Which group a history row belongs to, for the filter chips. Pending requests
+// have no chip of their own: they sit in the Waiting group above the list.
+function qhHistoryKind(h) {
+  if (!h) return 'other';
+  if (QH_OUTCOMES[h.outcome]) return h.outcome;
+  if (h.status === 'rejected') return 'denied';
+  if (h.status === 'pending') return 'pending';
+  return 'approved';
+}
+const QH_HIST_FILTERS = [['all', 'All'], ['approved', 'Approved'], ['denied', 'Denied'], ['expired', 'Expired'], ['withdrawn', 'Withdrawn']];
+function qhHistoryFilter(rows, key) {
+  const list = rows || [];
+  if (!key || key === 'all') return list;
+  return list.filter(h => qhHistoryKind(h) === key);
+}
+
+// The start of a statement on one line, for a row title.
+function qhSqlStart(sql, n) {
+  const one = String(sql == null ? '' : sql).replace(/\s+/g, ' ').trim();
+  const max = n || 40;
+  return one.length > max ? one.slice(0, max - 1).trimEnd() + '…' : one;
+}
+
+// The requests of this person that wait for a DBA. Open tabs come first, because
+// a tab knows the moment of the submit before the history list is read again.
+// A pending history row that no tab holds comes next (a reload, another browser).
+// Longest wait first. A request with no known time goes last.
+function qhPendingRequests(tabs, history) {
+  const out = [], seen = new Set();
+  (tabs || []).forEach(t => {
+    if (!t || t.kind || t.status !== 'pending' || !t.qid) return;
+    const id = String(t.qid);
+    if (seen.has(id)) return;
+    seen.add(id);
+    out.push({ id, tabId: t.id, title: t.name || qhSqlStart(t.sql), sql: t.sql || '', conn: t.conn, db: t.db, since: t.submittedAt || null });
+  });
+  (history || []).forEach(h => {
+    if (!h || h.status !== 'pending') return;
+    const id = String(h.id);
+    if (seen.has(id)) return;
+    seen.add(id);
+    out.push({ id, tabId: null, title: qhSqlStart(h.sql), sql: h.sql || '', conn: h.conn, db: h.db, since: h.createdAt || null });
+  });
+  const when = (p) => { const n = p.since ? new Date(p.since).getTime() : NaN; return isNaN(n) ? Infinity : n; };
+  return out.sort((a, b) => when(a) - when(b));
+}
+
+// A new tab with the SAME SQL and target as a request that a DBA sent back. Only
+// client state: nothing is sent. The tab is picked (not `unpicked`), so a click in
+// the tree never rebinds it.
+function qhResubmitOver(src) {
+  return { name: (src && src.name) || qhSqlStart(src && src.sql, 24), sql: (src && src.sql) || '', conn: src && src.conn, db: src && src.db, unpicked: false };
+}
+
+// What a bell item opens. The server builds the notification id from the subject
+// (q<request id>-dec, q<request id>-sched, er<access request id>, kill<audit id>),
+// and the payload has no other field for it, so the id is the only source. Nothing
+// to open gives null, and the click then only marks the item read. The admin
+// screens open for an admin only: a developer cannot open them.
+function qhNotifSubject(n, opts) {
+  const id = String((n && n.id) == null ? '' : n.id);
+  const o = opts || {};
+  const m = /^q(.+)-(dec|sched)$/.exec(id);
+  if (m) return { kind: 'request', id: m[1] };
+  if (/^kill\d+$/.test(id)) return o.isAdmin ? { kind: 'admin', section: 'kill' } : null;
+  if (/^er\d+$/.test(id)) return o.isAdmin ? { kind: 'admin', section: 'conns' } : null;
+  return null;
+}
+
+// Browser notifications (the bell menu switch). Off until the person turns it on.
+// The permission prompt belongs to that one click and never to page load.
+const QH_BROWSER_NOTIF_KEY = 'qh.notif.browser.v1';
+const QH_RAISED_KEY = 'qh.notif.raised.v1';
+function qhBrowserNotifStored() { try { return localStorage.getItem(QH_BROWSER_NOTIF_KEY) === '1'; } catch (e) { return false; } }
+function qhBrowserNotifStore(on) { try { localStorage.setItem(QH_BROWSER_NOTIF_KEY, on ? '1' : '0'); } catch (e) {} }
+function qhRaisedLoad() {
+  try { const r = JSON.parse(localStorage.getItem(QH_RAISED_KEY)); if (Array.isArray(r)) return new Set(r.map(String)); } catch (e) {}
+  return new Set();
+}
+function qhRaisedSave(set) {
+  try { localStorage.setItem(QH_RAISED_KEY, JSON.stringify([...set].slice(-200))); } catch (e) {}
+}
+// 'unsupported' | 'granted' | 'denied' | 'default'.
+function qhBrowserNotifPermission(Ctor) {
+  if (!Ctor) return 'unsupported';
+  return Ctor.permission || 'default';
+}
+// The answer of the switch's click: a Promise of { on, why }. `why` is a sentence
+// for the person when the answer is off. It asks the browser only while the
+// permission is undecided, and only because the caller is a click.
+function qhBrowserNotifEnable(Ctor) {
+  const perm = qhBrowserNotifPermission(Ctor);
+  if (perm === 'unsupported') return Promise.resolve({ on: false, why: 'This browser has no notifications.' });
+  if (perm === 'denied') return Promise.resolve({ on: false, why: 'The browser blocks notifications for this site. Change it in the site settings.' });
+  if (perm === 'granted') return Promise.resolve({ on: true, why: '' });
+  return Promise.resolve(Ctor.requestPermission()).then(
+    r => (r === 'granted' ? { on: true, why: '' } : { on: false, why: 'The browser did not give permission.' }),
+    () => ({ on: false, why: 'The browser did not give permission.' }));
+}
+// Raise a notification for each NEW unread item, once. `raised` is a Set of item
+// ids and it is changed in place: an item is added whether or not it is shown, so
+// an old item never fires later. Only an item from the last ten minutes is shown,
+// and at most three per call, so a reload cannot flood the desktop. Returns the
+// items that were shown.
+function qhRaiseBrowserNotifs(items, ctx) {
+  const c = ctx || {};
+  const Ctor = c.Ctor, raised = c.raised || new Set();
+  const granted = !!Ctor && qhBrowserNotifPermission(Ctor) === 'granted';
+  const now = c.now == null ? Date.now() : c.now;
+  const shown = [];
+  (items || []).forEach(n => {
+    if (!n || n.id == null) return;
+    const id = String(n.id);
+    if (raised.has(id) || (c.isUnread && !c.isUnread(n))) return;
+    raised.add(id);
+    if (!granted || shown.length >= 3) return;
+    const at = n.createdAt ? new Date(n.createdAt).getTime() : NaN;
+    if (isNaN(at) || now - at > 10 * 60000) return;
+    try {
+      const note = new Ctor(n.title || 'QueryHub', { body: n.body || '', tag: id });
+      if (note) note.onclick = () => { try { window.focus(); } catch (e) {} };
+      shown.push(n);
+    } catch (e) {}
+  });
+  return shown;
+}
+
+// What a person's connections do to a statement: which databases run at once and
+// which go to a DBA first (2026-10-24). The rule is the one the submit uses:
+// read-only on a database that auto-approves runs at once. Read/write, schema
+// changes, and read-only without auto-approve wait for a DBA. A super-admin runs
+// everything at once, so the page says that in one line. A disabled connection is
+// left out. The API sends no grant end date, so none is shown.
+function qhAccessSummary(conns, isSuper) {
+  if (isSuper) return { everything: true, once: [], dba: [] };
+  const once = [], dba = [];
+  (conns || []).forEach(c => {
+    if (!c || c.disabled) return;
+    (c.databases || []).forEach(d => {
+      const row = { key: c.id + '/' + d.id, server: c.name || c.id, db: d.name || d.id, tier: d.tier || 'RO' };
+      (row.tier === 'RO' && qhAutoApproveRO(c, d) ? once : dba).push(row);
+    });
+  });
+  return { everything: false, once, dba };
+}
+
 Object.assign(window, {
   qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhConfirmReasons, qhSplitReasons,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
@@ -1153,10 +1455,16 @@ Object.assign(window, {
   qhConnState, QH_CONN_STATE,
   qhColumnsFor, qhIndexesFor, qhViewsFor, qhSplitRelations, qhAgo, qhEndState, qhPersonName, qhIsHandleName, QH_ROLE_PREFIXES,
   qhRiskHints, qhExplainPlan, qhQuoteIdent, qhQuoteList, qhApproxRows, qhFmtRows,
-  QH_SHOW_ENV_TAGS,
-  QH_ENGINES, qhEngineId, qhEngine, qhEngineBadge, qhEngineLogo, qhQuoteIdentFor, qhServerRoles,
+  QH_SHOW_ENV_TAGS, qhEnvChipWord,
+  qhThemeFor, qhApplyTheme, QH_TIER_PROSE, qhTierProse, QH_TIER_BLURB, qhTierLockWhy,
+  qhAskWaiting, qhAskAt, qhAskWindowLabel, qhAskFor, qhAskWindowEnds,
+  QH_ENGINES, qhEngineId, qhEngine, qhEngineReadOnly, qhEngineBadge, qhEngineLogo, qhQuoteIdentFor, qhServerRoles,
   QH_PROVIDERS, QH_TAG_KEYS, QH_TAG_RESERVED, qhProviderLogo, qhProvider, qhTags, qhHosting, qhHostingFull, qhEndpointHover,
   qhCustomTags, qhParseTagQuery, qhTagMatch, qhProviderGroups, qhTagVocab, qhTokenSuggest, qhApplyToken,
   qhAutoApproveRO, qhSchemaFor, qhSchemaOf, qhQualify, qhSelectSql,
   QH_PICK_HINT, qhTabBindsOnClick,
+  QH_OUTCOMES, qhOutcomeInfo, qhOutcomeMessages, qhHistoryRow, qhHistoryKind, QH_HIST_FILTERS, qhHistoryFilter, qhSqlStart,
+  qhPendingRequests, qhResubmitOver, qhNotifSubject, qhEndNote,
+  qhBrowserNotifStored, qhBrowserNotifStore, qhRaisedLoad, qhRaisedSave, qhBrowserNotifPermission, qhBrowserNotifEnable, qhRaiseBrowserNotifs,
+  qhAccessSummary,
 });

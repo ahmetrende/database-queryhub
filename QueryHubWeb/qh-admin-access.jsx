@@ -23,10 +23,10 @@ const AIcon = {
   alert: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7.5v5.5M12 16.5v.01" /></svg>,
 };
 
-function TierSelect({ value, onChange }) {
+function TierSelect({ value, onChange, tiers }) {
   return (
     <div className="qh-seg qh-seg-sm">
-      {QH_TIERS.map(v => <button key={v} className={'qh-seg-opt' + (value === v ? ' is-active' : '')} onClick={() => onChange(v)}><TierBadge tier={v} sm /></button>)}
+      {(tiers || QH_TIERS).map(v => <button key={v} className={'qh-seg-opt' + (value === v ? ' is-active' : '')} onClick={() => onChange(v)}><TierBadge tier={v} sm /></button>)}
     </div>
   );
 }
@@ -52,16 +52,61 @@ function expForm(iso) { return iso ? { ttl: 'date', expDate: expDay(new Date(iso
 // `base` (2026-10-23): the moment a quick pick counts from. Extend counts from
 // the grant's current end, so "+7 days" never moves an end that is three
 // weeks away to one that is one week away. It is never earlier than now.
-function expIso(f, base) {
+// `maxDays` (2026-10-24): the limit of an auto-approve rule. A picked day ends
+// at 23:59:59, and a quick pick counts from now, so either can land after the
+// limit by hours. The end is clamped to the limit minus one minute, which the
+// server (it takes five minutes of clock room) then accepts.
+function expIso(f, base, maxDays) {
   if (!f.ttl || f.ttl === 'none') return null;
-  if (f.ttl === 'date') return f.expDate ? new Date(f.expDate + 'T23:59:59').toISOString() : null;
-  const from = Math.max(Date.now(), base ? new Date(base).getTime() || 0 : 0);
-  return qhIso(new Date(from + 1000 * 86400 * parseInt(f.ttl)));
+  let at;
+  if (f.ttl === 'date') at = f.expDate ? new Date(f.expDate + 'T23:59:59').getTime() : null;
+  else at = Math.max(Date.now(), base ? new Date(base).getTime() || 0 : 0) + 1000 * 86400 * parseInt(f.ttl);
+  if (at === null) return null;
+  if (maxDays) at = Math.min(at, endCeiling(maxDays));
+  return qhIso(new Date(at));
 }
 // The server refuses a past date with 400 rather than accepting it inert — a
 // grant that is dead on arrival still reads to the admin as "access given". The
 // input carries `min` and Save refuses, so that 400 is a backstop, not the UI.
 function expBad(f) { return f.ttl === 'date' && (!f.expDate || f.expDate < expToday()); }
+
+// ---- An auto-approve rule needs an end (2026-10-24) ----
+// The server refuses a rule with no end and one that ends later than
+// `auto_approve_max_days` from now (HTTP 400 `end_required`, `end_too_far`). So
+// every form that makes a rule picks an end, hides "No expiry", and stops at
+// that limit. `maxDays` is `st.autoMaxDays` (GET /admin/auto-grants `maxDays`).
+const AUTO_MAX_DEFAULT = 90;
+// A rule is RO or RW. The server refuses DDL with `tier_not_allowed`.
+const AUTO_TIER_SAY = 'An auto-approve rule can be RO or RW. Schema changes always need a DBA.';
+function autoMaxOf(st) { const n = Math.floor(Number(st && st.autoMaxDays)); return n >= 1 ? n : AUTO_MAX_DEFAULT; }
+// +7, +30 and +90 days where they fit, and the limit itself.
+function endPicks(maxDays) { return [7, 30, 90].filter(d => d < maxDays).concat([maxDays]); }
+// The form starts on 30 days, or on the limit when that is shorter.
+function endDefault(maxDays) { return String(Math.min(30, maxDays)); }
+function endCeiling(maxDays) { return Date.now() + maxDays * 86400000 - 60000; }
+// The last day the date field offers.
+function expMaxDay(maxDays) { return expDay(new Date(Date.now() + maxDays * 86400000)); }
+// A rule's current end can be kept only while it is within the limit.
+function endKeepable(iso, maxDays) { return !!iso && new Date(iso).getTime() <= Date.now() + maxDays * 86400000; }
+// Why this end cannot be saved as a rule, or null. The reason goes on the Save
+// button's title.
+function autoEndWhy(f, maxDays) {
+  const tooFar = 'The end can be at most ' + maxDays + ' days from now.';
+  if (!f.ttl || f.ttl === 'none') return 'Pick an end date. An auto-approve rule cannot be open-ended.';
+  if (f.ttl === 'keep') return endKeepable(f.expiresAt, maxDays) ? null : 'Pick a new end date. ' + tooFar;
+  if (f.ttl === 'date') {
+    if (!f.expDate) return 'Pick an end date.';
+    if (f.expDate < expToday()) return 'Pick a date from today on.';
+    return f.expDate > expMaxDay(maxDays) ? tooFar : null;
+  }
+  const d = parseInt(f.ttl, 10);
+  return d >= 1 && d <= maxDays ? null : tooFar;
+}
+// The state of an end picker as a form opens on a rule: keep a good end, else
+// start on the default.
+function autoEndInit(iso, maxDays) {
+  return { ttl: endKeepable(iso, maxDays) ? 'keep' : endDefault(maxDays), expDate: '' };
+}
 // Expiry only ever REMOVES: an expired user grant does not fall back to the
 // team's, because a user row is usually written to NARROW what a team allows
 // and falling through would widen access on the day it was meant to end.
@@ -69,15 +114,30 @@ function ExpiryNote({ f, subjectType }) {
   if (!f.ttl || f.ttl === 'none') return null;
   return <div className="qh-exp-note">Access stops on this date{subjectType === 'user' ? ' — it does not use a team grant instead' : ''}. Re-granting later replaces the date, or clears it.</div>;
 }
-function ExpiryPick({ f, onChange }) {
+// `required` (2026-10-24): the end cannot be empty, so there is no "No expiry",
+// the picks stop at `maxDays` and the date field has a `max`. `keepLabel` adds
+// "Keep the current end" for an edit. Without `required` nothing changes.
+// `defaultDays` (2026-10-24) adds that many days to the quick picks when they
+// are not there yet, so a form can open on the server's default (an
+// access-request approval: `access_grant_default_days`).
+function qhPicksWith(picks, extra) {
+  const n = Math.floor(Number(extra));
+  return n >= 1 && picks.indexOf(n) < 0 ? picks.concat([n]).sort((a, b) => a - b) : picks;
+}
+function ExpiryPick({ f, onChange, required, maxDays, keepLabel, defaultDays }) {
+  const ttl = f.ttl || 'none';
+  const picks = required ? endPicks(maxDays) : qhPicksWith([7, 30, 90], defaultDays);
+  const bad = required ? !!autoEndWhy(f, maxDays) : expBad(f);
   return (
     <div className="qh-exppick">
-      <select className="qh-select" value={f.ttl || 'none'} onChange={e => onChange({ ttl: e.target.value, expDate: e.target.value === 'date' ? (f.expDate || expToday()) : f.expDate })}>
-        <option value="none">No expiry</option>
-        <option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option>
+      <select className="qh-select" aria-label={required ? 'End date, required' : undefined} value={ttl} onChange={e => onChange({ ttl: e.target.value, expDate: e.target.value === 'date' ? (f.expDate || expToday()) : f.expDate })}>
+        {keepLabel && <option value="keep">{keepLabel}</option>}
+        {!required && <option value="none">No expiry</option>}
+        {required && ttl === 'none' && <option value="none" disabled>Pick an end…</option>}
+        {picks.map(d => <option key={d} value={String(d)}>{d} days</option>)}
         <option value="date">Until a date…</option>
       </select>
-      {f.ttl === 'date' && <input type="date" className={'qh-input qh-input-sm qh-input-date' + (expBad(f) ? ' is-err' : '')} min={expToday()} value={f.expDate} onChange={e => onChange({ ttl: 'date', expDate: e.target.value })} />}
+      {ttl === 'date' && <input type="date" className={'qh-input qh-input-sm qh-input-date' + (bad ? ' is-err' : '')} min={expToday()} max={required ? expMaxDay(maxDays) : undefined} value={f.expDate} onChange={e => onChange({ ttl: 'date', expDate: e.target.value })} />}
     </div>
   );
 }
@@ -699,9 +759,15 @@ function GrantForm({ init, actor, st, people, teams, onDone }) {
   // control that lies.
   const autoTiers = ['RO', 'RW'].filter(t => AUTO_TIER_RANK[t] <= AUTO_TIER_RANK[f.tier]);
   const autoTier = autoTiers.indexOf(f.autoTier) >= 0 ? f.autoTier : autoTiers[autoTiers.length - 1];
+  // A waiver takes the grant's end, and a rule needs one (2026-10-24): with the
+  // box ticked the end is required and stops at the limit. A grant alone keeps
+  // its optional end.
+  const maxDays = autoMaxOf(st);
+  const autoOn = !editing && !!f.autoApprove;
+  const autoWhy = autoOn ? autoEndWhy(f, maxDays) : null;
   const save = () => {
-    if (!f.subject.trim() || expBad(f)) return;
-    const payload = { subjectType: f.subjectType, subject: f.subject.trim(), connectionId: f.connectionId, databases: f.databases, tier: f.tier, expiresAt: expIso(f),
+    if (!f.subject.trim() || expBad(f) || autoWhy) return;
+    const payload = { subjectType: f.subjectType, subject: f.subject.trim(), connectionId: f.connectionId, databases: f.databases, tier: f.tier, expiresAt: expIso(f, null, autoOn ? maxDays : undefined),
       ...(!editing && f.autoApprove ? { autoApprove: true, autoApproveTier: autoTier } : {}) };
     if (editing) st.updateGrant({ ...payload, id: f.id }, actor); else Promise.resolve(st.addGrant(payload, actor)).catch(() => {});
     onDone();
@@ -719,11 +785,11 @@ function GrantForm({ init, actor, st, people, teams, onDone }) {
       </select>
       <TierSelect value={f.tier} onChange={v => setF({ ...f, tier: v })} />
       <DbMultiPick conns={conns} connectionId={f.connectionId} databases={f.databases} onChange={dbs => setF({ ...f, databases: dbs })} />
-      <ExpiryPick f={f} onChange={p => setF({ ...f, ...p })} />
+      <ExpiryPick f={f} onChange={p => setF({ ...f, ...p })} required={autoOn} maxDays={maxDays} />
       {!editing && (
         <>
           <label className="qh-percopy-tm">
-            <input type="checkbox" checked={!!f.autoApprove} onChange={e => setF({ ...f, autoApprove: e.target.checked })} />
+            <input type="checkbox" checked={!!f.autoApprove} onChange={e => setF({ ...f, autoApprove: e.target.checked, ...(e.target.checked && (!f.ttl || f.ttl === 'none') ? { ttl: endDefault(maxDays), expDate: '' } : {}) })} />
             Auto-approve <span className="qh-percopy-warn">skips DBA review</span>
           </label>
           {f.autoApprove && (
@@ -733,9 +799,10 @@ function GrantForm({ init, actor, st, people, teams, onDone }) {
           )}
         </>
       )}
-      <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={save}>{editing ? 'Save' : 'Add'}</button>
+      <span title={autoWhy || undefined}><button className="qh-btn qh-btn-primary qh-btn-sm" onClick={save} disabled={!!autoWhy}>{editing ? 'Save' : 'Add'}</button></span>
       {editing && <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone}>Cancel</button>}
       <ExpiryNote f={f} subjectType={f.subjectType} />
+      {autoWhy && <div className="qh-exp-note">An auto-approve rule needs an end date, at most {maxDays} days from now. {autoWhy}</div>}
       {!editing && f.autoApprove && <div className="qh-exp-note">{f.subjectType === 'team' ? 'Every member’s' : 'Their'} {autoTier === 'RO' ? 'reads' : 'reads and writes'} on this grant run without a DBA{f.ttl && f.ttl !== 'none' ? ', until the grant ends' : ', with no end date'}. Where an auto-approve they already hold covers it, none is added.</div>}
     </div>
   );
@@ -814,6 +881,9 @@ function FleetGrantsBlock({ st, canWrite }) {
   const [busyId, setBusyId] = useAcc(null);
   const [rowErr, setRowErr] = useAcc(null);
   const blankF = { subjectType: 'user', subject: '', autoApprove: false, reason: '', ttl: 'none', expDate: '' };
+  // Reads that skip review are an auto-approve rule: they need an end, at most
+  // `maxDays` from now (2026-10-24). The grant alone keeps its optional end.
+  const maxDays = autoMaxOf(st);
   const [f, setF] = useAcc(blankF);
   const [formErr, setFormErr] = useAcc(null);
   const [saving, setSaving] = useAcc(false);
@@ -823,11 +893,12 @@ function FleetGrantsBlock({ st, canWrite }) {
   React.useEffect(() => { load(); }, []);
   const set = (p) => { setF(x => ({ ...x, ...p })); setFormErr(null); };
   const why = !f.subject.trim() ? 'Pick a ' + (f.subjectType === 'team' ? 'team' : 'person') + '.'
-    : !f.reason.trim() ? 'Write a reason.' : expBad(f) ? 'Pick a date from today on.' : null;
+    : !f.reason.trim() ? 'Write a reason.' : expBad(f) ? 'Pick a date from today on.'
+    : f.autoApprove ? autoEndWhy(f, maxDays) : null;
   const save = () => {
     if (why || saving) return;
     setSaving(true);
-    st.addFleetGrant({ subjectType: f.subjectType, subject: f.subject.trim(), tier: 'ro', autoApprove: !!f.autoApprove, reason: f.reason.trim(), expiresAt: expIso(f) })
+    st.addFleetGrant({ subjectType: f.subjectType, subject: f.subject.trim(), tier: 'ro', autoApprove: !!f.autoApprove, reason: f.reason.trim(), expiresAt: expIso(f, null, f.autoApprove ? maxDays : undefined) })
       .then(() => { setSaving(false); setAdding(false); setF(blankF); load(); })
       .catch(e => { setSaving(false); setFormErr((e && e.message) || 'QueryHub could not add the grant.'); });
   };
@@ -856,9 +927,9 @@ function FleetGrantsBlock({ st, canWrite }) {
               ? <PersonPick people={people} value={f.subject} onChange={v => set({ subject: v })} resolve={st.resolvePerson} autoFocus />
               : <select className="qh-select" value={f.subject} onChange={e => set({ subject: e.target.value })}><option value="">Select team…</option>{teams.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}</select>}
             <TierBadge tier="RO" sm />
-            <ExpiryPick f={f} onChange={p => set(p)} />
+            <ExpiryPick f={f} onChange={p => set(p)} required={!!f.autoApprove} maxDays={maxDays} />
             <label className="qh-percopy-tm">
-              <input type="checkbox" checked={!!f.autoApprove} onChange={e => set({ autoApprove: e.target.checked })} />
+              <input type="checkbox" checked={!!f.autoApprove} onChange={e => set({ autoApprove: e.target.checked, ...(e.target.checked && (!f.ttl || f.ttl === 'none') ? { ttl: endDefault(maxDays), expDate: '' } : {}) })} />
               Reads skip review
             </label>
           </div>
@@ -913,6 +984,7 @@ function GrantsView({ st, user }) {
   const [adding, setAdding] = useAcc(false);
   const [editId, setEditId] = useAcc(null);
   const [extendId, setExtendId] = useAcc(null);
+  const [revokeId, setRevokeId] = useAcc(null);   // the grant whose inline confirm is open
   const c0 = (st.connections || [])[0] || { id: '' };
   const blank = { subjectType: 'user', subject: '', connectionId: c0.id, databases: ['*'], tier: 'RO' };
 
@@ -998,8 +1070,15 @@ function GrantsView({ st, user }) {
                   <td className="qh-muted"><span className="qh-grantby" title={grantByLabel(g)}>{grantByLabel(g)}</span>{g.grantedByName && g.grantedByName !== g.grantedBy && <div className="qh-muted qh-mono" style={{ fontSize: 11.5 }}>{g.grantedBy}</div>}</td>
                   <td className="qh-tright"><div className="qh-rowacts">
                     {canExtend && <button className="qh-rowbtn" aria-expanded={extendId === g.id} onClick={() => { setExtendId(x => x === g.id ? null : g.id); setEditId(null); setAdding(false); }}>Extend</button>}
-                    <button className="qh-rowbtn" onClick={() => { setEditId(g.id); setExtendId(null); setAdding(false); }}><AIcon.edit />Edit</button><button className="qh-revoke" onClick={() => st.revokeGrant(g.id, actor)}>Revoke</button></div></td>
+                    <button className="qh-rowbtn" onClick={() => { setEditId(g.id); setExtendId(null); setAdding(false); }}><AIcon.edit />Edit</button><button className="qh-revoke" aria-expanded={revokeId === g.id} onClick={() => { setRevokeId(x => x === g.id ? null : g.id); setExtendId(null); }}>Revoke</button></div></td>
                 </tr>
+                {revokeId === g.id && <tr className="qh-editrow qh-revokerow"><td colSpan={6}>
+                  <div className="qh-revokeconfirm" role="alert">
+                    <span className="qh-revokeconfirm-say">{grantName(g, st.people)} loses {g.tier} on {qhGrantTarget(g)}. A query that is running finishes.</span>
+                    <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setRevokeId(null)}>Keep access</button>
+                    <button className="qh-btn qh-btn-danger qh-btn-sm" onClick={() => { setRevokeId(null); st.revokeGrant(g.id, actor); }}>Revoke access</button>
+                  </div>
+                </td></tr>}
                 {extendId === g.id && canExtend && <tr className="qh-editrow"><td colSpan={6}><ExtendForm g={g} st={st} people={st.people} onDone={() => setExtendId(null)} /></td></tr>}
                 </React.Fragment>
               );
@@ -1058,7 +1137,11 @@ function autoToggleSay(a, on) {
   return 'Resume this auto-approve rule? The queries of ' + who + ' on ' + where + ' then run without a DBA again, up to ' + a.tier + (a.expiresAt ? ', until ' + qhFmt(a.expiresAt) : ', with no end date') + '.';
 }
 function AutoForm({ init, actor, st, onDone }) {
-  const [f, setF] = useAcc(init);
+  // An edit writes a NEW rule, and a rule needs an end, at most `maxDays` from
+  // now (2026-10-24). A good end can be kept. A rule with no end, or one past
+  // the limit, starts on the default and must be given an end to be saved.
+  const maxDays = autoMaxOf(st);
+  const [f, setF] = useAcc(() => ({ ...init, ...autoEndInit(init.expiresAt, maxDays) }));
   const conns = st.connections || [];
   const editing = !!f.id;
   const conn = conns.find(c => c.id === f.connectionId);
@@ -1067,14 +1150,13 @@ function AutoForm({ init, actor, st, onDone }) {
   // fell through to manual review with an active grant sitting in the table.
   // "All databases" is an option here now, and NULL is what it sends.
   const allDbs = autoAllDbs(f.databaseId);
+  const endWhy = autoEndWhy(f, maxDays);
+  const tierWhy = f.tier === 'DDL' ? AUTO_TIER_SAY : null;
+  const why = !f.user.trim() ? 'Pick a person.' : tierWhy || endWhy;
+  const keepable = endKeepable(f.expiresAt, maxDays);
   const save = () => {
-    if (!f.user.trim()) return;
-    // "No expiry" is a choice beside the durations, not two fields left blank
-    // (§17): an open-ended auto-grant has always been accepted by the API, and
-    // the only way to ask for one was to leave the form empty and hope.
-    const expiresAt = f.ttl === 'keep' ? f.expiresAt
-      : f.ttl === 'none' ? null
-      : qhIso(new Date(Date.now() + 1000 * 86400 * parseInt(f.ttl)));
+    if (why) return;
+    const expiresAt = f.ttl === 'keep' ? f.expiresAt : expIso(f, null, maxDays);
     // No per-grant row cap: caps live in the row-limit overrides, keyed to a
     // PERSON, because how much someone can pull is a property of them and their
     // machine rather than of one authorization row. `maxRows` came out of this
@@ -1098,20 +1180,19 @@ function AutoForm({ init, actor, st, onDone }) {
       <PersonPick people={st.people} value={f.user}
                   onChange={v => setF({ ...f, user: v })}
                   resolve={st.resolvePerson} autoFocus={!editing} />
-      <TierSelect value={f.tier} onChange={v => setF({ ...f, tier: v })} />
+      <TierSelect value={f.tier} tiers={['RO', 'RW']} onChange={v => setF({ ...f, tier: v })} />
       <select className="qh-select" value={f.connectionId} onChange={e => setF({ ...f, connectionId: e.target.value, databaseId: null })}>{conns.map(c => <option key={c.id} value={c.id}>{connLabel(c)}</option>)}</select>
       <select className="qh-select" value={allDbs ? '' : f.databaseId} onChange={e => setF({ ...f, databaseId: e.target.value || null })}>
         <option value="">All databases</option>
         {(conn ? conn.databases : []).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
       </select>
-      <select className="qh-select" value={f.ttl} onChange={e => setF({ ...f, ttl: e.target.value })}>
-        {editing && <option value="keep">Keep ({expiryLabel(f.expiresAt).text})</option>}
-        <option value="none">No expiry</option>
-        <option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option>
-      </select>
-      <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={save}>{editing ? 'Save' : 'Add'}</button>
+      <ExpiryPick f={f} onChange={p => setF({ ...f, ...p })} required maxDays={maxDays}
+                  keepLabel={editing && keepable ? 'Keep (' + expiryLabel(f.expiresAt).text + ')' : null} />
+      <span title={why || undefined}><button className="qh-btn qh-btn-primary qh-btn-sm" onClick={save} disabled={!!why}>{editing ? 'Save' : 'Add'}</button></span>
       {editing && <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone}>Cancel</button>}
-      {(f.ttl === 'none' || (f.ttl === 'keep' && !f.expiresAt)) && <div className="qh-exp-note">No end date — this subject stays auto-approved on that target until someone revokes the grant.</div>}
+      {editing && !init.expiresAt && <div className="qh-exp-note">This rule has no end. Pick one to save.</div>}
+      {editing && init.expiresAt && !keepable && <div className="qh-exp-note">This rule ends later than the limit of {maxDays} days. Pick an end within it to save.</div>}
+      {tierWhy && <div className="qh-exp-note">{tierWhy} Pick RO or RW to save.</div>}
     </div>
   );
 }
@@ -1302,7 +1383,6 @@ function autoSubjects(rows, people) {
 // are granted that server. The connections, the databases and the tier ceiling
 // all come from the subject's effective access, the answer the Effective access
 // screen draws; the server refuses anything else, by name.
-const AUTO_WINDOWS = [['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['none', 'No end date']];
 function autoHigher(a, b) { return !a ? b : !b ? a : (AUTO_TIER_RANK[b] > AUTO_TIER_RANK[a] ? b : a); }
 function autoLower(a, b) { return !a ? b : !b ? a : (AUTO_TIER_RANK[b] < AUTO_TIER_RANK[a] ? b : a); }
 // { [connectionId]: { top: 'RW', all: bool, dbs: { [database]: 'RO' } } }, from
@@ -1335,7 +1415,10 @@ function AutoBulkForm({ st, actor, lockType, lockUser, lockName, existing, onDon
   const [who, setWho] = useAcc(lockUser || '');
   const [rows, setRows] = useAcc([]);
   const [tier, setTier] = useAcc('RO');
-  const [ttl, setTtl] = useAcc('30');
+  // The end is required, and stops at the limit (2026-10-24). It starts on 30
+  // days, or on the limit when that is shorter.
+  const maxDays = autoMaxOf(st);
+  const [end, setEnd] = useAcc(() => ({ ttl: endDefault(maxDays), expDate: '' }));
   const [reason, setReason] = useAcc('');
   const [busy, setBusy] = useAcc(false);
   const [err, setErr] = useAcc(null);
@@ -1392,15 +1475,16 @@ function AutoBulkForm({ st, actor, lockType, lockUser, lockName, existing, onDon
   const keyOf = (r) => r.connectionId + '/' + (r.databaseId || '*');
   const dupeIn = (r, i) => rows.findIndex(x => keyOf(x) === keyOf(r)) !== i;
   const heldBy = (r) => held.find(a => a.connectionId === r.connectionId && (a.databaseId || '*') === (r.databaseId || '*'));
-  const bad = !subj || !reach || !rows.length || rows.some((r, i) => dupeIn(r, i) || heldBy(r)) || busy;
-  const win = (AUTO_WINDOWS.find(w => w[0] === ttl) || [])[1];
+  const endWhy = autoEndWhy(end, maxDays);
+  const bad = !subj || !reach || !rows.length || rows.some((r, i) => dupeIn(r, i) || heldBy(r)) || !!endWhy || busy;
+  const endIso = endWhy ? null : expIso(end, null, maxDays);
   const whoName = lockName || (type === 'team' ? who : qhPersonName(((st.people || []).find(p => p.handle === who || p.id === who) || {}).name || who));
   const pickType = (v) => { setType(v); setWho(''); setErr(null); setRefused({}); };
   const save = () => {
     if (bad) return;
     setBusy(true); setErr(null); setRefused({});
     st.addAutoGrants({ subjectType: type, subject: subj, targets: rows, tier: useTier, reason: reason.trim() || null,
-      expiresAt: ttl === 'none' ? null : qhIso(new Date(Date.now() + 86400000 * parseInt(ttl, 10))) })
+      expiresAt: expIso(end, null, maxDays) })
       .then(() => { setBusy(false); onDone(); })
       .catch(e => {
         const list = (e && e.refused) || [], m = {};
@@ -1463,7 +1547,7 @@ function AutoBulkForm({ st, actor, lockType, lockUser, lockName, existing, onDon
         <div className="qh-autobulk-opt"><span className="qh-rolefield-l">Up to</span>
           <div className="qh-seg qh-seg-sm">{tiers.map(t => <button key={t} className={'qh-seg-opt' + (useTier === t ? ' is-active' : '')} onClick={() => { setTier(t); setErr(null); }}>{t}</button>)}</div></div>
         <div className="qh-autobulk-opt"><span className="qh-rolefield-l">For</span>
-          <select className="qh-select" value={ttl} onChange={e => { setTtl(e.target.value); setErr(null); }}>{AUTO_WINDOWS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></div>
+          <ExpiryPick f={end} required maxDays={maxDays} onChange={p => { setEnd(x => ({ ...x, ...p })); setErr(null); }} /></div>
         <span className="qh-autobulk-note">One tier and one window for every target here.{reach && rows.length && cap === 'RO' ? ' Only RO: on at least one of these they can only read.' : ''}</span>
       </div>
       <input className="qh-input qh-input-sm qh-autobulk-why" placeholder="Why (optional, kept on every row)" value={reason} onChange={e => setReason(e.target.value)} />
@@ -1471,9 +1555,9 @@ function AutoBulkForm({ st, actor, lockType, lockUser, lockName, existing, onDon
       <div className="qh-autobulk-foot">
         <span className="qh-autobulk-say">{!who
           ? 'Pick the person or team first — then as many targets as they need.'
-          : <>{type === 'team' ? <>Every member of <b>{whoName}</b>: their</> : <><b>{whoName}</b>'s</>} {does} on {rows.length} target{rows.length === 1 ? '' : 's'} will run without a DBA{ttl === 'none' ? <>, <b className="qh-eff-sum-warn">with no end date</b></> : <> for {win}</>}.</>}</span>
+          : <>{type === 'team' ? <>Every member of <b>{whoName}</b>: their</> : <><b>{whoName}</b>'s</>} {does} on {rows.length} target{rows.length === 1 ? '' : 's'} will run without a DBA{endIso ? <> until <b>{qhFmt(endIso)}</b></> : null}.</>}</span>
         <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone} disabled={busy}>Cancel</button>
-        <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={bad} onClick={save}>{busy ? 'Creating…' : 'Create ' + rows.length + ' exemption' + (rows.length === 1 ? '' : 's')}</button>
+        <span title={endWhy || undefined}><button className="qh-btn qh-btn-primary qh-btn-sm" disabled={bad} onClick={save}>{busy ? 'Creating…' : 'Create ' + rows.length + ' exemption' + (rows.length === 1 ? '' : 's')}</button></span>
       </div>
     </div>
   );
@@ -1495,14 +1579,25 @@ function scopeEndSay(f) {
   if (f.ttl === 'keep') return null;
   return 'After this date the scope stops. The admin can no longer approve requests through it. An admin with an end date cannot use the kill switch or the connection list.';
 }
+// The connection names in a scope's comma string. '*' and blanks are no name.
+function scopeConnList(s) {
+  return String(s || '').split(',').map(x => x.trim()).filter(x => x && x !== '*');
+}
 function ScopeForm({ init, actor, st, onDone }) {
   const [f, setF] = useAcc(() => ({ ...init, ttl: init.expiresAt ? 'keep' : 'none', expDate: '' }));
   const editing = !!f.id;
   const toggleTier = (t) => setF(s => ({ ...s, canApprove: s.canApprove.includes(t) ? s.canApprove.filter(x => x !== t) : [...s.canApprove, t] }));
-  const why = !f.admin.trim() ? 'Type the admin handle.' : (f.role !== 'super' && expBad(f)) ? 'Pick a date from today on.' : null;
+  // The connections are chips (2026-10-24). The state keeps the comma string
+  // of before, so the payload is the same: names, or ['*'] for every one.
+  const picked = scopeConnList(f.connections);
+  const allConns = (st && (st.connectionRows || st.connections)) || [];
+  const takenByName = {};
+  allConns.forEach(c => { if (picked.indexOf(c.name) >= 0) takenByName[c.id] = 'Already added'; });
+  const setPicked = (list) => setF(s => ({ ...s, connections: list.length ? list.join(', ') : '*' }));
+  const why = !f.admin.trim() ? 'Pick the admin first.' : (f.role !== 'super' && expBad(f)) ? 'Pick a date from today on.' : null;
   const save = () => {
     if (why) return;
-    const connections = (f.connections.trim() === '*' || !f.connections.trim()) ? ['*'] : f.connections.split(',').map(s => s.trim()).filter(Boolean);
+    const connections = picked.length ? picked : ['*'];
     const end = f.role === 'super' ? { expiresAt: null } : f.ttl === 'keep' ? {} : { expiresAt: expIso(f) };
     st.saveScope({ ...(editing ? { id: f.id } : {}), admin: f.admin.trim(), role: f.role, canApprove: f.canApprove, connections, ...end }, actor);
     onDone();
@@ -1510,10 +1605,17 @@ function ScopeForm({ init, actor, st, onDone }) {
   const say = scopeEndSay(f);
   return (
     <div className="qh-addrow wrap">
-      <input className="qh-input qh-input-sm" placeholder="admin handle" value={f.admin} onChange={e => setF({ ...f, admin: e.target.value })} />
+      <div className="qh-scopeform-who"><PersonPick people={st && st.people} value={f.admin} onChange={v => setF(s => ({ ...s, admin: v }))} resolve={st && st.resolvePerson} /></div>
       <div className="qh-seg qh-seg-sm">{['dba', 'super'].map(v => <button key={v} className={'qh-seg-opt' + (f.role === v ? ' is-active' : '')} onClick={() => setF({ ...f, role: v })}>{v === 'super' ? 'super-admin' : 'DBA'}</button>)}</div>
       <div className="qh-tierchecks">{QH_TIERS.map(t => <button key={t} className={'qh-tierchk' + (f.canApprove.includes(t) ? ' is-on' : '')} onClick={() => toggleTier(t)}><TierBadge tier={t} sm />{f.canApprove.includes(t) ? '✓' : ''}</button>)}</div>
-      <input className="qh-input qh-input-sm" placeholder="connections (* or comma list)" value={f.connections} onChange={e => setF({ ...f, connections: e.target.value })} />
+      <div className="qh-scopeform-conns">
+        <div className="qh-scopeform-chips">
+          {picked.length === 0 && <span className="qh-scopeform-all">Every connection</span>}
+          {picked.map(n => <span key={n} className="qh-scopeform-chip">{n}<button type="button" className="qh-scopeform-x" aria-label={'Remove ' + n} onClick={() => setPicked(picked.filter(x => x !== n))}>×</button></span>)}
+        </div>
+        <ConnPick conns={allConns} taken={takenByName} inputId="scope-conn"
+          onPick={cid => { const c = allConns.find(x => x.id === cid); if (c && picked.indexOf(c.name) < 0) setPicked(picked.concat([c.name])); }} />
+      </div>
       {f.role !== 'super' && <><span className="qh-rolefield-l">Ends</span>
         <EndPick f={f} onChange={p => setF(x => ({ ...x, ...p }))} none keep={!!init.expiresAt} label="Scope end date" /></>}
       <span title={why || undefined}><button className="qh-btn qh-btn-primary qh-btn-sm" disabled={!!why} onClick={save}>{editing ? 'Save' : 'Add'}</button></span>
@@ -1789,8 +1891,8 @@ const QH_CONN_ENGINES = [
 const QH_RO_ENGINES = ['clickhouse', 'athena'];
 const QH_CRED_TIERS = [
   ['ro', 'Read-only', 'Used for every SELECT, the schema snapshot and the connection test.'],
-  ['rw', 'Read/Write', 'Optional. Without it, QueryHub refuses write queries on this target.'],
-  ['ddl', 'Schema (DDL)', 'Optional. Without it, QueryHub refuses schema changes on this target.'],
+  ['rw', 'Read/write', 'Optional. Without it, QueryHub refuses write queries on this target.'],
+  ['ddl', 'Schema change', 'Optional. Without it, QueryHub refuses schema changes on this target.'],
 ];
 
 // One tier's username + password. The password box is always empty on open,
@@ -2258,6 +2360,15 @@ function connHealthState(h) {
     title: 'The last check could not connect.' + (h.failingSince ? ' Failing since ' + new Date(h.failingSince).toLocaleString() + '.' : '') + at };
 }
 const connFailing = (c) => !c.deleted && !!c.health && !c.health.ok;
+// The red banner above the connection table (2026-10-24). It names up to
+// three failing connections and the oldest "failing since" among them.
+function connBannerSay(failing) {
+  const n = failing.length;
+  if (!n) return null;
+  const since = failing.map(c => c.health && c.health.failingSince).filter(Boolean).sort()[0];
+  const names = failing.slice(0, 3).map(c => c.name).join(', ') + (n > 3 ? ' and ' + (n - 3) + ' more' : '');
+  return (n === 1 ? '1 connection is failing.' : n + ' connections are failing.') + (since ? ' Failing since ' + qhAgo(since) + '.' : '') + ' ' + names + '.';
+}
 // The chip, and the error behind a disclosure. The server scrubs the error.
 // It renders as text, never as HTML.
 function ConnHealth({ h }) {
@@ -2286,6 +2397,18 @@ function connRotation(c) {
 function ConnectionsView({ st, user, readOnly }) {
   const act = 'dba.' + ((user && user.name) || '').split(' ')[0].toLowerCase();
   const pending = st.endpointReqs.filter(e => e.status === 'submitted');
+  // "Access ends" on each pending request (2026-10-24). It opens on the
+  // server's default (`st.accessDefaultDays`, from GET /admin/endpoint-requests)
+  // and sends nothing while untouched, so the server applies the same default.
+  // "No expiry" sends noEnd: the admin can still give a grant with no end.
+  const accessDays = Math.floor(Number(st.accessDefaultDays)) >= 1 ? Math.floor(Number(st.accessDefaultDays)) : 90;
+  const [ends, setEnds] = React.useState({});
+  const endOf = (id) => ends[id] || { ttl: String(accessDays), expDate: '' };
+  const provision = (er) => {
+    const f = ends[er.id];
+    const end = !f ? null : f.ttl === 'none' ? { noEnd: true } : { expiresAt: expIso(f) };
+    st.decideEndpoint(er.id, true, act, end);
+  };
   const [refreshing, setRefreshing] = React.useState(null);
   const [q, setQ] = React.useState('');
   const [envF, setEnvF] = React.useState('all');
@@ -2355,6 +2478,18 @@ function ConnectionsView({ st, user, readOnly }) {
       .catch(e => st.pushToast && st.pushToast((e && e.message) || ("Couldn't test " + c.name + '.')))
       .finally(() => setTesting(null));
   };
+  // "Test again" on the banner: the stored-credential test for every failing
+  // connection, one after the other. The same route as the row button.
+  const [retrying, setRetrying] = React.useState(false);
+  const retryFailing = () => {
+    const list = allConns.filter(connFailing);
+    if (retrying || !list.length) return;
+    setRetrying(true);
+    list.reduce((p, c) => p.then(() => qhApi.adminTestConnection(c.id)
+      .then(r => setTested(t => ({ ...t, [c.id]: r })))
+      .catch(() => {})), Promise.resolve())
+      .then(() => { setRetrying(false); st.pushToast && st.pushToast('Tested ' + list.length + ' failing connection' + (list.length === 1 ? '' : 's') + '. The result shows on each row.'); });
+  };
   const toggleEnabled = (c) => {
     // Disabling pulls a target out of every picker mid-flight, so it asks
     // first; enabling is the reversible direction and does not.
@@ -2376,6 +2511,13 @@ function ConnectionsView({ st, user, readOnly }) {
       {!readOnly && form && form.mode === 'owners' && <ConnOwnersForm st={st} conn={form.conn} onDone={() => setForm(null)} />}
       {!readOnly && form && form.mode !== 'owners' && <ConnectionForm st={st} init={form.conn} mode={form.mode} canSuper={!!(user && user.role === 'super')} onDone={() => setForm(null)} />}
 
+      {allConns.some(connFailing) && (
+        <div className="qh-connbanner" role="alert">
+          <span className="qh-connbanner-say">{connBannerSay(allConns.filter(connFailing))}</span>
+          <button className="qh-btn qh-btn-ghost qh-btn-sm qh-connbanner-btn" disabled={retrying} onClick={retryFailing}>{retrying ? 'Testing…' : 'Test again'}</button>
+        </div>
+      )}
+
       {pending.length > 0 && <div className="qh-section-label">Pending requests · {pending.length}</div>}
       <div className="qh-erlist">
         {pending.map(er => (
@@ -2387,10 +2529,12 @@ function ConnectionsView({ st, user, readOnly }) {
                   on the endpoint-request row), so it is read as a name and the
                   handle stays on `title`. */}
               <div className="qh-ercard-by">requested by <b title={qhIsHandleName(er.requester) ? er.requester : null}>{qhPersonName(er.requester)}</b></div>
+              {!readOnly && <label className="qh-ercard-end"><span>Access ends</span>
+                <ExpiryPick f={endOf(er.id)} defaultDays={accessDays} onChange={p => setEnds(m => ({ ...m, [er.id]: { ...endOf(er.id), ...p } }))} /></label>}
             </div>
             {!readOnly && <div className="qh-ercard-actions">
-              <button className="qh-btn qh-btn-danger qh-btn-sm" onClick={() => st.decideEndpoint(er.id, false, act)}>Reject</button>
-              <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => st.decideEndpoint(er.id, true, act)}>Provision</button>
+              <button className="qh-btn qh-btn-danger qh-btn-sm" onClick={() => st.decideEndpoint(er.id, false, act)}>Deny</button>
+              <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={expBad(endOf(er.id))} title={expBad(endOf(er.id)) ? 'Pick an end date from today on.' : null} onClick={() => provision(er)}>Provision</button>
             </div>}
           </div>
         ))}
@@ -2462,7 +2606,7 @@ function ConnectionsView({ st, user, readOnly }) {
         const credWord = bulk ? { ro: 'read-only', rw: 'read/write', ddl: 'DDL' }[bulk.tier] : '';
         const had = bulk ? selRows.filter(c => { const k = (c.credentials || {})[bulk.tier]; return k && k.configured && !k.placeholder; }).length : 0;
         const nSel = selRows.length;
-        const nCols = readOnly ? 5 : 6;
+        const nCols = readOnly ? 6 : 7;
         return (
           <>
           {sel.length > 0 && (
@@ -2493,7 +2637,7 @@ function ConnectionsView({ st, user, readOnly }) {
                   <div className="qh-connbulk-cred-row">
                     {bulk.enable
                       ? <span className="qh-rolefield-l">Read-only credential</span>
-                      : <div className="qh-seg qh-seg-sm">{[['ro', 'Read-only'], ['rw', 'Read/Write'], ['ddl', 'DDL']].map(([t, l]) => <button key={t} className={'qh-seg-opt' + (bulk.tier === t ? ' is-active' : '')} onClick={() => setBulk({ ...bulk, tier: t })}>{l}</button>)}</div>}
+                      : <div className="qh-seg qh-seg-sm">{[['ro', 'Read-only'], ['rw', 'Read/write'], ['ddl', 'Schema change']].map(([t, l]) => <button key={t} className={'qh-seg-opt' + (bulk.tier === t ? ' is-active' : '')} onClick={() => setBulk({ ...bulk, tier: t })}>{l}</button>)}</div>}
                     <input className="qh-input qh-input-sm" placeholder="username" autoComplete="off" autoFocus value={bulk.username} onChange={e => setBulk({ ...bulk, username: e.target.value })} />
                     <input className="qh-input qh-input-sm" type="password" placeholder="password" autoComplete="new-password" value={bulk.password} onChange={e => setBulk({ ...bulk, password: e.target.value })} />
                   </div>
@@ -2510,7 +2654,7 @@ function ConnectionsView({ st, user, readOnly }) {
           )}
           <div className="qh-tablewrap">
           <table className="qh-atable qh-conntable qh-acttable">
-            <thead><tr>{!readOnly && <th className="qh-conn-selcol"><ConnCheck on={allOn} some={someOn} label={allOn ? 'Deselect every connection shown' : 'Select all ' + vis.length + ' connections shown'} onChange={() => { setRefused(null); setSel(xs => allOn ? xs.filter(id => vis.indexOf(id) < 0) : [...new Set(xs.concat(vis))]); }} /></th>}{th('name', 'Connection')}{th('engine', 'Engine · hosting')}{th('enabled', 'Status')}{th('dbs', 'Databases')}<th className="qh-tright">Actions</th></tr></thead>
+            <thead><tr>{!readOnly && <th className="qh-conn-selcol"><ConnCheck on={allOn} some={someOn} label={allOn ? 'Deselect every connection shown' : 'Select all ' + vis.length + ' connections shown'} onChange={() => { setRefused(null); setSel(xs => allOn ? xs.filter(id => vis.indexOf(id) < 0) : [...new Set(xs.concat(vis))]); }} /></th>}{th('name', 'Connection')}{th('engine', 'Engine')}{th('hosting', 'Provider')}{th('enabled', 'Status')}{th('dbs', 'Databases')}<th className="qh-tright">Actions</th></tr></thead>
             <tbody>
               {rows.map(c => {
                 const probe = tested[c.id];
@@ -2522,8 +2666,8 @@ function ConnectionsView({ st, user, readOnly }) {
                       the name: seven columns plus pinned actions were ~400px wider
                       than the panel, so Databases sat under the actions. The
                       account and custom tags stay on the hover. */}
-                  <td className="qh-conn-engtd">
-                    <div className="qh-conn-eng">{c.engine}</div>
+                  <td className="qh-conn-engtd"><div className="qh-conn-eng">{c.engine}</div></td>
+                  <td className="qh-conn-provtd">
                     {qhProvider(c)
                       ? <div className="qh-conn-namecell qh-hostcell" title={qhHostingFull(c)}><img className="qh-prov-logo" src={qhProviderLogo(qhTags(c).provider)} alt="" draggable={false} />{qhHosting(c)}</div>
                       : <span className="qh-expiry is-soon" title="No provider tag — nothing here says where this server runs.">untagged</span>}
@@ -2572,8 +2716,8 @@ function ConnectionsView({ st, user, readOnly }) {
                 <tr key={c.id} className="is-deleted">
                   {!readOnly && <td className="qh-conn-selcol" />}
                   <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b></div></td>
-                  <td className="qh-conn-engtd">
-                    <div className="qh-conn-eng">{c.engine}</div>
+                  <td className="qh-conn-engtd"><div className="qh-conn-eng">{c.engine}</div></td>
+                  <td className="qh-conn-provtd">
                     {qhProvider(c) && <div className="qh-conn-namecell qh-hostcell" title={qhHostingFull(c)}><img className="qh-prov-logo" src={qhProviderLogo(qhTags(c).provider)} alt="" draggable={false} />{qhHosting(c)}</div>}
                   </td>
                   <td>
@@ -2603,4 +2747,6 @@ function ConnectionsView({ st, user, readOnly }) {
 // segmented control would be a second grouping idiom on one page.
 // `QH_TIER_WORD` / `qhTierWord` too (2026-10-21): the Roles screen and the
 // access editor say Read, Write and Schema from one table.
-Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, connHealthState, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, EndChip, EndPick, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord });
+Object.assign(window, { GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, connHealthState, connBannerSay, scopeConnList, ScopeForm, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, EndChip, EndPick, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord,
+  // The end of an auto-approve rule (2026-10-24).
+  AUTO_TIER_SAY, autoMaxOf, endPicks, endDefault, endKeepable, expMaxDay, autoEndWhy, autoEndInit });

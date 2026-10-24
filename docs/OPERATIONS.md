@@ -46,6 +46,7 @@ you need.
 27. [Verifying target certificates](#27-verifying-target-certificates)
 28. [Splitting the metadata database roles](#28-splitting-the-metadata-database-roles)
 29. [Connection health](#29-connection-health)
+30. [A permanent auto-approve rule: manual SQL only](#30-a-permanent-auto-approve-rule-manual-sql-only)
 
 ---
 
@@ -127,7 +128,7 @@ UPDATE bot_config SET value = '<new>' WHERE key = '<key>';
 | `bot_display_icon` | `:query_hub:` | no | Emoji that the bot uses as its avatar in chat. Upload it to the workspace as a custom emoji. |
 | `bot_display_name` | `QueryHub` | no | Username shown in chat |
 | `csv_size_mb` | `10` | no | Max CSV file size. Result streaming aborts at this cap |
-| `kill_switch` | `off` | no | Master kill switch. `on` blocks new submissions and scheduler dispatch. Admins can still approve. Set `on` from the web or with `/sql kill on`, the switch goes on first, then it cancels the running read-only queries. Writes and DDL continue to run. Audit rows: `kill_switch_set`, then `kill_switch_cancelled` with the count. The SQL below cancels nothing |
+| `kill_switch` | `off` | no | Master kill switch. `on` blocks new submissions and scheduler dispatch. It also refuses every approval that runs a request (web, Slack, batch and CSV import). A deny and a request for changes still work. Set `on` from the web or with `/sql kill on`, the switch goes on first, then it cancels the running read-only queries. Writes and DDL continue to run. Audit rows: `kill_switch_set`, then `kill_switch_cancelled` with the count. The SQL below cancels nothing |
 | `kill_switch_message` | (banner text) | no | Ephemeral message shown when kill_switch is on |
 | `log_level` | `INFO` | yes | Python logging level |
 | `max_open_requests_per_user` | `5` | no | Cap on in-flight requests per non-admin Slack user (pending/approved/scheduled/executing) |
@@ -2278,4 +2279,94 @@ SELECT t.alias, h.failing_since, h.checked_at, h.error
   JOIN target_servers t ON t.id = h.target_server_id
  WHERE NOT h.ok
  ORDER BY h.failing_since;
+```
+
+## 30. A permanent auto-approve rule: manual SQL only
+
+Every auto-approve rule that the app creates has an end date. The end is at
+most `auto_approve_max_days` days from now (default 90, from 1 to 365). Set the
+limit on the System configuration screen, group "Grants & RO windows". The
+screen refuses 0, an empty value, a negative number and a number above 365.
+Code: `src/queryhub/auto_approve_limits.py`.
+
+A rule that the app creates is also RO or RW, never DDL. The refusal is HTTP
+400 with the code `tier_not_allowed`. A super-admin's own DDL needs no rule:
+QueryHub auto-approves it at submit.
+
+The limit applies to every path in the app that writes a rule:
+
+- the Auto-approve screen (`POST /api/admin/auto-grants` and `/bulk`)
+- the Grants screen, when you tick auto-approve (`POST /api/admin/grants`, for a
+  person and for a team)
+- the Every server block (`POST /api/admin/grants/fleet`, with auto-approve)
+- copy access with auto-approve: a copy gets the end of its source, never more
+  than the limit. A source with no end gets the limit. A DDL rule is not copied,
+  and the answer says how many (`autoApproveSkippedDdl`).
+- the approval of a window request: a window that is longer than the limit is
+  refused (`window_too_long`). You can reject it.
+- the Slack `/sql grant` modal: it has no end date field, so its auto-approve
+  box is refused. Grant the access in Slack. Add the auto-approve in the web app.
+
+The refusal is HTTP 400 with the code `end_required`, `end_too_far` or
+`end_in_past`.
+
+**The database does not enforce the limit.** There is no CHECK, no trigger and
+no NOT NULL on `auto_approve_grants.expires_at` or `access_grant.valid_until`.
+This is deliberate: a DBA can still make a rule that never ends, or a rule for
+DDL, with SQL. Every reader treats a row with `expires_at IS NULL` as permanent.
+Rules that existed before the limit keep their end dates, and a rule with no end
+stays as it is.
+
+To make a permanent rule, follow the DB change rule: show first, apply in a
+transaction, write an audit row, and paste the SQL in the chat.
+
+```sql
+-- 1. Dry run. Check who and what, and look for a rule that already covers it.
+SELECT id, slack_user_id, max_tier, target_server_id, database_name,
+       expires_at, enabled
+  FROM auto_approve_grants
+ WHERE slack_user_id = 'U0EXAMPLE001'
+   AND (expires_at IS NULL OR expires_at > NOW());
+
+-- 2. Apply, in one transaction, with the audit row.
+BEGIN;
+
+INSERT INTO auto_approve_grants
+    (slack_user_id, max_tier, target_server_id, database_name,
+     expires_at, reason, granted_by)
+VALUES
+    ('U0EXAMPLE001', 'ro',
+     (SELECT id FROM target_servers WHERE alias = 'prod-main'),
+     NULL,                      -- NULL database = every database
+     NULL,                      -- NULL = no end: the rule is permanent
+     'Why this person needs a rule with no end', 'U0EXAMPLE002')
+RETURNING id;
+
+INSERT INTO audit_log (actor_slack_id, actor_name, action, details)
+VALUES ('U0EXAMPLE002', 'Jordan Ray', 'auto_approve_granted',
+        jsonb_build_object('user', 'U0EXAMPLE001', 'tier', 'ro',
+                           'target', 'prod-main', 'database', NULL,
+                           'expires_at', NULL, 'permanent', TRUE,
+                           'by', 'manual SQL',
+                           'reason', 'Why this person needs a rule with no end'));
+
+-- 3. Check the two rows. Then COMMIT, or ROLLBACK to undo.
+COMMIT;
+```
+
+The auth-event trigger tells the person about the new rule. The migration-109
+mirror copies the row into `access_grant`. The Auto-approve screen lists the
+rule with "No expiry" and counts it in "with no end date". To edit it there,
+pick an end date: the form asks for one, as an edit writes a new rule. To remove
+it, press **Revoke**, or `DELETE` the row and write an audit row.
+
+A team's rule has no row in `auto_approve_grants`. Write it in `access_grant`
+with `auto_approve` TRUE, `valid_until` NULL and `merge_with_team` FALSE.
+
+```sql
+-- Rules with no end that exist now
+SELECT id, slack_user_id, max_tier, target_server_id, database_name, granted_at
+  FROM auto_approve_grants
+ WHERE expires_at IS NULL AND enabled
+ ORDER BY granted_at;
 ```

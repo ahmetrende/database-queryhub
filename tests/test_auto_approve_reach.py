@@ -61,6 +61,7 @@ def env(monkeypatch):
 
 def _bulk(**kw):
     kw.setdefault("subject", "U0EXAMPLE002")
+    kw.setdefault("expiresInMinutes", 60)          # a rule needs an end
     kw.setdefault("targets", [{"connectionId": "prod-ledger", "databaseId": "ledger"},
                               {"connectionId": "prod-orders"}])
     return ra.admin_bulk_create_auto_grants(ra.BulkAutoGrantIn(**kw), claims=CLAIMS)
@@ -128,7 +129,7 @@ def test_a_target_refused_twice_is_named_once(env, monkeypatch):
 
 def _single(**kw):
     body = {"user": "U0EXAMPLE002", "connectionId": "prod-ledger", "databaseId": "ledger",
-            "tier": "ro"}
+            "tier": "ro", "expiresInMinutes": 60}
     body.update(kw)
     return ra.admin_create_auto_grant(ra.AutoGrantIn(**body), claims=CLAIMS)
 

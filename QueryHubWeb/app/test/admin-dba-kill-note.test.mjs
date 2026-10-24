@@ -7,7 +7,7 @@
 //   * The kill switch history. GET /admin/kill/history lists the pauses. After a
 //     switch to ON, the screen says how many reads QueryHub cancelled, and that
 //     writes keep running. A missing count is said as unknown, never as zero.
-//   * The note on Reject and Request changes. It needs 15 trimmed characters.
+//   * The note on Deny and Request changes. It needs 15 trimmed characters.
 //     The send button is disabled until then and says why in its title. Chips
 //     add a sentence.
 import test from 'node:test';
@@ -159,7 +159,7 @@ function baseSt(extra) {
 test('a DBA sees locked rows with a title, and Connections opens read-only', opts, () => {
   const ui = mount(null, 'AdminPanel', () => ({ st: baseSt(), user: DBA, modeEntry: null }));
   const locked = ui.all('.qh-anav-item.is-locked');
-  assert.deepEqual(locked.map(b => b.textContent.trim()),
+  assert.deepEqual(locked.map(b => b.textContent.replace('Ask a super-admin', '').trim()),
     ['Grants', 'Auto-approve', 'Admin scopes', 'Teams', 'Masking exemptions', 'System configuration']);
   for (const b of locked) {
     assert.equal(b.getAttribute('aria-disabled'), 'true');
@@ -187,7 +187,7 @@ test('a super-admin sees no locked row, and Connections is not read-only', opts,
 
 test('an admin below the DBA level sees Effective access and Connections locked for DBAs', opts, () => {
   const ui = mount(null, 'AdminPanel', () => ({ st: baseSt(), user: ADMIN, modeEntry: null }));
-  const byName = Object.fromEntries(ui.all('.qh-anav-item.is-locked').map(b => [b.textContent.trim(), b.title]));
+  const byName = Object.fromEntries(ui.all('.qh-anav-item.is-locked').map(b => [b.textContent.replace('Ask a super-admin', '').trim(), b.title]));
   assert.equal(byName['Effective access'], 'DBA or super-admin only');
   assert.equal(byName['Connections'], 'DBA or super-admin only');
   assert.equal(byName['Roles'], undefined, 'Roles stays readable');
@@ -249,7 +249,7 @@ test('a DBA engages the switch: the count is said, and the history is read again
       toggleKill: (on, actor, msg) => { calls.push([on, msg]); return Promise.resolve({ enabled: true, cancelledCount: 3 }); },
     }), user: DBA, modeEntry: null }; });
   await ui.flush();
-  const btn = ui.all('.qh-kill-card button').find(b => b.textContent.trim() === 'Engage kill switch');
+  const btn = ui.all('.qh-kill-card button').find(b => b.textContent.trim() === 'Pause all queries');
   assert.ok(btn, 'a DBA has the button');
   ui.act(() => btn.dispatchEvent(new ui.win.MouseEvent('click', { bubbles: true })));
   await ui.flush();
@@ -276,7 +276,7 @@ function typeInto(ui, el, value) {
   ui.act(() => { setter.call(el, value); el.dispatchEvent(new ui.win.Event('input', { bubbles: true })); });
 }
 
-for (const [mode, open, send] of [['reject', 'Reject', 'Confirm reject'], ['changes', 'Request changes', 'Send request']]) {
+for (const [mode, open, send] of [['reject', 'Deny', 'Confirm deny'], ['changes', 'Request changes', 'Send request']]) {
   test(mode + ': the note needs 15 characters, and a chip fills it', opts, () => {
     const decided = [];
     const ui = mount(null, 'AdminPanel', () => ({ st: baseSt({ decide: (...a) => decided.push(a) }), user: DBA, modeEntry: null }));
@@ -303,7 +303,7 @@ for (const [mode, open, send] of [['reject', 'Reject', 'Confirm reject'], ['chan
 
 test('the chips are the four sentence-case labels, each with its text as a title', opts, () => {
   const ui = mount(null, 'AdminPanel', () => ({ st: baseSt(), user: DBA, modeEntry: null }));
-  const reject = ui.all('.qh-adetail-actions button').find(b => b.textContent.trim() === 'Reject');
+  const reject = ui.all('.qh-adetail-actions button').find(b => b.textContent.trim() === 'Deny');
   ui.act(() => reject.dispatchEvent(new ui.win.MouseEvent('click', { bubbles: true })));
   const chips = ui.all('.qh-notechip');
   assert.deepEqual(chips.map(c => c.textContent), ['Try on test first', 'Add a WHERE clause', 'Link an incident', 'Inside change freeze']);
@@ -313,13 +313,13 @@ test('the chips are the four sentence-case labels, each with its text as a title
 test('a note belongs to one request: another card closes it', opts, () => {
   const two = QUEUE.concat([{ ...QUEUE[0], id: 'q2', submitter: { name: 'Sam Lee', initials: 'SL', slackId: 'U0EXAMPLE003' } }]);
   const ui = mount(null, 'AdminPanel', () => ({ st: baseSt({ queue: two }), user: DBA, modeEntry: null }));
-  const reject = ui.all('.qh-adetail-actions button').find(b => b.textContent.trim() === 'Reject');
+  const reject = ui.all('.qh-adetail-actions button').find(b => b.textContent.trim() === 'Deny');
   ui.act(() => reject.dispatchEvent(new ui.win.MouseEvent('click', { bubbles: true })));
   typeInto(ui, ui.doc.querySelector('.qh-notebox textarea'), 'This note is for the first request.');
   const second = ui.all('.qh-qcard-main')[1];
   ui.act(() => second.dispatchEvent(new ui.win.MouseEvent('click', { bubbles: true })));
   assert.ok(!ui.doc.querySelector('.qh-notebox'));
-  ui.act(() => ui.all('.qh-adetail-actions button').find(b => b.textContent.trim() === 'Reject')
+  ui.act(() => ui.all('.qh-adetail-actions button').find(b => b.textContent.trim() === 'Deny')
     .dispatchEvent(new ui.win.MouseEvent('click', { bubbles: true })));
   assert.equal(ui.doc.querySelector('.qh-notebox textarea').value, '');
 });

@@ -39,9 +39,37 @@ function qhFocusables(root) {
     (el) => el.offsetParent !== null || el === document.activeElement);
 }
 
+// A field is a control the person types or picks in. When one of these took focus
+// by itself (an `autoFocus` input), the modal leaves it alone.
+const QH_FIELD_TAGS = ['INPUT', 'TEXTAREA', 'SELECT'];
+const QH_NON_TEXT_INPUT = ['checkbox', 'radio', 'button', 'submit', 'reset', 'hidden', 'file', 'image', 'range', 'color'];
+function qhIsFieldEl(el) {
+  if (!el || QH_FIELD_TAGS.indexOf(el.tagName) < 0) return false;
+  if (el.tagName === 'INPUT' && QH_NON_TEXT_INPUT.indexOf(String(el.type || '').toLowerCase()) >= 0) return false;
+  return !el.disabled;
+}
+// Where focus goes when a modal opens (2026-10-24). This used to be the first
+// focusable control, which in most dialogs is the close X, and in a confirm dialog
+// is Cancel: the browser drew its default heavy ring on a button nobody had
+// asked for, and it also took the focus away from an `autoFocus` field. Now:
+//   1. a field that already took focus itself stays focused;
+//   2. else the element marked `data-autofocus` (ConfirmRunModal marks Cancel, so
+//      Enter still cancels);
+//   3. else the first text field;
+//   4. else the panel itself, which carries tabindex -1 and draws no ring.
+const QH_TEXT_FIELD = 'input:not([disabled]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="hidden"]):not([type="file"]), textarea:not([disabled])';
+function qhInitialFocus(panel) {
+  const active = document.activeElement;
+  if (active && active !== panel && panel.contains(active) && qhIsFieldEl(active)) return active;
+  return panel.querySelector('[data-autofocus]:not([disabled])') || panel.querySelector(QH_TEXT_FIELD) || panel;
+}
+
 function QhModal({ onClose, children, panelClass, panelStyle, labelledBy }) {
   const panelRef = React.useRef(null);
-  const restoreRef = React.useRef(null);
+  // Read while rendering, before an `autoFocus` field inside the panel takes
+  // focus at commit: after that, document.activeElement is already in the panel,
+  // and closing would try to give focus back to a field that is gone.
+  const restoreRef = React.useRef(typeof document !== 'undefined' ? document.activeElement : null);
   const idRef = React.useRef(null);
   if (idRef.current === null) idRef.current = 'qh-modal-title-' + (++QH_MODAL_SEQ);
 
@@ -101,8 +129,9 @@ function QhModal({ onClose, children, panelClass, panelStyle, labelledBy }) {
     const panel = panelRef.current;
     if (!panel) return undefined;
     // Remember where focus came from so it can go back — closing a modal must
-    // not dump the caret at the top of the document.
-    restoreRef.current = document.activeElement;
+    // not dump the caret at the top of the document. The render-time read above
+    // is the real one; this only fills in when that read landed inside the panel.
+    if (!restoreRef.current || panel.contains(restoreRef.current)) restoreRef.current = document.activeElement;
 
     if (!labelledBy) {
       const title = panel.querySelector('.qh-modal-title');
@@ -112,8 +141,7 @@ function QhModal({ onClose, children, panelClass, panelStyle, labelledBy }) {
       }
     }
 
-    const first = qhFocusables(panel)[0];
-    (first || panel).focus();
+    qhInitialFocus(panel).focus();
 
     const onKey = (e) => {
       if (e.key === 'Escape') {
@@ -129,7 +157,9 @@ function QhModal({ onClose, children, panelClass, panelStyle, labelledBy }) {
       const lastEl = items[items.length - 1];
       // Wrap at both ends. Without this, Tab past the last control moves into
       // the browser chrome and then into the page behind the overlay.
-      if (e.shiftKey && (document.activeElement === firstEl || !panel.contains(document.activeElement))) {
+      // The panel itself can hold focus (no field to focus): Shift+Tab from it
+      // would leave the dialog, so it counts as standing on the first control.
+      if (e.shiftKey && (document.activeElement === firstEl || document.activeElement === panel || !panel.contains(document.activeElement))) {
         e.preventDefault();
         lastEl.focus();
       } else if (!e.shiftKey && document.activeElement === lastEl) {
@@ -214,4 +244,4 @@ function qhUseDismiss(open, onClose) {
   return ref;
 }
 
-Object.assign(window, { QhModal, qhFocusables, qhUseDismiss });
+Object.assign(window, { QhModal, qhFocusables, qhUseDismiss, qhInitialFocus, qhIsFieldEl });

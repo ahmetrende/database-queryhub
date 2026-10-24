@@ -37,6 +37,7 @@ _TYPES = {
     "security_override_ttl_enabled": "bool", "web_auth_slack_enabled": "bool",
     "web_cookie_secure": "bool",
     # int
+    "access_grant_default_days": "int", "auto_approve_max_days": "int",
     "batch_max_items": "int", "connection_health_interval_sec": "int",
     "connection_health_timeout_sec": "int", "cost_avoided_replicas": "int",
     "cost_dba_hourly_usd": "int", "cost_dba_minutes_per_request": "int",
@@ -80,7 +81,8 @@ _GROUPS = [
         "grant_idle_revoke_days", "grant_reaper_enabled",
         "security_override_ttl_enabled", "security_override_ttl_minutes",
         "ro_burst_threshold", "ro_burst_window_min", "ro_window_minutes",
-        "auto_approve_rw_requests",
+        "auto_approve_rw_requests", "auto_approve_max_days",
+        "access_grant_default_days",
         "fingerprint_cache_enabled", "fingerprint_cache_ttl_days"]),
     ("execution", "Query execution", [
         "query_timeout_sec", "execution_lease_sec", "max_rows",
@@ -176,11 +178,26 @@ _MUST_BE_POSITIVE = frozenset({
 })
 
 
+# Int keys with a closed range, as (lowest, highest). A value outside it is
+# refused, and a refused value is an error on the save, not a skipped key
+# (`apply_config`). `auto_approve_max_days` is the longest an auto-approve rule
+# made in the app may last. Blank, 0, a negative number and a number above 365
+# are all refused: the limit must not be switchable into "no limit" from here.
+# `access_grant_default_days` is how long a grant lasts when an access-request
+# approval gives it no other end. The same range, for the same reason: 0 or a
+# blank must not turn the default into "no end".
+_RANGES = {
+    "auto_approve_max_days": (1, 365),
+    "access_grant_default_days": (1, 365),
+}
+
+
 def _coerce(raw, kind: str, current: str | None, key: str | None = None) -> str | None:
     """Normalize an incoming value to what bot_config should store. Bools keep
     the key's existing true/false vocabulary so a `== 'true'` check elsewhere
     never breaks. Ints must parse and pass a range check (no negatives; the
-    safety-limit keys must be positive). Strings pass through (empty allowed)."""
+    safety-limit keys must be positive; a key in `_RANGES` must sit in its
+    range). Strings pass through (empty allowed)."""
     s = "" if raw is None else str(raw).strip()
     if kind == "bool":
         truthy = s.lower() in _TRUTHY
@@ -193,12 +210,14 @@ def _coerce(raw, kind: str, current: str | None, key: str | None = None) -> str 
     if kind == "int":
         try:
             n = int(float(s))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             return None
         if n < 0:
             return None  # config values are never negative
         if n == 0 and key in _MUST_BE_POSITIVE:
             return None  # 0 here would disable a safety limit
+        if key in _RANGES and not _RANGES[key][0] <= n <= _RANGES[key][1]:
+            return None
         return str(n)
     if kind == "tz":
         # Only a real IANA zone can be saved — a bad value would break the
@@ -278,6 +297,11 @@ def apply_config(changes: dict, cur) -> list[dict]:
             v = _coerce(raw, _kind(k, current[k]), current[k], key=k)
             if v is not None:
                 post[k] = v
+            elif k in _RANGES:
+                # A refused value of a ranged key is said, not skipped: a save
+                # that quietly keeps the old limit reads as a save that worked.
+                lo, hi = _RANGES[k]
+                raise ValueError(f"{k} must be a whole number from {lo} to {hi}.")
     problem = _lease_covers_timeout(post)
     if not problem and _TLS_KEYS & set(changes or {}):
         problem = _tls_settings_hold(post)

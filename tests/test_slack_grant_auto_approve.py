@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from queryhub import auto_approve_limits
 from queryhub.slack_app import admin_grant as ag
 from queryhub.slack_app import handlers
 
@@ -93,15 +94,29 @@ def _written(kw):
     return {"tier": "ro", "written": [{"id": "1", "database": None}], "skipped": []}
 
 
-def test_a_ticked_box_asks_every_grant_for_the_ro_waiver(slack):
+def test_a_ticked_box_is_refused_because_the_modal_has_no_end_date(slack):
+    """An auto-approve rule needs an end date (auto_approve_limits). This modal
+    has no end date field, so the box cannot make a rule from here. The refusal
+    sits beside the box, and nothing is written."""
     slack.outcome = _written
     _submit(slack)
-    assert slack.acks == [None]                              # the modal closed
-    assert [(c["grantee_id"], c["target_id"], c["auto_approve_tier"]) for c in slack.calls] == [
-        ("U0EXAMPLE002", 7, "ro"), ("U0EXAMPLE002", 8, "ro")]
-    assert slack.notified == [("U0EXAMPLE002", "ro")]
-    [(to, text)] = slack.dms
-    assert to == ADMIN and "Auto-approve up to *RO* is on for these." in text
+    assert slack.acks == [{"response_action": "errors",
+                           "errors": {ag.B_AUTO: auto_approve_limits.SLACK_NEEDS_END_MESSAGE}}]
+    assert slack.calls == [] and slack.dms == [] and slack.notified == []
+
+
+def test_a_waiver_tier_the_rule_cannot_have_is_said_before_the_end(slack, monkeypatch):
+    def refuse(tier, auto):
+        raise auto_approve_limits.TierRefused("tier_not_allowed", auto_approve_limits.TIER_MESSAGE)
+    monkeypatch.setattr(handlers.grants, "check_waiver_tier", refuse)
+    _submit(slack)
+    assert slack.acks[0]["errors"] == {ag.B_AUTO: auto_approve_limits.TIER_MESSAGE}
+    assert slack.calls == []
+
+
+def test_grants_without_a_waiver_are_not_affected(slack):
+    _submit(slack, auto=False)
+    assert slack.acks == [None] and len(slack.calls) == 2
 
 
 def test_an_unticked_box_asks_for_nothing(slack):
@@ -111,25 +126,21 @@ def test_an_unticked_box_asks_for_nothing(slack):
     assert "Auto-approve" not in slack.dms[0][1]
 
 
-def test_a_waiver_already_in_place_is_named_in_the_summary(slack):
-    slack.outcome = lambda kw: {"tier": "ro", "written": [], "skipped": [
+def test_a_waiver_already_in_place_is_named_in_the_summary():
+    """The admin's summary line, for a caller that can still write a waiver."""
+    text = handlers._grant_waiver_summary("ro", [{"tier": "ro", "written": [], "skipped": [
         {"database": None, "covered_by": "12", "by": "auto-approve #12 (up to RO on every "
-         "server they can reach, no expiry)", "reason": "already covered by ..."}]}
-    _submit(slack)
-    text = slack.dms[0][1]
+         "server they can reach, no expiry)", "reason": "already covered by ..."}]}])
     assert "already existed" in text and "auto-approve #12" in text
-    # Nothing new was written, so the grantee is not told it as news.
-    assert slack.notified == [("U0EXAMPLE002", None)]
 
 
-def test_a_mixed_outcome_counts_both(slack):
-    slack.outcome = lambda kw: (_written(kw) if kw["target_id"] == 7 else {
-        "tier": "ro", "written": [], "skipped": [{"database": None, "covered_by": "14",
-                                                   "by": "auto-approve #14 (...)",
-                                                   "reason": "already covered by ..."}]})
-    _submit(slack)
-    assert "1 written, 1 skipped" in slack.dms[0][1]
-    assert slack.notified == [("U0EXAMPLE002", "ro")]
+def test_a_mixed_outcome_counts_both():
+    text = handlers._grant_waiver_summary("ro", [
+        {"tier": "ro", "written": [{"id": "1", "database": None}], "skipped": []},
+        {"tier": "ro", "written": [], "skipped": [{"database": None, "covered_by": "14",
+                                                    "by": "auto-approve #14 (...)",
+                                                    "reason": "already covered by ..."}]}])
+    assert "1 written, 1 skipped" in text
 
 
 def test_the_target_change_rebuild_keeps_the_tick(monkeypatch):

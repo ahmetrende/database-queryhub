@@ -22,6 +22,14 @@ supplies the default shown below.
 Keys marked **(Slack)** only matter when the Slack surface is installed.
 They are inert in the vanilla (web-only) profile.
 
+## Auto-approve rules
+
+| Key | Default | What it does |
+|---|---|---|
+| `auto_approve_max_days` | `90` | The most days that an auto-approve rule made in the app can last. Every such rule needs an end date, and the end cannot be later than this many days from now. A whole number from 1 to 365. The System configuration screen refuses 0, an empty value, a negative number and a number above 365. A value outside that range, set with SQL, counts as 90. The limit applies to the Auto-approve screen, a grant that carries auto-approve, a grant on every server with auto-approve, copy access, and the approval of a window request. The database does not enforce it: a row that you insert with SQL with `expires_at` NULL is a rule with no end (OPERATIONS.md §30). Rules that exist keep their end dates. |
+
+An auto-approve rule made in the app is RO or RW, never DDL. This has no setting. A super-admin's own DDL needs no rule: QueryHub auto-approves it at submit.
+
 ## Web UI & authentication
 
 | Key | Default | What it does |
@@ -107,7 +115,7 @@ default instead of stopping the process.
 
 | Key | Default | What it does |
 |---|---|---|
-| `kill_switch` | `off` | Master stop: reject all new submissions. When an admin sets it `on` from the web or with `/sql kill on`, QueryHub sets the switch first, then cancels every running read-only query. Writes and DDL continue to run. The `kill_switch_set` audit row records the message. A `kill_switch_cancelled` row after it records `cancelledCount`. A direct SQL update cancels nothing. `GET /api/admin/kill/history` lists the pauses. |
+| `kill_switch` | `off` | Master stop: reject all new submissions. It also refuses every approval that runs a request: the web decision, the web batch approve, the web batch decision, the Slack Approve button, "Approve all remaining" and the approval of a CSV import. The web answers HTTP 409 with the code `kill_switch_on`, and Slack sends an ephemeral message. Both say "Kill switch is on. Resume queries first." A deny and a request for changes still work. The web app turns the approve buttons off. When an admin sets it `on` from the web or with `/sql kill on`, QueryHub sets the switch first, then cancels every running read-only query. Writes and DDL continue to run. The `kill_switch_set` audit row records the message. A `kill_switch_cancelled` row after it records `cancelledCount`. A direct SQL update cancels nothing. `GET /api/admin/kill/history` lists the pauses. |
 | `kill_switch_message` | _(notice)_ | Message shown while the kill switch is on. |
 | `query_timeout_sec` | `300` | Statement timeout for an executing query. |
 | `execution_lease_sec` | `900` | How long a claimed execution lease lasts before the app considers it stale. |
@@ -157,6 +165,7 @@ default instead of stopping the process.
 | `ro_window_minutes` | `60` | Length of a granted read-only auto-approve window. |
 | `auto_approve_rw_requests` | `off` | `on` = a person who holds RW on a database can ask for an auto-approve window that covers writes (`POST /api/auto-approve-requests` with `tier: "RW"`). Every window has an end time. A window for DDL is never possible. On a production connection (`targets.environment`: an alias without `test`, `stage` or `staging`), only a super-admin decides a RW window. `off` = QueryHub refuses a RW window request with 403, and an admin cannot approve a pending one. Migration 150. |
 | `auto_approve_feed_channel` | `""` | Slack channel that receives an auto-approve FYI feed. **(Slack)** |
+| `access_grant_default_days` | `90` | The days that a new grant lasts when an approver approves an access request and picks no other end. A whole number from 1 to 365. The System configuration screen refuses 0, an empty value, a negative number and a number above 365. A value outside that range, set with SQL, counts as 90. The web approval can send `expiresAt` for another end, or `noEnd: true` for a grant with no end. The Slack Approve button takes the default. `GET /api/admin/endpoint-requests` returns the value as `accessDefaultDays`. Grants that exist keep their end dates, and an approval that merges into an active grant of the same tier keeps that grant's end. A grant from the Grants screen is not affected. |
 | `access_model_v2` | `off` | Resolve authorization from the nine-table model instead of the team tables. Turn it on only when the access snapshot comparison is empty. |
 
 ## Batch, scheduling & CSV import

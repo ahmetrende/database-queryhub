@@ -53,6 +53,9 @@ function qhAdminCanOpen(id, user) {
   if (!need) return true;
   return need === 'super' ? lv === 'super' : lv === 'super' || lv === 'dba';
 }
+function qhFailingConnCount(rows) {
+  return (rows || []).filter(c => !c.deleted && !!c.health && !c.health.ok).length;
+}
 function qhAdminLockReason(id) {
   return QH_ADMIN_NEED[id] === 'dba' ? 'DBA or super-admin only' : 'Super-admin only';
 }
@@ -74,6 +77,9 @@ function AdminPanel({ st, user, modeEntry }) {
   // and nothing will move until someone runs it — so it counts on the badge.
   const pendCount = st.queue.length + (st.manualRuns || []).length;
   const erCount = st.endpointReqs.filter(e => e.status === 'submitted').length;
+  // Failing connections, from the health the state hook already loads. A
+  // deleted one does not count. Replica rows count too (`connectionRows`).
+  const failingConns = qhFailingConnCount(st.connectionRows || st.connections);
 
   const groups = [
     { label: 'Review', items: [
@@ -129,7 +135,8 @@ function AdminPanel({ st, user, modeEntry }) {
   const navFirst = React.useRef(true);
   React.useEffect(() => {
     const want = '#admin/' + curNav;
-    if (location.hash !== want) {
+    // `#admin/effective?person=<id>` is the same section with a person named.
+    if ((location.hash || '').split('?')[0] !== want) {
       // A child's effects run BEFORE its parent's, so on the crossing from the
       // editor this runs ahead of App's '#admin' push and the hash is still the
       // editor's. Replacing it then overwrote the editor's entry, and Back
@@ -160,7 +167,7 @@ function AdminPanel({ st, user, modeEntry }) {
               return (
                 <button key={id} type="button" className="qh-anav-item is-locked" aria-disabled="true" title={why}
                         aria-label={label + '. ' + why + '.'} onClick={(e) => e.preventDefault()}>
-                  <Icon /><span className="qh-anav-text">{label}</span>
+                  <Icon /><span className="qh-anav-text">{label}<span className="qh-anav-ask">Ask a super-admin</span></span>
                   <span className="qh-lock" aria-hidden="true">{QH_LOCK_ICON}</span>
                 </button>
               );
@@ -168,6 +175,7 @@ function AdminPanel({ st, user, modeEntry }) {
             return (
               <button key={id} className={'qh-anav-item' + (curNav === id ? ' is-active' : '')} onClick={() => setNav(id)}>
                 <Icon /><span className="qh-anav-text">{label}</span>
+                {id === 'conns' && failingConns > 0 && <span className="qh-anav-badge is-fail" title={failingConns + (failingConns === 1 ? ' connection is failing' : ' connections are failing')} aria-label={failingConns + ' failing'}>{failingConns}</span>}
                 {count != null && count > 0 && <span className="qh-anav-badge">{count}</span>}
               </button>
             );
@@ -319,6 +327,40 @@ function ManualRunsBlock({ st }) {
   );
 }
 
+// "Expires in 12 min" for a request that carries `expiresAt`. '' for null or
+// an unreadable time, so nothing shows when there is nothing to say.
+function qhExpiresIn(iso, now) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return '';
+  const s = Math.floor((t - (now == null ? Date.now() : now)) / 1000);
+  if (s <= 0) return 'Expired';
+  const m = Math.max(1, Math.round(s / 60));
+  if (m < 60) return 'Expires in ' + m + ' min';
+  const h = Math.floor(m / 60);
+  if (h < 48) return 'Expires in ' + h + ' h';
+  return 'Expires in ' + Math.floor(h / 24) + ' d';
+}
+const QH_HOLD_RANK = { RO: 1, RW: 2, DDL: 3 };
+// The highest live personal grant the requester holds on the request's
+// connection, as "RW on orders". null when the grants list shows none.
+function qhRequesterHolds(it, grants, now) {
+  const sub = it.submitter || {};
+  const ids = [sub.slackId, sub.name].filter(Boolean);
+  const t = now == null ? Date.now() : now;
+  let best = null;
+  (grants || []).forEach(g => {
+    if (g.subjectType !== 'user' || ids.indexOf(g.subject) < 0) return;
+    if (g.connectionId !== it.connectionId) return;
+    if (g.expiresAt && new Date(g.expiresAt).getTime() <= t) return;
+    const dbs = Array.isArray(g.databases) ? g.databases : ['*'];
+    if (dbs.indexOf('*') < 0 && dbs.indexOf(it.databaseId) < 0) return;
+    if (!best || (QH_HOLD_RANK[g.tier] || 0) > (QH_HOLD_RANK[best.tier] || 0)) best = g;
+  });
+  if (!best) return null;
+  return best.tier + ' on ' + (best.databases && best.databases.indexOf('*') < 0 ? it.databaseId : 'every database on ' + it.connectionId);
+}
+
 function ApprovalsView({ st, user, role }) {
   // Decisions are optimistic: st.decide() reloads the queue, but that round
   // trip lands AFTER this render. Without hiding the decided row the detail
@@ -346,6 +388,13 @@ function ApprovalsView({ st, user, role }) {
   const toggleCheck = (id) => setChecked(c => c.includes(id) ? c.filter(x => x !== id) : [...c, id]);
   const actor = user ? ('dba.' + user.name.split(' ')[0].toLowerCase()) : 'dba';
 
+  // While the kill switch is on, every action that approves and runs is off.
+  // The server refuses it too (409 kill_switch_on). Deny and Request changes
+  // stay open. The state is `st.killSwitch.enabled`; a state that is missing
+  // counts as off, and the server then has the last word.
+  const killOn = !!(st.killSwitch && st.killSwitch.enabled);
+  const killSay = killOn ? 'Kill switch is on. Resume queries first.' : null;
+
   // Select all / none. Tri-state, because "some selected" and "all selected"
   // must not look identical when the next click empties the selection.
   const allIds = items.map(x => x.id);
@@ -371,7 +420,7 @@ function ApprovalsView({ st, user, role }) {
     return out;
   }, [shown]);
 
-  // Reject and Request changes need a note of QH_NOTE_MIN characters. The first
+  // Deny and Request changes need a note of QH_NOTE_MIN characters. The first
   // click opens the note. The second click sends it. Until the note is long
   // enough, that button is disabled and its title says why.
   const noteChk = qhNoteCheck(note);
@@ -381,12 +430,56 @@ function ApprovalsView({ st, user, role }) {
   React.useEffect(() => { setNoteMode(null); setNote(''); }, [curId]);
   
   const act = (decision) => {
+    if (decision === 'approve' && killOn) return;
     if ((decision === 'reject' || decision === 'changes') && noteMode !== decision) { setNoteMode(decision); return; }
     st.decide(cur.id, decision, actor, note.trim() || undefined);
     setNote(''); setNoteMode(null);
     const rest = items.filter(x => x.id !== cur.id);
     setDecided(d => d.concat([cur.id]));   // hide it now, not when the reload lands
     setSel(rest[0] ? rest[0].id : null);
+  };
+
+  // The queue arrives after the first render on a slow load. Nothing is
+  // selected then, so the first request opens at once (2026-10-24). A decided
+  // last item leaves `items` empty, so this never re-selects it.
+  React.useEffect(() => {
+    if (sel == null && items.length > 0) setSel(items[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [st.queue]);
+
+  // Keyboard: J next, K previous, A approve and run, D deny, C request changes.
+  // Ignored while focus is in a field or a dialog is open. The handler is kept
+  // in a ref so the listener binds once and always sees the current card.
+  const order = groups.reduce((a, g) => a.concat(g.solo ? [g.solo] : g.rows), []);
+  const keyRef = React.useRef(null);
+  keyRef.current = (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+    const t = e.target || {};
+    const tag = String(t.tagName || '').toUpperCase();
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable) return;
+    if (document.querySelector('[role="dialog"], [aria-modal="true"], .qh-modal-back')) return;
+    const k = String(e.key || '').toLowerCase();
+    if (k === 'j' || k === 'k') {
+      if (!order.length) return;
+      const i = order.findIndex(x => cur && x.id === cur.id);
+      const next = k === 'j' ? Math.min(order.length - 1, i + 1) : Math.max(0, i < 0 ? 0 : i - 1);
+      setSel(order[next].id);
+      e.preventDefault();
+    } else if (cur && (k === 'a' || k === 'd' || k === 'c')) {
+      act(k === 'a' ? 'approve' : k === 'd' ? 'reject' : 'changes');
+      e.preventDefault();
+    }
+  };
+  React.useEffect(() => {
+    const on = (e) => keyRef.current && keyRef.current(e);
+    document.addEventListener('keydown', on);
+    return () => document.removeEventListener('keydown', on);
+  }, []);
+  const holds = cur ? qhRequesterHolds(cur, st.grants) : null;
+  const expiresIn = cur ? qhExpiresIn(cur.expiresAt) : '';
+  const viewAccess = () => {
+    const id = (cur.submitter && cur.submitter.slackId) || '';
+    if (id) location.hash = '#admin/effective?person=' + encodeURIComponent(id);
   };
 
   return (
@@ -417,7 +510,7 @@ function ApprovalsView({ st, user, role }) {
             <div className="qh-flex1" />
             {checked.length > 0 && (
               <div className="qh-batchbar-actions">
-                <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => { st.batchApprove(checked, actor); setChecked([]); }}>Approve {checked.length}</button>
+                <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={killOn} title={killSay} onClick={() => { st.batchApprove(checked, actor); setChecked([]); }}>Approve {checked.length}</button>
                 <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setChecked([])}>Clear</button>
               </div>
             )}
@@ -429,7 +522,7 @@ function ApprovalsView({ st, user, role }) {
               request that has already been decided, so the sentence naming
               where it went is also the way there. `#admin/audit` is picked up
               by the hashchange listener in AdminPanel — no prop drilling. */}
-          {items.length === 0 && <div className="qh-aempty"><AdminIcons.approvals /><div>Queue is clear.</div><div className="qh-aempty-hint">Nothing waiting. Approved and rejected queries move to the <a className="qh-aempty-link" href="#admin/audit">audit log</a>.</div></div>}
+          {items.length === 0 && <div className="qh-aempty"><AdminIcons.approvals /><div>Queue is clear.</div><div className="qh-aempty-hint">Nothing waiting. Approved and denied queries move to the <a className="qh-aempty-link" href="#admin/audit">audit log</a>.</div></div>}
           {groups.map(g => {
             if (g.solo) return <QueueCard key={g.solo.id} it={g.solo} selected={cur && cur.id === g.solo.id} onSelect={setSel} checked={checked.includes(g.solo.id)} onCheck={toggleCheck} />;
             const ids = g.rows.map(x => x.id);
@@ -446,7 +539,7 @@ function ApprovalsView({ st, user, role }) {
                       letting "5 queries" sit above three rows. */}
                   {g.rows.length !== g.size && <span className="qh-qbundle-part">{g.rows.length} still waiting</span>}
                   <div className="qh-flex1" />
-                  <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => st.approveBundle(g.bundleId, actor)}>Approve all</button>
+                  <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={killOn} title={killSay} onClick={() => st.approveBundle(g.bundleId, actor)}>Approve all</button>
                 </div>
                 {g.rows.map(it => <QueueCard key={it.id} it={it} selected={cur && cur.id === it.id} onSelect={setSel} checked={checked.includes(it.id)} onCheck={toggleCheck} />)}
               </div>
@@ -465,7 +558,10 @@ function ApprovalsView({ st, user, role }) {
                   <div className="qh-adetail-name">{qhPersonName(cur.submitter.name)}</div>
                   {/* The handle is appended only when the name above was derived from it — it is what an approver types into Slack, so it must stay readable somewhere. */}
                   <div className="qh-adetail-slack"><SlackMark size={12} />{qhIsHandleName(cur.submitter.name) ? cur.submitter.name + ' · ' : ''}{cur.submitter.slackId}{cur.submitter.trust != null ? ' · trust ' + cur.submitter.trust : ''}</div>
+                  {holds && <div className="qh-adetail-holds">Requester holds: {holds}</div>}
+                  {expiresIn && <div className="qh-adetail-expires">{expiresIn}</div>}
                 </div>
+                <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-adetail-viewacc" onClick={viewAccess}>View access</button>
               </div>
               <div className="qh-adetail-target">
                 <span className={'qh-env-dot env-' + cur.env} />
@@ -533,7 +629,7 @@ function ApprovalsView({ st, user, role }) {
               <div className="qh-bundle-note">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
                 Part of bundle <b>{cur.bundleId}</b> ({cur.bundleSize || items.filter(x => x.bundleId === cur.bundleId).length} queries) — one approval round.
-                <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => st.approveBundle(cur.bundleId, actor)}>Approve whole bundle</button>
+                <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={killOn} title={killSay} onClick={() => st.approveBundle(cur.bundleId, actor)}>Approve whole bundle</button>
               </div>
             )}
 
@@ -541,20 +637,21 @@ function ApprovalsView({ st, user, role }) {
 
             {/* Approve leads, in its own colour — it is the action taken on
                 the overwhelming majority of requests, so it sits where the
-                eye lands first. Reject / Request changes follow beside it;
+                eye lands first. Deny / Request changes follow beside it;
                 the escalation tag stays right-aligned. */}
             <div className="qh-adetail-actions">
-              <button className="qh-btn qh-btn-primary" onClick={() => act('approve')}>
+              <button className="qh-btn qh-btn-primary" disabled={killOn} title={killSay} onClick={() => act('approve')}>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-                {cur.escalate || cur.tier === 'DDL' ? 'Approve schema change' : 'Approve & run'}
+                {cur.escalate || cur.tier === 'DDL' ? 'Approve schema change' : 'Approve and run'}
               </button>
               <button className="qh-btn qh-btn-danger" disabled={noteMode === 'reject' && !noteChk.ok}
-                      title={noteMode === 'reject' ? noteChk.why : null} onClick={() => act('reject')}>{noteMode === 'reject' ? 'Confirm reject' : 'Reject'}</button>
+                      title={noteMode === 'reject' ? noteChk.why : null} onClick={() => act('reject')}>{noteMode === 'reject' ? 'Confirm deny' : 'Deny'}</button>
               <button className="qh-btn qh-btn-ghost" disabled={noteMode === 'changes' && !noteChk.ok}
                       title={noteMode === 'changes' ? noteChk.why : null} onClick={() => act('changes')}>{noteMode === 'changes' ? 'Send request' : 'Request changes'}</button>
               <div className="qh-flex1" />
               {cur.escalate && <span className="qh-escalate-tag"><AdminIcons.ddl />Escalated · DDL</span>}
             </div>
+            <div className="qh-adetail-keys" aria-hidden="true">Keys: <kbd>J</kbd> next · <kbd>K</kbd> previous · <kbd>A</kbd> approve and run · <kbd>D</kbd> deny · <kbd>C</kbd> request changes</div>
           </>
         )}
       </div>
@@ -657,6 +754,11 @@ function KillView({ st, user, canWrite }) {
   return (
     <div className="qh-apad">
       <div className="qh-aview-head"><div><div className="qh-aview-title">Kill switch</div><div className="qh-aview-sub">Emergency stop for all query execution on every server. Same as <code>/sql kill</code> in Slack. A DBA or a super-admin can engage it.</div></div></div>
+      <div className={'qh-kill-banner ' + (k.enabled ? 'is-paused' : 'is-running')} role="status">
+        <span className="qh-kill-banner-dot" aria-hidden="true" />
+        <span className="qh-kill-banner-t">{k.enabled ? 'Queries are paused' : 'Queries are running'}</span>
+        {k.enabled && <span className="qh-kill-banner-d">{(by ? 'Paused by ' + by : 'Paused') + (k.at ? ' · ' + qhAgo(k.at) : '') + (k.message ? ' · Reason: ' + k.message : ' · No reason given')}</span>}
+      </div>
       <div className={'qh-kill-card' + (k.enabled ? ' is-on' : '')}>
         <div className="qh-kill-ic">
           <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M18.4 6.6a9 9 0 11-12.8 0M12 2v10"/></svg>
@@ -670,8 +772,8 @@ function KillView({ st, user, canWrite }) {
           {said && <div className="qh-kill-said" role="status">{said}</div>}
         </div>
         {canWrite
-          ? <button className={'qh-btn qh-btn-lg ' + (k.enabled ? 'qh-btn-primary' : 'qh-btn-danger')} disabled={busy} onClick={flip}>
-              {k.enabled ? 'Release kill switch' : 'Engage kill switch'}
+          ? <button className={'qh-btn qh-btn-lg ' + (k.enabled ? 'qh-btn-ghost qh-kill-resume' : 'qh-btn-danger qh-kill-pause')} disabled={busy} onClick={flip}>
+              {k.enabled ? 'Resume queries' : 'Pause all queries'}
             </button>
           : <span className="qh-kill-ro">Only a DBA or a super-admin can {k.enabled ? 'release' : 'engage'} it</span>}
       </div>
@@ -682,7 +784,7 @@ function KillView({ st, user, canWrite }) {
   );
 }
 
-// ---------- The note on Reject and Request changes (2026-10-23) ----------
+// ---------- The note on Deny and Request changes (2026-10-23) ----------
 // Design takeaway 2: a note shorter than this does not tell the submitter what
 // to change. Web only. The server and Slack keep their own rule (not empty), so
 // nothing that Slack accepts is refused there.
@@ -715,7 +817,7 @@ function NoteBox({ mode, value, onChange, onCancel }) {
   const id = 'qh-note-' + mode;
   return (
     <div className="qh-notebox">
-      <label className="qh-notebox-l" htmlFor={id}>{mode === 'reject' ? 'Why do you reject it? The submitter reads this note.' : 'What must they change? The submitter reads this note.'}</label>
+      <label className="qh-notebox-l" htmlFor={id}>{mode === 'reject' ? 'Why do you deny it? The submitter reads this note.' : 'What must they change? The submitter reads this note.'}</label>
       <textarea id={id} className="qh-input qh-notebox-in" autoFocus rows={3} value={value}
                 aria-describedby={id + '-n'} onChange={(e) => onChange(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); }} />
@@ -730,4 +832,4 @@ function NoteBox({ mode, value, onChange, onCancel }) {
   );
 }
 
-Object.assign(window, { AdminPanel, AdminIcons, qhAdminLevel, qhAdminCanOpen, qhAdminLockReason, qhKillLasted, qhKillCancelSay, qhNoteCheck, qhNoteAdd, QH_NOTE_MIN });
+Object.assign(window, { AdminPanel, AdminIcons, qhExpiresIn, qhRequesterHolds, qhFailingConnCount, qhAdminLevel, qhAdminCanOpen, qhAdminLockReason, qhKillLasted, qhKillCancelSay, qhNoteCheck, qhNoteAdd, QH_NOTE_MIN });

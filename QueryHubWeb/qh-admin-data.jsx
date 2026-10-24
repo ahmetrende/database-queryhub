@@ -62,6 +62,14 @@ function qhGrantAutoSay(r) {
     : ' Auto-approve skipped: ' + why + '.';
 }
 
+// When the grant that an approval wrote ends. The answer of POST
+// /admin/endpoint-requests/{id}/decision has `expiresAt` only when a grant was
+// written, and null in it means no end. Nothing to say when there is no grant.
+function qhEndSay(r) {
+  if (!r || !('expiresAt' in r)) return '';
+  return r.expiresAt ? ' Access ends ' + qhFmt(r.expiresAt) + '.' : ' The grant has no end date.';
+}
+
 // Empty metrics shell (same keys the Insights view reads) until /admin/metrics loads.
 const QH_METRICS = {
   totalQueries: 0, autoApproveRate: 0, avgLatencyMin: 0, rejectRate: 0,
@@ -89,6 +97,10 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const [grantsState, setGrantsState] = useAdminStateHook('loading');
   const [autoRequests, setAutoRequests] = useAdminStateHook([]);
   const [autoGrants, setAutoGrants] = useAdminStateHook([]);
+  // The most days a rule made in the app may last (`maxDays` on GET
+  // /admin/auto-grants, from `auto_approve_max_days`). Every auto-approve form
+  // needs an end date and caps its picker at this. 90 until the list loads.
+  const [autoMaxDays, setAutoMaxDays] = useAdminStateHook(90);
   const [scopes, setScopes] = useAdminStateHook([]);
   const [roles, setRoles] = useAdminStateHook([]);
   // `enforced` = the fleet's access_model_v2 switch. While it is false the DIRECT
@@ -104,6 +116,9 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const [people, setPeople] = useAdminStateHook([]);
   const [teams, setTeams] = useAdminStateHook([]);
   const [endpointReqs, setEndpointReqs] = useAdminStateHook([]);
+  // How many days a grant lasts when an approval picks no other end
+  // (GET /admin/endpoint-requests `accessDefaultDays`, `access_grant_default_days`).
+  const [accessDefaultDays, setAccessDefaultDays] = useAdminStateHook(90);
   // What the bot handed to a DBA to run by hand (CODE 2026-09-23 §5).
   const [manualRuns, setManualRuns] = useAdminStateHook([]);
   const [feedback, setFeedback] = useAdminStateHook([]);
@@ -134,13 +149,15 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const loadGrants = useAdminCb(() => qhApi.adminGrants().then(r => { setGrants(mapGrants(r.grants)); setGrantsState('ok'); }).catch(() => setGrantsState('error')), []);
   const loadAutoReqs = useAdminCb(() => qhApi.adminAutoRequests().then(r => setAutoRequests(r.requests || [])).catch(() => {}), []);
   const loadManualRuns = useAdminCb(() => qhApi.adminManualRuns().then(r => setManualRuns(r.items || [])).catch(() => {}), []);
-  const loadAuto = useAdminCb(() => qhApi.adminAutoGrants().then(r => setAutoGrants(r.autoGrants || [])).catch(() => {}), []);
+  const readAuto = (r) => { setAutoGrants(r.autoGrants || []); if (r.maxDays >= 1) setAutoMaxDays(r.maxDays); };
+  const loadAuto = useAdminCb(() => qhApi.adminAutoGrants().then(readAuto).catch(() => {}), []);
   const loadAudit = useAdminCb(() => qhApi.adminAudit().then(r => setAudit(r.audit || [])).catch(() => {}), []);
   const loadKill = useAdminCb(() => qhApi.adminKillGet().then(r => setKillSwitch({ enabled: !!r.enabled, message: r.message || '', by: r.by || null, at: r.at || null })).catch(() => {}), []);
   const loadScopes = useAdminCb(() => qhApi.adminScopes().then(r => setScopes(r.scopes || [])).catch(() => {}), []);
   const loadRoles = useAdminCb(() => qhApi.adminRoles().then(r => { setRoles(r.roles || []); setRolesEnforced(r.enforced !== false); }).catch(() => {}), []);
   const loadMask = useAdminCb(() => qhApi.adminMaskExemptions().then(r => { setMaskExemptions(r.exemptions || []); setMaskMeta({ maskingEnabled: r.maskingEnabled !== false, nameRules: r.nameRules || 0, valueDetectors: r.valueDetectors || [] }); }).catch(() => {}), []);
-  const loadEndpointReqs = useAdminCb(() => qhApi.adminEndpointReqs().then(r => setEndpointReqs((r.requests || []).map(x => ({ ...x, tier: x.tier || null })))).catch(() => {}), []);
+  const readEndpointReqs = (r) => { setEndpointReqs((r.requests || []).map(x => ({ ...x, tier: x.tier || null }))); if (r.accessDefaultDays >= 1) setAccessDefaultDays(r.accessDefaultDays); };
+  const loadEndpointReqs = useAdminCb(() => qhApi.adminEndpointReqs().then(readEndpointReqs).catch(() => {}), []);
   const loadPeople = useAdminCb(() => qhApi.adminPeople().then(r => setPeople(r.people || [])).catch(() => {}), []);
   const loadTeams = useAdminCb(() => qhApi.adminTeams().then(r => setTeams(r.teams || [])).catch(() => {}), []);
   const loadConnections = useAdminCb(() => qhApi.adminConnections().then(r => setConnections(r.connections || [])).catch(() => {}), []);
@@ -154,7 +171,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
     const jobs = [
       qhApi.adminQueue().then(r => setQueue(mapQueue(r.queue))),
       qhApi.adminGrants().then(r => { setGrants(mapGrants(r.grants)); setGrantsState('ok'); }, e => { setGrantsState(e && e.status === 403 ? 'ok' : 'error'); throw e; }),
-      qhApi.adminAutoGrants().then(r => setAutoGrants(r.autoGrants || [])),
+      qhApi.adminAutoGrants().then(readAuto),
       qhApi.adminAutoRequests().then(r => setAutoRequests(r.requests || [])),
       qhApi.adminManualRuns().then(r => setManualRuns(r.items || [])),
       qhApi.adminAudit().then(r => setAudit(r.audit || [])),
@@ -162,7 +179,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
       qhApi.adminScopes().then(r => setScopes(r.scopes || [])),
       qhApi.adminRoles().then(r => { setRoles(r.roles || []); setRolesEnforced(r.enforced !== false); }),
       qhApi.adminMaskExemptions().then(r => { setMaskExemptions(r.exemptions || []); setMaskMeta({ maskingEnabled: r.maskingEnabled !== false, nameRules: r.nameRules || 0, valueDetectors: r.valueDetectors || [] }); }),
-      qhApi.adminEndpointReqs().then(r => setEndpointReqs((r.requests || []).map(x => ({ ...x, tier: x.tier || null })))),
+      qhApi.adminEndpointReqs().then(readEndpointReqs),
       qhApi.adminFeedback().then(r => setFeedback(r.feedback || [])),
       qhApi.adminMetrics().then(r => setMetrics(r || {})),
       qhApi.adminConnections().then(r => setConnections(r.connections || [])),
@@ -202,21 +219,27 @@ function useAdminState(pushToast, active, isAdminViewer) {
     const tick = () => {
       if (typeof document !== 'undefined' && document.hidden) return;
       loadQueue();
+      loadKill();   // the approve buttons follow the kill switch
     };
     tick();
     const iv = setInterval(tick, QH_QUEUE_POLL_MS);
-    const onVis = () => { if (!document.hidden) loadQueue(); };
+    const onVis = () => { if (!document.hidden) { loadQueue(); loadKill(); } };
     document.addEventListener('visibilitychange', onVis);
     return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };
-  }, [isAdminViewer, loadQueue]);
+  }, [isAdminViewer, loadQueue, loadKill]);
 
-  const fail = (e, fallback) => pushToast && pushToast((e && e.message) || fallback);
+  const fail = (e, fallback) => {
+    pushToast && pushToast((e && e.message) || fallback);
+    // The server refused an approval because the kill switch is on. Show the
+    // switch as on, so the approve buttons turn off.
+    if (e && e.code === 'kill_switch_on') loadKill();
+  };
 
   const decide = (id, decision, actor, note) => {
     qhApi.adminDecision(id, { decision, note: note || null })
       .then(() => { loadQueue(); loadAudit();
         pushToast && pushToast(decision === 'approve' ? 'Approved — running now. Submitter notified in Slack.'
-          : decision === 'reject' ? 'Rejected. Submitter notified in Slack.'
+          : decision === 'reject' ? 'Denied. Submitter notified in Slack.'
           : 'Change request sent to the submitter in Slack.'); })
       .catch(e => fail(e, 'Decision failed.'));
   };
@@ -425,12 +448,14 @@ function useAdminState(pushToast, active, isAdminViewer) {
   };
   // Endpoint requests — approve provisions a real RO grant (+ DMs the
   // requester), reject just records the decision. Both audited server-side.
-  const decideEndpoint = (id, ok) => {
-    qhApi.adminDecideEndpoint(id, !!ok)
-      .then(() => { loadEndpointReqs(); loadGrants(); loadAudit();
+  // `end` is { expiresAt } or { noEnd: true }, or null to take the default
+  // (`access_grant_default_days`). It only counts on an approval.
+  const decideEndpoint = (id, ok, actor, end) => {
+    qhApi.adminDecideEndpoint(id, !!ok, null, ok ? end : null)
+      .then((r) => { loadEndpointReqs(); loadGrants(); loadAudit();
         pushToast && pushToast(ok
-          ? 'Provisioned. QueryHub created the RO grant and told the requester in Slack.'
-          : 'Request rejected. QueryHub told the requester in Slack.'); })
+          ? 'Provisioned. QueryHub created the grant and told the requester in Slack.' + qhEndSay(r)
+          : 'Request denied. QueryHub told the requester in Slack.'); })
       .catch(e => fail(e, 'Decision failed.'));
   };
 
@@ -604,7 +629,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
   // the one screen that manages it.
   const primaries = (connections || []).filter(c => !c.replicaOf);
   return {
-    queue, manualRuns, grants, grantsState, autoGrants, autoRequests, scopes, roles, rolesEnforced, maskExemptions, maskMeta, people, teams, endpointReqs, feedback, audit, metrics, connections: primaries, connectionRows: connections, killSwitch, config, pushToast,
+    queue, manualRuns, grants, grantsState, autoGrants, autoMaxDays, autoRequests, scopes, roles, rolesEnforced, maskExemptions, maskMeta, people, teams, endpointReqs, accessDefaultDays, feedback, audit, metrics, connections: primaries, connectionRows: connections, killSwitch, config, pushToast,
     loadError, loading, reload: reloadAll,
     decide, batchApprove, approveBundle, toggleKill, killHistory,
     addGrant, updateGrant, revokeGrant, setSubjectGrants, extendGrant, setAutoGrantEnabled,

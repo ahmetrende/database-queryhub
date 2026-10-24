@@ -37,7 +37,60 @@ function HomeEmpty({ text }) {
   return <div className="qh-home-empty">{text}</div>;
 }
 
-function HomeScreen({ user, loading, openTabs, slackEnabled, onFocusTab, onNewQuery, onSaveSession, sessions, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, saved, onLoadSaved, onDeleteSaved, onBrowse, onWhatsNew, unseenNews }) {
+// What happens to a statement of this person (2026-10-24): two lists built from
+// the connections they hold. "Runs at once" is read-only on a database that
+// auto-approves. "Goes to a DBA first" is everything else. Six rows each, then
+// "+N more". A super-admin runs everything at once and gets one line. The API
+// sends no grant end dates, so none is shown. The loading and empty states say so.
+const QH_ACCESS_MAX = 6;
+function AccessList({ title, hint, rows, loading, emptyText, tone }) {
+  const shown = rows.slice(0, QH_ACCESS_MAX);
+  return (
+    <section className={'qh-home-card qh-access-card is-' + tone} aria-label={title}>
+      <div className="qh-home-card-head">
+        <h2 className="qh-home-card-title">{title}{!loading && <span className="qh-home-card-count">{rows.length}</span>}</h2>
+      </div>
+      <p className="qh-access-hint">{hint}</p>
+      <div className="qh-home-card-body">
+        {loading ? <HomePlaceholder /> : rows.length === 0 ? <HomeEmpty text={emptyText} /> : (
+          <div className="qh-home-list">
+            {shown.map(r => (
+              <div key={r.key} className="qh-home-row qh-access-row">
+                <TierBadge tier={r.tier} sm />
+                <span className="qh-home-row-name qh-mono">{r.db}</span>
+                <span className="qh-home-row-meta">{r.server}</span>
+              </div>
+            ))}
+            {rows.length > shown.length && <div className="qh-access-more">+{rows.length - shown.length} more</div>}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+function AccessSummary({ conns, loading, isSuper }) {
+  const sum = qhAccessSummary(conns, isSuper);
+  const wait = !!loading && (conns || []).length === 0;
+  if (sum.everything) {
+    return <div className="qh-access-all" role="status">You run everything at once. No query waits for a DBA.</div>;
+  }
+  const none = !wait && sum.once.length === 0 && sum.dba.length === 0;
+  if (none) {
+    return <div className="qh-access-all is-none" role="status">You hold no database yet. Use Request database access in the sidebar.</div>;
+  }
+  return (
+    <div className="qh-access-grid">
+      <AccessList title="Runs at once" tone="once" loading={wait} rows={sum.once}
+        hint="Read-only queries on these databases run when you submit them."
+        emptyText="No database runs at once for you." />
+      <AccessList title="Goes to a DBA first" tone="dba" loading={wait} rows={sum.dba}
+        hint="Read/write, schema changes, and reads without auto-approve wait for a DBA."
+        emptyText="No database goes to a DBA first." />
+    </div>
+  );
+}
+
+function HomeScreen({ user, loading, openTabs, slackEnabled, onFocusTab, onNewQuery, onSaveSession, sessions, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, saved, onLoadSaved, onDeleteSaved, conns, connsLoading, isSuper, onBrowse, onWhatsNew, unseenNews }) {
   const first = (user && user.name ? qhPersonName(user.name).split(' ')[0] : 'there');
   const nonEmpty = (openTabs || []).filter(t => t.sql && t.sql.trim());
   // A list that is empty only because its first load is still pending.
@@ -58,6 +111,8 @@ function HomeScreen({ user, loading, openTabs, slackEnabled, onFocusTab, onNewQu
             <button className="qh-btn qh-btn-ghost qh-btn-lg" onClick={onBrowse}>{QH_HOME_ICN.browse}Browse connections</button>
           </div>
         </div>
+
+        <AccessSummary conns={conns} loading={connsLoading} isSuper={isSuper} />
 
         <div className="qh-home-grid">
           <HomeCard title="Current session" count={openTabs.length}
@@ -95,7 +150,7 @@ function HomeScreen({ user, loading, openTabs, slackEnabled, onFocusTab, onNewQu
               <div className="qh-home-list">
                 {history.map(h => (
                   <button key={h.id} className="qh-home-row is-hist" onClick={() => onLoadHistory(h)}>
-                    <span className="qh-home-histtop"><TierBadge tier={h.tier} sm /><StatusPill status={h.status} /><span className="qh-home-when">{h.when}</span></span>
+                    <span className="qh-home-histtop"><TierBadge tier={h.tier} sm /><StatusPill status={h.status} outcome={h.outcome} /><span className="qh-home-when">{h.when}</span></span>
                     <span className="qh-home-histsql">{h.sql}</span>
                     <span className="qh-home-row-meta">{h.conn} · {h.db}</span>
                   </button>
@@ -148,4 +203,4 @@ function HomeScreen({ user, loading, openTabs, slackEnabled, onFocusTab, onNewQu
   );
 }
 
-Object.assign(window, { HomeScreen });
+Object.assign(window, { HomeScreen, AccessSummary });

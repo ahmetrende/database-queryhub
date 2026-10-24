@@ -923,7 +923,8 @@ def audit_entries(rows: list[dict], caller_id: str) -> list[dict]:
     return out
 
 
-def _run_note_messages(row: dict, when: str) -> list[dict]:
+def _run_note_messages(row: dict, when: str,
+                       replica_name: str | None = None) -> list[dict]:
     """The statement summary and the server's own output, for the Messages tab.
 
     Both exist because a script that returns no rows used to finish with one
@@ -964,7 +965,8 @@ def _run_note_messages(row: dict, when: str) -> list[dict]:
     if isinstance(replica, dict):
         from .. import replicas
         out.append({"time": when, "kind": "info",
-                    "text": replicas.served_note(replica.get("lag_s"))})
+                    "text": replicas.served_note(replica.get("lag_s"),
+                                                 replica_name)})
 
     for note in notes.get("notices") or []:
         sev = (note.get("severity") or "NOTICE").upper()
@@ -1104,7 +1106,45 @@ def request_tier(row: dict) -> str:
         return "?"
 
 
-def status_messages(row: dict, audit_rows: list[dict] | None = None) -> list[dict]:
+def done_line(row_count: int | None, elapsed_ms: int | None) -> str:
+    """The success line of the Messages tab: "184 rows in 412 ms."
+
+    Both numbers must exist. A request with no row count or no run time (an
+    older row, or a hand-run) keeps the old wording, "Done — N row(s).", so that
+    the line never invents a number."""
+    if row_count is None or elapsed_ms is None:
+        return f"Done — {row_count if row_count is not None else '?'} row(s)."
+    n = int(row_count)
+    return f"{n:,} row{'' if n == 1 else 's'} in {max(0, int(elapsed_ms)):,} ms."
+
+
+#: How many masked column names the line spells out. The rest become a count.
+MASKED_NAMES_SHOWN = 5
+
+
+def masked_line(columns: Iterable[str] | None) -> str | None:
+    """"1 PII column masked: iban." for the Messages tab, or None when no column
+    was masked.
+
+    NAMES only. The argument holds column names from the header of the stored
+    result, and no function on this path reads a row, so a masked VALUE cannot
+    reach the line. Duplicate names count once, in first-seen order."""
+    names: list[str] = []
+    for c in columns or ():
+        name = " ".join(str(c).split())[:60]
+        if name and name not in names:
+            names.append(name)
+    if not names:
+        return None
+    n = len(names)
+    more = f" and {n - MASKED_NAMES_SHOWN} more" if n > MASKED_NAMES_SHOWN else ""
+    return (f"{n} PII column{'' if n == 1 else 's'} masked: "
+            f"{', '.join(names[:MASKED_NAMES_SHOWN])}{more}.")
+
+
+def status_messages(row: dict, audit_rows: list[dict] | None = None,
+                    masked_columns: Iterable[str] | None = None,
+                    replica_name: str | None = None) -> list[dict]:
     """Derived, human-readable message feed {time, kind, text} the UI
     shows under the editor. kind ∈ info | ok | err (exact strings).
 
@@ -1112,7 +1152,13 @@ def status_messages(row: dict, audit_rows: list[dict] | None = None) -> list[dic
     number in a conversation about it are the same one.
 
     A request that QueryHub approved by itself was never sent to a DBA, and no
-    person approved it. The feed says so, and names QueryHub as the approver."""
+    person approved it. The feed says so, and names QueryHub as the approver.
+
+    A finished request ends with its row count and run time ("184 rows in 412
+    ms."), and, when the run masked columns, with their names
+    (`masked_columns`, names only). `replica_name` names the replica that an
+    automatic route used. The caller passes it only for a reader who may see
+    replica names (a super-admin); with None the line stays unnamed."""
     def t(dt):
         # Full yyyy-MM-dd HH:mm:ss.fff (display tz) — the Messages tab renders
         # this verbatim, matching the audit feed and the design's client stamp.
@@ -1153,10 +1199,14 @@ def status_messages(row: dict, audit_rows: list[dict] | None = None) -> list[dic
         msgs.append({"time": t(row.get("executed_at")), "kind": "info",
                      "text": "Execution started."})
     if status == "completed":
-        msgs.extend(_run_note_messages(row, t(row.get("completed_at"))))
-        n = row.get("row_count")
+        msgs.extend(_run_note_messages(row, t(row.get("completed_at")),
+                                       replica_name=replica_name))
         msgs.append({"time": t(row.get("completed_at")), "kind": "ok",
-                     "text": f"Done — {n if n is not None else '?'} row(s)."})
+                     "text": done_line(row.get("row_count"), run_ms(row))})
+        masked = masked_line(masked_columns)
+        if masked:
+            msgs.append({"time": t(row.get("completed_at")), "kind": "info",
+                         "text": masked})
     elif status == "failed":
         msgs.append({"time": t(row.get("completed_at") or row.get("executed_at")),
                      "kind": "err",

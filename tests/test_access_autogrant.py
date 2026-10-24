@@ -118,12 +118,16 @@ def test_approve_creates_grant_fresh(monkeypatch, audit_calls):
     _wire(monkeypatch, conn)
     out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
     ag = out["auto_grant"]
+    # The grant ends in the default days (access_grant_default_days, 90).
+    end = ag.pop("expires_at")
+    assert abs(end - (datetime.now(timezone.utc) + timedelta(days=90))) < timedelta(minutes=1)
     assert ag == {"applied": True, "reason": "granted", "mode": "ro",
-                  "databases": ["shipping_service"], "expires_at": None}
+                  "databases": ["shipping_service"]}
     assert conn.sql_containing("INSERT INTO user_target_grants")
     assert conn.sql_containing("INSERT INTO requesters")     # whitelist net
     assert audit_calls and audit_calls[0][0] == "access_request_auto_grant"
-    assert audit_calls[0][1]["expires_at"] is None
+    assert audit_calls[0][1]["expires_at"] == end.isoformat()
+    assert audit_calls[0][1]["end_source"] == "default"
 
 
 def test_approve_merges_same_tier(monkeypatch, audit_calls):
@@ -153,9 +157,10 @@ def test_approve_revoked_grant_treated_as_fresh(monkeypatch, audit_calls):
     _wire(monkeypatch, conn)
     out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
     # revoked rw row is dead — the new ro grant replaces it at the asked tier
-    assert out["auto_grant"] == {"applied": True, "reason": "granted",
-                                 "mode": "ro", "databases": ["shipping_service"],
-                                 "expires_at": None}
+    ag = out["auto_grant"]
+    assert ag.pop("expires_at") is not None       # the default end, not the old one
+    assert ag == {"applied": True, "reason": "granted",
+                  "mode": "ro", "databases": ["shipping_service"]}
 
 
 def test_approve_no_target_skips(monkeypatch, audit_calls):
@@ -205,11 +210,13 @@ def test_approve_after_a_lapse_starts_without_the_old_end_date(monkeypatch,
     _wire(monkeypatch, conn)
     out = ar.decide(13, "approved", "U0EXAMPLE99", "admin", None)
     assert out["auto_grant"]["applied"] is True
-    assert out["auto_grant"]["expires_at"] is None
+    # A fresh grant: the default end, never the lapsed one.
+    end = out["auto_grant"]["expires_at"]
+    assert end is not None and end > datetime.now(timezone.utc)
     # (uid, target, databases, tier, granted_by, expires_at)
     params = conn.params_of("INSERT INTO user_target_grants")
-    assert params[-1] is None
-    assert audit_calls[0][1]["expires_at"] is None
+    assert params[-1] == end and params[-1] != _PAST
+    assert audit_calls[0][1]["expires_at"] == end.isoformat()
 
 
 def test_a_lapsed_grant_does_not_block_another_tier(monkeypatch, audit_calls):

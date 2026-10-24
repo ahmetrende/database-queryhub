@@ -11,6 +11,18 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Added
 
+- **The kill switch stops approvals too.** While it is on, every approval that
+  runs a request is refused with "Kill switch is on. Resume queries first." This
+  covers the web decision, the web batch approve, the web batch decision, the
+  Slack Approve button, "Approve all remaining" and the approval of a CSV import.
+  The web answers HTTP 409 with the code `kill_switch_on`. A deny and a request for
+  changes still work. The queue turns its approve buttons off.
+- **A grant from an access-request approval ends in 90 days.** The new setting
+  `access_grant_default_days` (default 90, from 1 to 365) sets the default end.
+  `POST /api/admin/endpoint-requests/{id}/decision` accepts `expiresAt` for another
+  end and `noEnd: true` for no end. The Slack Approve button takes the default.
+  `GET /api/admin/endpoint-requests` returns `accessDefaultDays`. Grants that exist
+  keep their end dates. The Provision card has an "Access ends" picker.
 - **A `dba` admin level.** A person with a permanent admin role that covers every
   connection passes it. A tier ceiling does not block it, and a super-admin passes. A
   temporary, scoped or approver-only role does not. `GET /api/me` returns
@@ -88,6 +100,23 @@ frontend and the endpoints it calls are explicitly outside it.
   screen shows "Refused: QueryHub opens through the portal. Sign in there." The
   default is `off`. Migration 145 adds the key.
 
+- **The connection list shows the cloud and the environment on every row.** Each
+  server row has the provider logo and a PROD or STG chip. PROD is a solid orange
+  pill. Chips read at 11 px, and only PROD, STG, RO, RW and DDL stay in capitals.
+  The confirm-before-run dialog shows the statement in a code box with the target
+  chip. The request-access picker shows the provider logo and the environment, and
+  it locks Read/write and Schema change on read-only engines, with the reason. The
+  auto-approve request dialog now warns about an ask that already waits, and it
+  shows "Ends on <date>". Dialogs no longer open with a heavy focus ring.
+- **Words match the portal.** "Approve and run", "Deny", "Withdraw", "Submit for
+  DBA approval", "Read/write" and "Schema change" replace "Approve & run",
+  "Reject", "Cancel request", "Submit for approval", "Read/Write" and "Schema
+  (DDL)" on the web. Server values, API fields and Slack texts do not change.
+- **The provider logo follows the theme.** The dark logo variant loads on first
+  paint in dark mode.
+- **The target strip shows the cloud and the engine.** Next to Run, the strip reads
+  the provider logo, the environment tag, the engine logo, then the connection and
+  the database. A connection with no provider tag shows no provider logo.
 - **A click on a database uses it in a blank tab.** A new blank tab starts with a
   default database. The first click on a database in the tree sets the tab to it,
   and the tab then keeps it, so browsing the tree never changes a connection. To
@@ -121,8 +150,71 @@ frontend and the endpoints it calls are explicitly outside it.
   replica says "In rotation" or "Out of rotation". A "Failing" filter lists the
   failing connections. The People list says when a person last sent a query.
 
+- **A request shows where it stands.** A request that waits for a DBA shows a pale
+  "Waiting for a DBA" pill and a Withdraw button in the action bar. The results
+  area shows an amber card with the time since the submit. The History sidebar
+  has a "Waiting" group. Denied, Withdrawn, Expired and "Changes requested" each
+  have their own pill, and the history list has a filter for them. A request with
+  changes requested has an "Edit and resubmit" button. It opens a new tab with the
+  same SQL and target.
+- **The Welcome screen says what runs at once.** Two lists, "Runs at once" and
+  "Goes to a DBA first", come from the connections the person holds. Each list
+  shows six rows at most, then "+N more". A super-admin sees one line.
+- **The bell opens what it names.** A click on an item opens the request, or the
+  admin page for an admin item. The bell menu has a "Browser notifications" switch,
+  off by default. When it is on, each new item raises one browser notification.
+- **The Messages tab says what ran.** A finished request reads "184 rows in 412
+  ms." When the run masked columns, a second line reads "1 PII column masked:
+  iban." It names columns and never a value. A run on a read replica adds "Ran on
+  <name>, about 2.3 s behind." Only a super-admin sees the replica name. A request
+  without a row count keeps the old line.
+- **The environment chip is smaller.** The chip is 10 px with weight 600. Colours
+  and contrast do not change (5.00 in light, 7.41 in dark).
+- **The approval queue opens the first request.** The detail pane has a "View
+  access" button. It opens the Effective access screen for the requester
+  (`#admin/effective?person=<id>`). A "Requester holds" line shows the tier and the
+  database, and an "Expires in N min" line shows when the request has `expiresAt`.
+  The keys J and K move between cards. A, D and C approve, deny and ask for
+  changes. A field or a dialog with focus turns the keys off.
+- **The Kill switch screen shows its state.** A banner reads "Queries are running"
+  or "Queries are paused", with who and why. "Pause all queries" is a solid red
+  button. "Resume queries" is calm. The admin menu shows a second line "Ask a
+  super-admin" on a locked row. Connections has a red badge with the count of
+  failing connections.
+- **The Metrics screen shows decision time.** The screen has "Last 7 days" and
+  "Last 30 days" tabs (30 days by default). A card shows the median and the p90
+  time to a decision, the bands, and short lists by server and by team (five rows
+  each).
+- **Connections show a banner for failing connections.** The red banner names up
+  to three connections and the oldest failing time. "Test again" re-tests only the
+  failing connections. The provider has its own column. A DBA still sees the list
+  read-only.
+- **Revoking a grant asks first.** A row under the grant says "<person> loses <tier>
+  on <database>. A query that is running finishes." The buttons are "Keep access"
+  and "Revoke access". The fleet grants still use the browser confirm.
+- **The admin scope form picks people and connections.** The admin comes from the
+  person picker and the connections are chips. The saved payload does not change.
+- **Masking exemptions have an "Ends soon" filter.** It keeps the rows that end
+  within seven days and shows a count. The chips use sentence case.
+
 ### Changed
 
+- **An auto-approve rule needs an end date, and is never DDL.** A rule that the
+  app creates has an end, at most `auto_approve_max_days` days from now (new
+  setting, default 90, from 1 to 365; migration 193). A request with no end, or
+  with an end that is too far away, answers HTTP 400 with the code `end_required`
+  or `end_too_far`. A rule for tier DDL answers 400 with `tier_not_allowed`: a
+  rule is RO or RW. This covers the Auto-approve screen (`POST
+  /api/admin/auto-grants` and `/bulk`), a grant with auto-approve
+  (`POST /api/admin/grants`), a grant on every server with auto-approve, copy
+  access and the approval of a window request. Copy access gives a copied rule
+  the end of its source, at most the limit, and skips a DDL rule. The forms hide
+  "No expiry", stop the picks at the limit and start on 30 days.
+  `GET /api/admin/auto-grants` returns `maxDays`. The Slack `/sql grant` box for
+  auto-approve is refused, because that modal has no end date field. The
+  database enforces nothing: a DBA can still insert a rule with no end with SQL
+  (OPERATIONS.md §30), and every reader treats it as permanent. Rules that exist
+  keep their end dates.
 - **An RW auto-approve request answers 403 while `auto_approve_rw_requests` is
   off.** That is the default. Before, a person who held RW could ask for one.
   Nobody did. The web form greys out "Reads and writes" and says why. Production

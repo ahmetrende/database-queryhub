@@ -29,7 +29,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from queryhub import access_requests, admins, grants, idp_outbox, targets
+from queryhub import access_grant_default, access_requests, admins, grants, idp_outbox, targets
 from queryhub import auto_approve_requests as aar
 from queryhub import config as cfg
 from queryhub import db
@@ -191,6 +191,10 @@ def w(monkeypatch):
         return real_get_setting(key, default)
     monkeypatch.setattr(cfg, "get_setting", get_setting)
     monkeypatch.setattr(cfg, "ENV", w.env)
+    # The end of a grant that an approval writes is "now plus the default days".
+    # Three runs of one decision must compare equal, so the end is fixed.
+    monkeypatch.setattr(access_grant_default, "approval_end",
+                        lambda *a, **k: datetime(2027, 1, 1, tzinfo=timezone.utc))
 
     def execute(sql, params=None):
         sql = _norm(sql)

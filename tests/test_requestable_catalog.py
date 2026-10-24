@@ -16,7 +16,8 @@ from queryhub.web import routes_requests as rr
 
 class _T:
     def __init__(self, tid, alias, engine="postgres", env="production",
-                 enabled=True):
+                 enabled=True, tags=None):
+        self.tags = tags or {}
         self.id = tid
         self.alias = alias
         self.engine = engine
@@ -105,3 +106,19 @@ def test_disabled_targets_are_out_by_construction(catalog, monkeypatch):
     monkeypatch.setattr(rr.deps, "require_whitelisted", lambda c: None)
     assert rr.requestable(claims={"sub": "U1"})["connections"] == []
     assert seen["called"] is True
+
+
+def test_a_row_carries_only_the_provider_and_service_tags(catalog):
+    # The picker draws the cloud logo from `tags`. Provider and service are the
+    # narrowing every non-admin gets on GET /connections; the account and any
+    # custom key never leave the registry on this route.
+    tags = {"provider": "aws", "service": "RDS", "account": "000000000000",
+            "team": "payments"}
+    out = catalog([_T(7, "prod-main", tags=tags)], {}, {7: ["payments"]})
+    assert out[0]["tags"] == {"provider": "aws", "service": "RDS"}
+
+
+def test_a_target_with_no_provider_tags_has_no_tags_key(catalog):
+    out = catalog([_T(7, "prod-main"), _T(8, "other", tags={"account": "x"})], {},
+                  {7: ["a"], 8: ["b"]})
+    assert all("tags" not in row for row in out)

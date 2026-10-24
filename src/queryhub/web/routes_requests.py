@@ -62,6 +62,9 @@ def _target_by_id(value: str):
         return None
 
 
+_REQUESTABLE_TAG_KEYS = ("provider", "service")
+
+
 def _requestable_target(t, granted, control_plane) -> dict | None:
     """One catalogue row, or None when there is nothing left to ask for.
 
@@ -85,9 +88,17 @@ def _requestable_target(t, granted, control_plane) -> dict | None:
             return None                      # every catalogued db already held
     # `env` is derived from the alias, the same way GET /connections does it —
     # it is not a column on the target row.
-    return {"connectionId": t.alias, "name": t.alias, "engine": t.engine,
-            "env": mapping.env_of(t.alias), "databases": dbs,
-            "partial": granted is not None}
+    row = {"connectionId": t.alias, "name": t.alias, "engine": t.engine,
+           "env": mapping.env_of(t.alias), "databases": dbs,
+           "partial": granted is not None}
+    # Where it runs, so the picker can draw the provider logo. Provider and
+    # service only, the same narrowing GET /connections applies to a non-admin:
+    # `account` and any custom key are registry detail a requester does not see.
+    tags = {k: v for k, v in (getattr(t, "tags", None) or {}).items()
+            if k in _REQUESTABLE_TAG_KEYS and v}
+    if tags:
+        row["tags"] = tags
+    return row
 
 
 @router.get("/requestable")

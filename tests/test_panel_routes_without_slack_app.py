@@ -35,13 +35,14 @@ import pkgutil
 import subprocess
 import sys
 import textwrap
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 import queryhub
-from queryhub import access_requests, admins, grants, idp_outbox, targets, teams
+from queryhub import access_grant_default, access_requests, admins, grants, idp_outbox, targets, teams
 from queryhub import auto_approve_requests as aar
 from queryhub import config as cfg
 from queryhub import db
@@ -218,6 +219,10 @@ def world(monkeypatch):
             raise KeyError(f"bot_config key not set in test: {key}")
         return default
     monkeypatch.setattr(cfg, "get_setting", get_setting)
+    # The end of a grant that an approval writes is "now plus the default days".
+    # Two runs of one decision must compare equal, so the end is fixed.
+    monkeypatch.setattr(access_grant_default, "approval_end",
+                        lambda *a, **k: datetime(2027, 1, 1, tzinfo=timezone.utc))
     # Slack off: no bot token, so the real `_bot_client()` answers None.
     monkeypatch.setattr(cfg, "ENV", dataclasses.replace(cfg.ENV, slack_bot_token=""))
 
@@ -475,10 +480,11 @@ def test_with_slack_on_a_window_decision_sends_the_same_dm(world, monkeypatch, a
     pytest.param(
         {"approve": True},
         f":white_check_mark: Approved by <@{ADMIN}>\n"
-        ":key: Granted automatically: *RO* on `demo_db`.",
+        ":key: Granted automatically: *RO* on `demo_db`, until `2027-01-01 00:00 UTC`.",
         f":white_check_mark: *Access request `#12` approved* by <@{ADMIN}>.\n"
         "*Target:* `demo-orders`  •  *Database:* `demo_db`\n\n"
-        "You can now run `/sql` — your access is active.",
+        "You can now run `/sql` — your access is active. "
+        "It lasts until `2027-01-01 00:00 UTC`.",
         id="approve"),
     pytest.param(
         {"approve": False, "note": "too broad"},

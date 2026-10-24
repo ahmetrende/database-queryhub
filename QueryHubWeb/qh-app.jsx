@@ -483,12 +483,7 @@ function App() {
     setDevLoading(true);
     const jobs = [
       qhApi.connections().then(r => setConns(r.connections || [])).finally(() => setConnsLoading(false)),
-      qhApi.history().then(r => setHistory((r.history || []).map(h => ({
-        id: h.id, sql: h.sql, conn: h.connectionId, db: h.databaseId, tier: h.tier,
-        status: h.status, rows: h.rowCount, when: qhTimeAgo(h.createdAt), approver: h.approver,
-        awaitingDba: !!h.awaitingDba, ranOn: h.ranOn || null,
-        state: h.connectionState || null,
-      })))),
+      qhApi.history().then(r => setHistory((r.history || []).map(qhHistoryRow))),
       // Merge the user's server-saved queries into the Saved library (server
       // rows are dest:'server'; on a name+conn+db clash the server row wins).
       qhApi.saved().then(r => {
@@ -542,13 +537,15 @@ function App() {
   useEffect(() => { loadSchema(tab.conn, tab.db); }, [tab.conn, tab.db, loadSchema]);
 
   // ----- theme -----
+  // 2026-10-24: the attribute is also written in the render body (qhApplyTheme,
+  // below), so a component that reads it while it renders (the provider logo)
+  // never sees the old theme. This effect keeps the OS listener: when the OS theme
+  // flips while the setting is 'system', it applies the theme and bumps `osTick`,
+  // which re-renders the app so every logo repaints.
+  const [, setOsTick] = useState(0);
   useEffect(() => {
-    const apply = () => {
-      let th = t.theme;
-      if (th === 'system') th = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      document.documentElement.setAttribute('data-theme', th);
-    };
-    apply();
+    const apply = () => { qhApplyTheme(t.theme); setOsTick(n => n + 1); };
+    qhApplyTheme(t.theme);
     if (t.theme === 'system') {
       const mq = window.matchMedia('(prefers-color-scheme: dark)');
       mq.addEventListener('change', apply);
@@ -566,6 +563,8 @@ function App() {
     document.querySelectorAll("link[rel='icon'], link[rel='apple-touch-icon']").forEach(l => { l.href = href; });
   }, [t.brand]);
 
+  // Set the theme attribute BEFORE any child renders (see qhApplyTheme).
+  qhApplyTheme(t.theme);
   const resolvedDark = (() => {
     if (t.theme === 'dark') return true;
     if (t.theme === 'light') return false;
@@ -774,6 +773,41 @@ function App() {
     const f = freshTab({ name: h.sql.slice(0, 24), sql: h.sql, conn: h.conn, db: h.db, connState: h.state });
     setTabs(ts => [...ts, f]); setActiveId(f.id); reserveFor(f.id);  };
 
+  // ---- requests that wait, and requests that a DBA sent back (2026-10-24) ----
+  // Waiting group of the History list: the open tabs that wait, then the pending
+  // rows of the history that no tab holds. Longest wait first.
+  const pendingReqs = qhPendingRequests(tabs, history);
+  // A click on a waiting request opens the tab that holds it. When no tab does (a
+  // reload, another browser), a new tab tracks the request, so it shows its card
+  // and its Withdraw button and moves on by itself when a DBA decides.
+  const openPending = (p) => {
+    setView('dev');
+    const own = tabs.find(x => !x.kind && x.qid && String(x.qid) === p.id);
+    if (own) { setActiveId(own.id); return; }
+    const f = freshTab({ name: p.title, sql: p.sql, conn: p.conn, db: p.db, qid: p.id, reqId: p.id, status: 'pending', submittedAt: p.since || null });
+    setTabs(ts => [...ts, f]); setActiveId(f.id);
+    track(f.id, p.id);
+  };
+  // "Edit and resubmit": a NEW tab with the same SQL and target. Client side only.
+  // The tab is picked, not unpicked: the tree must not rebind it.
+  const resubmitFrom = (src) => {
+    setView('dev');
+    const f = freshTab(qhResubmitOver(src));
+    setTabs(ts => [...ts, f]); setActiveId(f.id); reserveFor(f.id); focusEditor();
+    pushToast('Opened a new tab with the same SQL and target. Change it, then submit again.');
+  };
+  // A bell item that points at a request: its tab when one is open, else the
+  // History list, scrolled to the row.
+  const [histFocus, setHistFocus] = useState(null);
+  const openRequest = (id) => {
+    setView('dev');
+    const own = tabs.find(x => !x.kind && ((x.qid && String(x.qid) === String(id)) || (x.reqId && String(x.reqId) === String(id))));
+    if (own) { setActiveId(own.id); return; }
+    if (t.hideSidebar) setTweak('hideSidebar', false);
+    setSideMode('history');
+    setHistFocus({ id: String(id), n: Date.now() });
+  };
+
   // Reserve the request id for a tab the moment it exists, then patch it in.
   // Fire-and-forget on purpose: the number is a convenience, so a slow or failed
   // call leaves the tab perfectly usable and the id simply arrives at submit.
@@ -953,12 +987,9 @@ function App() {
   };
   useEffect(() => () => Object.keys(trackers.current).forEach(stopTrack), []);
 
-  const refreshHistory = () => qhApi.history().then(r => setHistory((r.history || []).map(h => ({
-    id: h.id, sql: h.sql, conn: h.connectionId, db: h.databaseId, tier: h.tier,
-    status: h.status, rows: h.rowCount, when: qhTimeAgo(h.createdAt), approver: h.approver,
-    awaitingDba: !!h.awaitingDba, ranOn: h.ranOn || null,
-    state: h.connectionState || null,
-  })))).catch(() => {});
+  // One mapper for both reads (`qhHistoryRow` in qh-data.jsx), so a field that the
+  // list needs (`outcome`, `createdAt`) cannot reach one path and miss the other.
+  const refreshHistory = () => qhApi.history().then(r => setHistory((r.history || []).map(qhHistoryRow))).catch(() => {});
 
   // Where the query in a tab runs (super-admin, Postgres with a replica in
   // rotation). The tab stores the choice; what is SENT is only what the control
@@ -991,9 +1022,13 @@ function App() {
       const at = sres.status === 'done' && msgs.length ? msgs.length - 1 : msgs.length;
       msgs.splice(at, 0, { kind: 'info', text: ranLine, time: (msgs[at] || msgs[at - 1] || {}).time || nowTime() });
     }
+    // `outcome` (withdrawn, expired, denied, changes_requested, null) and
+    // `expiresAt` ride on the status payload. The server words a withdrawal and
+    // an expiry with the same generic line, so the UI words each from `outcome`.
     setTabs(ts => ts.map(x => x.id === id ? {
-      ...x, status: sres.status, awaitingDba: !!sres.awaitingDba, runMs: sres.runMs, messages: msgs, audit: sres.audit || [],
-      ranOn: sres.ranOn || null,
+      ...x, status: sres.status, awaitingDba: !!sres.awaitingDba, runMs: sres.runMs,
+      messages: qhOutcomeMessages(msgs, sres.outcome || null), audit: sres.audit || [],
+      ranOn: sres.ranOn || null, outcome: sres.outcome || null, expiresAt: sres.expiresAt || null,
     } : x));
     if (sres.scheduledFor && sres.status !== 'running' && sres.status !== 'done'
         && new Date(sres.scheduledFor) > new Date()) { setResTab('messages'); return true; }
@@ -1006,7 +1041,12 @@ function App() {
           // No grid to look at: open Messages, which holds what the run said.
           setResTab(qhTabAfterResult(res));
         } catch (e) { setResTab('messages'); }
-      } else { setResTab('messages'); }
+      } else {
+        // A request that ended with a known outcome shows its card in Results (what
+        // happened, and "Edit and resubmit" for changes requested). Messages holds
+        // the DBA's note. Any other end opens Messages, as before.
+        setResTab(sres.status === 'rejected' && qhOutcomeInfo(sres.outcome) ? 'results' : 'messages');
+      }
       return true;
     }
     return false;
@@ -1060,7 +1100,7 @@ function App() {
       return;
     }
     setResTab('messages');
-    patch(id, { status: 'pending', result: null, ranOn: null,
+    patch(id, { status: 'pending', result: null, ranOn: null, outcome: null, expiresAt: null, submittedAt: new Date().toISOString(),
       messages: [{ kind: 'info', text: 'Submitting to QueryHub…', time: nowTime() }] });
     try {
       const r = await qhApi.submit({
@@ -1083,8 +1123,13 @@ function App() {
         // instead, which is why qid below comes from the RESPONSE, not from here.
         draftId: cur.reqId || null,
       });
-      patch(id, { qid: r.id, reqId: r.id, status: r.status, ranUnmasked: !!cur.unmasked, ranConn: cur.conn, expired: null });
+      patch(id, { qid: r.id, reqId: r.id, status: r.status, ranUnmasked: !!cur.unmasked, ranConn: cur.conn, expired: null,
+        // The server's own time of the submit, when it sends one (the local clock was set above).
+        ...(r.createdAt ? { submittedAt: r.createdAt } : null) });
       if (cur.justification) setReasons(rs => qhSaveReason(rs, cur.justification));
+      // A request that waits for a DBA shows its amber card in Results, and the
+      // history list is read again so the Waiting group in the sidebar has it.
+      if (r.status === 'pending') { setResTab('results'); refreshHistory(); }
       track(id, r.id);
     } catch (e) {
       // A 409 carrying reasons is not a failure — it is the server asking before
@@ -1099,7 +1144,9 @@ function App() {
           messages: [{ kind: 'info', text: 'Confirm to continue. Nothing ran.', time: nowTime() }] });
         setConfirmRun({ id, runAtISO: runAtISO || null, sqlOverride: sqlOverride || null, reasons,
           target: (c2 ? c2.name : cur.conn) + ' / ' + (d2 ? d2.name : cur.db),
-          env: c2 ? c2.env : null, tier: qhClassify(sqlOverride || cur.sql).tier, scheduled: !!runAtISO });
+          env: c2 ? c2.env : null, tier: qhClassify(sqlOverride || cur.sql).tier, scheduled: !!runAtISO,
+          // The statement and the connection, for the echo and the target chip in the dialog.
+          sql: sqlOverride || cur.sql, conn: c2 || null });
         return;
       }
       // A lapsed grant is a STATE, not a failure toast: `403 access_expired`
@@ -1440,6 +1487,14 @@ function App() {
   const isAdminUser = !!user && (user.role === 'dba' || user.role === 'super');
   const adminWaiting = admin.queue.length + (admin.manualRuns || []).length;
   const modeEntry = (where) => isAdminUser ? <ModeEntry where={where} setView={setView} pendingCount={adminWaiting} /> : null;
+  // A bell item opens its subject (2026-10-24). `qhNotifSubject` reads it from the
+  // notification id. A request opens its tab or the History list. An admin item
+  // opens #admin/<section>, which pushes a history entry, so Back returns here.
+  const openSubject = (sub) => {
+    if (!sub) return;
+    if (sub.kind === 'request') openRequest(sub.id);
+    else if (sub.kind === 'admin' && isAdminUser) { window.location.hash = '#admin/' + sub.section; setView('admin'); }
+  };
   const sideEl = !t.hideSidebar && (
     <Sidebar modeEntry={modeEntry('side')} focusSearch={sideFocus} mode={sideMode} setMode={setSideMode} conns={conns} connsLoading={connsLoading} schemaCache={schemaCache} onLoadSchema={loadSchema} rolesCache={rolesCache} onLoadRoles={loadRoles}
       canRefresh={!!(user && user.role !== 'developer')} onRefreshSchema={refreshSchema}
@@ -1448,7 +1503,7 @@ function App() {
       saved={savedList} onLoadSaved={loadSaved} onDeleteSaved={deleteSaved}
       sessions={sessions} onSaveSession={() => setSessionModal(true)} onRestoreSession={restoreSession} onDeleteSession={deleteSession}
       scheduled={scheduled} onOpenScheduled={openScheduled} onCancelScheduled={cancelScheduled}
-      history={history} onLoadHistory={loadHistory}
+      history={history} onLoadHistory={loadHistory} pending={pendingReqs} onOpenPending={openPending} onResubmit={resubmitFrom} histFocus={histFocus}
       width={sideWidth} onResizerDown={onResizerDown} onResizerFit={fitSidebar}
       onRequestEndpoint={() => setReqOpen(true)} onRequestAuto={() => setAutoReqOpen(true)} onOpenTable={openTable} onNewQuery={newQueryOn} onNewTab={newTab}
       onOpenSqlFile={openSqlFile} onDownloadSql={() => requestDownloadSql(activeId)} canDownloadSql={activeHasSql} isSuper={isSuper} />
@@ -1493,7 +1548,7 @@ function App() {
       {pwOpen && <ChangePasswordScreen onCancel={() => setPwOpen(false)} />}
       <TopChrome resolvedDark={resolvedDark} theme={t.theme} setTheme={(v) => setTweak('theme', v)} user={user} onSignOut={signOut}
         onChangePassword={() => setPwOpen(true)} slackEnabled={slackOn}
-        view={view} onGoHome={goHome} role={(user && user.role) || 'developer'} lastSync={lastSync} onFeedback={() => setFeedbackOpen(true)} onWhatsNew={openWhatsNew} unseenNews={unseenNews} onDismissNews={markNewsSeen} />
+        view={view} onGoHome={goHome} role={(user && user.role) || 'developer'} lastSync={lastSync} onFeedback={() => setFeedbackOpen(true)} onWhatsNew={openWhatsNew} unseenNews={unseenNews} onDismissNews={markNewsSeen} onOpenSubject={openSubject} isAdminUser={isAdminUser} />
 
       {/* The editor ↔ admin switch sits at the head of the left column (CODE
           2026-09-23 (j) §3; see ModeEntry). */}
@@ -1539,6 +1594,7 @@ function App() {
               scheduled={scheduled} onOpenScheduled={openScheduled} onCancelScheduled={cancelScheduled}
               history={history} onLoadHistory={loadHistory}
               saved={savedList} onLoadSaved={loadSaved} onDeleteSaved={deleteSaved}
+              conns={conns} connsLoading={connsLoading} isSuper={isSuper}
               onBrowse={browseConnections} onWhatsNew={openWhatsNew} unseenNews={unseenNews} />
           ) : isWhatsNew ? (
             <WhatsNew />
@@ -1578,7 +1634,9 @@ function App() {
               <div style={{ height: resH, flexShrink: 0 }}>
                 <ResultsPanel colMeta={colMeta} tab={resTab} setTab={setResTab} result={tab.result} messages={tab.messages}
                   audit={tab.audit} status={tab.status} awaitingDba={tab.awaitingDba} runMs={tab.runMs} onExport={exportResult} plan={tab.plan} onToast={pushToast} reqId={tab.reqId}
-                  unmasked={resUnmasked} conn={resConn} onStatement={pickStatement} ranOn={tab.ranOn} />
+                  unmasked={resUnmasked} conn={resConn} onStatement={pickStatement} ranOn={tab.ranOn}
+                  pending={tab.status === 'pending' ? { since: tab.submittedAt || null, expiresAt: tab.expiresAt || null } : null}
+                  onWithdraw={cancelRun} outcome={tab.outcome || null} endNote={qhEndNote(tab.messages, tab.outcome)} onResubmit={() => resubmitFrom(tab)} slackEnabled={slackOn} />
               </div>
             </>
           )}
@@ -1595,7 +1653,8 @@ function App() {
       {feedbackOpen && <FeedbackModal user={user} view={view} onClose={() => setFeedbackOpen(false)} onSubmit={submitFeedback} />}
       {dlModal && <DownloadSqlModal defaultName={dlModal.name} onConfirm={performDownloadSql} onCancel={() => setDlModal(null)} />}
       {confirmRun && <ConfirmRunModal reasons={confirmRun.reasons} target={confirmRun.target} env={confirmRun.env}
-        tier={confirmRun.tier} scheduled={confirmRun.scheduled} onConfirm={confirmRunGo} onCancel={confirmRunCancel} />}
+        tier={confirmRun.tier} scheduled={confirmRun.scheduled} sql={confirmRun.sql} conn={confirmRun.conn}
+        onConfirm={confirmRunGo} onCancel={confirmRunCancel} />}
       {batchOpen && (
         <BatchModal tabs={tabs} activeId={activeId} onClose={() => setBatchOpen(false)} onSubmit={submitBatch} recent={reasons} />
       )}
@@ -1659,7 +1718,7 @@ function notifIcon(kind) {
   return <svg width="16" height="16" viewBox="0 0 24 24" {...p}><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>;
 }
 
-function NotificationBell({ unseenNews, onOpenNews, onDismissNews }) {
+function NotificationBell({ unseenNews, onOpenNews, onDismissNews, onOpenSubject, isAdminUser }) {
   // Real feed: GET /notifications (newest first), read state mirrored server-side
   // via POST /notifications/read so it follows the user across devices. The
   // localStorage mirror keeps the badge instant across reloads.
@@ -1667,6 +1726,18 @@ function NotificationBell({ unseenNews, onOpenNews, onDismissNews }) {
   const [open, setOpen] = useState(false);
   const [readIds, setReadIds] = useState(() => { try { const r = JSON.parse(localStorage.getItem('qh.notif.v1')); if (Array.isArray(r)) return r; } catch (e) {} return []; });
   useEffect(() => { try { localStorage.setItem('qh.notif.v1', JSON.stringify(readIds)); } catch (e) {} }, [readIds]);
+  // Browser notifications (2026-10-24). Off until the person turns the switch on
+  // in this menu. The permission prompt comes from that click and nowhere else.
+  // `raised` holds the ids that were already shown or seen, so an item raises one
+  // Notification and a reload does not raise it again.
+  const [browserOn, setBrowserOn] = useState(() => qhBrowserNotifStored());
+  const [browserWhy, setBrowserWhy] = useState('');
+  const raisedRef = useRef(null);
+  if (raisedRef.current === null) raisedRef.current = qhRaisedLoad();
+  const readRef = useRef(readIds);
+  readRef.current = readIds;
+  const browserRef = useRef(browserOn);
+  browserRef.current = browserOn;
   useEffect(() => {
     let alive = true;
     const load = () => qhApi.notifications().then(r => {
@@ -1675,12 +1746,37 @@ function NotificationBell({ unseenNews, onOpenNews, onDismissNews }) {
       setList(items);
       const srvRead = items.filter(n => n.read).map(n => n.id);
       if (srvRead.length) setReadIds(prev => [...new Set([...prev, ...srvRead])]);
+      if (browserRef.current) {
+        const done = new Set([...readRef.current, ...srvRead]);
+        qhRaiseBrowserNotifs(items, { Ctor: window.Notification, raised: raisedRef.current, isUnread: (n) => !done.has(n.id) && !n.read });
+        qhRaisedSave(raisedRef.current);
+      }
     }).catch(() => {});
     load();
     const iv = setInterval(load, 60000);
     return () => { alive = false; clearInterval(iv); };
   }, []);
   const isUnread = (n) => !readIds.includes(n.id);
+  // The switch. Turning it ON asks the browser (inside this click handler, as
+  // browsers require) and turns it off again when the answer is no. Everything in
+  // the feed at that moment counts as seen, so only LATER items raise one.
+  const toggleBrowser = () => {
+    if (browserOn) { setBrowserOn(false); qhBrowserNotifStore(false); setBrowserWhy(''); return; }
+    qhBrowserNotifEnable(window.Notification).then(res => {
+      setBrowserWhy(res.why || '');
+      if (!res.on) { setBrowserOn(false); qhBrowserNotifStore(false); return; }
+      list.forEach(n => raisedRef.current.add(String(n.id)));
+      qhRaisedSave(raisedRef.current);
+      setBrowserOn(true); qhBrowserNotifStore(true);
+    });
+  };
+  // A click marks the item read and opens its subject, when one can be read from
+  // the id. With no subject, the click only marks it read.
+  const openItem = (n) => {
+    markRead(n.id);
+    const sub = qhNotifSubject(n, { isAdmin: !!isAdminUser });
+    if (sub && onOpenSubject) { setOpen(false); onOpenSubject(sub); }
+  };
   // A pending changelog release shows as one extra unread "news" item at the top.
   const unread = list.filter(isUnread).length + (unseenNews ? 1 : 0);
   const markRead = (id) => {
@@ -1720,7 +1816,7 @@ function NotificationBell({ unseenNews, onOpenNews, onDismissNews }) {
               </button>
             )}
             {list.map(n => (
-              <button key={n.id} className={'qh-notif-item' + (isUnread(n) ? ' is-unread' : '')} onClick={() => markRead(n.id)}>
+              <button key={n.id} className={'qh-notif-item' + (isUnread(n) ? ' is-unread' : '')} onClick={() => openItem(n)}>
                 <span className={'qh-notif-ic k-' + n.kind}>{notifIcon(n.kind)}</span>
                 <span className="qh-notif-tx">
                   <span className="qh-notif-title">{n.title}</span>
@@ -1730,6 +1826,14 @@ function NotificationBell({ unseenNews, onOpenNews, onDismissNews }) {
                 {isUnread(n) && <span className="qh-notif-udot" />}
               </button>
             ))}
+          </div>
+          <div className="qh-notif-foot">
+            <label className="qh-notif-switch">
+              <input type="checkbox" role="switch" checked={browserOn} onChange={toggleBrowser} aria-describedby="qh-notif-browser-hint" />
+              <span className="qh-notif-switch-track" aria-hidden="true"><span className="qh-notif-switch-knob" /></span>
+              <span className="qh-notif-switch-label">Browser notifications</span>
+            </label>
+            <span className="qh-notif-switch-hint" id="qh-notif-browser-hint">{browserWhy || (browserOn ? 'On. A new item shows on your desktop.' : 'Off. Turn it on to see a new item on your desktop.')}</span>
           </div>
         </div>
       </>)}
@@ -1768,7 +1872,7 @@ function ModeEntry({ where, setView, pendingCount }) {
 }
 
 // ---------- Top chrome (logo + theme toggle) ----------
-function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePassword, view, onGoHome, role, lastSync, onFeedback, onWhatsNew, unseenNews, onDismissNews, slackEnabled }) {
+function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePassword, view, onGoHome, role, lastSync, onFeedback, onWhatsNew, unseenNews, onDismissNews, slackEnabled, onOpenSubject, isAdminUser }) {
   const toggle = () => setTheme(resolvedDark ? 'light' : 'dark');
   const [menu, setMenu] = useState(false);
   return (
@@ -1798,7 +1902,7 @@ function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePas
             ? <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/></svg>
             : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.8A8.5 8.5 0 1111.2 3a6.6 6.6 0 009.8 9.8z"/></svg>}
         </button>
-        <NotificationBell unseenNews={unseenNews} onOpenNews={onWhatsNew} onDismissNews={onDismissNews} />
+        <NotificationBell unseenNews={unseenNews} onOpenNews={onWhatsNew} onDismissNews={onDismissNews} onOpenSubject={onOpenSubject} isAdminUser={isAdminUser} />
         <div className="qh-user">
           <button className="qh-avatar-btn" onClick={() => setMenu(m => !m)} onBlur={() => setTimeout(() => setMenu(false), 140)} title={user ? qhPersonName(user.name) : ''}>
             <Avatar user={user} size={34} />
@@ -2076,7 +2180,7 @@ function RunOnToggle({ conn, runOn, tier, onRunOn, tight }) {
 // ---------- Action bar (target context + security + actions) ----------
 function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn }) {
   const runOnConflict = !!(runOnConn && runOn && runOn.mode === 'replica' && hasSql && !classify.empty && classify.tier !== 'RO');
-  const tierLabel = { RO: 'Read-only', RW: 'Read/Write', DDL: 'Schema (DDL)' }[classify.tier];
+  const tierLabel = qhTierProse(classify.tier);
   const highRisks = (riskHints || []).filter(h => h.level !== 'low');
   const schedBtnRef = useRef(null);
   const [schedPos, setSchedPos] = useState(null);
@@ -2088,10 +2192,14 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
     setSchedPos({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) });
     setSchedOpen(true);
   };
-  let primaryLabel = autoApprove ? 'Run' : 'Submit for approval';
+  let primaryLabel = autoApprove ? 'Run' : 'Submit for DBA approval';
   if (killed) primaryLabel = 'Paused (kill switch)';
   else if (runOnConflict && !busy) primaryLabel = 'Reads only';
-  else if (busy) primaryLabel = status === 'pending' ? 'Awaiting DBA approval…' : status === 'running' ? 'Running…' : 'Approved — running…';
+  else if (busy) primaryLabel = status === 'running' ? 'Running…' : 'Approved — running…';
+  // A request that waits for a DBA is not a button: a solid orange pill looked
+  // like something to click. The action bar says the state in a pale pill and
+  // keeps the one action (Withdraw) as a ghost button beside it.
+  const waitingForDba = busy && status === 'pending';
   // A tight bar drops the three secondary buttons to icons (each keeps its own
   // title), which is what buys the target strip room to keep the whole
   // identifier instead of clipping the name down to the env tag. Measured, like
@@ -2115,6 +2223,11 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
 
   return (
     <div className={'qh-actionbar' + (tight ? ' is-tight' : '')} ref={barRef}>
+      {waitingForDba ? (
+        <span className="qh-wait-pill" role="status" title="A DBA decides this request. You can withdraw it until then.">
+          <span className="qh-pulse" />Waiting for a DBA
+        </span>
+      ) : (
       <button className={'qh-btn qh-btn-primary qh-run' + (autoApprove ? '' : ' is-approval') + (busy ? ' is-waiting' : '')}
         data-kbd={QH_KBD.run}
         onClick={() => onPrimary()} disabled={!hasSql || busy || tierExceedsGrant || killed || runOnConflict}
@@ -2124,6 +2237,7 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
         {!busy && !autoApprove && <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>}
         {primaryLabel}
       </button>
+      )}
 
       {/* One button for "stop this", from the moment there is something to
           stop. What it DOES depends on how far the request got, and the label
@@ -2150,7 +2264,7 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
                stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
             <rect x="6" y="6" width="12" height="12" rx="1.5" />
           </svg>
-          {status === 'running' ? 'Stop' : 'Cancel request'}
+          {status === 'running' ? 'Stop' : 'Withdraw'}
         </button>
       )}
 
@@ -2163,7 +2277,10 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
             disabled, say it here loudest — it is the last moment before the
             query goes to a retired instance that will answer anyway. */}
         {conn && conn.disabled && <span className="qh-conn-off" title="Disabled — retired or parked. It will still answer, with stale data.">disabled</span>}
-        {conn && <span className={'qh-envtag-sm env-' + conn.env} title={conn.env}>{conn.env === 'production' ? 'PROD' : conn.env === 'staging' ? 'STG' : conn.env}</span>}
+        {/* 2026-10-23 · Who runs the machine and what it is, before the name, as the portal's design shows it: provider logo, env tag, engine logo, then name / db. A connection with no provider tag shows no logo, not a placeholder. */}
+        {conn && qhProvider(conn) && <img className="qh-prov-logo qh-target-prov" src={qhProviderLogo(qhTags(conn).provider)} alt={qhProvider(conn).label} title={qhHosting(conn) || qhProvider(conn).label} draggable={false} />}
+        {conn && <span className={'qh-envtag-sm env-' + conn.env} title={conn.env}>{qhEnvChipWord(conn.env)}</span>}
+        {conn && <img className="qh-engine-logo qh-target-eng" src={qhEngineLogo(conn)} alt={qhEngine(conn).label} title={qhEngine(conn).label} draggable={false} />}
         {/* The alias, not a dash: naming WHICH target is unreachable is the
             difference between a broken tab and an answerable one. */}
         <span className={'qh-target-conn' + (!conn && connAlias ? ' is-gone' : '')}>{conn ? conn.name : (connAlias || '—')}</span>
@@ -2287,21 +2404,34 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
 // Enter is always the safe answer. Confirming is a deliberate click on a
 // danger-weighted button — and nothing more than that. This is a working tool
 // someone uses dozens of times a day: no typing the table name, no countdown.
-function ConfirmRunModal({ reasons, target, env, tier, scheduled, onConfirm, onCancel }) {
+// 2026-10-24: a red icon tile, the target as a chip (provider logo, env tag,
+// engine logo, name / db), the statement echoed in a scrollable code box, a solid
+// red primary button and a ghost Cancel. Cancel carries `data-autofocus`, so the
+// dialog opens with Cancel focused (QhModal reads the marker) and Enter still
+// cancels. Escape cancels. Confirming stays a deliberate click.
+function ConfirmRunModal({ reasons, target, env, tier, scheduled, sql, conn, onConfirm, onCancel }) {
   return (
     <QhModal onClose={onCancel} panelClass="qh-conf-modal">
       <div className="qh-modal-head">
-        <div>
-          <div className="qh-modal-title">{reasons.length > 1 ? 'Confirm before these run' : 'Confirm before this runs'}</div>
-          <div className="qh-modal-sub">Nothing ran — {scheduled ? 'QueryHub did not set the schedule' : 'the database did not change'}. Read what this does, then confirm.</div>
+        <div className="qh-conf-headrow">
+          <span className="qh-conf-ic" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L14.7 3.9a2 2 0 00-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+          </span>
+          <div>
+            <div className="qh-modal-title">{reasons.length > 1 ? 'Confirm before these run' : 'Confirm before this runs'}</div>
+            <div className="qh-modal-sub">Nothing ran — {scheduled ? 'QueryHub did not set the schedule' : 'the database did not change'}. Read what this does, then confirm.</div>
+          </div>
         </div>
       </div>
       <div className="qh-modal-body">
         <div className="qh-conf-target">
-          {env && <span className={'qh-envtag-sm env-' + env} title={env}>{env === 'production' ? 'PROD' : env === 'staging' ? 'STG' : env}</span>}
+          {conn && qhProvider(conn) && <img className="qh-prov-logo qh-conf-prov" src={qhProviderLogo(qhTags(conn).provider)} alt={qhProvider(conn).label} draggable={false} />}
+          {env && <span className={'qh-envtag-sm env-' + env} title={env}>{qhEnvChipWord(env)}</span>}
+          {conn && <img className="qh-engine-logo qh-conf-eng" src={qhEngineLogo(conn)} alt={qhEngine(conn).label} draggable={false} />}
           <span className="qh-conf-tgt">{target}</span>
           {tier && <TierBadge tier={tier} sm />}
         </div>
+        {sql ? <pre className="qh-conf-sql" tabIndex={0} aria-label="The statement"><code>{sql}</code></pre> : null}
         <ul className="qh-conf-reasons">
           {reasons.map((r, i) => (
             <li key={i} className="qh-conf-reason">
@@ -2312,8 +2442,8 @@ function ConfirmRunModal({ reasons, target, env, tier, scheduled, onConfirm, onC
         </ul>
       </div>
       <div className="qh-modal-foot">
-        <button className="qh-btn qh-btn-ghost" onClick={onCancel}>Cancel</button>
-        <button className="qh-btn qh-btn-danger qh-conf-go" onClick={onConfirm}>{scheduled ? 'Schedule it' : 'Run it'}</button>
+        <button className="qh-btn qh-btn-ghost" data-autofocus onClick={onCancel}>Cancel</button>
+        <button className="qh-btn qh-conf-go" onClick={onConfirm}>{scheduled ? 'Schedule it' : 'Run it'}</button>
       </div>
     </QhModal>
   );
@@ -2537,7 +2667,7 @@ function BatchModal({ tabs, activeId, onClose, onSubmit, recent }) {
       <div className="qh-modal-head">
         <div>
           <div className="qh-modal-title">Submit as a batch</div>
-          <div className="qh-modal-sub">Queue several queries into one approval round. A DBA approves (or rejects) the whole bundle at once in Slack; each result comes back here.</div>
+          <div className="qh-modal-sub">Queue several queries into one approval round. A DBA approves (or denies) the whole bundle at once in Slack; each result comes back here.</div>
         </div>
         <button className="qh-icon-btn" onClick={onClose} aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
       </div>

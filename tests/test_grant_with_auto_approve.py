@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from queryhub import grants
+from queryhub import auto_approve_limits, grants
 
 ADMIN, DEV = "U0EXAMPLE001", "U0EXAMPLE002"
 NOW = datetime.now(timezone.utc)
@@ -86,7 +86,9 @@ def env(monkeypatch):
 def _grant(**kw):
     args = dict(granter_id=ADMIN, granter_name="Example Admin", grantee_id=DEV,
                 grantee_profile={}, target_id=7, mode="ro", databases=None,
-                reason=None, notify=True, auto_approve_tier="ro")
+                reason=None, notify=True, auto_approve_tier="ro",
+                # A waiver needs an end (`auto_approve_limits`).
+                expires_at=LATER)
     args.update(kw)
     return grants.grant(**args)
 
@@ -198,7 +200,6 @@ def test_an_all_databases_waiver_on_the_server_covers_every_database(env):
 
 @pytest.mark.parametrize("held,kw", [
     (dict(expires_at=SOON), dict(expires_at=LATER)),               # ends first
-    (dict(expires_at=SOON), dict(expires_at=None)),                # ends at all
     (dict(max_tier="ro"), dict(mode="rw", auto_approve_tier="rw")),  # narrower tier
     (dict(target_server_id=8), {}),                                # another server
     (dict(target_server_id=7, database_name="other"), dict(databases=["app"])),
@@ -247,7 +248,7 @@ def test_grant_many_decides_coverage_per_person(env, monkeypatch):
     out = grants.grant_many(granter_id=ADMIN, granter_name=None,
                             grantees=[(DEV, {}), ("U0EXAMPLE003", {})], target_id=7,
                             mode="rw", databases=None, reason=None,
-                            auto_approve_tier="ro")
+                            auto_approve_tier="ro", expires_at=LATER)
     assert env.txns == 1 and env.committed
     assert [w[0] for w in env.cur.waivers] == ["U0EXAMPLE003"]
     assert out[0]["auto_approve"]["skipped"][0]["covered_by"] == "30"
@@ -277,3 +278,57 @@ def test_covering_needs_no_database():
                    "database_name": "app", "starts_at": PAST, "expires_at": None}
     assert grants.covering_waiver([team_shaped], "ro", 7, "app", LATER) is team_shaped
     assert grants.covering_waiver([team_shaped], "ro", 7, None) is None
+
+
+def test_a_waiver_with_no_end_is_only_covered_by_one_with_no_end():
+    """The pure predicate still says it. `grant` no longer asks it with no end,
+    because a waiver written by the app needs one."""
+    held = _waiver(expires_at=SOON)
+    assert grants.covering_waiver([held], "ro", 7, None, None) is None
+    assert grants.covering_waiver([_waiver()], "ro", 7, None, None) is not None
+
+
+# --- the end and the tier of a waiver ----------------------------------------
+
+@pytest.mark.parametrize("end", [None, NOW + timedelta(days=400), PAST])
+def test_a_waiver_with_no_end_or_too_long_an_end_is_refused_before_anything_runs(env, end):
+    with pytest.raises(auto_approve_limits.EndRefused):
+        _grant(expires_at=end)
+    assert env.txns == 0 and env.cur.statements == []
+    with pytest.raises(auto_approve_limits.EndRefused):
+        grants.grant_many(granter_id=ADMIN, granter_name=None, grantees=[(DEV, {})],
+                          target_id=7, mode="ro", databases=None, reason=None,
+                          auto_approve_tier="ro", expires_at=end)
+    assert env.txns == 0
+
+
+def test_a_grant_without_a_waiver_may_still_have_no_end(env):
+    out = _grant(auto_approve_tier=None, expires_at=None)
+    assert out["auto_approve"] is None
+    assert env.cur.grants_written[0][5] is None
+
+
+def test_a_waiver_row_is_never_written_with_no_end_even_if_the_pre_check_is_skipped(env):
+    """`_write_waivers` checks again where the row is written."""
+    with pytest.raises(auto_approve_limits.EndRefused):
+        grants._write_waivers(env.cur, plan=[{"database": None, "covered_by": None}],
+                              tier="ro", granter_id=ADMIN, granter_name=None,
+                              grantee_id=DEV, target_id=7, reason=None, expires_at=None)
+    assert env.cur.waivers == []
+
+
+@pytest.mark.parametrize("mode", ["ro", "rw", "ddl"])
+def test_a_ddl_waiver_is_refused_with_tier_not_allowed(env, mode):
+    with pytest.raises(auto_approve_limits.TierRefused) as e:
+        _grant(mode=mode, auto_approve_tier="ddl")
+    assert e.value.code == "tier_not_allowed"
+    assert e.value.message == "An auto-approve rule can be RO or RW. Schema changes always need a DBA."
+    assert env.txns == 0
+
+
+def test_a_waiver_row_is_never_written_for_ddl_even_if_the_pre_check_is_skipped(env):
+    with pytest.raises(auto_approve_limits.TierRefused):
+        grants._write_waivers(env.cur, plan=[{"database": None, "covered_by": None}],
+                              tier="ddl", granter_id=ADMIN, granter_name=None,
+                              grantee_id=DEV, target_id=7, reason=None, expires_at=LATER)
+    assert env.cur.waivers == []

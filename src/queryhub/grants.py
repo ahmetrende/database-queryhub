@@ -25,7 +25,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from . import auto_approve, db
+from . import auto_approve, auto_approve_limits, db
 
 log = logging.getLogger(__name__)
 
@@ -183,8 +183,8 @@ def check_waiver_tier(mode: str, auto_approve_tier: str | None) -> str | None:
         return None
     tier = str(auto_approve_tier).strip().lower()
     if tier == "ddl":
-        raise ValueError("Schema changes are always reviewed: auto-approve "
-                         "cannot be DDL.")
+        raise auto_approve_limits.TierRefused(
+            "tier_not_allowed", auto_approve_limits.TIER_MESSAGE)
     if tier not in _WAIVER_TIERS:
         raise ValueError(f"Auto-approve tier must be RO or RW, not "
                          f"{auto_approve_tier!r}.")
@@ -196,6 +196,22 @@ def check_waiver_tier(mode: str, auto_approve_tier: str | None) -> str | None:
                          f"{grant_tier.upper()} access it comes with. Pick "
                          f"{grant_tier.upper()} or lower.")
     return tier
+
+
+def check_waiver_end(auto_approve_tier: str | None, expires_at) -> None:
+    """Refuse a waiver that would have no end, or too long an end.
+
+    A waiver written with a grant takes the grant's end. A grant may have no
+    end, but an auto-approve rule may not (`auto_approve_limits`). So when a
+    waiver is asked for, the grant needs an end that a rule can have. Raises
+    `auto_approve_limits.EndRefused`, a ValueError. No waiver asked for, no
+    check: a grant with no end stays possible.
+
+    Called before anything is written, as `check_waiver_tier` is, and again
+    where the waiver row is written (`_write_waivers`)."""
+    if auto_approve_tier is None:
+        return
+    auto_approve_limits.check_end(expires_at)
 
 
 def waiver_reason(reason: str | None) -> str:
@@ -330,6 +346,11 @@ def _write_waivers(cur, *, plan: list[dict], tier: str, granter_id: str,
     """
     written: list[dict] = []
     skipped: list[dict] = []
+    # The row below is an auto-approve rule made in the app, so it needs an end.
+    # Checked here too, where the row is written, so that a caller that skipped
+    # `check_waiver_end` cannot write one with no end.
+    auto_approve_limits.check_end(expires_at)
+    auto_approve_limits.check_tier(tier)
     for item in plan:
         cover = item["covered_by"]
         if cover is not None:
@@ -402,6 +423,7 @@ def grant(
             "access to it would allow tampering with the audit log and the "
             "admin list.")
     waiver_tier = check_waiver_tier(mode, auto_approve_tier)
+    check_waiver_end(waiver_tier, expires_at)
     plan = (_waiver_plan(grantee_id, waiver_tier, target_id, databases, expires_at)
             if waiver_tier else None)
 
@@ -552,6 +574,7 @@ def grant_many(
             "access to it would allow tampering with the audit log and the "
             "admin list.")
     waiver_tier = check_waiver_tier(mode, auto_approve_tier)
+    check_waiver_end(waiver_tier, expires_at)
     if not grantees:
         return []
     plans = {gid: _waiver_plan(gid, waiver_tier, target_id, databases, expires_at)

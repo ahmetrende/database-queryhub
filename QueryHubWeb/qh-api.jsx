@@ -341,7 +341,10 @@ const qhApi = {
                  + '/schema-refresh' + (database ? '?database=' + encodeURIComponent(database) : ''),
                  { method: 'POST' })),
   adminEndpointReqs:()    => qhFetch('/admin/endpoint-requests'),
-  adminDecideEndpoint:(id, approve, note) => qhFetch('/admin/endpoint-requests/' + encodeURIComponent(String(id).replace(/^er_/, '')) + '/decision', { method: 'POST', body: JSON.stringify({ approve: !!approve, note: note || null }) }),
+  // `end` (approve only) is { expiresAt } or { noEnd: true }. Without it the
+  // server ends the grant in `access_grant_default_days` days. Only these two
+  // keys go out, so a stray field cannot reach the body.
+  adminDecideEndpoint:(id, approve, note, end) => qhFetch('/admin/endpoint-requests/' + encodeURIComponent(String(id).replace(/^er_/, '')) + '/decision', { method: 'POST', body: JSON.stringify({ approve: !!approve, note: note || null, ...(end && end.noEnd ? { noEnd: true } : {}), ...(end && end.expiresAt ? { expiresAt: end.expiresAt } : {}) }) }),
   // Teams + people directory (super-admin).
   adminPeople:     ()     => qhFetch('/admin/people'),
   adminTeams:      ()     => qhFetch('/admin/teams'),
@@ -359,7 +362,8 @@ const qhApi = {
   // synchronously inside the view's effect: a 404 lands in its own .catch and
   // the screen says "Could not load the trail" instead of unmounting the panel.
   adminAuditSearch:(body) => qhFetch('/admin/audit/search', { method: 'POST', body: JSON.stringify(body || {}) }),
-  adminMetrics:    ()     => qhFetch('/admin/metrics'),
+  // `window` is '7d' or '30d' (PLA-1592 U8). Without it, every request counts.
+  adminMetrics:    (window) => qhFetch('/admin/metrics' + (window ? '?window=' + encodeURIComponent(window) : '')),
   adminFeedback:   ()     => qhFetch('/admin/feedback'),
   adminConfig:     ()      => qhFetch('/admin/config'),
   adminConfigSave: (changes) => qhFetch('/admin/config', { method: 'PUT', body: JSON.stringify({ changes }) }),
