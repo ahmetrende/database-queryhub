@@ -209,6 +209,8 @@ The web editor shows where a request stands and what ran. The admin screens work
 
 ### Changed
 
+- **The image lock moves to `certifi` 2026.10.23 and `setuptools` 84.2.1.** The
+  release audit found known advisories in the two older pins. No other pin changes.
 - **An auto-approve rule needs an end date, and is never DDL.** A rule that the
   app creates has an end, at most `auto_approve_max_days` days from now (new
   setting, default 90, from 1 to 365; migration 193). A request with no end, or
