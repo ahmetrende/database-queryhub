@@ -9,6 +9,10 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+## [1.0.38] — 2026-10-25
+
+The results grid sorts, filters and totals in the page, and a result downloads as Excel CSV, JSON, Markdown or SQL INSERT. The editor formats SQL. A person can withdraw an auto-approve window request, and a request shows its steps. An approver can approve RO or RW, never DDL. The release adds migrations 195 and 196. Patch bump.
+
 ### Added
 
 - **Sort, filter, sum and JSON view in the results grid.** Each column header has a sort
@@ -32,7 +36,7 @@ frontend and the endpoints it calls are explicitly outside it.
 - **More ways to download a result.** `GET /api/queries/{id}/result.json`, `result.md` and
   `result.sql` return the stored, masked result as JSON, a Markdown table or INSERT
   statements for a placeholder table name. A result with more rows than
-  `result_export_max_rows` (default 100000) answers 413. `result.csv?bom=1` adds a UTF-8
+  `result_export_max_rows` (default 100000, migration 196) answers 413. `result.csv?bom=1` adds a UTF-8
   byte order mark, so that Excel shows Turkish letters right. The stored file does not
   change. Add `?statement=N` to pick one table of a multi-statement result.
 - **The audit screen says when one rule does most of the auto-approving.** `GET
