@@ -178,6 +178,7 @@ default instead of stopping the process.
 | `csv_import_enabled` | `off` | Allow CSV → table imports. |
 | `csv_size_mb` | `10` | Default result CSV size cap. |
 | `csv_size_mb_ceiling` | `100` | Hard ceiling that the size cap can scale to for large results. |
+| `result_export_max_rows` | `100000` | Most rows that a JSON, Markdown or SQL INSERT download can hold. A bigger result answers 413 and the person downloads the CSV. |
 | `import_max_mb` | `50` | Max uploaded CSV size. |
 | `import_max_rows` | `100000` | Max rows per CSV import. |
 | `import_timeout_sec` | `600` | CSV import timeout. |

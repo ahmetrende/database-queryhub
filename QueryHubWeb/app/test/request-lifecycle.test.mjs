@@ -17,7 +17,7 @@ import { bareWindow, loadInto } from './_load.mjs';
 import { page, sliceFunction, web, tokensCss, isVendorTokens, jsdomOpts as opts } from './_mount.mjs';
 
 const pure = loadInto(bareWindow(), 'qh-data.jsx');
-const FILES = ['qh-data.jsx', 'qh-modal.jsx', 'qh-login.jsx', 'qh-editor.jsx', 'qh-panels.jsx'];
+const FILES = ['qh-data.jsx', 'qh-modal.jsx', 'qh-login.jsx', 'qh-editor.jsx', 'qh-results-tools.jsx', 'qh-panels.jsx'];
 
 // ---------- pure rules ----------
 

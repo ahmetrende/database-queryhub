@@ -1,5 +1,5 @@
 // 2026-10-24 (operator request): the env chip (.qh-envtag-sm) is SMALLER on purpose:
-// 10px, weight 600, padding 1px 6px, set in a separate block at the end of the
+// 9px, weight 500, padding 1px 5px, set in a separate block at the end of the
 // style. The 11px floor below therefore no longer covers it. The other chips keep it.
 // Chips (2026-10-24): the env, tier, status, origin, conn-state, conn-off and
 // reqrow-partial chips have text of at least 11px, are in sentence case except
@@ -45,11 +45,11 @@ function lastRule(sel) {
   return found;
 }
 
-test('the env chip is small: 10px, weight 600, padding 1px 6px, one line, never upper-cased by CSS', () => {
+test('the env chip is small: 9px, weight 500, padding 1px 5px, one line, never upper-cased by CSS', () => {
   const body = lastRule('.qh-envtag-sm');
-  assert.equal(px(body), 10);
-  assert.match(body, /font-weight:\s*600/);
-  assert.match(body, /padding:\s*1px 6px/);
+  assert.equal(px(body), 9);
+  assert.match(body, /font-weight:\s*500/);
+  assert.match(body, /padding:\s*1px 5px/);
   assert.match(body, /white-space:\s*nowrap/);
   assert.match(body, /flex-shrink:\s*0/);
   assert.doesNotMatch(body, /text-transform:\s*uppercase/);

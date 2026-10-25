@@ -11,6 +11,30 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Added
 
+- **Sort, filter, sum and JSON view in the results grid.** Each column header has a sort
+  button. It cycles ascending, descending and the original order. A filter box above the
+  grid keeps the rows that contain the text. Write `column:value` to search one column.
+  Both work on results of up to 5,000 rows. A larger result shows the filter box off,
+  with the reason as its tooltip. A dragged column width stays while you sort. When you
+  select two or more cells, a bar shows the count, sum, average, minimum and maximum. A
+  JSON cell opens as indented text in the full value view, and a Raw button shows the
+  original.
+- **The Export menu offers the new formats.** It has four more items: CSV for Excel, JSON,
+  Markdown table and SQL INSERT. They call the `result.*` routes that the entry below
+  describes. A refusal, such as a result that is too large, shows its message in a toast
+  and saves no file. The menu opens upward when the window has little room below it.
+- **Format SQL in the editor.** Shift+Alt+F lays out the selected text, or the whole text
+  when the selection is empty. It uses the `sql-formatter` package with the dialect of the
+  connection's engine. It changes spaces and line breaks only, and keeps case, quotes,
+  casts and comments. A Format button next to the word wrap button does the same. One
+  Undo restores the text and the selection. The raw prototype has no formatter, so the
+  key does nothing there and the button is absent.
+- **More ways to download a result.** `GET /api/queries/{id}/result.json`, `result.md` and
+  `result.sql` return the stored, masked result as JSON, a Markdown table or INSERT
+  statements for a placeholder table name. A result with more rows than
+  `result_export_max_rows` (default 100000) answers 413. `result.csv?bom=1` adds a UTF-8
+  byte order mark, so that Excel shows Turkish letters right. The stored file does not
+  change. Add `?statement=N` to pick one table of a multi-statement result.
 - **The audit screen says when one rule does most of the auto-approving.** `GET
   /api/admin/audit/insight` looks at the queries that QueryHub approved by itself
   in the last 30 days and groups them by rule and by the tier of the query: RO,

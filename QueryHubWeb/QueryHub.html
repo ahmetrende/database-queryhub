@@ -2441,8 +2441,9 @@
   .qh-cancel-run.is-terminate { color: var(--fg-danger); border-color: var(--danger-adaptive-strong); }
   .qh-cancel-run.is-terminate:hover:not(:disabled) { background: var(--danger-adaptive-light); border-color: var(--stroke-danger); }
   .qh-export { position: relative; }
-  .qh-export-menu { position: absolute; right: 0; top: 100%; z-index: 40; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); box-shadow: var(--shadow-medium); padding: 4px; min-width: 130px; }
-  .qh-export-menu button { width: 100%; text-align: left; padding: 8px 10px; background: transparent; border: 0; border-radius: var(--r-xs); cursor: pointer; font-family: inherit; font-size: 13px; color: var(--fg-primary); }
+  .qh-export-menu { position: absolute; right: 0; top: 100%; z-index: 40; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); box-shadow: var(--shadow-medium); padding: 4px; min-width: 230px; white-space: nowrap; overflow-y: auto; }
+  .qh-export-menu.is-up { top: auto; bottom: 100%; }
+  .qh-export-menu button { display: block; width: 100%; text-align: left; padding: 8px 10px; background: transparent; border: 0; border-radius: var(--r-xs); cursor: pointer; font-family: inherit; font-size: 13px; color: var(--fg-primary); }
   .qh-export-menu button:hover { background: var(--brand-adaptive-light); color: var(--fg-accent); }
 
   /* plan view */
@@ -2753,8 +2754,9 @@
 
   /* ---------- 2026-10-24 · Smaller env chip (operator request) ----------
      SEPARATE BLOCK. The solid orange PROD pill was too big in the sidebar tree
-     and tired the eyes. Only the SIZE changes here: 10px text, weight 600,
-     padding 1px 6px, still a pill. The colours stay the tokens set above, so
+     and tired the eyes. Only the SIZE changes here: 9px text, weight 500,
+     padding 1px 5px, still a pill. (Second request the same day: it was 10px,
+     weight 600, padding 1px 6px, and still looked too big.) The colours stay the tokens set above, so
      contrast does not move (hand-computed from the token hex values, and pinned
      by app/test/chip-styles.test.mjs):
        light PROD  ink #1F2229 on #D97706  5.00
@@ -2763,7 +2765,7 @@
      above, and it replaces the 24x14 provider logo of the tree rows with 20x12.
      The chip never wraps (nowrap, no shrink), so the NAME ellipsizes first.
      The old admin table chip (.qh-envtag) is not touched. */
-  .qh-envtag-sm { font-size: 10px; font-weight: 600; letter-spacing: 0.02em; line-height: 1.4; padding: 1px 6px; white-space: nowrap; flex-shrink: 0; }
+  .qh-envtag-sm { font-size: 9px; font-weight: 500; letter-spacing: 0.02em; line-height: 1.4; padding: 1px 5px; white-space: nowrap; flex-shrink: 0; }
   .qh-tr > .qh-tr-prov { width: 20px; height: 12px; }
 
   /* ---------- 2026-10-24 · Admin batch 3b: connections banner, revoke confirm, scope form, masking filter ----------
@@ -2873,6 +2875,23 @@
   .qh-audinsight-lines { flex: 1 1 320px; min-width: 0; text-wrap: pretty; }
   .qh-audinsight-line + .qh-audinsight-line { margin-top: 4px; }
   .qh-audinsight .qh-btn-ghost { color: var(--fg-primary); flex-shrink: 0; }
+  /* ---------- 2026-10-25 · Results tools ----------
+     Sort buttons in the header, a filter bar above the grid and a sum bar above
+     the pager. Tokens only, so dark mode follows. Small and quiet on purpose. */
+  .qh-th-sort { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 4px; padding: 0; border: 0; border-radius: var(--r-xs); background: transparent; color: var(--fg-tertiary); cursor: pointer; opacity: 0.55; vertical-align: middle; }
+  .qh-th-sort:hover, .qh-th-sort:focus-visible { opacity: 1; background: var(--adaptive-medium); color: var(--fg-primary); }
+  .qh-th-sort.is-on { opacity: 1; color: var(--fg-accent); }
+  .qh-res-tools { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 4px 12px; border-bottom: 1px solid var(--stroke-medium); background: var(--bg-light); font-size: 12px; color: var(--fg-tertiary); }
+  .qh-res-filter { flex: 0 1 280px; min-width: 120px; height: 26px; padding: 0 8px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-xs); font-family: inherit; font-size: 12px; color: var(--fg-primary); }
+  .qh-res-filter:disabled { opacity: 0.5; cursor: not-allowed; }
+  .qh-res-filter:focus-visible { outline: 2px solid var(--stroke-accent); outline-offset: -1px; }
+  .qh-res-filter-clear { width: 22px; height: 22px; padding: 0; border: 0; border-radius: var(--r-xs); background: transparent; color: var(--fg-secondary); font-size: 15px; line-height: 1; cursor: pointer; }
+  .qh-res-filter-clear:hover { background: var(--adaptive-medium); color: var(--fg-primary); }
+  .qh-res-tools-note { font-family: var(--qh-mono); white-space: nowrap; }
+  .qh-res-tools-note.is-error { color: var(--fg-danger); }
+  [data-theme='dark'] .qh-res-tools-note.is-error { color: var(--fg-primary); }
+  .qh-res-sum { flex-shrink: 0; display: flex; align-items: center; gap: 14px; padding: 3px 12px; border-top: 1px solid var(--stroke-medium); background: var(--bg-light); font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-secondary); white-space: nowrap; overflow: hidden; }
+  .qh-res-pretty[aria-pressed='true'] { color: var(--fg-accent); }
 </style>
 </head>
 <body>
@@ -2903,6 +2922,9 @@
 <script type="text/babel" src="qh-api-mock.jsx"></script>
 <script type="text/babel" src="qh-modal.jsx"></script>
 <script type="text/babel" src="qh-login.jsx"></script>
+<script type="text/babel" src="qh-sqlformat.jsx"></script>
+<script type="text/babel" src="qh-result-download.jsx"></script>
+<script type="text/babel" src="qh-results-tools.jsx"></script>
 <script type="text/babel" src="qh-editor.jsx"></script>
 <script type="text/babel" src="qh-panels.jsx"></script>
 <script type="text/babel" src="qh-admin-data.jsx"></script>

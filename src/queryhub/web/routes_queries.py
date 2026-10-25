@@ -27,14 +27,14 @@ from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 from .. import people
 from .. import admins, audit as audit_mod
 from .. import (cancellation, core_submit, db, engines, origins, pending_expiry, pii,
-               pre_flight, profile_sync, query_safety, requesters)
+               pre_flight, profile_sync, query_safety, requesters, result_export)
 from .. import config as cfg
 from . import deps, mapping, sessions
 from .routes_data import _alias_of, _target_by_alias
@@ -1501,7 +1501,7 @@ def query_rows(request_id: int, offset: int = 0, limit: int = 100,
 
 
 @router.get("/queries/{request_id}/result.csv")
-def query_result_csv(request_id: int, statement: int | None = None,
+def query_result_csv(request_id: int, statement: int | None = None, bom: int = 0,
                      claims: dict = Depends(deps.current_user)):
     """The stored result. `statement` picks one table out of a multi-statement
     archive, so Export beside a statement switcher downloads what is on screen.
@@ -1509,6 +1509,9 @@ def query_result_csv(request_id: int, statement: int | None = None,
     Without it the whole artefact is served, which for a multi-statement result
     is the zip of every table — the old behaviour, and still the right answer
     for "give me everything".
+
+    `bom=1` puts a UTF-8 byte order mark in front of a CSV download, so that
+    Excel shows Turkish letters right. It does nothing for a zip or an XLSX.
     """
     deps.require_whitelisted(claims)
     row = _own_request(request_id, claims["sub"])
@@ -1526,10 +1529,14 @@ def query_result_csv(request_id: int, statement: int | None = None,
             shutil.copyfileobj(fh, out)
         audit_mod.log(request_id, claims["sub"], claims.get("name"),
                       "web_result_downloaded",
-                      {"file": p.name, "statement": statement})
+                      {"file": p.name, "statement": statement,
+                       **({"bom": True} if bom else {})})
+        name = f"queryhub_result_{request_id}_q{statement}.csv"
+        if bom:
+            return _csv_with_bom(Path(tmp_path), name,
+                                 BackgroundTask(os.remove, tmp_path))
         return FileResponse(
-            tmp_path, media_type="text/csv",
-            filename=f"queryhub_result_{request_id}_q{statement}.csv",
+            tmp_path, media_type="text/csv", filename=name,
             background=BackgroundTask(os.remove, tmp_path))
 
     # A zip is a zip. It used to be served as the XLSX media type, because the
@@ -1538,10 +1545,124 @@ def query_result_csv(request_id: int, statement: int | None = None,
     media = {".csv": "text/csv", ".zip": "application/zip"}.get(
         p.suffix.lower(),
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with_bom = bool(bom) and p.suffix.lower() == ".csv"
     audit_mod.log(request_id, claims["sub"], claims.get("name"),
-                  "web_result_downloaded", {"file": p.name})
+                  "web_result_downloaded",
+                  {"file": p.name, **({"bom": True} if with_bom else {})})
+    if with_bom:
+        return _csv_with_bom(p, f"queryhub_result_{request_id}.csv")
     return FileResponse(p, media_type=media,
                         filename=f"queryhub_result_{request_id}{p.suffix}")
+
+
+_BOM = b"\xef\xbb\xbf"
+_CHUNK = 1 << 16
+
+
+def _csv_with_bom(path: Path, filename: str,
+                  background: BackgroundTask | None = None) -> StreamingResponse:
+    """Serve a CSV file with a UTF-8 byte order mark in front.
+
+    Excel reads a CSV in the local code page unless the file starts with a BOM,
+    so Turkish letters arrive broken. The BOM goes into this download only. The
+    stored file stays plain, because the grid, the Slack upload and Copy as CSV
+    read it, and a BOM there would stick to the first column name.
+    """
+    def body():
+        yield _BOM
+        with path.open("rb") as fh:
+            while chunk := fh.read(_CHUNK):
+                yield chunk
+    return StreamingResponse(
+        body(), media_type="text/csv; charset=utf-8", background=background,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                 "Content-Length": str(path.stat().st_size + len(_BOM))})
+
+
+# Downloads in other shapes. Each reads the stored, already PII-masked CSV, so
+# a new format can never show more than the CSV does.
+_EXPORTS = {
+    "json": (result_export.stream_json, "application/json"),
+    "md": (result_export.stream_markdown, "text/markdown; charset=utf-8"),
+    "sql": (result_export.stream_sql_insert, "application/sql"),
+}
+
+
+def _check_export_size(p: Path, index: int, cap: int) -> None:
+    """Refuse an empty file or a result with more than `cap` rows, before the
+    answer starts. Reads at most cap + 1 rows."""
+    csv.field_size_limit(cfg.get_int("csv_size_mb_ceiling", 100) * 1024 * 1024)
+    with _open_statement(p, index) as fh:
+        reader = csv.reader(fh)
+        if next(reader, None) is None:
+            raise deps._error(409, "conflict", "This result has no table to export.")
+        for n, _row in enumerate(reader, start=1):
+            if n > cap:
+                raise deps._error(
+                    413, "too_large",
+                    f"This result has more than {cap:,} rows. Download it as CSV "
+                    "instead.")
+
+
+def _export_body(p: Path, index: int, make):
+    csv.field_size_limit(cfg.get_int("csv_size_mb_ceiling", 100) * 1024 * 1024)
+    with _open_statement(p, index) as fh:
+        reader = csv.reader(fh)
+        header = next(reader, None)
+        if header is None:
+            return
+        yield from make(_dedup_cols(header), reader)
+
+
+def _export_response(request_id: int, statement: int | None, claims: dict,
+                     fmt: str) -> StreamingResponse:
+    deps.require_whitelisted(claims)
+    row = _own_request(request_id, claims["sub"])
+    if row["status"] != "completed":
+        raise deps._error(409, "conflict", "The result is not ready.")
+    p = _result_file(row)
+    if p.suffix.lower() == ".zip" and statement is None:
+        raise deps._error(
+            409, "conflict",
+            "This result has several tables. Ask for one table with "
+            "?statement=N.")
+    if p.suffix.lower() not in (".csv", ".zip"):
+        raise deps._error(409, "conflict",
+                          "QueryHub cannot export this stored result in this "
+                          "format. Download the file directly.")
+    index = statement or 1
+    _check_export_size(p, index, max(1, cfg.get_int("result_export_max_rows", 100000)))
+    make, media = _EXPORTS[fmt]
+    audit_mod.log(request_id, claims["sub"], claims.get("name"),
+                  "web_result_downloaded",
+                  {"format": fmt, "file": p.name,
+                   **({"statement": statement} if statement else {})})
+    suffix = f"_q{statement}" if statement else ""
+    return StreamingResponse(
+        _export_body(p, index, make), media_type=media,
+        headers={"Content-Disposition":
+                 f'attachment; filename="queryhub_result_{request_id}{suffix}.{fmt}"'})
+
+
+@router.get("/queries/{request_id}/result.json")
+def query_result_json(request_id: int, statement: int | None = None,
+                      claims: dict = Depends(deps.current_user)):
+    """The stored result as JSON: the column names and one object per row."""
+    return _export_response(request_id, statement, claims, "json")
+
+
+@router.get("/queries/{request_id}/result.md")
+def query_result_markdown(request_id: int, statement: int | None = None,
+                          claims: dict = Depends(deps.current_user)):
+    """The stored result as a Markdown table."""
+    return _export_response(request_id, statement, claims, "md")
+
+
+@router.get("/queries/{request_id}/result.sql")
+def query_result_sql(request_id: int, statement: int | None = None,
+                     claims: dict = Depends(deps.current_user)):
+    """The stored result as INSERT statements for a placeholder table name."""
+    return _export_response(request_id, statement, claims, "sql")
 
 
 @router.get("/queries/{request_id}/result.xlsx")

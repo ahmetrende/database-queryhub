@@ -13,7 +13,8 @@
 # scan proves nothing, so the commit is refused rather than waved through.
 # `git commit --no-verify` is the deliberate escape hatch.
 #
-# Install:  cp scripts/hooks/commit-msg .git/hooks/ && chmod +x .git/hooks/commit-msg
+# Install (maintainer):  cp scripts/hooks/commit-msg .git/hooks/ && chmod +x .git/hooks/commit-msg
+# Install (contributor): scripts/install_hooks.sh   (sets core.hooksPath to scripts/hooks)
 set -u
 
 # Resolve the repo from the hook's own location, so a clone anywhere works.
@@ -21,11 +22,24 @@ REPO=$(git rev-parse --show-toplevel)
 VENV="$REPO/.venv/bin/python3"
 [ -x "$VENV" ] || VENV=python3
 
-# The denylist is read from the bot DB; its connection lives in the operator's
-# env file. Absent (a fresh clone, CI), the scan fails closed and says so.
+# The scanner reads the denylist from the bot DB. Two places can hold the
+# connection, in this order:
+#   1. the maintainer's env file, when this account can read it.
+#   2. a contributor's own credentials file (their own read-only DB role).
+#      It wins when it exists.
+# Absent both (a fresh clone, CI), the scan fails closed and says so.
+CONTRIB_ENV="${QH_DENYLIST_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/queryhub/denylist.env}"
 set -a
 # shellcheck disable=SC1091
-[ -f /etc/queryhub/env ] && . /etc/queryhub/env
+[ -r /etc/queryhub/env ] && . /etc/queryhub/env
+if [ -r "$CONTRIB_ENV" ]; then
+  # shellcheck disable=SC1090
+  . "$CONTRIB_ENV"
+  # The bot's encrypted store is not readable for a contributor, and the
+  # explicit password makes it unnecessary. A path that does not exist makes
+  # the config loader skip the store instead of stopping on a permission error.
+  export SECRETS_ENC_PATH=/nonexistent/queryhub/no-secrets.enc
+fi
 set +a
 
 "$VENV" "$REPO/scripts/check_repo_clean.py" --message "$1"

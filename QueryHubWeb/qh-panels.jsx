@@ -1432,6 +1432,10 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
 // ---------- Bottom results panel ----------
 function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement, ranOn, pending, onWithdraw, outcome, endNote, onResubmit, slackEnabled, timeline }) {
   const [exp, setExp] = React.useState(false);
+  // The Export menu is long. The panel sits at the bottom of the window, so the
+  // menu measures the room below and above the button when it opens, and goes
+  // up when the room below is short. It scrolls when neither side fits it.
+  const [expPos, setExpPos] = React.useState({ up: false, max: null });
   // Click-away / Escape, not mouse-out: the 6px gap between the button and the
   // menu used to close it mid-reach. See qhUseDismiss.
   const closeExp = React.useCallback(() => setExp(false), []);
@@ -1569,16 +1573,33 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
                 Copy CSV
               </button>
               <div className="qh-export" ref={expRef}>
-                <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setExp(e => !e)}
+                <button className="qh-btn qh-btn-ghost qh-btn-sm"
+                        onClick={() => {
+                          if (!exp && expRef.current) {
+                            const r = expRef.current.getBoundingClientRect();
+                            const below = window.innerHeight - r.bottom;
+                            const above = r.top;
+                            const up = below < 340 && above > below;
+                            setExpPos({ up, max: Math.max(160, Math.floor((up ? above : below) - 12)) });
+                          }
+                          setExp(e => !e);
+                        }}
                         aria-haspopup="menu" aria-expanded={exp}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
                   Export
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"/></svg>
                 </button>
                 {exp && (
-                  <div className="qh-export-menu">
+                  <div className={'qh-export-menu' + (expPos.up ? ' is-up' : '')}
+                       style={expPos.max ? { maxHeight: expPos.max } : undefined}>
                     <button onClick={() => { setExp(false); onExport('csv'); }}>Download CSV (.csv)</button>
                     <button onClick={() => { setExp(false); onExport('xlsx'); }}>Download Excel (.xls)</button>
+                    <button onClick={() => { setExp(false); onExport('csv-bom'); }}
+                            title="A byte order mark makes Excel show accented letters right">Download CSV for Excel (.csv)</button>
+                    <button onClick={() => { setExp(false); onExport('json'); }}>Download JSON (.json)</button>
+                    <button onClick={() => { setExp(false); onExport('md'); }}>Download Markdown table (.md)</button>
+                    <button onClick={() => { setExp(false); onExport('sql'); }}
+                            title="INSERT statements for a table named table_name">Download SQL INSERT (.sql)</button>
                     <div className="qh-ctx-sep" />
                     <button onClick={() => { setExp(false); onExport('copy-csv'); }}>Copy all as CSV</button>
                     <button onClick={() => { setExp(false); onExport('copy-tsv'); }}>Copy all as TSV</button>
@@ -1684,7 +1705,13 @@ function PlanView({ plan }) {
 }
 
 const QH_PAGE_SIZES = [100, 500, 1000];
-function ResultsView({ result, status, onToast, colMeta, unmasked }) {
+function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked }) {
+  // Sort and filter (2026-10-25). `result` below is the derived view. It is the
+  // same object as `baseResult` when there is no sort and no filter, so paging,
+  // selection and copy work on the sorted and filtered rows with no other change.
+  // The hook call stays before every early return.
+  const tools = qhUseResultView(baseResult);
+  const result = tools.view;
   // Column header tooltip. Two sources, in this order:
   //
   //   1. `result.colTypes[c]` — what the DRIVER reported for this exact result
@@ -1725,7 +1752,10 @@ function ResultsView({ result, status, onToast, colMeta, unmasked }) {
   // admin queue's mapQueue).
   const piiSet = React.useMemo(() => new Set(((result && result.piiCols) || [])
     .map(c => (typeof c === 'string' ? c : (c && c.col))).filter(Boolean)), [result]);
-  React.useEffect(() => { setPage(0); setColW({}); setSel(new Set()); setColSel(new Set()); setAnchor(null); setCursor(null); }, [result]);
+  // Column widths reset for a new result only. A sort or filter changes
+  // `result` but keeps the widths the user dragged.
+  React.useEffect(() => { setColW({}); }, [baseResult]);
+  React.useEffect(() => { setPage(0); setSel(new Set()); setColSel(new Set()); setAnchor(null); setCursor(null); }, [result]);
 
   React.useEffect(() => {
     const up = () => { dragRef.current = null; resizeRef.current = null; };
@@ -1982,6 +2012,8 @@ function ResultsView({ result, status, onToast, colMeta, unmasked }) {
   });
   React.useEffect(() => {
     const onKey = (e) => {
+      // The filter box keeps its own copy, select all and arrow keys.
+      if (document.activeElement && document.activeElement.className === 'qh-res-filter') return;
       if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C')
           && (sel.size || colSel.size) && gridFocused()) {
         // The gate is "is the grid focused", the same test Ctrl+A uses. It
@@ -2051,9 +2083,47 @@ function ResultsView({ result, status, onToast, colMeta, unmasked }) {
   const from = total === 0 ? 0 : offset + 1;
   const to = Math.min(offset + rows.length, total);
 
+  // Sum bar. It reads the cells that `sel` points at on this page, or whole
+  // columns (first 5,000 rows) when columns are selected. Plain code, no hook.
+  let sumInfo = null;
+  if (colSel.size || sel.size) {
+    const vals = [];
+    let n = 0;
+    if (colSel.size) {
+      const all = result.slice(0, Math.min(total, 5000));
+      [...colSel].forEach(ci => { n += all.length; all.forEach(r => vals.push(r[cols[ci]])); });
+    } else {
+      sel.forEach(k => {
+        const [r, ci] = k.split(':').map(Number);
+        if (rows[r] && cols[ci] != null) { n += 1; vals.push(rows[r][cols[ci]]); }
+      });
+    }
+    if (n >= 2) sumInfo = { n, agg: qhResAggregate(vals) };
+  }
+  const resNum = (x) => Number(x).toLocaleString('en-US', { maximumFractionDigits: 6 });
+  const filterText = tools.filter ? String(tools.filter) : '';
+  const peekPretty = peek ? qhPrettyJson(peek.value) : null;
+  const peekShown = peekPretty && !peek.raw ? peekPretty : (peek ? peek.value : '');
+
   return (
     <div className="qh-resultsview" tabIndex={0} ref={viewRef} role="grid"
          aria-label="Query result" aria-rowcount={total}>
+      <div className="qh-res-tools">
+        <input type="text" className="qh-res-filter" aria-label="Filter rows"
+          placeholder="Filter rows, or column:value"
+          value={filterText} disabled={!tools.enabled}
+          title={tools.enabled ? undefined : tools.reason}
+          onChange={(e) => tools.setFilter(e.target.value)} />
+        {filterText && tools.enabled && (
+          <button type="button" className="qh-res-filter-clear" aria-label="Clear filter" title="Clear filter"
+            onClick={() => tools.setFilter('')}>×</button>
+        )}
+        {tools.loading && <span className="qh-res-tools-note">Loading all rows…</span>}
+        {tools.error && <span className="qh-res-tools-note is-error">{String(tools.error)}</span>}
+        {filterText && !tools.loading && !tools.error && (
+          <span className="qh-res-tools-note">{tools.shown.toLocaleString()} of {tools.total.toLocaleString()} rows</span>
+        )}
+      </div>
       <div className="qh-table-scroll" ref={scrollRef}>
         {/* Explicit total width: `table-layout: fixed` is only honoured when
             the table itself has a width — with the stylesheet's `width: auto`
@@ -2078,6 +2148,7 @@ function ResultsView({ result, status, onToast, colMeta, unmasked }) {
                 const colOn = colSel.has(ci);
                 return (
                   <th key={c} className={colOn ? 'is-sel' : ''} onMouseDown={(e) => colDown(ci, e)}
+                    aria-sort={tools.sort && tools.sort.col === c ? (tools.sort.dir === 'desc' ? 'descending' : 'ascending') : undefined}
                     onContextMenu={(e) => {
                       // Right-clicking a column you haven't selected selects
                       // it first, so "Copy" always means what you pointed at.
@@ -2086,6 +2157,19 @@ function ResultsView({ result, status, onToast, colMeta, unmasked }) {
                     }}
                     title={colTitle(c)}>
                     <span className="qh-th-name">{c}{pii && <span className={'qh-pii-dot' + (unmasked ? ' is-open' : '')} title={unmasked ? 'PII — returned unmasked (real values)' : 'Masked (PII)'} />}</span>
+                    {tools.enabled && (() => {
+                      const dir = tools.sort && tools.sort.col === c ? tools.sort.dir : null;
+                      const d = dir === 'asc' ? 'M12 19V5M5 12l7-7 7 7' : dir === 'desc' ? 'M12 5v14M5 12l7 7 7-7' : 'M8 9l4-4 4 4M8 15l4 4 4-4';
+                      return (
+                        <button type="button" className={'qh-th-sort' + (dir ? ' is-on' : '')}
+                          aria-label={'Sort by ' + c}
+                          title={dir === 'asc' ? 'Sort descending' : dir === 'desc' ? 'Clear sort' : 'Sort ascending'}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onClick={() => tools.toggleSort(c)}>
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
+                        </button>
+                      );
+                    })()}
                     <span className="qh-col-grip" onMouseDown={(e) => startGrip(c, e)} />
                   </th>
                 );
@@ -2161,13 +2245,26 @@ function ResultsView({ result, status, onToast, colMeta, unmasked }) {
               <b>{peek.col}</b>
               <span>{peek.value.length.toLocaleString()} chars</span>
               <span className="qh-flex1" />
+              {peekPretty && (
+                <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-res-pretty" aria-pressed={!peek.raw}
+                  title={peek.raw ? 'Show formatted JSON' : 'Show the original text'}
+                  onClick={() => setPeek(p => ({ ...p, raw: !p.raw }))}>{peek.raw ? 'Raw' : 'Pretty'}</button>
+              )}
               <button className="qh-btn qh-btn-ghost qh-btn-sm"
-                onClick={() => qhCopyText(peek.value).then(ok => onToast && onToast(ok ? 'Cell copied.' : 'Could not copy — the browser blocked clipboard access.'))}>Copy</button>
+                onClick={() => qhCopyText(peekShown).then(ok => onToast && onToast(ok ? 'Cell copied.' : 'Could not copy — the browser blocked clipboard access.'))}>Copy</button>
               <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setPeek(null)}>Close</button>
             </div>
-            <textarea readOnly value={peek.value} autoFocus onFocus={(e) => e.target.select()} />
+            <textarea readOnly value={peekShown} autoFocus onFocus={(e) => e.target.select()} />
           </div>
         </>
+      )}
+      {sumInfo && (
+        <div className="qh-res-sum" role="status">
+          <span>{sumInfo.n.toLocaleString()} cells</span>
+          {sumInfo.agg.numeric > 0 && (
+            <span>Sum {resNum(sumInfo.agg.sum)} · Avg {resNum(sumInfo.agg.avg)} · Min {resNum(sumInfo.agg.min)} · Max {resNum(sumInfo.agg.max)}</span>
+          )}
+        </div>
       )}
       <div className="qh-pager">
         <div className="qh-pager-left">

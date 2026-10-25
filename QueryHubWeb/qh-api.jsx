@@ -187,6 +187,15 @@ const qhApi = {
                  + (statement ? '?statement=' + statement : ''),
   resultXlsxUrl:(id, statement) => API_BASE + '/queries/' + id + '/result.xlsx'
                  + (statement ? '?statement=' + statement : ''),
+  // The other shapes of a result: 'csv-bom' (CSV with a byte order mark, for Excel),
+  // 'json', 'md' and 'sql'. `statement` works as it does for the two above.
+  resultFormatUrl:(id, format, statement) => {
+    const q = [];
+    if (format === 'csv-bom') q.push('bom=1');
+    if (statement) q.push('statement=' + statement);
+    return API_BASE + '/queries/' + id + '/result.' + (format === 'csv-bom' ? 'csv' : format)
+           + (q.length ? '?' + q.join('&') : '');
+  },
   saveSnippet: (body)  => qhFetch('/saved', { method: 'POST', body: JSON.stringify(body) }),
   deleteSnippet:(id)   => qhFetch('/saved/' + id, { method: 'DELETE' }),
   // What this person could ask for: enabled connections they cannot reach, with

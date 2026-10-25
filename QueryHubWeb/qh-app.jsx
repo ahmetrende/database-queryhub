@@ -4,7 +4,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // Keyboard-shortcut labels (mac-aware) surfaced as hover tooltips on action buttons.
 const QH_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
-const QH_KBD = { run: QH_MAC ? '⌘ ↵  ·  F5' : 'Ctrl ↵  ·  F5', newq: QH_MAC ? '⌘ ⌥ N' : 'Ctrl Alt N', wrap: QH_MAC ? '⌥ Z' : 'Alt Z',
+const QH_KBD = { run: QH_MAC ? '⌘ ↵  ·  F5' : 'Ctrl ↵  ·  F5', newq: QH_MAC ? '⌘ ⌥ N' : 'Ctrl Alt N', wrap: QH_MAC ? '⌥ Z' : 'Alt Z', fmt: QH_MAC ? '⇧ ⌥ F' : 'Shift Alt F',
   stmt: QH_MAC ? '⌥ ← / →' : 'Alt ← / →' };
 window.QH_KBD = QH_KBD;
 
@@ -1228,6 +1228,7 @@ function App() {
   // wrapped line costs the one-line-one-number reading of the gutter.
   const [wrap, setWrap] = useState(() => { try { return localStorage.getItem('qh.wrap.v1') === '1'; } catch (e) { return false; } });
   useEffect(() => { try { localStorage.setItem('qh.wrap.v1', wrap ? '1' : '0'); } catch (e) {} }, [wrap]);
+  const [fmtSig, setFmtSig] = useState(0);   // the Format button bumps it, SqlEditor formats
 
   // Destructive-statement confirmation. The server answers a DROP / TRUNCATE /
   // unqualified UPDATE with a question instead of running it; confirming re-sends
@@ -1358,6 +1359,24 @@ function App() {
       qhCopyText(lines.join('\n')).then(ok => pushToast(ok
         ? 'Copied ' + n.toLocaleString() + ' row' + (n > 1 ? 's' : '') + (capped ? ' (first ' + CAP.toLocaleString() + ')' : '') + ' as ' + (sep === '\t' ? 'TSV' : 'CSV') + '.'
         : 'Could not copy — the browser blocked clipboard access.'));
+      return;
+    }
+
+    // CSV for Excel, JSON, Markdown and SQL INSERT: built by the server from the
+    // stored, masked result. Needs the request id, so there is no client fallback.
+    const shape = QH_RESULT_FORMATS[format];
+    if (shape) {
+      if (!tab.qid) { pushToast('This result has no request id yet. Try again in a moment.'); return; }
+      const stN = tab.result && tab.result.statementCount > 1 ? tab.result.statement : undefined;
+      const url = qhApi.resultFormatUrl(tab.qid, format, stN);
+      const name = 'queryhub_result_' + tab.qid + (stN ? '_q' + stN : '') + '.' + shape.ext;
+      if (shape.viaLink) {
+        const a = document.createElement('a'); a.href = url; a.rel = 'noopener'; a.click();
+        pushToast('Downloading full result as ' + shape.label + '…');
+      } else {
+        pushToast('Preparing ' + shape.label + '…');
+        qhDownloadResultFile(url, name).then(r => pushToast(r.ok ? 'Downloaded ' + shape.label + '.' : r.message));
+      }
       return;
     }
 
@@ -1582,7 +1601,7 @@ function App() {
                 : <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M16.5 9l-3 3 3 3"/></svg>}
             </button>
             <EditorTabs tabs={tabsForBar} activeId={activeId} onSelect={selectTab} onClose={(id) => requestClose('one', id)} onNew={newTab}
-              wrap={wrap} onToggleWrap={() => setWrap(w => !w)}
+              wrap={wrap} onToggleWrap={() => setWrap(w => !w)} onFormat={() => setFmtSig(n => n + 1)}
               onCloseOthers={(id) => requestClose('others', id)} onCloseRight={(id) => requestClose('right', id)} onCloseAll={() => requestClose('all', activeId)} onDuplicate={duplicateTab} onRename={renameTab} onCopySql={copyTabSql} onDownloadSql={requestDownloadSql} onReorder={reorderTabs} />
           </div>
 
@@ -1628,7 +1647,7 @@ function App() {
                 onRequest={() => setReqOpen(true)} onDismiss={() => patch(activeId, { expired: null })} />
 
               <div className="qh-ed-host">
-                <SqlEditor value={tab.sql} onChange={onCode} docId={tab.id} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} />
+                <SqlEditor value={tab.sql} onChange={onCode} docId={tab.id} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} formatSignal={fmtSig} />
               </div>
 
               <div className="qh-res-grip" onMouseDown={onDragStart}><span /></div>

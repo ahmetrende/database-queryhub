@@ -2022,7 +2022,7 @@ function resultDataUrl(id, statement) {
   if (r.kind !== 'table') return 'data:text/csv;charset=utf-8,' + encodeURIComponent('affected\n' + (r.affected || 0));
   const cap = Math.min(r.total, 5000);
   const esc = (v) => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-  const lines = [r.cols.join(',')].concat(r.slice(0, cap).map(row => row.map(esc).join(',')));
+  const lines = [r.cols.join(',')].concat(r.slice(0, cap).map(row => (Array.isArray(row) ? row : r.cols.map(c => row[c])).map(esc).join(',')));
   return 'data:text/csv;charset=utf-8,' + encodeURIComponent(lines.join('\n'));
 }
 
@@ -2358,6 +2358,7 @@ const qhApi = {
   // XLSX media type (CODE brief 2026-08-21 (d)).
   resultCsvUrl: (id, statement) => resultDataUrl(id, statement),
   resultXlsxUrl: (id, statement) => resultDataUrl(id, statement),
+  resultFormatUrl: (id, format, statement) => resultDataUrl(id, statement),
   // POST /queries/{id}/cancel — one endpoint, three outcomes. The pre-execution
   // states withdraw the request (it never touches the database); running kills
   // the statement; anything terminal is a no-op. Callers must not collapse

@@ -10,6 +10,8 @@ this page when QueryHub is the right shape.
   login. Both surfaces share the *same* submit → approve → execute → audit core.
   Approvals always arrive in Slack. Either surface serves results as CSV/XLSX
   with server-side paging.
+  The web also downloads a result as JSON, Markdown or SQL INSERT statements, and as a CSV
+  with a byte order mark for Excel.
 - **Multiple engines** — **PostgreSQL** and **SQL Server** both have the full
   three-tier model. A pluggable `engines.py` spec classifies each statement and
   routes the driver (psycopg / pyodbc, including read-only routing for SQL

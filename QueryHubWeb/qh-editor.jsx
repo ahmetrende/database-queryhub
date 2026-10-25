@@ -524,7 +524,7 @@ function qhStarExpansion(sql, caret, schema, engineId, live) {
 }
 const QH_AC_TYPE_LABEL ={ keyword: 'kw', table: 'table', column: 'col', database: 'db', system: 'system', function: 'fn', expand: 'all cols' };
 
-function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, schema, engineId, focusSignal, revealRange, docId }) {
+function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, schema, engineId, focusSignal, formatSignal, revealRange, docId }) {
   const taRef = React.useRef(null);
   const preRef = React.useRef(null);
   const gutRef = React.useRef(null);
@@ -718,6 +718,17 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     requestAnimationFrame(() => { const ta = taRef.current; if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; } });
   }, [focusSignal]);
 
+  // Format when the parent bumps formatSignal (the Format button in the tab bar).
+  // The first value is not a request, so a remount does not format by itself.
+  const fmtSeen = React.useRef(formatSignal || 0);
+  React.useEffect(() => {
+    if (!formatSignal || formatSignal === fmtSeen.current) return;
+    fmtSeen.current = formatSignal;
+    setAc(null);
+    formatNow();
+    requestAnimationFrame(() => { const ta = taRef.current; if (ta) ta.focus(); });
+  }, [formatSignal]);
+
   // Select a span the parent points at — the hidden password, when Run stopped
   // on it — so the next keystroke replaces the placeholder.
   React.useEffect(() => {
@@ -840,6 +851,24 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = next; });
   };
 
+  // Format SQL. The key (Shift+Alt+F) and the tab-bar button both come here. The
+  // selection if there is one, else the whole text. One undo step. A missing
+  // formatter, a failure or an unchanged text changes nothing. The textarea keeps
+  // its selection when it loses focus, so a click on the button still formats
+  // the part that you selected.
+  const formatNow = () => {
+    const ta = taRef.current;
+    if (!ta) return;
+    const s = ta.selectionStart, en = ta.selectionEnd, part = s !== en;
+    const src = part ? value.slice(s, en) : value;
+    const out = typeof qhFormatSql === 'function' ? qhFormatSql(src, engineId) : null;
+    if (out == null || out === src) return;
+    const next = part ? value.slice(0, s) + out + value.slice(en) : out;
+    const end = part ? s + out.length : out.length;
+    restoreSel.current = { text: next, sel: [end, end] };
+    commit(next, 'format', [s, en], [end, end]);
+  };
+
   const onKey = (e) => {
     // Undo / redo. The letter is read from e.key, the one printed on the
     // user's layout; e.code only when e.key is not a Latin letter, so a
@@ -855,6 +884,14 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
         && (e.key === 'c' || e.key === 'C' || e.key === 'x' || e.key === 'X')
         && e.target.selectionStart === e.target.selectionEnd) {
       lineClip(e, e.key === 'x' || e.key === 'X');
+      return;
+    }
+    // Format SQL: Shift+Alt+F. e.code, not e.key: Alt changes e.key on a Mac.
+    // The selection if there is one, else the whole text. One undo step. A
+    // missing formatter, a failure or an unchanged text changes nothing.
+    if (e.shiftKey && e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyF') {
+      e.preventDefault(); setAc(null);
+      formatNow();
       return;
     }
     if (e.key === 'F5') { e.preventDefault(); setAc(null); onRun && onRun(); return; }
@@ -1002,7 +1039,7 @@ const QH_TAB_ICN = {
   all: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9l6 6M15 9l-6 6"/></svg>,
 };
 
-function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWrap, onCloseOthers, onCloseRight, onCloseAll, onDuplicate, onRename, onCopySql, onDownloadSql, onReorder }) {
+function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWrap, onFormat, onCloseOthers, onCloseRight, onCloseAll, onDuplicate, onRename, onCopySql, onDownloadSql, onReorder }) {
   const [kb, setKb] = React.useState(false);
   const [dragId, setDragId] = React.useState(null);
   const [overId, setOverId] = React.useState(null);
@@ -1066,7 +1103,7 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
   const [editId, setEditId] = React.useState(null);
   const [draft, setDraft] = React.useState('');
   const cancelledRef = React.useRef(false);
-  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current line'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Tab', 'Indent'], ['⌥ / Alt + Z', 'Toggle word wrap'], ['⌥ / Alt + ← →', 'Previous / next result'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
+  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current line'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Tab', 'Indent'], ['⌥ / Alt + Z', 'Toggle word wrap'], ['⇧ + ⌥ / Alt + F', 'Format SQL'], ['⌥ / Alt + ← →', 'Previous / next result'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
   const beginRename = (t) => { if (t.kind) return; setMenu(null); setEditId(t.id); setDraft(t.name); };
   const openMenu = (e, id) => { e.preventDefault(); e.stopPropagation(); setKb(false); setMenu({ x: Math.min(e.clientX, window.innerWidth - 200), y: e.clientY, id }); };
   React.useEffect(() => {
@@ -1158,6 +1195,17 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
           </>
         );
       })()}
+      {/* Format SQL sits next to word wrap in the same pinned cluster. It does one
+          thing and keeps no state, so it is a plain icon button. It is absent when
+          the build has no formatter (the raw prototype), because a button that does
+          nothing is worse than none. */}
+      {onFormat && typeof window.qhFormatSql === 'function' && window.__qhSqlFormatter && (
+        <button className="qh-kb-btn" onClick={onFormat}
+          data-kbd={'Format SQL  ·  ' + ((window.QH_KBD || {}).fmt || 'Shift Alt F')}
+          aria-label="Format SQL">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h16"/><path d="M4 10h10"/><path d="M4 14h16"/><path d="M4 18h10"/></svg>
+        </button>
+      )}
       {/* Word wrap lives in the tab bar's pinned cluster rather than in a
           toolbar of its own: the row is already there and never scrolls, so a
           per-editor view switch costs 34px and no new surface. State is on the

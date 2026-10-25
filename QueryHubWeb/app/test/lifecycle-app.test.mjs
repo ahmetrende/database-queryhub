@@ -20,7 +20,7 @@ const require_ = createRequire(import.meta.url);
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 const BEFORE_MOCK = ['tweaks-panel.jsx', 'qh-data.jsx'];
-const AFTER_MOCK = ['qh-modal.jsx', 'qh-login.jsx', 'qh-editor.jsx', 'qh-panels.jsx',
+const AFTER_MOCK = ['qh-modal.jsx', 'qh-login.jsx', 'qh-editor.jsx', 'qh-results-tools.jsx', 'qh-panels.jsx',
   'qh-admin-data.jsx', 'qh-admin-access.jsx', 'qh-admin-person.jsx', 'qh-admin-effective.jsx', 'qh-admin-roles.jsx', 'qh-admin-mask.jsx',
   'qh-admin-insights.jsx', 'qh-admin-audit.jsx', 'qh-admin-config.jsx', 'qh-admin.jsx', 'qh-whatsnew.jsx', 'qh-home.jsx', 'qh-app.jsx'];
 

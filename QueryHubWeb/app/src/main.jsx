@@ -9,6 +9,14 @@ import './qh-data.jsx';
 import './qh-version.js'; // build-stamp override for QH_VERSION (generated)
 import './qh-modal.jsx';  // QhModal shell used by qh-panels + qh-app
 import './qh-login.jsx';
+// New in the 2026-10-25 round. The bridge puts the npm formatter on window, then
+// qh-sqlformat.jsx defines qhFormatSql, which qh-editor.jsx calls from its key handler.
+import './sqlformat-bridge.js';
+import './qh-sqlformat.jsx';
+// New in the 2026-10-25 round. qh-app.jsx calls qhDownloadResultFile and reads QH_RESULT_FORMATS.
+import './qh-result-download.jsx';
+// New in the 2026-10-25 round. ResultsView calls qhUseResultView, qhResAggregate and qhPrettyJson.
+import './qh-results-tools.jsx';
 import './qh-editor.jsx';
 import './qh-panels.jsx';
 import './qh-home.jsx';

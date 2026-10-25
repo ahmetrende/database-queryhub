@@ -15,6 +15,7 @@ considering a contribution.
 ## Pull requests
 
 - Open one PR per change. We review small, focused diffs faster.
+- The maintainer merges and deploys. Open a pull request and do not merge to `main`.
 - Bash / Python / SQL: follow the style of the files that you edit.
   Python is PEP-8-ish. Comments explain *why*. Code explains *what*.
 - Update `docs/OPERATIONS.md` and `docs/SCHEMA.md` if your change
