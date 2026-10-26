@@ -7,6 +7,8 @@ after the pod cutover it named tables that were empty, and the paste failed.
 The requester's own attempted query stays on the card. That is information for
 the admin, not a recipe.
 """
+from types import SimpleNamespace
+
 from queryhub.slack_app import access
 
 
@@ -56,7 +58,10 @@ def test_no_fence_when_nothing_was_attempted():
 
 
 def test_the_card_says_what_approve_does():
-    text = _texts(access.admin_dm_blocks(_request(), None))
+    """For a request that names a connection. The case with no connection is in
+    tests/test_access_card_no_connection.py."""
+    connection = SimpleNamespace(id=7, alias="prod-main", host="db.example.internal")
+    text = _texts(access.admin_dm_blocks(_request(), connection))
     assert "Approve" in text
     assert "per-user grant" in text
     assert "default RO" in text

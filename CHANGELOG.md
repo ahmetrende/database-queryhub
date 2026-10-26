@@ -11,6 +11,14 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **The access-request card is honest when the request names no connection.** With the
+  request-access list off, every typed server has no connection. The card said that
+  Approve gives the requester a per-user grant, and the confirm dialog asked
+  "Approve and grant?". Approve only marks such a request approved. It grants no access.
+  The card now says so and tells the admin to match the typed server to a connection and
+  grant access in the Grants screen. The dialog asks "Approve without a grant?". A request
+  that names a connection keeps the old text.
+
 - **Two routes no longer show which connection names exist.** `POST
   /auto-approve-requests` answered 404 for a name that does not exist, and for
   one that does it went on to a 403 or to a 400 about the tier. `POST /saved`

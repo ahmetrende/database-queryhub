@@ -290,11 +290,22 @@ def admin_dm_blocks(access_request: dict, target: targets.TargetServer | None,
     # after the pod cutover it named tables that were empty, and the paste
     # failed.
     blocks.append({"type": "divider"})
+    # A request that names no connection (a typed server that nobody matched,
+    # which is every request while the list is off) cannot be granted:
+    # `access_requests.decide` flips the status and skips the grant. The card
+    # says so, because an admin who reads "gives a grant" believes the access
+    # exists.
+    no_connection = target is None
     blocks.append({
         "type": "section",
         "text": {
             "type": "mrkdwn",
             "text": (
+                ":wrench: This request names no connection. *Approve* only "
+                "marks it approved. It grants no access. Match the typed "
+                "server to a connection, then grant access in the Grants "
+                "screen."
+                if no_connection else
                 ":wrench: *Approve* gives the requester a per-user grant. "
                 "The grant uses the requested tier (default RO) and the "
                 "listed database."
@@ -313,10 +324,16 @@ def admin_dm_blocks(access_request: dict, target: targets.TargetServer | None,
                 "text": {"type": "plain_text", "text": "Approve"},
                 "value": str(req_id),
                 "confirm": {
-                    "title": {"type": "plain_text", "text": "Approve and grant?"},
+                    "title": {"type": "plain_text",
+                              "text": ("Approve without a grant?" if no_connection
+                                       else "Approve and grant?")},
                     "text": {
                         "type": "mrkdwn",
                         "text": (
+                            "This request names no connection. Approve marks "
+                            "it approved and tells the user that a DBA will "
+                            "finalize the access. It creates no grant."
+                            if no_connection else
                             "Approve creates the per-user grant for this "
                             "request automatically, at the requested tier, for "
                             "the listed database. Then it notifies the user."
