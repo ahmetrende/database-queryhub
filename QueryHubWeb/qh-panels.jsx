@@ -1095,6 +1095,10 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
 // The server refuses a reason shorter than this (EndpointRequestIn.reason,
 // min_length 5). The dialog says so before Send, not after a 422.
 const QH_REQ_REASON_MIN = 5;
+// 2026-10-19: the list is OFF by default (`request_access_list_enabled`). It named
+// and located every database for every person on the whitelist, so for the
+// default install `GET /requestable` answers `listed: false` and this form opens
+// straight on the free-text route, with no way back to a list that is not there.
 function RequestAccessModal({ onClose, onSubmit, load }) {
   const [rows, setRows] = React.useState(null);      // null = still loading
   const [loadErr, setLoadErr] = React.useState(null);
@@ -1105,11 +1109,17 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
   const [reason, setReason] = React.useState('');
   const [free, setFree] = React.useState(false);
   const [server, setServer] = React.useState('');
+  // The server answered `listed: false`: the list is off on purpose, not empty.
+  const [hidden, setHidden] = React.useState(false);
 
   React.useEffect(() => {
     let live = true;
     Promise.resolve(load())
-      .then(r => { if (live) setRows((r && r.connections) || []); })
+      .then(r => {
+        if (!live) return;
+        setRows((r && r.connections) || []);
+        if (r && r.listed === false) { setHidden(true); setFree(true); }
+      })
       // A list that cannot load must not dead-end the request: it falls through
       // to the free-text route, which says why it is the one on screen.
       .catch(e => { if (!live) return; setRows([]); setFree(true); setLoadErr((e && e.message) || 'the list could not be loaded'); });
@@ -1161,10 +1171,12 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
     <QhModal onClose={onClose} panelClass="qh-req-modal">
       <div className="qh-modal-head">
         <div>
-          <div className="qh-modal-title">{free ? 'Ask for a new endpoint' : 'Request access to a database'}</div>
-          <div className="qh-modal-sub">{free
-            ? 'For a server QueryHub does not have yet. This one arrives as free text and an admin resolves it by hand, so name it exactly.'
-            : 'Goes to the DBA team in Slack for review. You get a DM when a DBA grants it.'}</div>
+          <div className="qh-modal-title">{free && !hidden ? 'Ask for a new endpoint' : 'Request access to a database'}</div>
+          <div className="qh-modal-sub">{hidden
+            ? 'Type the server and the database. The DBA team matches the name to a connection. You get a DM when a DBA decides.'
+            : free
+              ? 'For a server QueryHub does not have yet. This one arrives as free text and an admin resolves it by hand, so name it exactly.'
+              : 'Goes to the DBA team in Slack for review. You get a DM when a DBA grants it.'}</div>
         </div>
         <button className="qh-icon-btn" onClick={onClose} aria-label="Close">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -1224,12 +1236,12 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
           </div>
         )}
 
-        {free && !loadErr && <button className="qh-reqalt is-row" onClick={() => { setFree(false); setServer(''); setDatabase(''); }}>Back to the list of databases</button>}
+        {free && !loadErr && !hidden && <button className="qh-reqalt is-row" onClick={() => { setFree(false); setServer(''); setDatabase(''); }}>Back to the list of databases</button>}
 
         {free && (
           <label className="qh-field">
-            <span className="qh-field-lbl">Server / host</span>
-            <input className="qh-input" autoFocus placeholder="e.g. prod-reporting-01" value={server} onChange={(e) => setServer(e.target.value)} />
+            <span className="qh-field-lbl">{hidden ? 'Server' : 'Server / host'}</span>
+            <input className="qh-input" autoFocus placeholder={hidden ? 'Name of the server' : 'e.g. prod-reporting-01'} value={server} onChange={(e) => setServer(e.target.value)} />
           </label>
         )}
 

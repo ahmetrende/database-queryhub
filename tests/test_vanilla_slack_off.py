@@ -76,6 +76,7 @@ def test_endpoint_request_is_submitted_not_503_without_slack(slack_off, monkeypa
 
     monkeypatch.setattr(deps, "require_whitelisted", lambda claims: None)
     monkeypatch.setattr(routes_requests, "_target_by_alias", lambda alias: None)
+    monkeypatch.setattr(access_requests, "resolve_typed_server", lambda text: None)
     monkeypatch.setattr(routes_requests, "_bot_client", lambda: None)
     # The abuse guard counts this user's open requests before doing anything.
     monkeypatch.setattr(admins, "is_admin", lambda uid: False)
@@ -105,6 +106,7 @@ def test_endpoint_request_still_503s_when_there_are_no_admins(slack_off, monkeyp
 
     monkeypatch.setattr(deps, "require_whitelisted", lambda claims: None)
     monkeypatch.setattr(routes_requests, "_target_by_alias", lambda alias: None)
+    monkeypatch.setattr(access_requests, "resolve_typed_server", lambda text: None)
     monkeypatch.setattr(routes_requests, "_bot_client", lambda: None)
     monkeypatch.setattr(admins, "is_admin", lambda uid: False)
     monkeypatch.setattr(access_requests, "open_count_for", lambda uid: 0)

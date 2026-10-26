@@ -258,6 +258,9 @@ def world(monkeypatch):
     monkeypatch.setattr(teams, "can_use_target", lambda pid, tid: True)
     monkeypatch.setattr(deps, "require_whitelisted", lambda claims: None)
     monkeypatch.setattr(rr, "_target_by_alias", lambda a: TARGET if a == "demo-orders" else None)
+    monkeypatch.setattr(rr.access_requests, "list_visible", lambda: True)
+    monkeypatch.setattr(rr.access_requests, "resolve_typed_server",
+                        lambda a: TARGET if a == "demo-orders" else None)
 
     def create(principal_id, name, target_server_id, database_name,
                attempted_query, reason, requested_tier=None):

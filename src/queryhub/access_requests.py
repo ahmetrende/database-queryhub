@@ -110,6 +110,58 @@ def find_pending_for(
     )
 
 
+def list_visible() -> bool:
+    """True when the request-access forms may list the connections to pick from.
+
+    The default is off. A list of every connection tells each requester the
+    name and the host of every database, whether or not they may use it. With
+    the list off, the requester types the server and the database. An admin
+    sees the typed text and matches it. `request_access_list_enabled` is a
+    runtime key, so a change needs no restart."""
+    value = cfg.get_setting("request_access_list_enabled", "off") or "off"
+    return value.strip().lower() == "on"
+
+
+def resolve_typed_server(text: str | None):
+    """The enabled connection whose alias equals the text a requester typed, or
+    None.
+
+    The match is exact and ignores case. Nothing else counts: no partial name
+    and no host. A disabled connection, a deleted one and the control plane
+    also return None. A request for the control plane stays a request with no
+    connection, which an admin can read and cannot approve into a grant.
+
+    SECURITY: the caller must answer the requester in the same way whether this
+    returns a connection or None. A different answer would let a requester test
+    which names exist, which is the list the form no longer shows."""
+    wanted = (text or "").strip()
+    if not wanted:
+        return None
+    row = db.fetch_one(
+        "SELECT id FROM target_servers "
+        " WHERE lower(alias) = lower(%s) AND enabled AND deleted_at IS NULL",
+        (wanted,),
+    )
+    if row is None:
+        return None
+    from . import grants, targets   # lazy, as in _refuse_control_plane
+    if int(row["id"]) in grants.control_plane_target_ids():
+        return None
+    return targets.get(int(row["id"]))
+
+
+# `attempted_query` of a request for a server that no connection matches. The
+# dedupe index keys on it, so two different unknown servers do not collide. The
+# IdP outbox reads the typed name back out of it (`idp_outbox._access_target`),
+# so the shape is fixed: <mark><server>|<TIER>|<database>.
+FREE_TEXT_MARK = "web-endpoint-request:"
+
+
+def free_text_key(server: str, tier: str | None, database: str | None) -> str:
+    """The `attempted_query` value for a typed server that no connection matches."""
+    return f"{FREE_TEXT_MARK}{server}|{(tier or '').upper()}|{database or ''}"
+
+
 def open_count_for(principal_id: str) -> int:
     """How many pending access requests this user has. Used to rate-limit
     the web endpoint-request flow (each one DMs every admin)."""

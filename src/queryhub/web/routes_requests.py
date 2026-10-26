@@ -7,6 +7,12 @@ access_requests storage, same admin DMs with approve/reject buttons, same
 dedupe, and — because `requested_tier` is persisted — the same one-click
 approval that writes the real grant.
 
+The list is off by default (`request_access_list_enabled`). A list of every
+connection shows each requester the name and the host of every database, so
+with the list off `GET /requestable` answers an empty list and `listed: false`,
+and the form asks for the server and the database as text. The sections below
+describe the list that appears when an admin turns the key on.
+
 Two shapes, and the difference is the whole point:
 
 * **Pick it from the catalogue.** `GET /requestable` lists what this person
@@ -116,6 +122,10 @@ def requestable(claims: dict = Depends(deps.current_user)):
     they have none of it.
     """
     deps.require_whitelisted(claims)
+    if not access_requests.list_visible():
+        # Hidden on purpose: the answer says nothing about the fleet. `listed`
+        # lets a client tell this apart from "you already reach everything".
+        return {"connections": [], "listed": False}
     uid = claims["sub"]
     control_plane = grants.control_plane_target_ids()
     out = []
@@ -128,7 +138,7 @@ def requestable(claims: dict = Depends(deps.current_user)):
         row = _requestable_target(t, granted, control_plane)
         if row is not None:
             out.append(row)
-    return {"connections": out}
+    return {"connections": out, "listed": True}
 
 
 @router.post("/endpoint-requests", status_code=201)
@@ -157,8 +167,13 @@ def endpoint_request(body: EndpointRequestIn,
     # back to free text. Falling back would turn "the connection you chose no
     # longer exists" into a request for a server nobody can match, reviewed by
     # hand — the exact outcome the catalogue exists to remove.
+    #
+    # With the list off, `connectionId` is ignored. A client that sends one
+    # would otherwise get a 404 for a name that does not exist and a 201 for one
+    # that does, and that is a way to read the fleet without the list.
+    listed = access_requests.list_visible()
     picked = (body.connectionId or "").strip()
-    if picked:
+    if picked and listed:
         t = _target_by_alias(picked) or _target_by_id(picked)
         if t is None or not t.enabled:
             raise deps._error(404, "not_found",
@@ -180,7 +195,10 @@ def endpoint_request(body: EndpointRequestIn,
                               f"'{wanted}' is not a database on {t.alias}.")
         server = t.alias
     else:
-        t = _target_by_alias(server)
+        # Typed text. An exact alias resolves, so an admin approves with one
+        # click. Anything else stays free text. The answer to the requester is
+        # the same in both cases (see `resolve_typed_server`).
+        t = access_requests.resolve_typed_server(server)
     reason = f"[requested tier: {body.tier}] {body.reason.strip()}"
     if t is None:
         reason = f"[server: {server}] {reason}"

@@ -895,6 +895,7 @@ function FleetGrantsBlock({ st, canWrite }) {
   const [rowErr, setRowErr] = useAcc(null);
   const [askId, setAskId] = useAcc(null);   // the row whose inline confirm is open (2026-10-24)
   const [askWhy, setAskWhy] = useAcc('');    // the optional reason typed in that row
+  const [open, setOpen] = useAcc(false);       // a long list shows every row (2026-10-26)
   const blankF = { subjectType: 'user', subject: '', autoApprove: false, reason: '', ttl: 'none', expDate: '' };
   // Reads that skip review are an auto-approve rule: they need an end, at most
   // `maxDays` from now (2026-10-24). The grant alone keeps its optional end.
@@ -926,11 +927,23 @@ function FleetGrantsBlock({ st, canWrite }) {
       .then(() => { setBusyId(null); load(); })
       .catch(e => { setBusyId(null); setRowErr({ id: g.id, msg: (e && e.message) || 'QueryHub could not revoke the grant.' }); });
   };
+  // A long list collapses (2026-10-26). 29 rows pushed the whole page below the
+  // fold, and 27 of them were one sentence: a person whose reads skip review
+  // through a copied rule. Those copies fold into one summary line. A short list
+  // stays as it was.
+  const COLLAPSE_AT = 6, SHOW_FIRST = 5;
+  const all = rows || [];
+  const collapsed = !open && all.length > COLLAPSE_AT;
+  const isCopy = (g) => !!g.syncedFrom && !!g.autoApprove && String(g.tier || 'RO').toUpperCase() === 'RO' && g.subjectType !== 'team';
+  const copiesAll = collapsed ? all.filter(isCopy) : [];
+  const copies = copiesAll.length > 1 ? copiesAll : [];
+  const rest = collapsed ? all.filter(g => !copies.includes(g)) : all;
+  const shown = collapsed ? rest.slice(0, SHOW_FIRST) : all;
   return (
     <div className="qh-fleet">
       <div className="qh-fleet-h">
-        <div><div className="qh-fleet-t">Every server</div>
-          <div className="qh-fleet-sub">Read-only access to every server, now and later. A super-admin-only server stays outside.</div></div>
+        <div><div className="qh-fleet-t">Every server{all.length > 0 && <span className="qh-fleet-count" title={all.length + ' grants on every server'}>{all.length}</span>}</div>
+          <div className="qh-fleet-sub">Access to every server, now and later. Each row shows its tier. A super-admin-only server stays outside.</div></div>
         {canWrite && !adding && <button className="qh-btn qh-btn-sm" onClick={() => { setAdding(true); setFormErr(null); }}><AIcon.plus />Add</button>}
       </div>
       {adding && canWrite && (
@@ -962,7 +975,7 @@ function FleetGrantsBlock({ st, canWrite }) {
       {loadErr && <div className="qh-fleet-empty is-bad">{loadErr} <button className="qh-linkbtn" onClick={load}>Try again</button></div>}
       {!loadErr && rows === null && <div className="qh-fleet-empty">Loading…</div>}
       {!loadErr && rows && rows.length === 0 && <div className="qh-fleet-empty">Nobody has access to every server. Each grant below names its connection.</div>}
-      {!loadErr && rows && rows.map(g => (
+      {!loadErr && rows && shown.map(g => (
         <div key={g.id} className="qh-fleet-row">
           <span className="qh-fleet-who" title={g.subject}>{grantName(g, people)}</span>
           {g.subjectType === 'team' && <span className="qh-fleet-kind">team</span>}
@@ -973,10 +986,11 @@ function FleetGrantsBlock({ st, canWrite }) {
           {/* Read-only end (2026-10-23): the API has no PATCH for a grant on
               every server. To move the end, remove the grant and add it again. */}
           <EndChip iso={g.expiresAt} none="No end date" />
-          {g.reason && <span className="qh-fleet-reason-t" title={g.reason}>{g.reason}</span>}
+          {/* A copied row's reason is system text that names an internal table: the label says "synced" and the tooltip says what to do. */}
+          {g.reason && !g.syncedFrom && <span className="qh-fleet-reason-t" title={g.reason}>{g.reason}</span>}
           <span className="qh-fleet-end">
             {g.syncedFrom
-              ? <span className="qh-fleet-kind" title={'QueryHub copies this row from ' + g.syncedFrom + '. Change it there.'}>synced from {g.syncedFrom}</span>
+              ? <span className="qh-fleet-kind" title="QueryHub keeps this row in step with the rule it was copied from. Change it there.">synced</span>
               : canWrite && <button className="qh-revoke" aria-expanded={askId === g.id} disabled={busyId === g.id} onClick={() => { setAskId(askId === g.id ? null : g.id); setAskWhy(''); }}>Remove</button>}
           </span>
           {askId === g.id && (
@@ -990,6 +1004,22 @@ function FleetGrantsBlock({ st, canWrite }) {
           {rowErr && rowErr.id === g.id && <div className="qh-roleform-err qh-fleet-rowerr">{rowErr.msg}</div>}
         </div>
       ))}
+      {!loadErr && rows && copies.length > 0 && (
+        <div className="qh-fleet-row qh-fleet-sum">
+          <span className="qh-fleet-who" title={copies.map(g => grantName(g, people)).join(', ')}>{copies.length} people</span>
+          <TierBadge tier="RO" sm />
+          <span className="qh-fleet-auto" title="Reads on every server run without a DBA.">auto-approve</span>
+          <span className="qh-fleet-kind">{copies.every(g => !g.expiresAt) ? 'No end date' : copies.filter(g => !g.expiresAt).length + ' with no end date'}</span>
+          {/* The names are in the tooltip, which a keyboard or a touch screen cannot reach: the link opens the full list. */}
+          <button className="qh-linkbtn" onClick={() => setOpen(true)}>Show them</button>
+          <span className="qh-fleet-end"><span className="qh-fleet-kind" title="QueryHub keeps these rows in step with the rules they were copied from. Change them there.">synced</span></span>
+        </div>
+      )}
+      {!loadErr && rows && all.length > COLLAPSE_AT && (
+        <div className="qh-fleet-more">
+          <button className="qh-linkbtn" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Show fewer' : 'Show all ' + all.length}</button>
+        </div>
+      )}
     </div>
   );
 }

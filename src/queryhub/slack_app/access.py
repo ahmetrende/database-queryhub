@@ -76,7 +76,31 @@ def blocked_ephemeral_blocks() -> list[dict]:
 
 # ---------- the request modal itself ----------
 
-def build_request_modal() -> dict:
+def build_request_modal(listed: bool | None = None) -> dict:
+    """The access-request modal.
+
+    With the list off (the default, `request_access_list_enabled`) the target
+    is a text box and the modal shows no connection at all. With the list on it
+    is the search box over every enabled connection. `listed` lets a test pick
+    one without a database."""
+    if listed is None:
+        from .. import access_requests
+        listed = access_requests.list_visible()
+    if listed:
+        target_element = {
+            "type": "external_select",
+            "action_id": A_TARGET,
+            "min_query_length": 0,
+            "placeholder": {"type": "plain_text", "text": "Type to search..."},
+        }
+        target_label = "Target server"
+    else:
+        target_element = {
+            "type": "plain_text_input",
+            "action_id": A_TARGET,
+            "placeholder": {"type": "plain_text", "text": "Example: payment-service"},
+        }
+        target_label = "Server (type the name)"
     return {
         "type": "modal",
         "callback_id": MODAL_CALLBACK,
@@ -98,13 +122,8 @@ def build_request_modal() -> dict:
             {
                 "type": "input",
                 "block_id": B_TARGET,
-                "label": {"type": "plain_text", "text": "Target server"},
-                "element": {
-                    "type": "external_select",
-                    "action_id": A_TARGET,
-                    "min_query_length": 0,
-                    "placeholder": {"type": "plain_text", "text": "Type to search..."},
-                },
+                "label": {"type": "plain_text", "text": target_label},
+                "element": target_element,
             },
             {
                 "type": "input",
@@ -147,11 +166,15 @@ def build_request_modal() -> dict:
     }
 
 
-def access_context_md(req: dict) -> str:
+def access_context_md(req: dict, requested_server: str | None = None) -> str:
     """One-line server+database summary for an access-request DM. Falls back
-    gracefully when the target was deleted between request and decision."""
+    gracefully when the target was deleted between request and decision.
+
+    `requested_server` is the text the requester typed. A request with no
+    matching connection shows that text, so the reply never names a
+    connection the requester did not name."""
     target = targets.get(req["target_server_id"]) if req.get("target_server_id") else None
-    target_alias = target.alias if target else "?"
+    target_alias = target.alias if target else (requested_server or "?")
     db = req.get("database_name") or "_(default)_"
     return f"*Target:* `{target_alias}`  •  *Database:* `{db}`"
 
@@ -160,6 +183,9 @@ def options_for_targets(query: str = "") -> list[dict]:
     """ALL enabled targets — the access-request modal must show every server
     so the user can pick the one they don't yet have access to. No team
     filtering here (unlike /sql modal)."""
+    from .. import access_requests
+    if not access_requests.list_visible():
+        return []                      # the modal has no select when the list is off
     matches = targets.search(query) if query else targets.list_enabled()
     return [
         {
@@ -176,12 +202,18 @@ def options_for_targets(query: str = "") -> list[dict]:
 
 def parse_modal_submission(view_state: dict) -> dict:
     values = view_state["values"]
-    target_id = int(values[B_TARGET][A_TARGET]["selected_option"]["value"])
+    element = values[B_TARGET][A_TARGET]
+    chosen = element.get("selected_option")
+    # A picked option is a connection id. Typed text is a name the caller must
+    # still resolve (`access_requests.resolve_typed_server`).
+    target_id = int(chosen["value"]) if chosen else None
+    server_text = None if chosen else (element.get("value") or "").strip() or None
     database = (values[B_DATABASE][A_DATABASE].get("value") or "").strip() or None
     attempted = (values[B_QUERY][A_QUERY].get("value") or "").strip() or None
     reason = (values[B_REASON][A_REASON].get("value") or "").strip()
     return {
         "target_server_id": target_id,
+        "server_text": server_text,
         "database_name": database,
         "attempted_query": attempted,
         "reason": reason,
@@ -235,6 +267,9 @@ def admin_dm_blocks(access_request: dict, target: targets.TargetServer | None,
         },
     ]
     attempted = access_request.get("attempted_query") or ""
+    from .. import access_requests
+    if attempted.startswith(access_requests.FREE_TEXT_MARK):
+        attempted = ""                 # a dedupe key, not a query the requester wrote
     if 0 < len(attempted) <= 500:
         # Short — show inline.
         blocks.append({

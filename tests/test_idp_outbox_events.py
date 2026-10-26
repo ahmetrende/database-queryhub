@@ -254,6 +254,9 @@ def w(monkeypatch):
     monkeypatch.setattr(deps, "require_whitelisted", lambda claims: None)
     monkeypatch.setattr(rr, "_target_by_alias",
                         lambda a: TARGET if a == "demo-orders" else None)
+    monkeypatch.setattr(rr.access_requests, "list_visible", lambda: True)
+    monkeypatch.setattr(rr.access_requests, "resolve_typed_server",
+                        lambda a: TARGET if a == "demo-orders" else None)
     monkeypatch.setattr(rr, "_bot_client", w.client)
     monkeypatch.setattr(routes_queries, "_bot_client", w.client)
     monkeypatch.setattr(ra.admin, "require_admin", lambda claims, need, **kw: claims["sub"])

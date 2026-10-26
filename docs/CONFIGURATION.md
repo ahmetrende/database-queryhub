@@ -160,6 +160,7 @@ default instead of stopping the process.
 | `max_open_access_requests_per_user` | `5` | Cap on pending target-access requests per user. |
 | `pending_expiry_enabled` | `off` | When on, `scripts/expire_stale_pending.py --commit` cancels a request that stays pending longer than `pending_expiry_hours`. The web then shows `expiresAt` on a pending request. |
 | `pending_expiry_hours` | `24` | How long a request can stay pending before the expiry job can cancel it. `expiresAt` is the submit time plus these hours. |
+| `request_access_list_enabled` | `off` | Show the list of connections in the request-access forms (Slack, QueryHub Web, IdP panel). `off` hides it. The requester types the server and the database, and an admin matches the text. |
 | `ro_burst_threshold` | `3` | Read-only submissions within the window that trigger the RO-window nudge. |
 | `ro_burst_window_min` | `10` | The RO-burst detection window (minutes). |
 | `ro_window_minutes` | `60` | Length of a granted read-only auto-approve window. |

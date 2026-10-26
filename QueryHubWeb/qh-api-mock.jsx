@@ -2411,6 +2411,10 @@ const qhApi = {
   requestable: () => mockDelay(() => {
     const me = mockUser();
     if (!me) return mockFail('Not signed in.', 401, 'unauthenticated');
+    // The server default since 2026-10-19: the list is off (`request_access_list_enabled`)
+    // and the answer is empty with `listed: false`. Open the prototype with `?hideList=1`
+    // to see that form; without it the mock keeps the list.
+    if (/[?&]hideList=1/.test(String(window.location.search || ''))) return { connections: [], listed: false };
     const held = heldScopeFor(me.handle);
     const out = [];
     connRegistry().forEach(c => {
@@ -2428,7 +2432,7 @@ const qhApi = {
       out.push({ connectionId: c.id, name: c.name, engine: c.engine, env: c.env, databases: dbs, partial: !!mine,
         tags: mockNarrowTags(c.tags) });
     });
-    return { connections: out };
+    return { connections: out, listed: true };
   }, 320),
   // POST /auto-approve-requests (design 2026-09-22 §3, NEW — CODE builds it).
   // A developer ASKS; granting stays an admin action. Refusals mirror what the

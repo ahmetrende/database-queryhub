@@ -9,6 +9,17 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+### Changed
+
+- **The request-access forms no longer list every connection.** The Slack
+  modal, the QueryHub Web form and the IdP panel showed the name and the host of
+  every database to every person on the whitelist. The requester now types the
+  server and the database. An exact alias resolves, so one click still
+  approves. Other text stays free text for an admin to match. `GET
+  /requestable` answers an empty list with `listed: false`, and QueryHub ignores
+  `connectionId`. Set `request_access_list_enabled` to `on` to bring the list back.
+  The default is `off`. Migration 197 seeds the key.
+
 ### Added
 
 - **The audit screen shows the channel of a request.** Each request row has a small pill
@@ -22,6 +33,15 @@ frontend and the endpoints it calls are explicitly outside it.
   shows when the person sent the request, who decided it and when, and the note. The name comes
   from the people list, and the name stored on the request is the fallback. An undecided
   request shows none of these lines.
+
+### Changed
+
+- **The "Every server" block of the Grants screen folds a long list.** The header shows the
+  number of grants. A list of more than six rows shows the first five rows that matter,
+  then one summary line for the people whose reads skip review through a copied rule.
+  A "Show all" link opens the full list, and "Show fewer" folds it back. A short list
+  looks as before. A copied row says "synced" and no longer names an internal table. The
+  subtitle no longer says that every row is for reads only.
 
 ## [1.0.38] — 2026-10-25
 

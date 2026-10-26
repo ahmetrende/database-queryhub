@@ -33,6 +33,11 @@ def wired(monkeypatch):
 
     def _wire(target=None, dbs=("payments",), control_plane=frozenset()):
         monkeypatch.setattr(rr.deps, "require_whitelisted", lambda c: None)
+        # This file covers the route with the list ON. The list is off by
+        # default; tests/test_request_access_hidden_list.py covers that route.
+        monkeypatch.setattr(rr.access_requests, "list_visible", lambda: True)
+        monkeypatch.setattr(rr.access_requests, "resolve_typed_server",
+                            lambda a: target if target and a == target.alias else None)
         monkeypatch.setattr(rr, "_target_by_alias",
                             lambda a: target if target and a == target.alias else None)
         monkeypatch.setattr(rr, "_target_by_id",

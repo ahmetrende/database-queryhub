@@ -39,6 +39,8 @@ def catalog(monkeypatch):
         monkeypatch.setattr(rr.grants, "control_plane_target_ids",
                             lambda: set(control_plane))
         monkeypatch.setattr(rr.deps, "require_whitelisted", lambda c: None)
+        # These tests cover the list when it is ON (it is off by default).
+        monkeypatch.setattr(rr.access_requests, "list_visible", lambda: True)
         return rr.requestable(claims={"sub": "U1"})["connections"]
     return _wire
 
@@ -104,6 +106,7 @@ def test_disabled_targets_are_out_by_construction(catalog, monkeypatch):
                         lambda: pytest.fail("must not enumerate the whole fleet"))
     monkeypatch.setattr(rr.grants, "control_plane_target_ids", lambda: set())
     monkeypatch.setattr(rr.deps, "require_whitelisted", lambda c: None)
+    monkeypatch.setattr(rr.access_requests, "list_visible", lambda: True)
     assert rr.requestable(claims={"sub": "U1"})["connections"] == []
     assert seen["called"] is True
 
