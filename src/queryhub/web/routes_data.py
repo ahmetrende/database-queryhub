@@ -471,6 +471,15 @@ def saved_list(claims: dict = Depends(deps.current_user)):
 def saved_create(body: SavedIn, claims: dict = Depends(deps.current_user)):
     deps.require_whitelisted(claims)
     t = _target_by_alias(body.connectionId)
+    # A saved query binds only to a connection the caller can use (an admin
+    # sees the whole fleet anyway). Any other alias is saved unbound, exactly
+    # like a name that does not exist. Echoing the alias and its state for an
+    # alias the caller cannot use would let anyone test which names exist.
+    if t is not None and not (
+            _is_admin(claims["sub"])
+            or (t.enabled and teams.effective_grant_for_user(claims["sub"], t.id)
+                is not None)):
+        t = None
     row = favorites.add(
         principal_id=claims["sub"],
         query=body.sql.strip(),

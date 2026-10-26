@@ -11,6 +11,15 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **Two routes no longer show which connection names exist.** `POST
+  /auto-approve-requests` answered 404 for a name that does not exist, and for
+  one that does it went on to a 403 or to a 400 about the tier. `POST /saved`
+  echoed the alias and the state of a connection the caller cannot use. Now a
+  name the caller cannot use answers like a name that does not exist. The check
+  runs before every other rule. The 403 with `field: "target"` on the window
+  request is gone: the answer is a 404. QueryHub saves a query on such a name
+  with no connection. A caller who can use the connection sees no change.
+
 - **An approver can use the approval routes, not only an admin.** A pod lead holds
   the `approver` role and no `admin` role. Slack let that person approve the requests
   of their own servers. The queue, one decision, a bundle decision and batch approve

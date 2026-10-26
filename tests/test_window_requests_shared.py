@@ -124,12 +124,25 @@ def test_the_web_files_it_and_sends_the_admins_the_card(web):
 
 def test_the_web_answers_a_refusal_with_its_status_and_field(web, core):
     rr = web["rr"]
+    with pytest.raises(HTTPException) as e:
+        rr.create_window_request(rr.WindowRequestIn(connectionId="prod-ledger",
+                                                    reason="reading the ledger",
+                                                    tier="ddl"),
+                                 claims={"sub": UID})
+    assert e.value.status_code == 400 and e.value.detail["field"] == "tier"
+
+
+def test_a_target_the_caller_cannot_use_answers_like_an_unknown_one(web, core):
+    """It used to be a 403 with `field: "target"`, which told the caller that
+    the name exists. See tests/test_alias_existence_oracle.py."""
+    rr = web["rr"]
     core["target"] = False
     with pytest.raises(HTTPException) as e:
         rr.create_window_request(rr.WindowRequestIn(connectionId="prod-ledger",
                                                     reason="reading the ledger"),
                                  claims={"sub": UID})
-    assert e.value.status_code == 403 and e.value.detail["field"] == "target"
+    assert e.value.status_code == 404
+    assert e.value.detail["message"] == "Unknown connection."
 
 
 def test_an_unknown_connection_is_a_404(web):

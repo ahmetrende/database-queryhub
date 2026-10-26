@@ -440,7 +440,12 @@ def create_window_request(body: WindowRequestIn,
     uid = claims["sub"]
     from .. import auto_approve_requests, targets
     t = targets.by_alias(body.connectionId)
-    if t is None:
+    # One answer for a name that does not exist and for one the caller cannot
+    # use. Two answers (404 and then 403, or a 400 for a bad tier that only an
+    # existing name reaches) would let any whitelisted person test which
+    # aliases exist, which the request-access forms do not show them. The
+    # check sits before every other rule for the same reason.
+    if t is None or not teams.can_use_target(uid, t.id):
         raise deps._error(404, "not_found", "Unknown connection.")
     minutes = (body.days * 1440 if body.days is not None
                else body.windowMinutes if body.windowMinutes is not None else 60)
