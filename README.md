@@ -31,7 +31,8 @@ ClickHouse are read-only.
 
 - [What this is instead of](#how-this-compares) · [Screenshots](#screenshots)
   · [Try it](#try-it-in-two-minutes) · [Install](deploy/INSTALL.md)
-  · [Architecture](docs/ARCHITECTURE.md) · [Operations](docs/OPERATIONS.md)
+  · [Architecture](docs/ARCHITECTURE.md) · [Portal door (IdP)](#a-third-door-the-portal-idp-optional)
+  · [Operations](docs/OPERATIONS.md)
   · [Backup & recovery](docs/DISASTER_RECOVERY.md)
   · [Key rotation](docs/KEY_ROTATION.md)
   · [Personal data](docs/COMPLIANCE.md) · [Versioning](#versioning-and-support)
@@ -230,7 +231,9 @@ No real connection, person or query appears in any of them.
   says exactly where the limits are.
 - **Two surfaces, one core.** `/sql` in Slack and the web UI drive the same
   submit → approve → execute → audit path. Approve wherever the interrupt
-  arrives. The result returns as CSV/XLSX either way.
+  arrives. The result returns as CSV/XLSX either way. A third, optional door
+  lets a trusted portal call the same API
+  ([below](#a-third-door-the-portal-idp-optional)).
 - **Auto-approve, deliberately narrow.** Read-only requests can run instantly
   under a per-user, time-bounded, tier- and target-scoped grant. Everything
   else waits for a human.
@@ -437,13 +440,61 @@ src/queryhub/
 ├── requesters.py       # allowlist + bypass · row_limits.py · ratings.py
 ├── schema_catalog.py   # hourly target-schema snapshot + browse/search
 ├── auth_events.py      # authorization-change outbox → DM poller
+├── idp_outbox.py · idp_sync_guard.py   # optional portal door: notification
+│                       #   feed rows, and the hold on a large sync
 ├── bundles.py · templates.py · favorites.py   # batch, saved queries, favorites
 ├── audit.py            # audit_log writes (transactional, atomic with state)
 ├── slack_app/          # Slack surface — modal, notifications, subcommands,
 │                       #   ro_window, schema_browser, admin_grant, handlers
 └── web/                # QueryHub Web — FastAPI app + Slack-OIDC auth +
                         #   sessions + routes_* + mapping (static UI in QueryHubWeb/)
+                        #   + idp_assertion (optional portal door)
 ```
+
+## A third door: the portal (IdP), optional
+
+QueryHub has two surfaces, Slack and the web UI. It also has a third door, for a
+portal that proxies QueryHub for its own signed-in users. **The door is off by
+default**, and most installs never turn it on. It is not OIDC and not SAML. It is
+a small protocol of signed requests, so a portal must speak it. An identity
+provider cannot plug in without such a portal. For a normal single sign-on, use
+the OIDC login ([docs/AUTH.md](docs/AUTH.md), section 1.1).
+
+What the door gives a portal:
+
+- **Identity assertions.** Each request carries an `X-IDP-Assertion` header with a
+  60-second Ed25519 (`EdDSA`) JWT. QueryHub finds the key by `kid` in
+  `idp_public_keys`. It binds the token to the method, the path and the body, and
+  it refuses a reused `jti`. It resolves the signed address to an existing
+  `requesters` or `admins` row. It never creates a row, and it refuses an unknown
+  address or one that two people share. The request records `origin = idp`.
+- **Principal sync.** `POST /api/admin/principals/sync` enables and disables
+  requesters to match the portal's list of addresses. It never writes `admins`.
+  A `dry_run` shows the change first. A run that would disable more than
+  `idp_sync_max_disable` people (default 5) changes nothing, and every super-admin
+  gets a Slack card to approve it. Only the principal named in `idp_sync_principal`
+  can call it. `GET /api/admin/people/duplicate-addresses` lists the addresses
+  that two people share.
+- **Notification feed.** With `idp_outbox_enabled = on`, QueryHub writes a row for
+  each event next to the Slack message: `queryhub.request_pending`,
+  `queryhub.request_decided`, `queryhub.request_withdrawn`,
+  `queryhub.request_expired`, `queryhub.access_request_pending`,
+  `queryhub.access_request_decided`, `queryhub.window_request_pending` and
+  `queryhub.window_request_decided`. The portal reads
+  `GET /api/admin/notifications/outbox` and acknowledges each row. QueryHub
+  deletes the rows after `idp_outbox_retention_days` (default 7).
+- **The same API.** The portal calls the same routes as the web UI, including the
+  access requests and the auto-approve window requests. A decision uses the same
+  core as Slack and the web UI.
+
+The settings are `bot_config` keys, and all of them do nothing while
+`idp_assertion_enabled` is `off`: `idp_assertion_enabled`, `idp_issuer`,
+`idp_audience`, `idp_public_keys`, `idp_clock_skew_seconds`, `idp_sync_principal`,
+`idp_sync_max_disable`, `idp_outbox_enabled` and `idp_outbox_retention_days`.
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md) lists the defaults.
+[docs/AUTH.md](docs/AUTH.md) (sections 1.2 and 1.3) holds the contract: the
+refusal codes and the payload of each event. The demo and the vanilla profile
+leave the door off.
 
 ## Slack app required scopes
 
