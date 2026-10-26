@@ -14,6 +14,7 @@ What these tests pin:
 * A typed name for the control plane stays free text. It never raises.
 """
 import pytest
+from fastapi import HTTPException
 
 from queryhub import access_requests, idp_outbox
 from queryhub.slack_app import access, handlers
@@ -118,7 +119,7 @@ def test_requestable_says_listed_when_the_list_is_on(monkeypatch):
 def web(monkeypatch):
     """endpoint_request with the list OFF. Anything the picked route would call
     fails the test."""
-    state = {"created": None, "resolved": []}
+    state = {"created": None, "resolved": [], "calls": []}
 
     def _wire(known=None):
         monkeypatch.setattr(rr.deps, "require_whitelisted", lambda c: None)
@@ -137,6 +138,7 @@ def web(monkeypatch):
 
         def create(**kw):
             state["created"] = kw
+            state["calls"].append(kw)
             return {"id": 42, **kw}
         monkeypatch.setattr(rr.access_requests, "create", create)
         monkeypatch.setattr(rr.access_requests, "open_count_for", lambda u: 0)
@@ -156,12 +158,15 @@ def _body(**kw):
     return rr.EndpointRequestIn(**base)
 
 
-def test_a_typed_alias_resolves_so_one_click_approves(web):
+def test_a_typed_alias_is_not_looked_up_when_the_list_is_off(web):
+    # A lookup would make a name that exists differ from one that does not.
     state = web(known=_T())
     out = rr.endpoint_request(_body(server="Prod-Main"), claims={"sub": "U1"})
     assert out["status"] == "submitted"
-    assert state["created"]["target_server_id"] == 7
-    assert state["created"]["attempted_query"] is None
+    assert state["resolved"] == []
+    assert state["created"]["target_server_id"] is None
+    assert state["created"]["reason"].startswith("[server: Prod-Main] ")
+    assert state["created"]["attempted_query"].startswith(access_requests.FREE_TEXT_MARK)
 
 
 def test_any_other_text_stays_free_text(web):
@@ -180,7 +185,47 @@ def test_the_answer_is_the_same_for_a_name_that_exists_and_one_that_does_not(web
     assert set(hit) == set(miss)
     assert hit["status"] == miss["status"] == "submitted"
     assert hit["slackMessageTs"] == miss["slackMessageTs"]
-    assert state["resolved"] == ["prod-main", "no-such-server"]
+    assert state["resolved"] == []
+    # What is stored differs only by the typed name.
+    a, b = state["calls"]
+    assert a["target_server_id"] is b["target_server_id"] is None
+    def norm(c, n):
+        return {k: (v.replace(n, "<name>") if isinstance(v, str) else v)
+                for k, v in c.items()}
+    assert norm(a, "prod-main") == norm(b, "no-such-server")
+
+
+def test_the_dedupe_answer_is_the_same_for_a_name_that_exists_and_one_that_does_not(
+        monkeypatch, web):
+    """The unique index ignores the tier and the database of a RESOLVED request
+    (target set, no query), so the same name with another tier gave 409 for a
+    name that exists and 201 for one that does not. Stored as text, both give
+    the same answer. The fake below keys like the index does."""
+    web(known=_T())
+    seen = set()
+
+    def create(**kw):
+        key = (kw["principal_id"], kw["target_server_id"],
+               kw["attempted_query"] or "")
+        if key in seen:
+            return None
+        seen.add(key)
+        return {"id": 42, **kw}
+    monkeypatch.setattr(rr.access_requests, "create", create)
+
+    def probe(name):
+        out = []
+        for tier, db in (("RO", "payments"), ("RW", "ledger")):
+            try:
+                out.append(rr.endpoint_request(_body(server=name, tier=tier, database=db),
+                                               claims={"sub": "U1"})["status"])
+            except HTTPException as e:
+                out.append(e.status_code)
+        return out
+
+    assert probe("prod-main") == probe("no-such-server") == ["submitted", "submitted"]
+    # The same request twice is still a conflict, for both.
+    assert probe("prod-main") == probe("no-such-server") == [409, 409]
 
 
 def test_connection_id_is_ignored_when_the_list_is_off(web):
@@ -190,20 +235,29 @@ def test_connection_id_is_ignored_when_the_list_is_off(web):
     out = rr.endpoint_request(_body(server="whatever", connectionId="ghost"),
                               claims={"sub": "U1"})
     assert out["status"] == "submitted"
-    assert state["resolved"] == ["whatever"]
+    assert state["resolved"] == []
     assert state["created"]["target_server_id"] is None
 
 
 def test_a_typed_control_plane_name_is_free_text_and_never_raises(monkeypatch, web):
     state = web()
-    from queryhub import grants, targets
     monkeypatch.setattr(rr.access_requests, "resolve_typed_server", _REAL_RESOLVE)
-    monkeypatch.setattr(access_requests.db, "fetch_one", lambda *a, **k: {"id": 1})
-    monkeypatch.setattr(grants, "control_plane_target_ids", lambda: {1})
-    monkeypatch.setattr(targets, "get", lambda tid: pytest.fail("must not resolve"))
+    monkeypatch.setattr(access_requests.db, "fetch_one",
+                        lambda *a, **k: pytest.fail("a typed name must not be looked up"))
     out = rr.endpoint_request(_body(server="bot-control"), claims={"sub": "U1"})
     assert out["status"] == "submitted"
     assert state["created"]["target_server_id"] is None
+
+
+def test_with_the_list_on_a_typed_alias_still_resolves(monkeypatch, web):
+    # The requester already sees every name, so one click may approve it.
+    state = web(known=_T())
+    monkeypatch.setattr(rr.access_requests, "list_visible", lambda: True)
+    out = rr.endpoint_request(_body(server="prod-main"), claims={"sub": "U1"})
+    assert out["status"] == "submitted"
+    assert state["resolved"] == ["prod-main"]
+    assert state["created"]["target_server_id"] == 7
+    assert state["created"]["attempted_query"] is None
 
 
 # --------------------------------------------------------------------------
@@ -279,7 +333,7 @@ def slack(monkeypatch):
     def _wire(resolved=None):
         monkeypatch.setattr(handlers, "_kill_switch_on", lambda: False)
         monkeypatch.setattr(handlers.access_requests, "resolve_typed_server",
-                            lambda text: resolved)
+                            lambda text: pytest.fail("a typed name must not be looked up"))
 
         def pending(uid, tid, query):
             state["pending_args"] = (uid, tid, query)
@@ -328,16 +382,18 @@ def test_slack_typed_unknown_server_is_saved_as_free_text(slack):
     assert state["pending_args"][1] is None
 
 
-def test_slack_typed_exact_alias_resolves_to_the_target(slack):
+def test_slack_a_typed_alias_is_stored_like_any_other_typed_name(slack):
+    # The fixture fails the test if the text is looked up. A name that exists
+    # and one that does not leave the same trace.
     wire, run = slack
-    t = _T()
-    state = wire(resolved=t)
+    state = wire(resolved=_T())
     run(state, {"type": "plain_text_input", "value": "Prod-Main"}, database="payments")
     c = state["created"]
-    assert c["target_server_id"] == 7
-    assert c["reason"] == "because I need it"          # nothing added
-    assert c["attempted_query"] is None
-    assert state["fan_out"][0] is t
+    assert c["target_server_id"] is None
+    assert c["reason"] == "[server: Prod-Main] because I need it"
+    assert c["attempted_query"] == access_requests.free_text_key("Prod-Main", None, "payments")
+    assert state["fan_out"] == (None, "Prod-Main")
+    assert state["pending_args"][1] is None
 
 
 def test_slack_a_written_query_is_kept_for_an_unknown_server(slack):

@@ -95,6 +95,16 @@ def is_admin(principal_id: str) -> bool:
     return row is not None
 
 
+def holds_approval_role(principal_id: str) -> bool:
+    """True iff the user may reach the approval queue: a live admin role, or in
+    the v2 model a live approver role (a pod lead). The old model has no
+    approver role, so there it is `is_admin`. This is the door only. Whether
+    one request is theirs to decide stays with `can_approve`."""
+    if _v2():
+        return access.holds_approval_role(principal_id)
+    return is_admin(principal_id)
+
+
 def is_super_admin(principal_id: str) -> bool:
     """A super-admin is a permanent admin row with all three scope
     columns NULL — they can approve anything AND grant temp admins to

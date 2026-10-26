@@ -204,8 +204,8 @@ def parse_modal_submission(view_state: dict) -> dict:
     values = view_state["values"]
     element = values[B_TARGET][A_TARGET]
     chosen = element.get("selected_option")
-    # A picked option is a connection id. Typed text is a name the caller must
-    # still resolve (`access_requests.resolve_typed_server`).
+    # A picked option is a connection id. Typed text is a name the caller keeps
+    # as free text. It is never looked up while the list is off.
     target_id = int(chosen["value"]) if chosen else None
     server_text = None if chosen else (element.get("value") or "").strip() or None
     database = (values[B_DATABASE][A_DATABASE].get("value") or "").strip() or None
@@ -236,7 +236,7 @@ def admin_dm_blocks(access_request: dict, target: targets.TargetServer | None,
     if target:
         target_label = f"`{target.alias}` (id={target.id})\n_{target.host}_"
     elif requested_server:
-        target_label = f"`{requested_server}`\n_(not onboarded — free-text request)_"
+        target_label = f"`{requested_server}`\n_(typed by the requester, not matched to a connection)_"
     else:
         target_label = "_(target removed)_"
     db_label = (
@@ -394,8 +394,9 @@ def approval_texts(updated: dict, decided_by: str) -> tuple[str, str]:
         requester_note = ("\n\nAn access request cannot grant this "
                           "connection.")
     elif ag.get("reason") == "no_target":
-        grant_line = ("\n:warning: Auto-grant skipped: this server is not a "
-                      "target yet. Onboard it, then grant access manually.")
+        grant_line = ("\n:warning: Auto-grant skipped: the request names no "
+                      "connection. Match the typed server to a connection, "
+                      "then grant access manually.")
         requester_note = "\n\nA DBA will finalize your access shortly."
     else:
         grant_line = ""

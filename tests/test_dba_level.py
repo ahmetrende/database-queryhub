@@ -207,8 +207,9 @@ def test_an_unknown_level_fails_closed(personas, level):
         web_admin.require_admin({"sub": SUPER}, level)
 
 
-def test_the_levels_are_the_three_known_ones():
-    assert web_admin.LEVELS == ("review", "dba", "access")
+def test_the_levels_are_the_four_known_ones():
+    """`approve` is the approval routes' level (tests/test_approver_queue_gate.py)."""
+    assert web_admin.LEVELS == ("review", "approve", "dba", "access")
 
 
 # ---------------------------------------------------------------------------
@@ -776,7 +777,8 @@ def test_reading_the_kill_switch_stays_open_to_every_admin():
 
 
 # The check in `admins` that answers each level of `require_admin`.
-LEVEL_CHECK = {"review": "is_admin", "dba": "is_dba", "access": "is_super_admin"}
+LEVEL_CHECK = {"review": "is_admin", "approve": "holds_approval_role",
+               "dba": "is_dba", "access": "is_super_admin"}
 
 
 def _slack_kill_checks() -> set[str]:

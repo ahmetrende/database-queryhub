@@ -143,7 +143,7 @@ def admin_queue(escalate: bool | None = None,
     """Pending queries this admin may approve (scoped by tier + connection
     via the same can_approve the Slack side uses). `?escalate=true` filters
     to DDL escalations, `?escalate=false` to the rest."""
-    uid = admin.require_admin(claims, "review")
+    uid = admin.require_admin(claims, "approve")
     rows = db.fetch_all(
         f"SELECT {_QUEUE_COLS} FROM requests WHERE status = 'pending' "
         f"ORDER BY id")
@@ -241,7 +241,7 @@ def admin_decision(request_id: int, body: DecisionIn,
     # admin-ness can, and must: reaching the `requests` SELECT as a non-admin
     # turns 404-vs-other into an id-enumeration oracle, and reaching the
     # decision check leaks the accepted values.
-    admin.require_admin(claims, "review")
+    admin.require_admin(claims, "approve")
     decision = (body.decision or "").strip().lower()
     if decision not in ("approve", "reject", "changes"):
         raise deps._error(400, "bad_request",
@@ -251,7 +251,7 @@ def admin_decision(request_id: int, body: DecisionIn,
     if row is None:
         raise deps._error(404, "not_found", "No such request.")
     # Scope gate: tier + connection, enforced server-side regardless of UI.
-    uid = admin.require_admin(claims, "review", request=row)
+    uid = admin.require_admin(claims, "approve", request=row)
     reason = (body.note or "").strip()
     if decision in ("reject", "changes") and not reason:
         raise deps._error(400, "bad_request",
@@ -283,7 +283,7 @@ def admin_batch_approve(body: BatchIn,
     can't approve, doesn't exist, or was already decided — returns the count
     actually approved. While the kill switch is on it refuses the whole call
     with 409 `kill_switch_on` and approves nothing."""
-    uid = admin.require_admin(claims, "review")
+    uid = admin.require_admin(claims, "approve")
     try:
         core_decide.require_kill_switch_off()
     except core_decide.KillSwitchOn as e:
@@ -327,7 +327,7 @@ def admin_bundle_decision(bundle_id: int, body: DecisionIn,
     queue, so it is not part of the decision. Each decided item gets its own
     audit row in the same transaction. After the commit, each item notifies
     and runs the way `batch-approve` does it."""
-    uid = admin.require_admin(claims, "review")
+    uid = admin.require_admin(claims, "approve")
     decision = (body.decision or "").strip().lower()
     if decision not in ("approve", "reject", "changes"):
         raise deps._error(400, "bad_request",

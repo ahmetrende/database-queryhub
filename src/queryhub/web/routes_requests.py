@@ -195,10 +195,14 @@ def endpoint_request(body: EndpointRequestIn,
                               f"'{wanted}' is not a database on {t.alias}.")
         server = t.alias
     else:
-        # Typed text. An exact alias resolves, so an admin approves with one
-        # click. Anything else stays free text. The answer to the requester is
-        # the same in both cases (see `resolve_typed_server`).
-        t = access_requests.resolve_typed_server(server)
+        # Typed text. With the list ON the requester already sees every name,
+        # so an exact alias resolves and an admin approves with one click.
+        # With the list OFF the text is never looked up. A lookup would make a
+        # name that exists differ from one that does not: the dedupe index
+        # ignores the tier and the database of a resolved request, and the
+        # requester DM names the alias. Every typed request is stored the same
+        # way, as free text, and an admin matches it to a connection.
+        t = access_requests.resolve_typed_server(server) if listed else None
     reason = f"[requested tier: {body.tier}] {body.reason.strip()}"
     if t is None:
         reason = f"[server: {server}] {reason}"

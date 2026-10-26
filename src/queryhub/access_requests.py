@@ -131,9 +131,11 @@ def resolve_typed_server(text: str | None):
     also return None. A request for the control plane stays a request with no
     connection, which an admin can read and cannot approve into a grant.
 
-    SECURITY: the caller must answer the requester in the same way whether this
-    returns a connection or None. A different answer would let a requester test
-    which names exist, which is the list the form no longer shows."""
+    SECURITY: call this only while the list is ON, when the requester already
+    sees every name. With the list off, a lookup makes a name that exists differ
+    from one that does not: the dedupe index ignores the tier and the database
+    of a resolved request, and the requester DM names the alias. The forms
+    store every typed request as free text, and an admin matches it."""
     wanted = (text or "").strip()
     if not wanted:
         return None

@@ -92,13 +92,18 @@ def require_sync_principal(claims: dict) -> str:
 
 
 # The levels `require_admin` knows, from the widest to the narrowest.
-LEVELS = ("review", "dba", "access")
+LEVELS = ("review", "approve", "dba", "access")
 
 
 def require_admin(claims: dict, need: str = "review", *, request: dict | None = None) -> str:
-    """Gate for /admin/* routes. `need` is one of three levels:
+    """Gate for /admin/* routes. `need` is one of four levels:
 
     - 'review': any admin, including a temporary or a scoped one.
+    - 'approve': the approval routes only (queue, decision, bundle decision,
+      batch-approve). Any admin, and also an approver such as a pod lead.
+      Whoever may approve in Slack may approve here, whatever the role.
+      The scope of each request still goes through `request=` or
+      `can_approve`.
     - 'dba': a PERMANENT (no end date) and UNSCOPED (all teams, all targets)
       admin role row (`admins.is_dba`). A tier ceiling is allowed, so a
       super-admin passes too. A temporary admin, a scoped admin and an
@@ -113,7 +118,11 @@ def require_admin(claims: dict, need: str = "review", *, request: dict | None = 
     if need not in LEVELS:
         raise ValueError(f"unknown admin level {need!r}")
     uid = claims["sub"]
-    if not admins.is_admin(uid):
+    if need == "approve":
+        if not admins.holds_approval_role(uid):
+            raise deps._error(403, "forbidden",
+                              "Refused: you need admin or approver access.")
+    elif not admins.is_admin(uid):
         raise deps._error(403, "forbidden", "Refused: you need admin access.")
     if need == "access" and not admins.is_super_admin(uid):
         raise deps._error(403, "forbidden",

@@ -11,14 +11,24 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **An approver can use the approval routes, not only an admin.** A pod lead holds
+  the `approver` role and no `admin` role. Slack let that person approve the requests
+  of their own servers. The queue, one decision, a bundle decision and batch approve
+  answered 403. The IdP portal forwards to these routes, so the lead saw nothing
+  there. The four routes now take a new gate level, `approve`: any admin, and any
+  approver. Each request is still checked with `can_approve`, so a lead sees and
+  decides only the requests of their own scope, up to their tier, and never their
+  own request. No other admin route changed.
+
 - **The request-access forms no longer list every connection.** The Slack
   modal, the QueryHub Web form and the IdP panel showed the name and the host of
   every database to every person on the whitelist. The requester now types the
-  server and the database. An exact alias resolves, so one click still
-  approves. Other text stays free text for an admin to match. `GET
-  /requestable` answers an empty list with `listed: false`, and QueryHub ignores
-  `connectionId`. Set `request_access_list_enabled` to `on` to bring the list back.
-  The default is `off`. Migration 197 seeds the key.
+  server and the database. QueryHub never looks the text up. It stores every typed
+  request as free text, so a name that exists and one that does not leave the
+  same trace. An admin matches the text to a connection. `GET /requestable`
+  answers an empty list with `listed: false`, and QueryHub ignores `connectionId`.
+  Set `request_access_list_enabled` to `on` to bring the list back. With the list
+  on, an exact alias resolves again. The default is `off`. Migration 197 seeds the key.
 
 ### Added
 

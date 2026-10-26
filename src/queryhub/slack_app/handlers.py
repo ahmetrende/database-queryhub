@@ -2260,22 +2260,19 @@ def handle_access_request_submission(ack: Ack, body: dict, client: WebClient) ->
         })
         return
 
-    # With the list off the target is typed text. An exact alias resolves, so an
-    # admin approves with one click. Any other text stays free text, which an
-    # admin matches by hand. The reply is the same either way: it names only
-    # what the requester typed.
+    # With the list off the target is typed text, and the text is never looked
+    # up. A lookup would make a name that exists differ from one that does not
+    # (the dedupe result and the requester DM). Every typed request is stored
+    # as free text, and an admin matches it to a connection.
     server_text = parsed.get("server_text")
-    typed_target = None
     if server_text is not None:
-        typed_target = access_requests.resolve_typed_server(server_text)
-        parsed["target_server_id"] = typed_target.id if typed_target else None
-        if typed_target is None:
-            if not parsed["attempted_query"]:
-                # The dedupe index needs something that tells two unknown
-                # servers apart (same key as the web form).
-                parsed["attempted_query"] = access_requests.free_text_key(
-                    server_text, None, parsed["database_name"])
-            parsed["reason"] = f"[server: {server_text}] {parsed['reason']}"
+        parsed["target_server_id"] = None
+        if not parsed["attempted_query"]:
+            # The dedupe index needs something that tells two unknown
+            # servers apart (same key as the web form).
+            parsed["attempted_query"] = access_requests.free_text_key(
+                server_text, None, parsed["database_name"])
+        parsed["reason"] = f"[server: {server_text}] {parsed['reason']}"
     elif parsed["target_server_id"] is None:
         ack({
             "response_action": "errors",
@@ -2302,7 +2299,7 @@ def handle_access_request_submission(ack: Ack, body: dict, client: WebClient) ->
         return
 
     if server_text is not None:
-        target = typed_target
+        target = None
     else:
         target = targets.get(parsed["target_server_id"])
         if target is None:

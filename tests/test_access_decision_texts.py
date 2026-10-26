@@ -103,8 +103,8 @@ def test_approved_but_the_target_is_the_control_plane():
 def test_approved_but_the_server_is_not_a_target():
     status, dm = access.approval_texts(
         _row(auto_grant={"applied": False, "reason": "no_target"}), WHO)
-    assert ("\n:warning: Auto-grant skipped: this server is not a target yet. "
-            "Onboard it, then grant access manually.") in status
+    assert ("\n:warning: Auto-grant skipped: the request names no connection. "
+            "Match the typed server to a connection, then grant access manually.") in status
     assert dm.endswith("\n\nA DBA will finalize your access shortly.")
 
 

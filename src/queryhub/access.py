@@ -117,6 +117,12 @@ def is_admin(principal_id: str) -> bool:
     return any(r["role"] == "admin" for r in roles(principal_id))
 
 
+def holds_approval_role(principal_id: str) -> bool:
+    """True for a live `admin` or `approver` role. A pod lead holds only the
+    second one. What each request admits is still `can_approve`, per request."""
+    return any(r["role"] in ("admin", "approver") for r in roles(principal_id))
+
+
 def is_super_admin(principal_id: str, rows: list[dict] | None = None) -> bool:
     """Unscoped, uncapped and permanent.
 
