@@ -39,6 +39,7 @@ from .. import (
     idp_sync_guard,
     kill_switch,
     manual_runs,
+    origins,
     owner_approvers,
     pending_expiry,
     people,
@@ -6770,7 +6771,13 @@ _AUDIT_SEARCH_SQL = (
     "  UNION "
     "  SELECT a4.id FROM audit_log a4 JOIN requests r4 ON r4.id = a4.request_id "
     "    JOIN target_servers ts4 ON ts4.id = r4.target_server_id "
-    "   WHERE ts4.alias ILIKE %(q)s)"
+    "   WHERE ts4.alias ILIKE %(q)s "
+    # The channel word ("idp", "slack", "web", "mcp") finds that door's requests.
+    # A branch of its own: `origin` has no trigram index, so an OR inside the
+    # branches above would cost them theirs.
+    "  UNION "
+    "  SELECT a5.id FROM audit_log a5 JOIN requests r5 ON r5.id = a5.request_id "
+    "   WHERE r5.origin ILIKE %(q)s)"
 )
 
 
@@ -6992,6 +6999,10 @@ def admin_audit_search(body: AuditSearchIn,
               "  r.database_name, r.query, r.row_count, "
               "  r.required_tier, r.executed_at, r.completed_at, "
               "  r.status AS request_status, r.error_message AS request_error, "
+              # Channel and decision facts of the request, for the rail.
+              "  r.origin AS request_origin, r.created_at AS request_created_at, "
+              "  r.decided_by_slack_id, r.decided_by_name, r.decision_reason, "
+              "  r.decided_at AS request_decided_at, "
               "  ts.alias AS target_alias, "
               "  g.slack_user_id AS via_user, g.max_tier AS via_tier, "
               "  g.database_name AS via_db, gts.alias AS via_target "
@@ -7022,7 +7033,8 @@ def admin_audit_search(body: AuditSearchIn,
         d = r.get("details") if isinstance(r.get("details"), dict) else {}
         ids |= _slack_ids_in(d.get("user"), d.get("grantee"),
                              d.get("slack_user_id"), r.get("actor_slack_id"),
-                             r.get("via_user"), r.get("requester_slack_id"))
+                             r.get("via_user"), r.get("requester_slack_id"),
+                             r.get("decided_by_slack_id"))
     names = _resolve_slack_names(ids)
 
     out = [_audit_row(r, names) for r in rows]
@@ -7114,6 +7126,18 @@ def _audit_row(r: dict, names: dict) -> dict:
             # requester saw, already scrubbed of values read from the database.
             "status": r.get("request_status"),
             "error": r.get("request_error") or None,
+            # The door the request came through, as the stored value and as a
+            # name to show (`origins.py`: slack, web, idp, mcp; an unknown
+            # value shows as itself). The decision facts live on the request
+            # row itself, so the rail can show them without a second query.
+            "origin": origins.normalize(r.get("request_origin")),
+            "channel": origins.label(r.get("request_origin")),
+            "submittedAt": mapping.iso(r.get("request_created_at")),
+            "decidedAt": mapping.iso(r.get("request_decided_at")),
+            "decidedBy": (names.get(r.get("decided_by_slack_id") or "")
+                          or r.get("decided_by_name") or None),
+            "decidedById": r.get("decided_by_slack_id") or None,
+            "decisionNote": r.get("decision_reason") or None,
         }
     target = None
     if r.get("target_alias"):

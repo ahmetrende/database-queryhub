@@ -243,6 +243,75 @@ def test_a_failed_request_row_carries_its_outcome_and_its_error():
     assert ok["outcome"] is None and ok["request"]["error"] is None
 
 
+@pytest.mark.parametrize("stored,origin,channel", [
+    ("slack", "slack", "Slack"),
+    ("web", "web", "Web"),
+    ("idp", "idp", "IdP"),
+    ("mcp", "mcp", "MCP"),
+    (" IdP ", "idp", "IdP"),
+    (None, "slack", "Slack"),
+])
+def test_a_request_row_names_the_door_it_came_through(stored, origin, channel):
+    row = ra._audit_row(_req_row(request_origin=stored), {})
+    assert row["request"]["origin"] == origin
+    assert row["request"]["channel"] == channel
+
+
+def test_an_unknown_origin_shows_as_itself_not_as_slack():
+    row = ra._audit_row(_req_row(request_origin="cli"), {})
+    assert row["request"]["origin"] == "cli"
+    assert "slack" not in row["request"]["channel"].lower()
+
+
+def test_a_row_with_no_request_has_no_channel():
+    row = ra._audit_row(_req_row(request_id=None, request_origin="web"), {})
+    assert row["request"] is None
+
+
+def test_the_decision_facts_ride_on_the_request():
+    when = __import__("datetime").datetime(2026, 10, 26, 9, 30,
+                                           tzinfo=__import__("datetime").timezone.utc)
+    row = ra._audit_row(_req_row(
+        request_created_at=when, request_decided_at=when,
+        decided_by_slack_id="U7", decided_by_name="snapshot.name",
+        decision_reason="Looks fine"), {"U7": "Roster Name"})
+    req = row["request"]
+    assert req["decidedBy"] == "Roster Name", "the roster name wins over the snapshot"
+    assert req["decidedById"] == "U7"
+    assert req["decisionNote"] == "Looks fine"
+    assert req["submittedAt"] and req["decidedAt"]
+
+
+def test_an_undecided_request_has_null_decision_facts():
+    req = ra._audit_row(_req_row(), {})["request"]
+    assert req["decidedBy"] is None and req["decidedById"] is None
+    assert req["decisionNote"] is None
+    assert req["decidedAt"] is None and req["submittedAt"] is None
+
+
+def test_the_snapshot_name_is_the_fallback_for_a_decider_the_roster_lost():
+    req = ra._audit_row(_req_row(decided_by_slack_id="U7",
+                                 decided_by_name="snapshot.name"), {})["request"]
+    assert req["decidedBy"] == "snapshot.name"
+
+
+def test_the_search_term_also_finds_a_channel():
+    """Typing "idp" must find the requests that came through the IdP. The
+    channel gets a branch of its own so the trigram branches keep their index."""
+    assert "r5.origin ILIKE %(q)s" in ra._AUDIT_SEARCH_SQL
+    assert ra._AUDIT_SEARCH_SQL.count("UNION") == 3
+    # A plain UNION drops duplicate ids, so the IN list stays as short as the matches.
+    assert "UNION ALL" not in ra._AUDIT_SEARCH_SQL
+
+
+def test_the_audit_select_reads_the_columns_the_row_needs():
+    src = Path(ra.__file__).read_text(encoding="utf-8")
+    for col in ("r.origin AS request_origin", "r.created_at AS request_created_at",
+                "r.decided_by_slack_id", "r.decided_by_name", "r.decision_reason",
+                "r.decided_at AS request_decided_at"):
+        assert col in src, col
+
+
 def test_the_outcome_filter_only_accepts_what_the_server_can_count():
     assert ra._AUDIT_OUTCOMES == ("failed",)
     assert ra.AuditSearchIn(outcomes=["failed"]).outcomes == ["failed"]

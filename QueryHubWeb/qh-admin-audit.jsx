@@ -247,8 +247,13 @@ function AudDetail({ row, onClose, pushToast }) {
                 || (row.request.requesterId
                   ? <code className="qh-audcode">{row.request.requesterId}</code>
                   : <span className="qh-audnull">—</span>)}</dd></div>
+              {/* The door the request came through: Slack, Web, IdP or MCP. */}
+              {row.request.channel && <div><dt>Channel</dt><dd data-channel={row.request.origin}>{row.request.channel}</dd></div>}
+              {row.request.submittedAt && <div><dt>Submitted</dt><dd>{new Date(row.request.submittedAt).toLocaleString('en-GB', { hour12: false })}</dd></div>}
               <div><dt>Target</dt><dd>{row.request.connection}/{row.request.database}</dd></div>
               {row.request.tier && <div><dt>Tier</dt><dd><TierBadge tier={row.request.tier} sm /></dd></div>}
+              {row.request.decidedBy && <div><dt>Decided by</dt><dd>{qhPersonName(row.request.decidedBy)}{row.request.decidedAt ? ' · ' + new Date(row.request.decidedAt).toLocaleString('en-GB', { hour12: false }) : ''}</dd></div>}
+              {row.request.decisionNote && <div className="is-long"><dt>Decision note</dt><dd>{row.request.decisionNote}</dd></div>}
               {row.request.status && <div><dt>Status</dt><dd>{row.request.status}</dd></div>}
               {row.request.rows != null && <div><dt>Rows</dt><dd>{audNum(row.request.rows)}</dd></div>}
               {row.request.durationMs != null && <div><dt>Duration</dt><dd>{qhDurMs(row.request.durationMs)}</dd></div>}
@@ -634,6 +639,8 @@ function AuditView({ st }) {
                     {r.actionLabel || r.action}
                     {/* Text, never colour alone: the pill says Failed. */}
                     {r.outcome === 'failed' && !/fail/i.test(r.actionLabel || r.action) && <span className="qh-audpill is-failed">Failed</span>}
+                    {/* Text, never colour alone: the pill names the door (Slack, Web, IdP, MCP). */}
+                    {r.request && r.request.channel && <span className="qh-audpill is-chan" title={'This request came in through ' + r.request.channel}>{r.request.channel}</span>}
                   </span>
                   {/* A request row names where it ran, as the rail does. The
                       requester is already in Who, so repeating it here only
@@ -668,4 +675,4 @@ function AuditView({ st }) {
   );
 }
 
-Object.assign(window, { AuditView, AuditInsight, audInsightLine,QH_AUD_CATS, QH_AUD_EFFECTS, QH_AUD_ACTORS, QH_AUD_OUTCOMES });
+Object.assign(window, { AuditView, AudDetail, AuditInsight, audInsightLine,QH_AUD_CATS, QH_AUD_EFFECTS, QH_AUD_ACTORS, QH_AUD_OUTCOMES });

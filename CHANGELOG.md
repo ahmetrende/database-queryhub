@@ -9,6 +9,20 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+### Added
+
+- **The audit screen shows the channel of a request.** Each request row has a small pill
+  with the door the request came through: Slack, Web, IdP or MCP. The side panel has a
+  "Channel" line. `POST /api/admin/audit/search` adds `origin` (the stored value) and
+  `channel` (the name to show) to the `request` block of each row. An unknown value
+  shows as itself. The search box also finds a channel: type `idp` to see the requests
+  from the IdP.
+- **The side panel of the audit screen shows the decision.** The `request` block adds
+  `submittedAt`, `decidedAt`, `decidedBy`, `decidedById` and `decisionNote`. The panel
+  shows when the person sent the request, who decided it and when, and the note. The name comes
+  from the people list, and the name stored on the request is the fallback. An undecided
+  request shows none of these lines.
+
 ## [1.0.38] — 2026-10-25
 
 The results grid sorts, filters and totals in the page, and a result downloads as Excel CSV, JSON, Markdown or SQL INSERT. The editor formats SQL. A person can withdraw an auto-approve window request, and a request shows its steps. An approver can approve RO or RW, never DDL. The release adds migrations 195 and 196. Patch bump.

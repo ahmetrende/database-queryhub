@@ -1038,12 +1038,28 @@ const MOCK_AUDIT_TRAIL = (() => {
       request: bound ? { id: reqId, requester: rq.name, requesterId: rq.handle, connection: conn, database: db, tier,
         status: failed ? 'failed' : 'completed', error: err,
         rows: Math.floor(rnd() * 4000), durationMs: Math.floor(rnd() * 12000) + 60,
+        ...audChan(reqId), ...audDecision(reqId),
         sql: sqls[Math.floor(rnd() * sqls.length)] } : null,
       slice: null };
   });
   // The hidden slice: 17,773 rows, 9 action types, 2.1x the visible trail. Kept
   // lean because "include them" triples the list and the screen has to render
   // that without the mock becoming the bottleneck.
+  // The door a request came through, and its decision facts, as the endpoint
+  // sends them (`origin`, `channel`, `submittedAt`, `decidedAt`, `decidedBy`,
+  // `decidedById`, `decisionNote`). Derived from the request id, so the seeded
+  // random sequence of the rows around it does not move.
+  function audChan(id) {
+    const o = ['slack', 'web', 'web', 'idp', 'mcp'][Number(id) % 5];
+    return { origin: o, channel: { slack: 'Slack', web: 'Web', idp: 'IdP', mcp: 'MCP' }[o] };
+  }
+  function audDecision(id) {
+    const n = Number(id);
+    const decided = n % 3 !== 0;
+    return { submittedAt: null, decidedAt: null,
+      decidedBy: decided ? 'Aylin Ozturk' : null, decidedById: decided ? 'dba.amara' : null,
+      decisionNote: decided && n % 7 === 0 ? 'Checked the plan, fine to run.' : null };
+  }
   const life = [];
   const LIFE = [['submitted', 4600], ['started', 4600], ['completed', 4290], ['failed', 396],
     ['import_submitted', 1300], ['import_completed', 1240], ['schedule_started', 700],
@@ -1064,10 +1080,14 @@ const MOCK_AUDIT_TRAIL = (() => {
         detail: (a === 'failed' && i === 0)
           ? { stage: a, requestId: '1741', error: AUD_LONG.repeat(14).slice(0, 9882) }
           : { stage: a },
-        request: { id: String(1200 + Math.floor(rnd() * 800)), requester: rq.name, requesterId: rq.handle, connection: conn, database: db,
-          tier: tiers[Math.floor(rnd() * tiers.length)], rows: null, durationMs: null, sql: sqls[0],
-          status: a === 'failed' ? 'failed' : null,
-          error: a === 'failed' ? AUD_ERRORS[Math.floor(rnd() * AUD_ERRORS.length)] : null },
+        request: (() => {
+          const id = String(1200 + Math.floor(rnd() * 800));
+          return { id, requester: rq.name, requesterId: rq.handle, connection: conn, database: db,
+            tier: tiers[Math.floor(rnd() * tiers.length)], rows: null, durationMs: null, sql: sqls[0],
+            status: a === 'failed' ? 'failed' : null,
+            error: a === 'failed' ? AUD_ERRORS[Math.floor(rnd() * AUD_ERRORS.length)] : null,
+            ...audChan(id), ...audDecision(id) };
+        })(),
         // `failed` is shown by default now; the rest of the lifecycle stays hidden.
         slice: a === 'failed' ? null : 'lifecycle' });
     }
