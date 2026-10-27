@@ -13,7 +13,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from .. import db, metrics_defs, people
+from .. import db, metrics_defs, origins, people
 from ..auto_approve import AUTO_DECIDED_BY
 
 # Definitions live in metrics_defs so the static S3 dashboard and this module
@@ -360,6 +360,23 @@ def build_metrics(window: str | None = None) -> dict:
                  "bytes": i["byte_size"], "loadSeconds": _f(i["load_seconds"])}
                 for i in imports]
 
+    # ---- channel mix: the door each request came through ----
+    # The rule lives in metrics_defs.channel_mix; the static dashboard repeats
+    # it in JS and a test runs both. The weekly list uses the screen's own
+    # local-time week keys, like every other weekly list in this payload.
+    channel_mix = metrics_defs.channel_mix(rows)
+    cw: dict = defaultdict(lambda: defaultdict(lambda: {"requests": 0, "_users": set()}))
+    for r in rows:
+        k = week_key(r)
+        if k:
+            cell = cw[k][origins.normalize(r.get("origin"))]
+            cell["requests"] += 1
+            cell["_users"].add(r.get("requester_slack_id"))
+    channel_weekly = [{"period": k,
+                       "byChannel": {c: {"requests": v["requests"], "users": len(v["_users"])}
+                                     for c, v in cw[k].items()}}
+                      for k in sorted(cw)]
+
     # ---- who can what (org access reference) ----
     who = [dict(r) for r in db.fetch_all("SELECT * FROM p_metrics_who_can_what ORDER BY name")]
 
@@ -405,6 +422,8 @@ def build_metrics(window: str | None = None) -> dict:
         "csvSummary": csv_summary,
         "csvImports": csv_rows,
         "whoCanWhat": who,
+        "channelMix": channel_mix,
+        "channelWeekly": channel_weekly,
         # PLA-1592 U8. `window` echoes the parameter (null: all time), and
         # `windowStart` is the first moment it covers. `whoCanWhat` is the
         # access of today, so the window does not apply to it.

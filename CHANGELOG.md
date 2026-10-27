@@ -73,6 +73,14 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Added
 
+- **The Admin Metrics screen shows the channel mix.** A new "Channels" section sits under the cost
+  card. It has a table of requests and distinct people for each channel, the share of each, and a
+  count of people by the channels they used. A weekly stack shows requests per channel, and the
+  tooltip of a week names the people. The block follows the 7-day and 30-day tabs. `GET
+  /api/admin/metrics` adds `channelMix` and `channelWeekly`. The rule is `metrics_defs.channel_mix`.
+  The static dashboard runs the same rule in JavaScript, and a test runs both. This screen is for
+  admins, so there is no What's-new entry.
+
 - **The metrics dashboard shows the channel mix.** A new "Channels" group has three panels. The
   first is a table of requests and distinct people for each channel (Slack, Web, IdP, MCP) with
   the share of each, and a count of people by the channels they used. The other two are weekly

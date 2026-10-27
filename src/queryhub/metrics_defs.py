@@ -26,6 +26,11 @@ part that was actually dangerous — two definitions with nothing comparing them
 """
 from __future__ import annotations
 
+import math
+from collections import defaultdict
+
+from . import origins
+
 # ---------------------------------------------------------------- inputs
 
 #: The reporting views. Each already excludes operator self-test traffic (the
@@ -122,3 +127,63 @@ def count_completed(rows) -> int:
         if status == COST_COUNTED_STATUS:
             n += 1
     return n
+
+
+# ---------------------------------------------------------------- channel mix
+#
+# The channel mix answers one question: through which door did requests come,
+# and how many different people used each door. The rule lives here. The
+# static dashboard repeats it in JavaScript (`channelMixStats` in
+# `scripts/build_metrics_dashboard.py`), and `tests/test_metrics_channel_mix.py`
+# runs both over the same rows, so the two pages cannot drift apart.
+#
+#   - A request's channel is `origins.normalize(origin)`: lower-cased and
+#     trimmed, and a blank value reads as `slack`, the column's own default.
+#   - A person who used two channels counts once in each channel row and once
+#     in the total, so the people column can add up to more than the total.
+#   - Known channels come first, in `origins.ORDER`. A value nobody taught us
+#     comes after them, by name, and is shown as itself.
+
+
+def _channel_rank(key: str) -> tuple:
+    known = origins.ORDER
+    return (known.index(key) if key in known else len(known), key)
+
+
+def share_pct(part: int, whole: int) -> float:
+    """`part` of `whole` as a percent with one decimal. Rounds halves up like
+    JavaScript's Math.round, and divides first like the page does, so the two
+    pages print the same digit."""
+    return math.floor(1000 * (part / whole) + 0.5) / 10 if whole else 0
+
+
+def channel_mix(rows) -> dict:
+    """Requests and DISTINCT people per channel, and how people spread over the
+    channels. `rows` are fact rows: `origin` and `requester_slack_id` are read.
+
+    {totalRequests, totalUsers,
+     channels: [{key, label, requests, requestShare, users, userShare}],
+     segments: [{label, users}]}   # "Slack + Web": people who used both
+    """
+    requests: dict[str, int] = defaultdict(int)
+    users: dict[str, set] = defaultdict(set)
+    chans: dict[str, set] = defaultdict(set)
+    total = 0
+    for r in rows:
+        key = origins.normalize(r.get("origin"))
+        total += 1
+        requests[key] += 1
+        users[key].add(r.get("requester_slack_id"))
+        chans[r.get("requester_slack_id")].add(key)
+    total_users = len(chans)
+    channels = [{"key": k, "label": origins.label(k),
+                 "requests": requests[k], "requestShare": share_pct(requests[k], total),
+                 "users": len(users[k]), "userShare": share_pct(len(users[k]), total_users)}
+                for k in sorted(requests, key=_channel_rank)]
+    spread: dict[str, int] = defaultdict(int)
+    for keys in chans.values():
+        spread[" + ".join(origins.label(k) for k in sorted(keys, key=_channel_rank))] += 1
+    segments = [{"label": label, "users": n}
+                for label, n in sorted(spread.items(), key=lambda kv: (-kv[1], kv[0]))]
+    return {"totalRequests": total, "totalUsers": total_users,
+            "channels": channels, "segments": segments}

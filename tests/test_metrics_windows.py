@@ -166,7 +166,7 @@ def test_every_key_from_before_is_still_there(fake_db):
            "teamUsage", "topUsers", "adminWorkload", "targetUsage", "ratingWeekly",
            "ratingResponse", "ratingLow", "csvSummary", "csvImports", "whoCanWhat"}
     assert old <= keys
-    assert keys - old == {"window", "windowStart", "decisionTime"}
+    assert keys - old == {"window", "windowStart", "decisionTime", "channelMix", "channelWeekly"}
 
 
 # ---- the route ----------------------------------------------------------------------

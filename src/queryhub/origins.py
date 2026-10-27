@@ -29,6 +29,10 @@ MCP = "mcp"
 # Display names, for the surfaces that show a human which door was used.
 _LABELS = {SLACK: "Slack", WEB: "Web", IDP: "IdP", MCP: "MCP"}
 
+#: The doors this module knows, in the order a list of channels shows them.
+#: A value that is not here comes after these, by name.
+ORDER = (SLACK, WEB, IDP, MCP)
+
 
 def normalize(origin: str | None) -> str:
     """The stored value, lowercased and stripped. Empty falls back to the

@@ -1944,6 +1944,23 @@
   .seg-failed { --seg: var(--danger-solid-light); }
   .seg-rejected { --seg: #E0A800; }
   .seg-cancelled { --seg: var(--fg-tertiary); }
+  /* 2026-10-27 Metrics > Channels. One tone per door, from the supportive
+   * palette tokens, so both themes and both brands follow their own values.
+   * A door the page does not know shares the grey one and keeps its name in
+   * the text. Colour is never the only cue: every swatch sits beside its name. */
+  .seg-chan-slack { --seg: var(--sup-purple-medium); }
+  .seg-chan-web { --seg: var(--sup-blue-medium); }
+  .seg-chan-idp { --seg: var(--sup-orange-medium); }
+  .seg-chan-mcp { --seg: var(--sup-pink-medium); }
+  .seg-chan-other { --seg: var(--fg-tertiary); }
+  .qh-channame { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+  .qh-channame::before { content: ''; width: 9px; height: 9px; border-radius: 2px; background: var(--seg); }
+  .qh-chanfill { background: var(--seg); }
+  .qh-chan .qh-tablewrap { margin-bottom: 14px; }
+  .qh-chan .qh-atable td:nth-child(3) { min-width: 160px; }
+  .qh-chan .qh-atable td:first-child { white-space: nowrap; }
+  .qh-chantotal td { border-top: 1px solid var(--stroke-medium); }
+  .qh-chan .qh-metric-sub { margin-top: 10px; }
   .qh-stackbars { display: flex; align-items: flex-end; gap: 5px; height: 150px; padding-top: 4px; }
   .qh-stackcol { flex: 1; height: 100%; display: flex; align-items: flex-end; min-width: 0; }
   .qh-stack { width: 100%; display: flex; flex-direction: column-reverse; border-radius: 3px 3px 0 0; overflow: hidden; min-height: 2px; }

@@ -113,6 +113,72 @@ function DecisionTime({ win, state }) {
   );
 }
 
+// Channel mix: the door the requests of the window came through, and how many
+// different people used each door. The rule (a blank origin reads as slack, a
+// person who used two doors counts once in each row and once in the total) is
+// metrics_defs.channel_mix on the server. The static dashboard repeats it in
+// JavaScript, and tests/test_metrics_channel_mix.py runs both. This view only
+// draws the answer. `state` is 'loading', 'error' or { mix, weekly }.
+const QH_CHAN_KNOWN = ['slack', 'web', 'idp', 'mcp'];
+function qhChanClass(key) { return 'seg-chan-' + (QH_CHAN_KNOWN.includes(key) ? key : 'other'); }
+function qhChanCell(week, key) { return ((week.byChannel || {})[key]) || { requests: 0, users: 0 }; }
+function qhShareStr(v) { return v == null ? '—' : v + '%'; }
+
+function ChannelMix({ label, state }) {
+  const title = 'Channel mix · ' + label;
+  if (state === 'loading') return <div className="qh-mcard qh-chan" aria-busy="true"><div className="qh-mcard-title">{title}</div><div className="qh-metric-sub">Loading…</div></div>;
+  if (state === 'error' || !state || !state.mix) return <div className="qh-mcard qh-chan" role="alert"><div className="qh-mcard-title">{title}</div><div className="qh-metric-sub">Could not load the channel mix for this window.</div></div>;
+  const mix = state.mix, chans = mix.channels || [];
+  if (!chans.length) return <div className="qh-mcard qh-chan"><div className="qh-mcard-title">{title}</div><div className="qh-metric-sub">No request came in during this window.</div></div>;
+  const weeks = state.weekly || [];
+  const total = (w) => chans.reduce((n, c) => n + qhChanCell(w, c.key).requests, 0);
+  const wMax = Math.max(1, ...weeks.map(total));
+  return (
+    <div className="qh-mcards">
+      <div className="qh-mcard qh-chan">
+        <div className="qh-mcard-title">{title}</div>
+        <div className="qh-tablewrap"><table className="qh-atable">
+          <thead><tr><th>Channel</th><th>Requests</th><th>Share of requests</th><th>People</th><th>Share of people</th></tr></thead>
+          <tbody>
+            {chans.map(c => (
+              <tr key={c.key} data-channel={c.key}>
+                <td><span className={'qh-channame ' + qhChanClass(c.key)}>{c.label}</span></td>
+                <td className="qh-mono">{_fmtNum(c.requests)}</td>
+                <td><div className="qh-toprow"><div className="qh-toptrack"><div className={'qh-topfill qh-chanfill ' + qhChanClass(c.key)} style={{ width: c.requestShare + '%' }} /></div><span className="qh-topn">{qhShareStr(c.requestShare)}</span></div></td>
+                <td className="qh-mono">{_fmtNum(c.users)}</td>
+                <td className="qh-mono">{qhShareStr(c.userShare)}</td>
+              </tr>
+            ))}
+            <tr className="qh-chantotal"><td><b>All channels</b></td><td className="qh-mono"><b>{_fmtNum(mix.totalRequests)}</b></td><td /><td className="qh-mono"><b>{_fmtNum(mix.totalUsers)}</b></td><td /></tr>
+          </tbody>
+        </table></div>
+        <div className="qh-dec-h">People by the channels they used</div>
+        <div className="qh-dec-rows">
+          {(mix.segments || []).map(g => (
+            <div key={g.label} className="qh-dec-row"><span className="qh-dec-name" title={g.label}>{g.label}</span><span className="qh-dec-n">{_fmtNum(g.users)} {g.users === 1 ? 'person' : 'people'}</span></div>
+          ))}
+        </div>
+        <div className="qh-metric-sub">A person who used two channels counts once in each channel row and once in the total.</div>
+      </div>
+      <div className="qh-mcard qh-chan">
+        <div className="qh-mcard-title">Requests per week by channel</div>
+        {!weeks.length ? <div className="qh-metric-sub">No data yet.</div> : (
+          <div className="qh-stackbars">
+            {weeks.map(w => (
+              <div key={w.period} className="qh-stackcol" title={w.period + ' · ' + _fmtNum(total(w)) + ' requests · ' + chans.map(c => { const x = qhChanCell(w, c.key); return c.label + ' ' + x.requests + ' (' + x.users + (x.users === 1 ? ' person' : ' people') + ')'; }).join(' · ')}>
+                <div className="qh-stack" style={{ height: (total(w) / wMax * 100) + '%' }}>
+                  {chans.map(c => <div key={c.key} className={'qh-stackseg ' + qhChanClass(c.key)} style={{ flexGrow: qhChanCell(w, c.key).requests }} />)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="qh-legend">{chans.map(c => <span key={c.key} className={'lg ' + qhChanClass(c.key)}>{c.label}</span>)}</div>
+      </div>
+    </div>
+  );
+}
+
 function MetricsView({ st }) {
   const [win, setWin] = useIns('30d');
   // { win, data } once a window answered, { win, error } when it failed.
@@ -127,6 +193,9 @@ function MetricsView({ st }) {
   }, [win, tick]);
   const fresh = res && res.win === win ? res : null;
   const decState = !fresh ? 'loading' : fresh.error ? 'error' : (fresh.data.decisionTime || 'error');
+  const winLabel = (QH_METRIC_WINDOWS.find(w => w[0] === win) || [0, win])[1];
+  const chanState = !fresh ? 'loading' : fresh.error ? 'error'
+    : (fresh.data.channelMix ? { mix: fresh.data.channelMix, weekly: fresh.data.channelWeekly || [] } : 'error');
   const m = (fresh && fresh.data) || st.metrics || {};
   const tabs = (
     <div className="qh-seg qh-seg-sm qh-mwin" role="tablist" aria-label="Metrics window">
@@ -139,7 +208,8 @@ function MetricsView({ st }) {
     <div className="qh-apad"><div className="qh-aview-head"><div>
       <div className="qh-aview-title">Metrics</div><div className="qh-aview-sub">Loading…</div>
     </div>{tabs}</div>
-    <DecisionTime win={win} state={decState} /></div>
+    <DecisionTime win={win} state={decState} />
+    <ChannelMix label={winLabel} state={chanState} /></div>
   );
   const h = m.headline, cost = m.costSavings || {};
   const vol = m.volumeWeekly || [];
@@ -184,6 +254,9 @@ function MetricsView({ st }) {
           <Stat k="Infra $ / mo" v={'$' + _fmtNum(cost.infraUsdPerMonth)} sub="replicas + other" />
         </div>
       </div>
+
+      <div className="qh-msection">Channels</div>
+      <ChannelMix label={winLabel} state={chanState} />
 
       <div className="qh-msection">Volume, tiers & usage</div>
       <div className="qh-mcards">
@@ -326,4 +399,4 @@ function FeedbackView({ st }) {
 
 // qhDurMs is exported because the audit screen (qh-admin-audit.jsx) formats the
 // same durations and a second copy of the rounding rules would drift.
-Object.assign(window, { MetricsView, FeedbackView, qhDurMs, qhDecisionSec, qhBandLabel, DecisionTime });
+Object.assign(window, { MetricsView, FeedbackView, qhDurMs, qhDecisionSec, qhBandLabel, DecisionTime, ChannelMix, qhChanClass });

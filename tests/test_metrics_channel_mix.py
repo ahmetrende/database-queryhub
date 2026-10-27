@@ -1,4 +1,4 @@
-"""The metrics dashboard shows the channel mix (migration 200).
+"""The metrics dashboard and the Admin Metrics screen show the channel mix (migration 200).
 
 `origin` names the door a request came through (slack, web, idp, mcp). The page
 aggregates in the browser, so the aggregation is lifted out of the generated
@@ -16,6 +16,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
+from queryhub import metrics_defs, origins
+from queryhub.web import metrics as web_metrics
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILDER = ROOT / "scripts" / "build_metrics_dashboard.py"
@@ -237,3 +240,79 @@ def test_the_page_carries_the_panel_and_the_view_carries_the_column():
     assert "id='grp-channels'" in page
     sql = MIGRATION.read_text(encoding="utf-8")
     assert "AS origin" in sql and "CREATE OR REPLACE VIEW p_metrics_request_facts" in sql
+
+
+# ---- the in-app screen: the same rule, in Python ------------------------------
+
+def test_the_python_rule_agrees_with_the_independent_count():
+    assert metrics_defs.channel_mix(ROWS) == expected(ROWS)
+    assert metrics_defs.channel_mix([]) == {"totalRequests": 0, "totalUsers": 0,
+                                            "channels": [], "segments": []}
+
+
+@needs_node
+def test_python_and_the_static_page_print_the_same_numbers():
+    """One rule, two languages: the in-app screen reads metrics_defs, the S3 page
+    runs the same rule in JavaScript."""
+    js = _strip_colors(_run(ROWS)["mix"])
+    assert metrics_defs.channel_mix(ROWS) == js
+
+
+@needs_node
+def test_both_round_a_share_the_same_way():
+    """Python's round() takes a half to the even digit and Math.round takes it up.
+    A share such as 12.25 would print 12.2 on one page and 12.3 on the other."""
+    pairs = [(a, b) for b in (3, 7, 8, 16, 40, 80, 200, 400) for a in range(0, b + 1)]
+    script = _lifted() + f"""
+const out = {json.dumps(pairs)}.map(([a, b]) => b ? oneDecimal(a / b) : 0);
+console.log(JSON.stringify(out));
+"""
+    got = json.loads(subprocess.run(["node", "-e", script], capture_output=True,
+                                    text=True, timeout=30, check=True).stdout)
+    assert got == [metrics_defs.share_pct(a, b) for a, b in pairs]
+    assert metrics_defs.share_pct(49, 400) == 12.3, "a half goes up, as in JavaScript"
+
+
+def test_negative_control_the_python_rule_fails_when_it_is_broken(monkeypatch):
+    """The comparison above must be able to fail. Teach the rule that a blank
+    origin is its own channel, and it must disagree with the independent count."""
+    assert metrics_defs.channel_mix(ROWS) == expected(ROWS)
+    monkeypatch.setattr(origins, "normalize", lambda o: (o or "").strip().lower())
+    assert metrics_defs.channel_mix(ROWS) != expected(ROWS)
+
+
+def test_the_known_channels_keep_their_order_and_an_unknown_one_comes_last():
+    keys = [c["key"] for c in metrics_defs.channel_mix(ROWS)["channels"]]
+    assert keys == list(origins.ORDER[:3]) + ["carrier-pigeon"]
+
+
+def _fact(i, user, origin, when):
+    return {"id": i, "created_at": when, "status": "completed", "requester_slack_id": user,
+            "requester_name": user, "team": None, "target_alias": "prod-main", "database_name": "app",
+            "tier": "ro", "decided_by_slack_id": None, "decided_by_name": None, "approval_sec": None,
+            "exec_sec": 1.0, "hour_local": 10, "dow_local": 2, "rating": None, "scheduled_for": None,
+            "auto_approved": False, "decided_at": None, "executed_at": None, "completed_at": None,
+            "origin": origin}
+
+
+def test_the_screen_payload_carries_the_mix_and_a_weekly_split(monkeypatch):
+    mon = datetime(2026, 10, 19, 9, 0, tzinfo=timezone.utc)
+    rows = [_fact(1, "U1", "slack", mon), _fact(2, "U1", "web", mon),
+            _fact(3, "U2", "web", mon + timedelta(days=1)), _fact(4, "U2", None, mon),
+            _fact(5, "U3", "idp", mon + timedelta(days=8))]
+
+    def fetch_all(sql, params=None):
+        return rows if "p_metrics_request_facts" in sql else []
+    monkeypatch.setattr(web_metrics.db, "fetch_all", fetch_all)
+    monkeypatch.setattr(web_metrics.people, "display_names", lambda ids: {}, raising=False)
+
+    out = web_metrics.build_metrics("30d")
+    assert out["channelMix"] == metrics_defs.channel_mix(rows)
+    by = {c["key"]: c for c in out["channelMix"]["channels"]}
+    assert (by["slack"]["requests"], by["slack"]["users"]) == (2, 2), "a blank origin counts as slack"
+    assert (by["web"]["requests"], by["web"]["users"]) == (2, 2)
+    assert out["channelMix"]["totalUsers"] == 3
+    assert out["channelWeekly"] == [
+        {"period": "2026-W43", "byChannel": {"slack": {"requests": 2, "users": 2},
+                                              "web": {"requests": 2, "users": 2}}},
+        {"period": "2026-W44", "byChannel": {"idp": {"requests": 1, "users": 1}}}]

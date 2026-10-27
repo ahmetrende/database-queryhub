@@ -518,6 +518,25 @@ const MOCK_METRICS = (function () {
       { name: 'staging/app_stg', count: 214 }, { name: 'prod-main/invoices', count: 156 },
     ],
     scheduledUsage: WK.map((p, i) => ({ period: p, scheduled: sched[i], total: vol[i].total, pct: Math.round(sched[i] / vol[i].total * 100) })),
+    // Channel mix, shaped like metrics_defs.channel_mix. The weekly split derives
+    // from the weekly totals, so no new random call can move the seeded rows.
+    channelMix: {
+      totalRequests: 3563, totalUsers: 74,
+      channels: [
+        { key: 'slack', label: 'Slack', requests: 1130, requestShare: 31.7, users: 61, userShare: 82.4 },
+        { key: 'web', label: 'Web', requests: 2412, requestShare: 67.7, users: 48, userShare: 64.9 },
+        { key: 'idp', label: 'IdP', requests: 21, requestShare: 0.6, users: 9, userShare: 12.2 },
+      ],
+      segments: [{ label: 'Slack', users: 21 }, { label: 'Slack + Web', users: 38 }, { label: 'Web', users: 6 },
+                 { label: 'Slack + Web + IdP', users: 9 }],
+    },
+    channelWeekly: vol.map((w, i) => {
+      const idp = i >= 6 ? (i - 5) * 4 : 0, slack = Math.round(w.total * 0.32), web = w.total - slack - idp;
+      return { period: WK[i], byChannel: {
+        slack: { requests: slack, users: Math.round(w.activeUsers * 0.8) },
+        web: { requests: web, users: Math.round(w.activeUsers * 0.65) },
+        ...(idp ? { idp: { requests: idp, users: Math.min(idp, 4) } } : {}) } };
+    }),
     ratingWeekly: WK.map((p, i) => ({ period: p, avg: ratingAvg[i], count: ratedN[i] })),
     ratingResponse: WK.map((p, i) => ({ period: p, rated: ratedN[i], completed: vol[i].completed, pct: Math.round(ratedN[i] / vol[i].completed * 100) })),
     ratingLow: [
@@ -3593,7 +3612,14 @@ const qhApi = {
     if (!window) return MOCK_METRICS;
     const w7 = window === '7d';
     const days = w7 ? 7 : 30;
-    return { ...MOCK_METRICS, window, windowStart: new Date(Date.now() - days * 86400000).toISOString(),
+    const chanDays = w7 ? { ...MOCK_METRICS.channelMix, totalRequests: 760, totalUsers: 44,
+      channels: [{ key: 'slack', label: 'Slack', requests: 240, requestShare: 31.6, users: 30, userShare: 68.2 },
+                 { key: 'web', label: 'Web', requests: 500, requestShare: 65.8, users: 28, userShare: 63.6 },
+                 { key: 'idp', label: 'IdP', requests: 20, requestShare: 2.6, users: 8, userShare: 18.2 }],
+      segments: [{ label: 'Slack + Web', users: 20 }, { label: 'Slack', users: 12 }, { label: 'Web', users: 4 },
+                 { label: 'Slack + Web + IdP', users: 8 }] } : MOCK_METRICS.channelMix;
+    return { ...MOCK_METRICS, window, channelMix: chanDays, channelWeekly: w7 ? MOCK_METRICS.channelWeekly.slice(-2) : MOCK_METRICS.channelWeekly,
+      windowStart: new Date(Date.now() - days * 86400000).toISOString(),
       decisionTime: {
         requests: w7 ? 212 : 884, p50Sec: w7 ? 41.0 : 55.5, p90Sec: w7 ? 420.0 : 780.0,
         bands: [{ fromSec: 0, toSec: 300, count: w7 ? 160 : 640 }, { fromSec: 300, toSec: 900, count: w7 ? 36 : 170 },
