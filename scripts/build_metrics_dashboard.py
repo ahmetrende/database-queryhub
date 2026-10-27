@@ -565,6 +565,15 @@ HTML = r"""<!doctype html>
   .qh-st-completed { color: var(--fg-accent); font-weight: 600; }
   .qh-st-failed, .qh-st-rejected { color: var(--fg-danger); font-weight: 600; }
   .empty { color: var(--fg-tertiary); font-size: 12.5px; padding: 4px 0; }
+  .qh-chan { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+  .qh-chan::before {
+    content: ''; width: 9px; height: 9px; border-radius: 2px; background: var(--seg);
+  }
+  .qh-sharecell { display: flex; align-items: center; gap: 10px; }
+  .qh-sharecell .qh-toptrack { flex: 1 1 auto; }
+  .qh-sharecell .qh-muted { flex: 0 0 44px; text-align: right; }
+  .qh-chan-seg { margin-top: 18px; }
+  .qh-chan-note { margin: 10px 0 0; font-size: 11.5px; color: var(--fg-tertiary); }
 
   @media (max-width: 960px) {
     .qh-mgrid { grid-template-columns: minmax(0, 1fr); }
@@ -655,6 +664,13 @@ CHART_SPECS = [
     ("volume-daily",   "Daily volume — status mix + active users", "volumeDaily",   "Volume", "wide"),
     ("volume-weekly",  "Weekly volume — status mix + WAU",        "volumeWeekly",   "Volume", "half"),
     ("volume-monthly", "Monthly volume — status mix + MAU",       "volumeMonthly",  "Volume", "half"),
+    # Which door requests come through: Slack, the web UI, the IdP portal
+    ("channel-mix",    "Channel mix — requests and people per channel", "channelMix",
+     "Channels", "wide"),
+    ("channel-weekly", "Requests per week by channel",            "channelWeekly",
+     "Channels", "half"),
+    ("channel-users-weekly", "Active people per week by channel", "channelUsersWeekly",
+     "Channels", "half"),
     # Outcomes, tiers, approvals
     ("failure-breakdown", "Terminal outcomes per week + success rate", "failureBreakdown",
      "Outcomes & approvals", "half"),
@@ -1330,6 +1346,144 @@ FACTORIES.tierDistribution = function (rows) {
   });
 };
 
+// ===== channel mix =========================================================
+//
+// `origin` is the door a request came through. The facts view lower-cases it
+// and reads a blank as 'slack'. A value this page does not know (a new door)
+// is shown under its own name after the known ones, never dropped.
+
+const CHANNELS = [
+  { key: 'slack', label: 'Slack', color: '#BFB2FF' },
+  { key: 'web',   label: 'Web',   color: '#4F8FD6' },
+  { key: 'idp',   label: 'IdP',   color: '#F08A4B' },
+  { key: 'mcp',   label: 'MCP',   color: '#8FA3A3' },
+];
+const OTHER_CHANNEL_COLOR = '#B9BDC4';
+
+function channelKey(r) {
+  return String(r.origin == null ? '' : r.origin).trim().toLowerCase() || 'slack';
+}
+
+function channelInfo(key) {
+  const known = CHANNELS.find(c => c.key === key);
+  return known || { key: key, label: key, color: OTHER_CHANNEL_COLOR };
+}
+
+function oneDecimal(x) { return Math.round(1000 * x) / 10; }
+
+// Requests and DISTINCT people per channel, and how people spread over the
+// channels. A person who used two channels counts once in each channel row and
+// once in the total, so the people column can add up to more than the total.
+function channelMixStats(rows) {
+  const per = new Map();       // channel key -> { requests, users: Set }
+  const byUser = new Map();    // person -> Set of channel keys
+  rows.forEach(r => {
+    const key = channelKey(r);
+    if (!per.has(key)) per.set(key, { requests: 0, users: new Set() });
+    const p = per.get(key);
+    p.requests++;
+    p.users.add(r.requester_slack_id);
+    if (!byUser.has(r.requester_slack_id)) byUser.set(r.requester_slack_id, new Set());
+    byUser.get(r.requester_slack_id).add(key);
+  });
+  const rank = key => {
+    const i = CHANNELS.findIndex(c => c.key === key);
+    return i < 0 ? CHANNELS.length : i;
+  };
+  const keys = [...per.keys()].sort((a, b) =>
+    rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
+  const totalRequests = rows.length;
+  const totalUsers = byUser.size;
+  const channels = keys.map(key => {
+    const info = channelInfo(key);
+    const p = per.get(key);
+    return {
+      key: key, label: info.label, color: info.color,
+      requests: p.requests,
+      requestShare: totalRequests ? oneDecimal(p.requests / totalRequests) : 0,
+      users: p.users.size,
+      userShare: totalUsers ? oneDecimal(p.users.size / totalUsers) : 0,
+    };
+  });
+  const seg = new Map();       // "Slack + Web" -> people
+  byUser.forEach(set => {
+    const label = [...set].sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : 1))
+      .map(k => channelInfo(k).label).join(' + ');
+    seg.set(label, (seg.get(label) || 0) + 1);
+  });
+  const segments = [...seg.entries()].map(([label, users]) => ({ label, users }))
+    .sort((a, b) => b.users - a.users || (a.label < b.label ? -1 : 1));
+  return { channels, totalRequests, totalUsers, segments };
+}
+
+FACTORIES.channelMix = function (rows) {
+  const container = document.getElementById('canvas-channel-mix');
+  const st = channelMixStats(rows);
+  if (!st.channels.length) {
+    container.innerHTML = '<div class="empty">No requests match the current filters.</div>';
+    return null;
+  }
+  let out = '<div class="qh-tablewrap"><table class="qh-atable"><thead><tr>'
+    + '<th>Channel</th><th class="num">Requests</th><th>Share of requests</th>'
+    + '<th class="num">People</th><th class="num">Share of people</th></tr></thead><tbody>';
+  st.channels.forEach(c => {
+    out += '<tr><td class="nowrap"><span class="qh-chan" style="--seg:' + c.color + '">'
+      + escapeHtml(c.label) + '</span></td>'
+      + '<td class="num">' + fmtNum(c.requests) + '</td>'
+      + '<td class="qh-heatbar"><div class="qh-sharecell"><div class="qh-toptrack">'
+      + '<div class="qh-topfill" style="width:' + c.requestShare + '%">'
+      + '<span class="qh-topseg" style="background:' + c.color + '"></span></div></div>'
+      + '<span class="qh-muted">' + c.requestShare + '%</span></div></td>'
+      + '<td class="num">' + fmtNum(c.users) + '</td>'
+      + '<td class="num">' + c.userShare + '%</td></tr>';
+  });
+  out += '<tr><td class="nowrap"><strong>All channels</strong></td>'
+    + '<td class="num"><strong>' + fmtNum(st.totalRequests) + '</strong></td><td></td>'
+    + '<td class="num"><strong>' + fmtNum(st.totalUsers) + '</strong></td><td></td></tr>';
+  out += '</tbody></table></div>';
+  out += '<table class="qh-atable qh-chan-seg"><thead><tr><th>People by the channels they used</th>'
+    + '<th class="num">People</th></tr></thead><tbody>'
+    + st.segments.map(s => '<tr><td class="nowrap">' + escapeHtml(s.label) + '</td>'
+      + '<td class="num">' + fmtNum(s.users) + '</td></tr>').join('')
+    + '</tbody></table>';
+  out += '<p class="qh-chan-note">A person who used two channels counts once in each '
+    + 'channel row and once in the total. Every figure follows the filters above.</p>';
+  container.innerHTML = out;
+  return null;
+};
+
+// One series per channel, one point per week; `valueOf` turns the rows of one
+// channel in one week into the number to plot.
+function channelWeeklySeries(rows, valueOf) {
+  const { labels, map } = gapFilledBuckets(rows, truncWeek, weeksBetween);
+  const channels = channelMixStats(rows).channels;
+  const datasets = channels.map(c => ({
+    label: c.label,
+    color: c.color,
+    data: labels.map(k => valueOf((map.get(k) || []).filter(r => channelKey(r) === c.key))),
+  }));
+  return { labels, datasets };
+}
+
+FACTORIES.channelWeekly = function (rows) {
+  const s = channelWeeklySeries(rows, rs => rs.length);
+  return stackSpec(s.labels, s.datasets, {
+    yTitle: 'requests',
+    bucket: 'week',
+    annotations: annotationsFor(s.labels),
+  });
+};
+
+FACTORIES.channelUsersWeekly = function (rows) {
+  const s = channelWeeklySeries(rows,
+    rs => new Set(rs.map(r => r.requester_slack_id)).size);
+  return lineSpec(s.labels, s.datasets, {
+    yTitle: 'people',
+    bucket: 'week',
+    annotations: annotationsFor(s.labels),
+  });
+};
+
 FACTORIES.scheduledUsage = function (rows) {
   const { labels, map } = gapFilledBuckets(rows, truncWeek, weeksBetween);
   const scheduledPct = labels.map(k => {
@@ -1858,7 +2012,7 @@ function render() {
     // and inject their own DOM; they want auto height. Chart.js factories
     // need a fresh canvas at the fixed height.
     const wantsChartJs = !['kpi', 'kpiCostSavings', 'targetHeatmap', 'peakHours',
-                            'teamUsage', 'topUsers', 'adminWorkload',
+                            'teamUsage', 'topUsers', 'adminWorkload', 'channelMix',
                             'ratingLow', 'whoCanWhat', 'csvImports']
                          .includes(spec.factory);
     if (wantsChartJs) {

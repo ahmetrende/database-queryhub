@@ -73,6 +73,13 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Added
 
+- **The metrics dashboard shows the channel mix.** A new "Channels" group has three panels. The
+  first is a table of requests and distinct people for each channel (Slack, Web, IdP, MCP) with
+  the share of each, and a count of people by the channels they used. The other two are weekly
+  charts of requests and of active people for each channel. All three follow the dashboard
+  filters. The view `p_metrics_request_facts` adds the column `origin` (migration 200). A blank
+  value reads as `slack`. An unknown value shows under its own name.
+
 - **The audit screen shows the channel of a request.** Each request row has a small pill
   with the door the request came through: Slack, Web, IdP or MCP. The side panel has a
   "Channel" line. `POST /api/admin/audit/search` adds `origin` (the stored value) and

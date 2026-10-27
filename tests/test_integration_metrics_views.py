@@ -118,3 +118,12 @@ def test_who_can_what_reads_roles_and_grants_from_the_access_model(seeded):
                        (CAPTAIN,))
     assert cap["is_admin"] is True and cap["admin_max_tier"] == "ro"
     assert cap["admin_scope_team_ids"] == [seeded["team_id"]]
+
+
+def test_a_request_carries_its_channel_and_a_blank_one_reads_as_slack(seeded):
+    """Migration 200: the facts view says which door a request came through."""
+    assert _fact(seeded["request"]("SELECT 4", origin="web"))["origin"] == "web"
+    assert _fact(seeded["request"]("SELECT 5", origin="  IdP "))["origin"] == "idp"
+    assert _fact(seeded["request"]("SELECT 6", origin=""))["origin"] == "slack"
+    assert _fact(seeded["request"]("SELECT 7"))["origin"] == "slack", \
+        "the column default"
