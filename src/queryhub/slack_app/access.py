@@ -414,7 +414,9 @@ def approval_texts(updated: dict, decided_by: str) -> tuple[str, str]:
         grant_line = ("\n:warning: Auto-grant skipped: the request names no "
                       "connection. Match the typed server to a connection, "
                       "then grant access manually.")
-        requester_note = "\n\nA DBA will finalize your access shortly."
+        requester_note = ("\n\nYour request named no connection, so QueryHub "
+                          "granted no access. A DBA will match your server "
+                          "to a connection and grant access.")
     else:
         grant_line = ""
         requester_note = "\n\nYou can now run `/sql`."

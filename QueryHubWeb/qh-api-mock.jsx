@@ -688,6 +688,12 @@ const mockAudit = (event, target, kind, extra) => {
 const DEFAULT_PORT = { postgres: 5432, mssql: 1433, oracle: 1521, mysql: 3306, clickhouse: 9440, athena: 443 };
 const mockEngineName = (e) => e === 'mssql' ? 'SQL Server 2022' : e === 'clickhouse' ? 'ClickHouse 24.8' : 'PostgreSQL 15';
 const mockEngineVer = (e) => e === 'mssql' ? '16.0.4125' : e === 'clickhouse' ? '24.8.4.13' : '15.6';
+// The lead of a mock team, by name: the first member, as the approvers below do.
+function mockLeadsOf(teamId) {
+  const team = ADMIN.teams.find(t => t.id === teamId);
+  const person = team && team.members && ADMIN.people.find(p => p.handle === team.members[0]);
+  return person ? [person.name] : [];
+}
 // Owner teams of one mock connection, and the leads they make approvers.
 function mockOwnerState(row) {
   const owners = row.owners || [];
@@ -744,7 +750,7 @@ function connRegistry() {
       // so the chip and the switch render in both states.
       superAdminOnly: c.id === 'svc-prod-billing',
       // Owner teams (CODE 2026-10-05 (g)): one synced, so the screen shows both kinds.
-      owners: c.id === 'prod-main' ? [{ id: 't_payments', name: 'payments', displayName: 'payments', syncedFrom: 'pod-sync' }] : [],
+      owners: c.id === 'prod-main' ? [{ id: 't_payments', name: 'payments', displayName: 'payments', syncedFrom: 'pod-sync', leads: mockLeadsOf('t_payments') }] : [],
       credentials: {
         ro: { username: 'qh_ro', configured: true, placeholder: false },
         rw: { username: 'qh_rw', configured: c.env !== 'production' || c.id === 'prod-main', placeholder: false },
@@ -3071,7 +3077,7 @@ const qhApi = {
     row.owners = row.owners || [];
     if (row.owners.some(o => o.id === teamId)) return mockFail(team.name + ' already owns ' + row.name + '.', 409, 'conflict');
     const before = mockOwnerState(row).approvers.map(a => a.name);
-    row.owners = row.owners.concat([{ id: team.id, name: team.name, displayName: team.name, syncedFrom: null }]);
+    row.owners = row.owners.concat([{ id: team.id, name: team.name, displayName: team.name, syncedFrom: null, leads: mockLeadsOf(team.id) }]);
     mockAudit('Added owner', team.name + ' · ' + row.name, 'grant');
     return mockOwnerResult(row, before);
   }, 260),

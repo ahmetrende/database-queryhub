@@ -1168,16 +1168,26 @@ def admin_connections(claims: dict = Depends(deps.current_user)):
     # database is this", the question an admin brings to it before deciding
     # anything else. Many-to-many, because six of these are shared between two
     # teams, and `syncedFrom` because a synced link is not the reader's to
-    # correct here while a hand-made one is.
+    # correct here while a hand-made one is. `leads` names the people who
+    # approve for the team (enabled leads only, as the reconcile counts them),
+    # so the row says whose approval the owner brings.
     owners: dict[int, list[dict]] = {}
     for row in db.fetch_all(
-            "SELECT tt.target_id, t.id, t.name, t.display_name, tt.source "
+            "SELECT tt.target_id, t.id, t.name, t.display_name, tt.source, "
+            "       COALESCE(array_agg(p.display_name ORDER BY p.display_name) "
+            "                FILTER (WHERE p.id IS NOT NULL), '{}') AS leads "
             "  FROM target_team tt "
             "  JOIN team t ON t.id = tt.team_id AND NOT t.is_deleted "
+            "  LEFT JOIN team_member m ON m.team_id = t.id AND m.is_lead "
+            "        AND NOT m.is_deleted "
+            "  LEFT JOIN principal p ON p.id = m.principal_id "
+            "        AND p.enabled AND NOT p.is_deleted "
+            " GROUP BY tt.target_id, t.id, t.name, t.display_name, tt.source "
             " ORDER BY t.display_name"):
         owners.setdefault(row["target_id"], []).append(
             {"id": row["id"], "name": row["name"],
-             "displayName": row["display_name"], "syncedFrom": row["source"]})
+             "displayName": row["display_name"], "syncedFrom": row["source"],
+             "leads": list(row.get("leads") or [])})
     from . import routes_data
     rows = targets.list_admin_rows()
     # One read for the whole fleet. This asked per target, which is a round

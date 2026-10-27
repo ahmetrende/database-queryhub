@@ -11,6 +11,16 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **The Connections list names the lead of each owner team.** Under each connection name,
+  the list showed the owner teams only. `GET /admin/connections` now adds a `leads` list to
+  each owner: the enabled leads of that team, as the lead-approver reconcile counts them.
+  A team with no lead gets an empty list. The row reads "Team (Lead Name)".
+
+- **The requester DM no longer promises access for a request that names no connection.**
+  After an admin approved such a request, the DM said "A DBA will finalize your access
+  shortly" under the heading "approved". The DM now says that QueryHub granted no access
+  and that a DBA will match the server to a connection and grant access.
+
 - **The access-request card is honest when the request names no connection.** With the
   request-access list off, every typed server has no connection. The card said that
   Approve gives the requester a per-user grant, and the confirm dialog asked

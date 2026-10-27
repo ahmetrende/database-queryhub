@@ -265,7 +265,8 @@ def _target_rows() -> list[dict]:
 
 
 OWNERS = [{"target_id": 42, "id": 7, "name": "payments-be",
-           "display_name": "Payments BE", "source": "pod-sync"}]
+           "display_name": "Payments BE", "source": "pod-sync",
+           "leads": ["Ada Lead"]}]
 
 
 @pytest.fixture
@@ -463,7 +464,8 @@ GOLDEN_SUPER_BODY = (
     b'"placeholder":false},"ddl":{"username":null,"configured":false,'
     b'"placeholder":false}},"databases":[{"id":"ledger","name":"ledger"},'
     b'{"id":"audit","name":"audit"}],"owners":[{"id":7,"name":"payments-be",'
-    b'"displayName":"Payments BE","syncedFrom":"pod-sync"}],'
+    b'"displayName":"Payments BE","syncedFrom":"pod-sync",'
+    b'"leads":["Ada Lead"]}],'
     b'"health":null,"inRotation":null},'
     b'{"id":"prod-main-replica","name":"prod-main-replica","engine":"PostgreSQL",'
     b'"engineId":"postgres","env":"production","enabled":false,'

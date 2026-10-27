@@ -105,7 +105,9 @@ def test_approved_but_the_server_is_not_a_target():
         _row(auto_grant={"applied": False, "reason": "no_target"}), WHO)
     assert ("\n:warning: Auto-grant skipped: the request names no connection. "
             "Match the typed server to a connection, then grant access manually.") in status
-    assert dm.endswith("\n\nA DBA will finalize your access shortly.")
+    assert dm.endswith("\n\nYour request named no connection, so QueryHub "
+                       "granted no access. A DBA will match your server to a "
+                       "connection and grant access.")
 
 
 def test_approved_with_no_summary_at_all():

@@ -660,13 +660,28 @@ def test_the_listing_says_which_team_owns_each_target(wire):
     correct here while a hand-made one is."""
     wire["owners"] = [
         {"target_id": wire["row"]["id"], "id": 7, "name": "payments-be",
-         "display_name": "Payments BE", "source": "pod-sync"},
+         "display_name": "Payments BE", "source": "pod-sync",
+         "leads": ["Ada Lead"]},
         {"target_id": wire["row"]["id"], "id": 8, "name": "identity-be",
-         "display_name": "Identity BE", "source": None},
+         "display_name": "Identity BE", "source": None, "leads": []},
     ]
     entry = ra.admin_connections(claims=SUPER)["connections"][0]
     assert [o["displayName"] for o in entry["owners"]] == ["Payments BE", "Identity BE"]
     assert [o["syncedFrom"] for o in entry["owners"]] == ["pod-sync", None]
+
+
+def test_each_owner_names_its_leads_and_a_team_without_a_lead_names_none(wire):
+    """The row says whose approval an owner brings. A team with no enabled
+    lead answers an empty list, never a missing key."""
+    wire["owners"] = [
+        {"target_id": wire["row"]["id"], "id": 7, "name": "payments-be",
+         "display_name": "Payments BE", "source": None,
+         "leads": ["Ada Lead", "Bo Lead"]},
+        {"target_id": wire["row"]["id"], "id": 8, "name": "identity-be",
+         "display_name": "Identity BE", "source": None, "leads": None},
+    ]
+    entry = ra.admin_connections(claims=SUPER)["connections"][0]
+    assert [o["leads"] for o in entry["owners"]] == [["Ada Lead", "Bo Lead"], []]
 
 
 def test_a_target_nobody_owns_says_so_with_an_empty_list(wire):

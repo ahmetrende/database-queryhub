@@ -98,4 +98,5 @@ def test_the_status_line_after_approval_says_no_grant_was_written():
         dict(_request(), auto_grant={"applied": False, "reason": "no_target"}),
         "<@UADMIN>")
     assert "Auto-grant skipped: the request names no connection" in status
-    assert "A DBA will finalize your access shortly." in dm
+    assert "granted no access" in dm
+    assert "finalize your access" not in dm
