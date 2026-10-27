@@ -15,6 +15,13 @@ const API_BASE = '/api';
 // refresh; the winner rotates the cookie and everyone retries with it.
 let _refreshInFlight = null;
 
+// A person the own UI refuses (the server answers 403 `ui_super_admin_only`)
+// goes to the notice page. It says that QueryHub opens through the portal and
+// sends them there. Every API call and every poller passes through qhFetch, so
+// a person who skips the page meets this again on the next request.
+const PORTAL_NOTICE_PATH = '/portal-redirect';
+function qhGoToPortalNotice() { window.location.replace(PORTAL_NOTICE_PATH); }
+
 async function qhFetch(path, opts = {}, _retried = false) {
   const res = await fetch(API_BASE + path, {
     credentials: 'same-origin',
@@ -33,6 +40,11 @@ async function qhFetch(path, opts = {}, _retried = false) {
     }
     const r = await _refreshInFlight;
     if (r.ok) return qhFetch(path, opts, true);
+    if (r.status === 403) {
+      let refused = null;
+      try { refused = await r.clone().json(); } catch (err) { /* non-JSON */ }
+      if (refused && refused.error && refused.error.code === 'ui_super_admin_only') qhGoToPortalNotice();
+    }
     window.dispatchEvent(new Event('qh:signed-out'));
     const e = new Error('Signed out.'); e.code = 'unauthenticated'; e.status = 401; throw e;
   }
@@ -53,6 +65,7 @@ async function qhFetch(path, opts = {}, _retried = false) {
     const e = new Error(err.message);
     Object.assign(e, err);
     e.code = err.code; e.status = res.status;
+    if (res.status === 403 && err.code === 'ui_super_admin_only') qhGoToPortalNotice();
     throw e;
   }
   return body;

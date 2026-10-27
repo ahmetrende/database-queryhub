@@ -299,6 +299,16 @@ def create_app() -> FastAPI:
     app.include_router(routes_requests.router)
     app.include_router(routes_admin.router)
 
+    # The notice page for a person the own UI refuses. No session is needed:
+    # that person is the one who has none that works. See portal_redirect.
+    @app.get("/portal-redirect", include_in_schema=False)
+    def portal_redirect_page():
+        from fastapi.responses import HTMLResponse
+
+        from . import portal_redirect
+        return HTMLResponse(portal_redirect.page(portal_redirect.portal_url()),
+                            headers={"Cache-Control": "no-store"})
+
     # ---- health / readiness ---------------------------------------------
     # Unauthenticated, cheap probes for process managers and load balancers.
     # /healthz = liveness (the process is up); /readyz = readiness (the

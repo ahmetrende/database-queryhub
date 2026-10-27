@@ -249,6 +249,11 @@ def auth_callback(provider: str, request: Request,
     if not deps.own_ui_allowed(ident.principal_id):
         log.warning("login rejected (own UI is super-admin only): %s",
                     ident.principal_id)
+        # With a portal address set, the refused person lands on the notice
+        # page that sends them there. Without one, the login page says so.
+        from . import portal_redirect
+        if portal_redirect.portal_url():
+            return RedirectResponse(f"{base_url()}{portal_redirect.PATH}", 302)
         return RedirectResponse(f"{base_url()}/?auth_error=portal_only", 302)
 
     # Still employed? This used to run only at refresh, which was enough while

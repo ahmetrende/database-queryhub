@@ -21,7 +21,7 @@ DEV = "U0EXAMPLE002"
 @pytest.fixture
 def switch(monkeypatch):
     """Set the switch value. `None` leaves the key unset, as on a new install."""
-    state = {"value": "off", "allowed": ""}
+    state = {"value": "off", "allowed": "", "portal": ""}
     real = deps.cfg.get_setting
 
     def fake(key, default=None):
@@ -29,6 +29,8 @@ def switch(monkeypatch):
             return default if state["value"] is None else state["value"]
         if key == "web_own_ui_allowed_users":
             return state["allowed"]
+        if key == "web_portal_url":
+            return state["portal"]
         return real(key, default)
 
     monkeypatch.setattr(deps.cfg, "get_setting", fake)
@@ -337,3 +339,14 @@ def test_refresh_works_with_the_switch_off(switch, refresh):
     switch["value"] = "off"
     assert refresh(DEV).status_code == 200
     assert refresh.revoked == []
+
+
+def test_an_sso_callback_of_a_developer_goes_to_the_notice_page_when_a_portal_is_set(
+        switch, callback):
+    """With a portal address set, the refused person lands on the page that
+    sends them there. Without one (the test above), the sign-in screen says so."""
+    switch["value"] = "on"
+    switch["portal"] = "https://portal.example.test"
+    resp = callback(DEV)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://qh.test/portal-redirect"

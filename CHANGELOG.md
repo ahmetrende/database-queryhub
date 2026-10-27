@@ -11,6 +11,14 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **A person that the web UI refuses lands on a page that sends them to the portal.** With
+  `web_own_ui_super_admin_only` on, a refused sign-in went back to the sign-in screen, and a
+  signed-in person got a 403 on every call. Now both go to `/portal-redirect`. The page links
+  to the portal and sends the person there after 5 seconds. The address is the new key
+  `web_portal_url` (migration 199). The page is plain HTML without a script. The client moves
+  to it on every 403 `ui_super_admin_only`, so a person who skips the page meets it again on
+  the next request. An empty address shows the notice without a link.
+
 - **A list of people can use the web sign-in while it is closed to everyone else.** With
   `web_own_ui_super_admin_only` on, only a super-admin could sign in to the QueryHub web UI.
   The new key `web_own_ui_allowed_users` (migration 198) holds a comma-separated list of ids
