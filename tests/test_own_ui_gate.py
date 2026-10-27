@@ -21,12 +21,14 @@ DEV = "U0EXAMPLE002"
 @pytest.fixture
 def switch(monkeypatch):
     """Set the switch value. `None` leaves the key unset, as on a new install."""
-    state = {"value": "off"}
+    state = {"value": "off", "allowed": ""}
     real = deps.cfg.get_setting
 
     def fake(key, default=None):
         if key == "web_own_ui_super_admin_only":
             return default if state["value"] is None else state["value"]
+        if key == "web_own_ui_allowed_users":
+            return state["allowed"]
         return real(key, default)
 
     monkeypatch.setattr(deps.cfg, "get_setting", fake)
@@ -69,6 +71,55 @@ def test_on_admits_only_a_super_admin(switch, raw):
     switch["value"] = raw
     assert deps.own_ui_allowed(SUPER) is True
     assert deps.own_ui_allowed(DEV) is False
+
+
+# ---- the allow list ------------------------------------------------------
+
+def test_a_listed_person_passes_with_the_switch_on_and_is_not_a_super_admin(switch):
+    switch["value"] = "on"
+    switch["allowed"] = DEV
+    assert deps.own_ui_allowed(DEV) is True
+    assert deps.own_ui_allowed("U0EXAMPLE003") is False
+
+
+def test_the_list_ignores_spaces_and_empty_parts(switch):
+    switch["value"] = "on"
+    switch["allowed"] = f" {DEV} , ,local:erdem,"
+    assert deps.own_ui_allowed(DEV) is True
+    assert deps.own_ui_allowed("local:erdem") is True
+    assert deps.own_ui_allowed("") is False
+
+
+def test_a_partial_id_does_not_match(switch):
+    """The match is exact. A prefix of a listed id gets nothing."""
+    switch["value"] = "on"
+    switch["allowed"] = DEV
+    assert deps.own_ui_allowed(DEV[:-1]) is False
+    assert deps.own_ui_allowed(DEV + "X") is False
+
+
+def test_an_empty_list_allows_only_super_admins(switch):
+    switch["value"] = "on"
+    switch["allowed"] = ""
+    assert deps.own_ui_allowed(SUPER) is True
+    assert deps.own_ui_allowed(DEV) is False
+
+
+def test_the_list_means_nothing_while_the_switch_is_off(switch, monkeypatch):
+    switch["value"] = "off"
+    switch["allowed"] = "U0EXAMPLE003"
+    assert deps.own_ui_allowed(DEV) is True
+
+
+def test_a_live_session_of_a_listed_person_keeps_working(switch, session_of):
+    session_of(DEV)
+    switch["value"] = "on"
+    switch["allowed"] = DEV
+    assert deps.current_user(_cookie_request())["sub"] == DEV
+    switch["allowed"] = ""
+    with pytest.raises(Exception) as e:
+        deps.current_user(_cookie_request())
+    assert e.value.detail["code"] == "ui_super_admin_only"
 
 
 def test_a_fault_while_reading_closes_the_gate(monkeypatch):

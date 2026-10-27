@@ -36,18 +36,28 @@ PORTAL_ONLY_MESSAGE = "Refused: QueryHub opens through the portal. Sign in there
 
 
 def own_ui_allowed(principal_id: str) -> bool:
-    """False when `web_own_ui_super_admin_only` is on and this person is not a
-    super-admin.
+    """False when `web_own_ui_super_admin_only` is on and this person is neither
+    a super-admin nor on the `web_own_ui_allowed_users` list.
 
     Judges a browser session only. A portal request carries an assertion and
-    never reaches this check. A failed read of the key or of the admin rows
+    never reaches this check. A failed read of a key or of the admin rows
     raises, which refuses the request: this gate closes on a fault, it does
     not open.
     """
     val = (cfg.get_setting("web_own_ui_super_admin_only", "off") or "").strip().lower()
     if val not in {"on", "1", "true", "yes"}:
         return True
+    if principal_id and principal_id in _own_ui_allowed_users():
+        return True
     return admins.is_super_admin(principal_id)
+
+
+def _own_ui_allowed_users() -> set[str]:
+    """The ids on `web_own_ui_allowed_users`: comma-separated, spaces ignored.
+    An empty or unset key is an empty set. The match is exact, so a person
+    needs the same id that the session carries."""
+    raw = cfg.get_setting("web_own_ui_allowed_users", "") or ""
+    return {part.strip() for part in raw.split(",") if part.strip()}
 
 
 def current_user(conn: HTTPConnection) -> dict:

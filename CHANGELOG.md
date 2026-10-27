@@ -11,6 +11,12 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **A list of people can use the web sign-in while it is closed to everyone else.** With
+  `web_own_ui_super_admin_only` on, only a super-admin could sign in to the QueryHub web UI.
+  The new key `web_own_ui_allowed_users` (migration 198) holds a comma-separated list of ids
+  that may sign in beside the super-admins. It is empty by default. It has no effect while
+  the switch is off. A portal request still never meets the switch.
+
 - **The Connections list names the lead of each owner team.** Under each connection name,
   the list showed the owner teams only. `GET /admin/connections` now adds a `leads` list to
   each owner: the enabled leads of that team, as the lead-approver reconcile counts them.
