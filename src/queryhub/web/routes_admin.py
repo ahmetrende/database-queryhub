@@ -142,8 +142,21 @@ def admin_queue(escalate: bool | None = None,
                 claims: dict = Depends(deps.current_user)):
     """Pending queries this admin may approve (scoped by tier + connection
     via the same can_approve the Slack side uses). `?escalate=true` filters
-    to DDL escalations, `?escalate=false` to the rest."""
-    uid = admin.require_admin(claims, "approve")
+    to DDL escalations, `?escalate=false` to the rest.
+
+    A signed-in person who holds no approval role gets an empty queue, not a
+    403. The IdP panel polls this route for everyone who holds its own
+    approve permission, and a refusal there is logged as an error on every
+    poll. Nothing is exposed: the list is empty. The decision routes keep
+    their 403."""
+    try:
+        uid = admin.require_admin(claims, "approve")
+    except HTTPException as e:
+        if e.status_code != 403:
+            raise
+        log.info("approval queue read by a person with no approval role: "
+                 "answered with an empty queue")
+        return {"queue": []}
     rows = db.fetch_all(
         f"SELECT {_QUEUE_COLS} FROM requests WHERE status = 'pending' "
         f"ORDER BY id")

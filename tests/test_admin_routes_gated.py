@@ -39,6 +39,12 @@ from queryhub.web import routes_admin, sessions
 # for itself in this list rather than pass silently.
 PUBLIC_ADMIN_ROUTES: dict[str, str] = {}
 
+# Read routes that answer a non-admin session with an empty body instead of a
+# 403. The IdP panel polls the queue for everyone who holds its approve
+# permission, and a 403 there is logged as an error on every poll. The body
+# holds no row. An addition here needs the same argument.
+EMPTY_FOR_NON_ADMIN = {("GET", "/api/admin/queue"): {"queue": []}}
+
 # Every call that counts as the gate. Kept in one place so the source check and
 # the ordering check below cannot disagree about what a gate is.
 _GATE_NAMES = ("require_admin", "require_super", "is_super_admin",
@@ -244,6 +250,11 @@ def test_non_admin_session_gets_403_from_every_admin_route(
             method, url,
             headers={"origin": "http://testserver"},  # pass the CSRF gate
             json=body if method in {"POST", "PUT", "PATCH"} else None)
+        if (method, path) in EMPTY_FOR_NON_ADMIN:
+            # The gate still runs. It answers an empty list, never a row.
+            assert r.status_code == 200 and r.json() == EMPTY_FOR_NON_ADMIN[
+                (method, path)], f"{method} {url}: {r.status_code} {r.text[:200]}"
+            continue
         assert r.status_code == 403, (
             f"{method} {url} answered {r.status_code}, not 403 — a non-admin "
             f"reached past the gate. Body: {r.text[:200]}")

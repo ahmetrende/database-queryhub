@@ -261,15 +261,19 @@ def test_a_bundle_decision_passes_the_scope_check_to_the_decision(world, monkeyp
     assert seen == [True, False]
 
 
+def test_a_person_with_no_role_reads_an_empty_queue_and_no_row(world):
+    assert ra.admin_queue(claims={"sub": REQUESTER}) == {"queue": []}
+    assert world == []
+
+
 @pytest.mark.parametrize("call", [
-    lambda: ra.admin_queue(claims={"sub": REQUESTER}),
     lambda: ra.admin_decision(1, ra.DecisionIn(decision="approve"),
                               claims={"sub": REQUESTER}),
     lambda: ra.admin_batch_approve(ra.BatchIn(ids=["1"]),
                                    claims={"sub": REQUESTER}),
     lambda: ra.admin_bundle_decision(5, ra.DecisionIn(decision="approve"),
                                      claims={"sub": REQUESTER}),
-], ids=["queue", "decision", "batch", "bundle"])
+], ids=["decision", "batch", "bundle"])
 def test_a_person_with_no_role_is_refused_before_any_work(world, call):
     with pytest.raises(HTTPException) as e:
         call()
