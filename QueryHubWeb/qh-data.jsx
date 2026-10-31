@@ -1464,22 +1464,74 @@ function qhGrantEnd(grantEndsAt, now) {
   return { state: 'live', text: e.label, short: '', tone: 'calm', title: 'Ends ' + full };
 }
 
-// The step list of one request (2026-10-24). `timeline` is the server's list of
-// { step, at, outcome?, by? }. Steps that the UI does not know are dropped. No
-// list, or an empty one, gives []. The last row is the strong one.
+// The step list of one request (2026-10-24, rows rebuilt 2026-10-31). `timeline`
+// is the server's list of { step, at, time?, outcome?, by? }. `time` is the
+// instant in the display timezone, in the format of the Messages lines. Steps
+// that the UI does not know are dropped. No list, or an empty one, gives [].
+// The last row is the strong one. A row after the first also carries the wait
+// since the step before it.
 const QH_STEP_WORDS = { sent: 'Sent', decided: 'Decided', started: 'Started', finished: 'Finished' };
 const QH_STEP_OUTCOMES = { approved: 'Approved', denied: 'Denied', changes_requested: 'Changes requested',
   withdrawn: 'Withdrawn', expired: 'Expired', completed: 'Completed', failed: 'Failed' };
+// The word and the colour of an outcome always go together: a chip never
+// shows state by colour alone.
+const QH_STEP_TONES = { approved: 'ok', completed: 'ok', denied: 'bad', failed: 'bad',
+  changes_requested: 'warn', withdrawn: 'warn', expired: 'warn' };
+
+// A wait as short text: "52 ms", "1.4 s", "42 s", "2 min 14 s", "1 h 5 min",
+// "2 d 3 h". Milliseconds in. A negative or missing value gives ''.
+function qhSpanText(ms) {
+  if (typeof ms !== 'number' || !(ms >= 0)) return '';
+  if (ms < 1000) return Math.round(ms) + ' ms';
+  if (ms < 10000) return (Math.round(ms / 100) / 10) + ' s';
+  const t = Math.round(ms / 1000);
+  if (t < 60) return t + ' s';
+  const part = (big, bigUnit, rest, restUnit) => big + ' ' + bigUnit + (rest ? ' ' + rest + ' ' + restUnit : '');
+  if (t < 3600) return part(Math.floor(t / 60), 'min', t % 60, 's');
+  if (t < 86400) return part(Math.floor(t / 3600), 'h', Math.floor((t % 3600) / 60), 'min');
+  return part(Math.floor(t / 86400), 'd', Math.floor((t % 86400) / 3600), 'h');
+}
+
+// The clock of one step: the server's `time`, or, for a server that does not
+// send it, the same layout from `at` in the browser's timezone.
+function qhStepClock(s) {
+  if (typeof s.time === 'string' && s.time) return s.time;
+  const d = s.at ? new Date(s.at) : null;
+  if (!d || isNaN(d.getTime())) return '';
+  const p = (n, w) => String(n).padStart(w || 2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' +
+    p(d.getMinutes()) + ':' + p(d.getSeconds()) + '.' + p(d.getMilliseconds(), 3);
+}
+
 function qhTimelineRows(timeline) {
   if (!Array.isArray(timeline)) return [];
   const rows = timeline.filter(s => s && QH_STEP_WORDS[s.step]).map((s, i) => {
     const o = (s.step === 'decided' || s.step === 'finished') && s.outcome ? String(s.outcome) : '';
-    const word = QH_STEP_OUTCOMES[o] || (o ? o.charAt(0).toUpperCase() + o.slice(1).replace(/_/g, ' ').toLowerCase() : '');
-    return { key: s.step + i, step: s.step, label: QH_STEP_WORDS[s.step], outcome: word,
-      by: s.by ? qhPersonName(String(s.by)) : '', ago: qhAgo(s.at), title: s.at ? new Date(s.at).toLocaleString() : '', strong: false };
+    const by = s.by ? qhPersonName(String(s.by)) : '';
+    // QueryHub approved it by itself: the same words as the Messages line.
+    const auto = s.step === 'decided' && o === 'approved' && by === 'QueryHub';
+    const word = auto ? 'Auto-approved'
+      : (QH_STEP_OUTCOMES[o] || (o ? o.charAt(0).toUpperCase() + o.slice(1).replace(/_/g, ' ').toLowerCase() : ''));
+    const ms = s.at ? new Date(s.at).getTime() : NaN;
+    return { key: s.step + i, step: s.step, label: QH_STEP_WORDS[s.step], outcome: word, tone: QH_STEP_TONES[o] || '',
+      by, at: s.at || '', time: qhStepClock(s), ago: isNaN(ms) ? '' : qhAgo(s.at), ms, gap: '', gapTitle: '', strong: false };
+  });
+  rows.forEach((r, i) => {
+    if (i === 0) return;
+    r.gap = qhSpanText(r.ms - rows[i - 1].ms);
+    if (r.gap) r.gapTitle = 'Time since ' + rows[i - 1].label;
   });
   if (rows.length) rows[rows.length - 1].strong = true;
   return rows;
+}
+
+// "2 min 14 s from Sent to Decided": the whole run of the list, in words.
+// Nothing for one step or for times that do not parse.
+function qhTimelineTotal(rows) {
+  if (!Array.isArray(rows) || rows.length < 2) return '';
+  const first = rows[0], last = rows[rows.length - 1];
+  const span = qhSpanText(last.ms - first.ms);
+  return span ? span + ' from ' + first.label + ' to ' + last.label : '';
 }
 
 Object.assign(window, {
@@ -1501,5 +1553,5 @@ Object.assign(window, {
   QH_OUTCOMES, qhOutcomeInfo, qhOutcomeMessages, qhHistoryRow, qhHistoryKind, QH_HIST_FILTERS, qhHistoryFilter, qhSqlStart,
   qhPendingRequests, qhResubmitOver, qhNotifSubject, qhEndNote,
   qhBrowserNotifStored, qhBrowserNotifStore, qhRaisedLoad, qhRaisedSave, qhBrowserNotifPermission, qhBrowserNotifEnable, qhRaiseBrowserNotifs,
-  qhAccessSummary, qhGrantEnd, qhTimelineRows, QH_STEP_WORDS, QH_STEP_OUTCOMES,
+  qhAccessSummary, qhGrantEnd, qhTimelineRows, qhTimelineTotal, qhSpanText, qhStepClock, QH_STEP_WORDS, QH_STEP_OUTCOMES, QH_STEP_TONES,
 });

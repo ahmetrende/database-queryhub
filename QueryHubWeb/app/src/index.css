@@ -2860,14 +2860,38 @@
   .qh-grantend.is-amber { color: var(--warning-solid-strong); background: var(--warning-adaptive-light); }
   .qh-grantend.is-muted { color: var(--fg-tertiary); background: var(--bg-light); }
   .qh-tr-endsoon { font-size: 10px; font-weight: 600; line-height: 1.4; padding: 1px 6px; border-radius: 999px; white-space: nowrap; flex-shrink: 0; color: var(--warning-solid-strong); background: var(--warning-adaptive-light); }
-  .qh-steps { margin: 6px 0 8px; padding: 6px 0 6px 2px; font-family: var(--qh-sans, inherit); }
-  .qh-steps-title { font-size: 11px; font-weight: 600; color: var(--fg-secondary); margin-bottom: 4px; }
-  .qh-step { display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 12.5px; color: var(--fg-secondary); }
-  .qh-step-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--fg-tertiary); flex-shrink: 0; }
+  /* 2026-10-31: Steps shares the columns of a Messages line: clock, dot, step,
+     what happened, wait since the step before. The tracks are fixed, so every
+     row lines up and no column drifts to the far edge of a wide panel. The font
+     is --font-sans: the name --qh-sans never existed, so the old rule fell back
+     to the mono of the log. Tokens only, so no dark partner is needed. */
+  .qh-steps { margin: 8px 0 10px; padding: 8px 0; font-family: var(--font-sans); border-top: 1px solid var(--stroke-light); border-bottom: 1px solid var(--stroke-light); }
+  .qh-steps-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 12px; margin-bottom: 4px; }
+  .qh-steps-title { font-size: 11px; font-weight: 600; color: var(--fg-secondary); }
+  .qh-steps-total { font-size: 11px; color: var(--fg-tertiary); }
+  .qh-step { display: grid; grid-template-columns: max-content 24px 72px minmax(0, 250px) max-content; font-size: 12.5px; line-height: 20px; color: var(--fg-secondary); }
+  .qh-step > * { padding: 2px 0; }
   .qh-step.is-last { color: var(--fg-primary); }
+  .qh-step-time { font-family: var(--qh-mono); color: var(--fg-tertiary); }
+  .qh-step-rail { position: relative; padding: 0; }
+  .qh-step-rail::before { content: ''; position: absolute; left: 11px; top: 18px; bottom: -6px; width: 1px; background: var(--stroke-strong); }
+  .qh-step:last-child .qh-step-rail::before { display: none; }
+  .qh-step-dot { position: absolute; left: 8px; top: 8px; width: 8px; height: 8px; border-radius: 999px; background: var(--fg-tertiary); }
   .qh-step.is-last .qh-step-dot { background: var(--brand-solid-strong); }
+  .qh-step.is-last.tone-bad .qh-step-dot { background: var(--danger-solid-medium); }
+  .qh-step.is-last.tone-warn .qh-step-dot { background: var(--warning-solid-strong); }
   .qh-step-word { font-weight: 600; }
-  .qh-step-time { color: var(--fg-tertiary); margin-left: auto; padding-right: 4px; }
+  .qh-step-what { min-width: 0; overflow-wrap: anywhere; }
+  .qh-step-outcome { display: inline-block; padding: 0 8px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 18px; vertical-align: 1px; color: var(--fg-secondary); background: var(--bg-light); }
+  .qh-step-outcome.tone-ok { color: var(--brand-solid-strong); background: var(--brand-adaptive-light); }
+  .qh-step-outcome.tone-warn { color: var(--warning-solid-strong); background: var(--warning-adaptive-light); }
+  .qh-step-outcome.tone-bad { color: var(--danger-solid-medium); background: var(--danger-adaptive-light); }
+  .qh-step-by { color: var(--fg-secondary); }
+  .qh-step-gap { padding-left: 12px; white-space: nowrap; color: var(--fg-tertiary); font-variant-numeric: tabular-nums; }
+  @media (max-width: 640px) {
+    .qh-step { grid-template-columns: max-content 24px 64px minmax(0, 1fr); }
+    .qh-step-gap { grid-column: 3 / -1; padding-left: 0; padding-top: 0; }
+  }
   /* Bell menu footer: the browser notifications switch. */
   .qh-notif-foot { border-top: 1px solid var(--stroke-light); padding: 10px 14px 11px; display: flex; flex-direction: column; gap: 4px; }
   .qh-notif-switch { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--fg-primary); }

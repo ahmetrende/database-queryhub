@@ -11,6 +11,13 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **The Steps list on the Messages tab shows exact times and the wait between steps.** Each row
+  starts with the same clock as the Messages lines. Then come the step, its outcome and the wait
+  since the step before ("+2 min 14 s"). The head names the whole run. The last dot turns red for
+  Denied and Failed and amber for Changes requested, Withdrawn and Expired. The time no longer sits at
+  the far edge of the panel, and the names show in the sans font. `GET /api/queries/{id}` adds `time`
+  to each step of `timeline`. The field `at` stays.
+
 - **A person that the web UI refuses lands on a page that sends them to the portal.** With
   `web_own_ui_super_admin_only` on, a refused sign-in went back to the sign-in screen, and a
   signed-in person got a 403 on every call. Now both go to `/portal-redirect`. The page links

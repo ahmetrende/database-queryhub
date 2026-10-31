@@ -2306,19 +2306,30 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked })
 }
 
 // The step list sits under the first line and above the rest (2026-10-24). It
-// renders nothing when the server sends no timeline or an empty one.
+// renders nothing when the server sends no timeline or an empty one. Each row
+// has the same columns as a Messages line: the clock, then a dot, the step,
+// what happened and the wait since the step before (2026-10-31).
 function StepsList({ timeline }) {
   const rows = qhTimelineRows(timeline);
   if (!rows.length) return null;
+  const total = qhTimelineTotal(rows);
   return <div className="qh-steps" role="list" aria-label="Steps">
-    <div className="qh-steps-title">Steps</div>
+    <div className="qh-steps-head">
+      <span className="qh-steps-title">Steps</span>
+      {total && <span className="qh-steps-total">{total}</span>}
+    </div>
     {rows.map(r => (
-      <div key={r.key} role="listitem" className={'qh-step' + (r.strong ? ' is-last' : '')} data-step={r.step}>
-        <span className="qh-step-dot" aria-hidden="true" />
+      <div key={r.key} role="listitem" data-step={r.step}
+        className={'qh-step' + (r.strong ? ' is-last' : '') + (r.tone ? ' tone-' + r.tone : '')}>
+        <time className="qh-step-time" dateTime={r.at || undefined} title={r.ago}>{r.time}</time>
+        <span className="qh-step-rail" aria-hidden="true"><span className="qh-step-dot" /></span>
         <span className="qh-step-word">{r.label}</span>
-        {r.outcome && <span className="qh-step-outcome">{r.outcome}</span>}
-        {r.by && <span className="qh-step-by">by {r.by}</span>}
-        <span className="qh-step-time" title={r.title}>{r.ago}</span>
+        <span className="qh-step-what">
+          {r.outcome && <span className={'qh-step-outcome' + (r.tone ? ' tone-' + r.tone : '')}>{r.outcome}</span>}
+          {r.outcome && r.by && ' '}
+          {r.by && <span className="qh-step-by">by {r.by}</span>}
+        </span>
+        <span className="qh-step-gap" title={r.gapTitle}>{r.gap ? '+' + r.gap : ''}</span>
       </div>
     ))}
   </div>;

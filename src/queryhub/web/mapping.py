@@ -1230,20 +1230,25 @@ def timeline(row: dict, audit_rows: list[dict] | None = None,
     """The steps of one request: sent, decided, started, finished.
 
     A step is present when its timestamp is set, in that order. Every value is
-    a string. `decided` carries `outcome` (`approved`, or the value of
-    `request_outcome`) and `by`, a person's name. QueryHub is the name when it
-    approved the request by itself. `finished` carries `completed` or `failed`.
-    The list holds no SQL text, no row count and no result value.
+    a string. `at` is the ISO time. `time` is the same instant in the display
+    timezone, with milliseconds, in the format of the Messages lines, so that
+    both lists show one clock. `decided` carries `outcome` (`approved`, or the
+    value of `request_outcome`) and `by`, a person's name. QueryHub is the name
+    when it approved the request by itself. `finished` carries `completed` or
+    `failed`. The list holds no SQL text, no row count and no result value.
 
     The detail route serves it. The list routes do not, to keep them small."""
+    def stamp(name: str, dt: datetime) -> dict:
+        return {"step": name, "at": iso(dt), "time": fmt_ts_ms(dt)}
+
     steps: list[dict] = []
     if row.get("created_at"):
-        steps.append({"step": "sent", "at": iso(row["created_at"])})
+        steps.append(stamp("sent", row["created_at"]))
     if row.get("decided_at"):
         status = row.get("status")
         actions = {a.get("action") for a in (audit_rows or [])}
         auto = auto_approval(row, audit_rows)
-        step = {"step": "decided", "at": iso(row["decided_at"])}
+        step = stamp("decided", row["decided_at"])
         outcome = request_outcome(status, actions)
         if outcome is None and status != "cancelled":
             outcome = "approved"
@@ -1259,9 +1264,9 @@ def timeline(row: dict, audit_rows: list[dict] | None = None,
                 step["by"] = str(who)
         steps.append(step)
     if row.get("executed_at"):
-        steps.append({"step": "started", "at": iso(row["executed_at"])})
+        steps.append(stamp("started", row["executed_at"]))
     if row.get("completed_at"):
-        step = {"step": "finished", "at": iso(row["completed_at"])}
+        step = stamp("finished", row["completed_at"])
         if row.get("status") in ("completed", "failed"):
             step["outcome"] = row["status"]
         steps.append(step)

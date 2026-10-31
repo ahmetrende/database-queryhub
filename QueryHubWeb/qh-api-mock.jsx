@@ -1810,8 +1810,18 @@ function seededStatus(rec) {
 }
 
 // MOCK of the server's `timeline` (GET /queries/{id}): only the steps that
-// happened, in order. Each mock status maps to the steps it implies.
+// happened, in order. Each mock status maps to the steps it implies. The server
+// adds `time` to each step: the instant as yyyy-MM-dd HH:mm:ss.fff, as the
+// Messages lines print it. The mock uses the browser's timezone for it.
+function mockStepTime(iso) {
+  const d = new Date(iso), p = (n, w) => String(n).padStart(w || 2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' +
+    p(d.getMinutes()) + ':' + p(d.getSeconds()) + '.' + p(d.getMilliseconds(), 3);
+}
 function mockTimeline(rec, s) {
+  return mockTimelineSteps(rec, s).map(x => ({ ...x, time: mockStepTime(x.at) }));
+}
+function mockTimelineSteps(rec, s) {
   const at = (ms) => new Date(rec.t0 + ms).toISOString();
   const gap = rec.auto ? 0 : (rec.seed ? 120000 : APPROVAL_MS);
   const out = [{ step: 'sent', at: at(0) }];
