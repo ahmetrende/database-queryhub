@@ -149,6 +149,40 @@ def test_results_dir_is_configurable(monkeypatch):
     assert str(ex._results_dir()) == "/var/lib/queryhub/results"
 
 
+def test_imports_dir_is_configurable(monkeypatch):
+    """The same trap as the results directory: the image user cannot write
+    the default path, so a CSV import failed in a container."""
+    monkeypatch.setenv("QH_IMPORTS_DIR", "/tmp/qh-imports-test")
+    assert str(ex._imports_dir()) == "/tmp/qh-imports-test"
+    monkeypatch.delenv("QH_IMPORTS_DIR")
+    assert str(ex._imports_dir()) == "/var/lib/queryhub/imports"
+    monkeypatch.setenv("QH_IMPORTS_DIR", "   ")
+    assert str(ex._imports_dir()) == "/var/lib/queryhub/imports"
+
+
+def test_cleanup_reads_the_directories_the_app_writes(monkeypatch):
+    """The cleanup read RESULTS_DIR while the app wrote QH_RESULTS_DIR, so in
+    the image it cleaned an empty path and kept every result file."""
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "cleanup_old_results.py"
+    spec = importlib.util.spec_from_file_location("cleanup_old_results", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    monkeypatch.delenv("RESULTS_DIR", raising=False)
+    monkeypatch.setenv("QH_RESULTS_DIR", "/data/results")
+    assert str(mod._dir("QH_RESULTS_DIR", "RESULTS_DIR", "/d")) == "/data/results"
+    # The app's name wins over the old one.
+    monkeypatch.setenv("RESULTS_DIR", "/old")
+    assert str(mod._dir("QH_RESULTS_DIR", "RESULTS_DIR", "/d")) == "/data/results"
+    monkeypatch.delenv("QH_RESULTS_DIR")
+    assert str(mod._dir("QH_RESULTS_DIR", "RESULTS_DIR", "/d")) == "/old"
+    monkeypatch.delenv("RESULTS_DIR")
+    assert str(mod._dir("QH_RESULTS_DIR", "RESULTS_DIR", "/d")) == "/d"
+
+
 def test_an_exception_escaping_the_worker_is_logged(monkeypatch, caplog):
     """The silent failure this closes: a ThreadPoolExecutor keeps an escaped
     exception in the Future, and nobody was reading it — so an unwritable

@@ -17,3 +17,8 @@ tests
 docs/screenshots
 metrics_dashboard.html
 *.log
+# Host files never belong in the build context.
+.env
+.claude
+CLAUDE.md
+CLAUDE.local.md

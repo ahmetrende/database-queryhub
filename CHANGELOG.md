@@ -80,6 +80,12 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Added
 
+- **A Helm chart and a Kubernetes-ready image.** `deploy/helm/queryhub` runs the web app and the
+  Slack bot in one pod, and CronJobs run the scheduled scripts. One image serves all of them.
+  `QH_MSSQL_DRIVER=1` adds the SQL Server driver at build time. `QH_HEALTH_PORT` gives the bot a
+  `/healthz`. The entrypoint adds the command `init` and the variables `QH_MASTER_KEY_SOURCE`,
+  `QH_SKIP_MIGRATIONS` and `QH_SKIP_IF_MIGRATIONS_PENDING`. Read `deploy/KUBERNETES.md`.
+
 - **The Admin Metrics screen shows the channel mix.** A new "Channels" section sits under the cost
   card. It has a table of requests and distinct people for each channel, the share of each, and a
   count of people by the channels they used. A weekly stack shows requests per channel, and the
@@ -122,6 +128,15 @@ frontend and the endpoints it calls are explicitly outside it.
   database was unreachable, the service kept a closed connection pool. Every request failed and
   `/readyz` stayed at 503 until a restart. A failed start now leaves no pool. A later request
   connects again, at most once every 5 seconds, and `/readyz` answers 200 when it succeeds.
+
+- **CSV imports work as the image user.** They wrote to a fixed path that the image user cannot
+  write. `QH_IMPORTS_DIR` now sets the path.
+
+- **The results cleanup deletes result files in the image.** It read `RESULTS_DIR`, but the app
+  writes to `QH_RESULTS_DIR`. In the image, it never deleted a result file. It now reads both.
+
+- **Scripts exit without a traceback on Python 3.14.** Every script printed a
+  `PythonFinalizationError` traceback at exit. The connection pool now closes at exit.
 
 ## [1.0.38] — 2026-10-25
 

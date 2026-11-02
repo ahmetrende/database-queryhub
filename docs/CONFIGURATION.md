@@ -82,6 +82,9 @@ needs the database connection that they configure:
 | `BOT_DB_SSLMODE` | *(unset)* | libpq `sslmode` for the metadata DB and the inventory DB on the same server. Unset keeps libpq's default (`prefer`). `verify-full` needs `BOT_DB_SSLROOTCERT`. |
 | `BOT_DB_SSLROOTCERT` | *(unset)* | CA file for `BOT_DB_SSLMODE`. Do not use libpq's `PGSSLROOTCERT` instead. libpq applies it to target connections too, and a root file turns their `require` into `verify-ca` against the wrong CA. |
 | `QH_WEB_STATIC_DIR` | *(unset)* | Serve the frontend from this directory instead of `QueryHubWeb/app/dist`. |
+| `QH_RESULTS_DIR` | `/var/lib/queryhub/results` | Directory for result files (CSV, XLSX, ZIP). The image sets `/var/lib/queryhub/results`. `scripts/cleanup_old_results.py` reads the same variable. |
+| `QH_IMPORTS_DIR` | `/var/lib/queryhub/imports` | Directory for uploaded CSV files that wait for their import. The image sets `/var/lib/queryhub/imports`. |
+| `QH_HEALTH_PORT` | *(unset)* | Starts a `/healthz` endpoint on this port in the Slack bot process. It answers 503 when the scheduler or the auth-event thread is not running. The Helm chart sets it (`deploy/KUBERNETES.md`). |
 | `BOT_DB_MIGRATOR_USER`, `BOT_DB_MIGRATOR_PASSWORD`, `BOT_DB_OWNER_ROLE` | *(unset)* | For `scripts/apply_migrations.py`, after the metadata roles are split (OPERATIONS.md §28). The script connects as the migrator and runs `SET ROLE` to the owner. Do not put these variables in the services' environment. |
 | `QH_BUILD_SHA`, `QH_BUILD_VERSION` | *(unset)* | Build identity for the build stamp when there is no `.git` to ask, as in the container image. The release workflow sets both. |
 | `QH_IMAGE_DIGEST` | *(unset)* | Shown in the build stamp and the startup log line. Set it where the image runs, from `docker inspect`: the image cannot know its own digest. |

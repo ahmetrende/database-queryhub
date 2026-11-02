@@ -1,0 +1,15 @@
+# CI render test: the web app alone, no Slack, no volume.
+image:
+  repository: registry.example.com/queryhub
+  tag: "1.0.0"
+secrets:
+  env: queryhub-env
+  masterKey:
+    name: queryhub-master-key
+slack:
+  enabled: false
+persistence:
+  enabled: false
+jobs:
+  cleanup-results:
+    enabled: false

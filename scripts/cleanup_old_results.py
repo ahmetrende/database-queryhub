@@ -54,8 +54,23 @@ def _slack_client():
         return None
     return WebClient(token=cfg.ENV.slack_bot_token)
 
-RESULTS_DIR = Path(os.environ.get("RESULTS_DIR", "/var/lib/queryhub/results"))
-IMPORT_DIR = Path(os.environ.get("IMPORT_DIR", "/var/lib/queryhub/imports"))
+def _dir(env_key: str, legacy_key: str, default: str) -> Path:
+    """The directory the app writes, so that the cleanup reads the same one.
+
+    The app reads QH_RESULTS_DIR and QH_IMPORTS_DIR. This script read only
+    RESULTS_DIR and IMPORT_DIR, so in the image (QH_RESULTS_DIR set to a
+    volume) it cleaned an empty default path and kept every result file. The
+    old names stay as a fallback for an install that sets them.
+    """
+    for key in (env_key, legacy_key):
+        raw = (os.environ.get(key) or "").strip()
+        if raw:
+            return Path(raw)
+    return Path(default)
+
+
+RESULTS_DIR = _dir("QH_RESULTS_DIR", "RESULTS_DIR", "/var/lib/queryhub/results")
+IMPORT_DIR = _dir("QH_IMPORTS_DIR", "IMPORT_DIR", "/var/lib/queryhub/imports")
 
 log = logging.getLogger("queryhub-cleanup")
 

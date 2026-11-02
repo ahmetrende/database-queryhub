@@ -1,6 +1,7 @@
 """Connection pool + helpers for the bot's metadata DB."""
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import threading
@@ -156,10 +157,20 @@ def _ensure_pool() -> ConnectionPool:
 
 def close_pool() -> None:
     global _pool, _connect_failed_at
-    _connect_failed_at = None
-    if _pool is not None:
-        _pool.close()
-        _pool = None
+    # The lock that _ensure_pool() takes, so that no thread opens a new pool
+    # while this one closes.
+    with _init_lock:
+        _connect_failed_at = None
+        if _pool is not None:
+            _pool.close()
+            _pool = None
+
+
+# Close the pool while the interpreter can still join its worker threads. A
+# script that ends with the pool open left it to the pool's __del__, which runs
+# later, during finalization. On Python 3.14 that join raises
+# PythonFinalizationError, and every scheduled job printed a traceback.
+atexit.register(close_pool)
 
 
 def pool_ready() -> bool:

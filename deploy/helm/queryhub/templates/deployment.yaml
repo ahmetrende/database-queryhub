@@ -1,0 +1,195 @@
+{{- include "queryhub.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "queryhub.fullname" . }}
+  labels:
+    {{- include "queryhub.labels" . | nindent 4 }}
+spec:
+  # Always one. The bot recovers interrupted requests at start, and that
+  # recovery is not safe with two copies. Recreate stops the old pod (it waits
+  # for its running queries) before the new pod starts, so two copies never
+  # run, and a ReadWriteOnce volume never needs two nodes.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "queryhub.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: app
+  template:
+    metadata:
+      labels:
+        {{- include "queryhub.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: app
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "queryhub.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # Migrations and the first admin account, before the app starts.
+        - name: init
+          image: {{ include "queryhub.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["init"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          envFrom:
+            {{- include "queryhub.commonEnvFrom" . | nindent 12 }}
+            {{- with .Values.secrets.migratorEnv }}
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
+          env:
+            {{- include "queryhub.commonEnv" . | nindent 12 }}
+            - name: QH_SKIP_MIGRATIONS
+              value: "0"
+            {{- with .Values.init.adminUser }}
+            - name: QH_ADMIN_USER
+              value: {{ . | quote }}
+            {{- end }}
+          volumeMounts:
+            {{- include "queryhub.commonMounts" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.init.resources | nindent 12 }}
+      containers:
+        - name: web
+          image: {{ include "queryhub.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["python", "-m", "queryhub.web"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.web.port }}
+              protocol: TCP
+          envFrom:
+            {{- include "queryhub.commonEnvFrom" . | nindent 12 }}
+            {{- with .Values.secrets.webEnv }}
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
+          env:
+            {{- include "queryhub.commonEnv" . | nindent 12 }}
+            - name: QH_SKIP_MIGRATIONS
+              value: "1"
+            - name: WEB_PORT
+              value: {{ .Values.web.port | quote }}
+            {{- with .Values.web.baseUrl }}
+            - name: WEB_BASE_URL
+              value: {{ . | quote }}
+            {{- end }}
+          volumeMounts:
+            {{- include "queryhub.commonMounts" . | nindent 12 }}
+            - name: data
+              mountPath: /var/lib/queryhub
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            # 503 while the control database is down or migrations are pending.
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- if gt (int .Values.web.preStopSleepSeconds) 0 }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", {{ .Values.web.preStopSleepSeconds | quote }}]
+          {{- end }}
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+        {{- if .Values.slack.enabled }}
+        - name: bot
+          image: {{ include "queryhub.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["python", "-m", "queryhub.main"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: health
+              containerPort: {{ .Values.bot.healthPort }}
+              protocol: TCP
+          envFrom:
+            {{- include "queryhub.commonEnvFrom" . | nindent 12 }}
+          env:
+            {{- include "queryhub.commonEnv" . | nindent 12 }}
+            - name: QH_SKIP_MIGRATIONS
+              value: "1"
+            - name: QH_HEALTH_PORT
+              value: {{ .Values.bot.healthPort | quote }}
+          volumeMounts:
+            {{- include "queryhub.commonMounts" . | nindent 12 }}
+            - name: data
+              mountPath: /var/lib/queryhub
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            # 503 when the scheduler or the auth-event thread has died.
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.bot.resources | nindent 12 }}
+        {{- end }}
+      volumes:
+        {{- include "queryhub.commonVolumes" . | nindent 8 }}
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "queryhub.dataClaimName" . }}
+          {{- else }}
+          # Evaluation only: the files go with the pod, and the cleanup job
+          # cannot reach them. The limit stops them from filling the node.
+          emptyDir:
+            sizeLimit: {{ .Values.persistence.emptyDirSizeLimit }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

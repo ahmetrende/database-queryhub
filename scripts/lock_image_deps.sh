@@ -16,6 +16,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 py=$(sed -n 's/^FROM python:\([0-9.]*\)-slim.* AS runtime$/\1/p' Dockerfile)
 [ -n "$py" ] || { echo "cannot read the runtime Python version from the Dockerfile" >&2; exit 2; }
+# The image carries the extras that a full install uses (Slack, SQL Server,
+# AWS Secrets Manager, ClickHouse), so one image serves every profile: the
+# profile is chosen at run time by the environment, not at build time.
 uv pip compile pyproject.toml docker/build-backend.in \
+  --extra slack --extra mssql --extra aws --extra clickhouse \
   --generate-hashes --universal --python-version "$py" \
   --output-file docker/requirements.lock

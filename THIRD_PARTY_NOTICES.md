@@ -76,6 +76,10 @@ install that does not want the door never carries them.
 Microsoft EULA, which you accept when you install it. SQL Server support is an
 opt-in extra for exactly this reason.
 
+The container image (`Dockerfile`) leaves the driver out by default. The build
+argument `--build-arg QH_MSSQL_DRIVER=1` installs it and accepts its EULA. The
+image installs the Python extras `slack`, `mssql`, `aws` and `clickhouse`.
+
 ## Development-only
 
 Not shipped in the image, listed for completeness: `pytest`, `pytest-cov`,

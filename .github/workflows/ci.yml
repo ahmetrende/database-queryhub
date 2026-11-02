@@ -623,3 +623,175 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f docker-compose.install.yml down -v
+
+  # The Kubernetes path runs the image in a way that no compose file does: a
+  # read-only root filesystem, the master key from a read-only Secret mount,
+  # migrations in a separate `init` step, and the scheduled scripts as their
+  # own processes. This job runs those steps against a real Postgres, with the
+  # SQL Server driver built in, so a broken entrypoint or image fails here and
+  # not in a cluster.
+  image-kubernetes-mode:
+    runs-on: ubuntu-latest
+    # Any job that hangs is a bug, and the default is six hours.
+    timeout-minutes: 30
+    # An explicit `bash` runs each step with `-eo pipefail`. The default shell
+    # has no pipefail, so `docker run ... | tee` would hide a failed run.
+    defaults:
+      run:
+        shell: bash
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: queryhub
+          POSTGRES_USER: queryhub
+          # A throwaway password for a throwaway container. It is not a secret.
+          POSTGRES_PASSWORD: queryhub-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U queryhub -d queryhub"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      QH_DB_ARGS: >-
+        -e BOT_DB_HOST=127.0.0.1 -e BOT_DB_PORT=5432 -e BOT_DB_NAME=queryhub
+        -e BOT_DB_USER=queryhub -e BOT_DB_PASSWORD=queryhub-ci
+      # What the chart sets on every container.
+      QH_K8S_ARGS: >-
+        --read-only --tmpfs /tmp --tmpfs /etc/queryhub:uid=10001,gid=10001
+        -v /tmp/qh-key:/run/key:ro
+        -e QH_MASTER_KEY_SOURCE=/run/key/master.key -e QH_MASTER_KEY_AUTOGEN=0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Build the image with the SQL Server driver
+        run: |
+          docker build --build-arg QH_MSSQL_DRIVER=1 \
+            --build-arg QH_BUILD_SHA=${{ github.sha }} -t queryhub:ci .
+
+      - name: Every driver and both entry points import
+        run: |
+          docker run --rm --entrypoint python \
+            -e BOT_DB_HOST=x -e BOT_DB_NAME=x -e BOT_DB_USER=x -e BOT_DB_PASSWORD=x \
+            -e MASTER_KEY_PATH=/tmp/none queryhub:ci -c "
+          import pyodbc, boto3, clickhouse_driver, slack_bolt
+          assert 'ODBC Driver 18 for SQL Server' in pyodbc.drivers(), pyodbc.drivers()
+          import queryhub.main, queryhub.mssql_exec, queryhub.clickhouse_exec
+          import queryhub.web.app as a
+          assert a.create_app().routes
+          print('imports OK')"
+
+      - name: A missing master key stops the start
+        run: |
+          if docker run --rm --network host $QH_DB_ARGS --read-only --tmpfs /tmp \
+               --tmpfs /etc/queryhub:uid=10001,gid=10001 -e QH_MASTER_KEY_AUTOGEN=0 \
+               queryhub:ci init; then
+            echo "::error::init started without a master key"; exit 1
+          fi
+
+      - name: init applies the migrations, and a second init does nothing
+        run: |
+          mkdir -p /tmp/qh-key
+          docker run --rm --entrypoint python queryhub:ci \
+            -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
+            > /tmp/qh-key/master.key
+          chmod 644 /tmp/qh-key/master.key
+          docker run --rm --network host $QH_DB_ARGS $QH_K8S_ARGS queryhub:ci init | tee /tmp/init1.log
+          grep -q "queryhub: init done" /tmp/init1.log
+          docker run --rm --network host $QH_DB_ARGS $QH_K8S_ARGS queryhub:ci init | tee /tmp/init2.log
+          grep -q "Nothing to do" /tmp/init2.log
+
+      - name: The web app becomes ready on a read-only root
+        run: |
+          docker run -d --name qh-web --network host $QH_DB_ARGS $QH_K8S_ARGS \
+            -e QH_SKIP_MIGRATIONS=1 queryhub:ci
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/readyz >/dev/null 2>&1; then
+              echo "ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::the web app never became ready"
+          docker logs qh-web | tail -80
+          exit 1
+
+      - name: The master key decrypts from the copied file
+        run: |
+          docker exec qh-web python -c "
+          from queryhub import crypto
+          assert crypto.fernet().decrypt(crypto.fernet().encrypt(b'probe')) == b'probe'
+          print('decrypt OK')"
+
+      - name: Scheduled scripts run and end without a traceback
+        run: |
+          for script in scripts/check_connection_health.py scripts/expire_stale_pending.py \
+                        scripts/cleanup_old_results.py; do
+            docker run --rm --network host $QH_DB_ARGS $QH_K8S_ARGS \
+              -e QH_SKIP_MIGRATIONS=1 -e QH_SKIP_IF_MIGRATIONS_PENDING=1 \
+              queryhub:ci python "$script" > /tmp/job.log 2>&1 \
+              || { cat /tmp/job.log; echo "::error::$script failed"; exit 1; }
+            if grep -q "Traceback" /tmp/job.log; then
+              cat /tmp/job.log; echo "::error::$script printed a traceback"; exit 1
+            fi
+          done
+
+      - name: A scheduled script does nothing while a migration is pending
+        run: |
+          PGPASSWORD=queryhub-ci psql -h 127.0.0.1 -U queryhub -d queryhub -Atc \
+            "DELETE FROM schema_migrations WHERE version = (SELECT max(version) FROM schema_migrations)"
+          docker run --rm --network host $QH_DB_ARGS $QH_K8S_ARGS \
+            -e QH_SKIP_MIGRATIONS=1 -e QH_SKIP_IF_MIGRATIONS_PENDING=1 \
+            queryhub:ci python scripts/expire_stale_pending.py | tee /tmp/skip.log
+          grep -q "migrations are pending, this run does nothing" /tmp/skip.log
+
+      - name: Web log (always, for diagnosis)
+        if: always()
+        run: docker logs qh-web 2>&1 | tail -80 || true
+
+  # The chart renders with every option on and with the smallest setup, and the
+  # result is valid Kubernetes. Both tools are pinned and checksum-checked
+  # downloads, so no third-party action runs here.
+  helm-chart:
+    runs-on: ubuntu-latest
+    # Any job that hangs is a bug, and the default is six hours.
+    timeout-minutes: 10
+    env:
+      HELM_VERSION: v3.17.3
+      HELM_SHA256: ee88b3c851ae6466a3de507f7be73fe94d54cbf2987cbaa3d1a3832ea331f2cd
+      KUBECONFORM_VERSION: v0.6.7
+      KUBECONFORM_SHA256: 95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Install helm and kubeconform
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          curl -fsSLo helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  helm.tgz" | sha256sum -c
+          tar -xzf helm.tgz linux-amd64/helm
+          curl -fsSLo kc.tgz "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kc.tgz" | sha256sum -c
+          tar -xzf kc.tgz kubeconform
+          mkdir -p "$RUNNER_TEMP/bin"
+          mv linux-amd64/helm kubeconform "$RUNNER_TEMP/bin/"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Lint and validate each value set
+        run: |
+          set -eu
+          for f in deploy/helm/queryhub/ci/*-values.yaml; do
+            echo "== $f"
+            helm lint --strict deploy/helm/queryhub -f "$f"
+            helm template q deploy/helm/queryhub -f "$f" \
+              | kubeconform -strict -summary -kubernetes-version 1.30.0 -
+          done
+
+      - name: A missing required value stops the render with a clear message
+        run: |
+          if helm template q deploy/helm/queryhub > /tmp/render.log 2>&1; then
+            echo "::error::the chart rendered without its required values"; exit 1
+          fi
+          grep -q "Set secrets.env" /tmp/render.log

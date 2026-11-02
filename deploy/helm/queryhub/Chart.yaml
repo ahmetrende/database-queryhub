@@ -1,0 +1,16 @@
+apiVersion: v2
+name: queryhub
+description: >-
+  QueryHub on Kubernetes. One pod runs the web app and the Slack bot, and
+  CronJobs run the scheduled scripts.
+type: application
+# The chart version. Change it when a template or a default changes.
+version: 0.1.0
+# The QueryHub version that this chart was written for. The chart does not use
+# it as an image tag: set image.tag to the image that you deploy.
+appVersion: "1.0.38"
+kubeVersion: ">=1.25.0-0"
+keywords:
+  - sql
+  - postgresql
+  - audit
