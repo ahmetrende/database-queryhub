@@ -80,6 +80,10 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Added
 
+- **The container takes the master key from an environment variable.** Set `QH_MASTER_KEY`
+  when a secret injector sets only environment variables. The entrypoint writes the key to
+  `MASTER_KEY_PATH` with mode 0600. Then it removes the variable before the app starts.
+
 - **A Helm chart and a Kubernetes-ready image.** `deploy/helm/queryhub` runs the web app and the
   Slack bot in one pod, and CronJobs run the scheduled scripts. One image serves all of them.
   `QH_MSSQL_DRIVER=1` adds the SQL Server driver at build time. `QH_HEALTH_PORT` gives the bot a

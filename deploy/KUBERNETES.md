@@ -123,6 +123,13 @@ kubectl -n queryhub create secret generic queryhub-master-key --from-file=master
 > stored target credential with this key. If you lose the key, QueryHub cannot
 > read any stored credential.
 
+**A secret injector that sets only environment variables.** Some clusters inject
+secrets with a webhook (a Vault webhook, for example) and cannot mount a file.
+Put the key in `QH_MASTER_KEY` instead. The entrypoint writes it to
+`MASTER_KEY_PATH` with mode 0600. Then it deletes `QH_MASTER_KEY` from the
+environment before the app starts. Set `QH_MASTER_KEY` or
+`QH_MASTER_KEY_SOURCE`, not both. When you set both, the entrypoint stops.
+
 ## Install
 
 Write a values file. This example uses only placeholders.

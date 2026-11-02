@@ -724,6 +724,26 @@ jobs:
           assert crypto.fernet().decrypt(crypto.fernet().encrypt(b'probe')) == b'probe'
           print('decrypt OK')"
 
+      - name: The master key can come from an environment variable
+        run: |
+          QH_ENV_KEY_ARGS="--read-only --tmpfs /tmp --tmpfs /etc/queryhub:uid=10001,gid=10001
+            -e QH_MASTER_KEY_AUTOGEN=0 -e QH_SKIP_MIGRATIONS=1"
+          docker run --rm --network host $QH_DB_ARGS $QH_ENV_KEY_ARGS \
+            -e QH_MASTER_KEY="$(cat /tmp/qh-key/master.key)" queryhub:ci python -c "
+          import os, stat
+          from queryhub import crypto
+          assert 'QH_MASTER_KEY' not in os.environ, 'the key stayed in the environment'
+          mode = stat.S_IMODE(os.stat(os.environ['MASTER_KEY_PATH']).st_mode)
+          assert mode == 0o600, oct(mode)
+          assert crypto.fernet().decrypt(crypto.fernet().encrypt(b'probe')) == b'probe'
+          print('env key OK')" | tee /tmp/envkey.log
+          grep -q "env key OK" /tmp/envkey.log
+          if docker run --rm --network host $QH_DB_ARGS $QH_ENV_KEY_ARGS \
+               -v /tmp/qh-key:/run/key:ro -e QH_MASTER_KEY_SOURCE=/run/key/master.key \
+               -e QH_MASTER_KEY=x queryhub:ci init; then
+            echo "::error::init started with both QH_MASTER_KEY and QH_MASTER_KEY_SOURCE"; exit 1
+          fi
+
       - name: Scheduled scripts run and end without a traceback
         run: |
           for script in scripts/check_connection_health.py scripts/expire_stale_pending.py \

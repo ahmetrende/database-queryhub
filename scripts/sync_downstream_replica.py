@@ -49,6 +49,38 @@ LOCAL_ONLY: tuple[tuple[str, str], ...] = (
      "names reviewers of the downstream org; upstream must stay org-neutral"),
 )
 
+# Paths that the replica MAY hold of its own. Kept when present, and not
+# required. An entry that ends in "/" covers every file under that directory.
+# Upstream must never carry any of them: the sync refuses when it does.
+LOCAL_OPTIONAL: tuple[tuple[str, str], ...] = (
+    (".cd/",
+     "the downstream deploy (Helm values, Dockerfile copy); its values name "
+     "that org's hosts, registry and secret paths"),
+    (".github/workflows/deploy-prod.yml",
+     "the downstream deploy workflow: it builds the image and syncs the apps"),
+    (".github/workflows/_build-and-deploy.yml",
+     "the reusable build-and-deploy job that the downstream deploy calls"),
+    (".github/workflows/hadolint.yml",
+     "lints the Dockerfile copy under .cd/docker in the downstream CI"),
+)
+
+# Replica files that are COPIES of an upstream file: (copy, source, reason).
+# Each sync refreshes a copy that the replica already holds, and never creates
+# one. A copy that was edited in the replica stops the sync: edit the source.
+DERIVED: tuple[tuple[str, str, str], ...] = (
+    (".cd/docker/Dockerfile.queryhub", "Dockerfile",
+     "the downstream deploy builds from .cd/docker, so it keeps a copy of "
+     "the image recipe"),
+)
+
+
+def is_local(path: str) -> bool:
+    """True when `path` belongs to the replica and must never travel upstream."""
+    for entry, _ in (*LOCAL_ONLY, *LOCAL_OPTIONAL):
+        if path == entry or (entry.endswith("/") and path.startswith(entry)):
+            return True
+    return any(path == copy for copy, _, _ in DERIVED)
+
 
 TRAILER = "Upstream-Commit:"
 
@@ -68,8 +100,30 @@ def blob_at(ref: str, path: str) -> str | None:
     return out.stdout.strip() if out.returncode == 0 else None
 
 
-def build_tree(base: str, restore: dict[str, str]) -> str:
-    """`base`'s tree with `restore` (path -> blob id) laid on top.
+def files_at(ref: str, *paths: str) -> dict[str, tuple[str, str]]:
+    """Every file at `ref` under `paths`, as path -> (mode, blob id).
+
+    The mode travels with the blob: a restore that wrote every file as 100644
+    would drop the executable bit of a script the replica keeps."""
+    out = git("ls-tree", "-r", "-z", ref, "--", *paths)
+    files: dict[str, tuple[str, str]] = {}
+    for entry in out.split("\0"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition("\t")
+        mode, _, blob = meta.split(" ")
+        files[path] = (mode, blob)
+    return files
+
+
+def source_versions(base: str, source: str) -> set[str]:
+    """Every blob id that `source` has had in the history of `base`."""
+    out = git("log", "--raw", "--no-abbrev", "--format=", base, "--", source)
+    return {line.split()[3] for line in out.splitlines() if line.startswith(":")}
+
+
+def build_tree(base: str, restore: dict[str, tuple[str, str]]) -> str:
+    """`base`'s tree with `restore` (path -> (mode, blob id)) laid on top.
 
     A temporary index, so the caller's staged work is untouched — this runs
     mid-session on a working checkout, not in a clean room.
@@ -78,9 +132,9 @@ def build_tree(base: str, restore: dict[str, str]) -> str:
         env = dict(os.environ, GIT_INDEX_FILE=str(Path(tmp) / "index"))
         subprocess.run(("git", "read-tree", base), cwd=str(ROOT), env=env,
                        check=True, capture_output=True)
-        for path, blob in restore.items():
+        for path, (mode, blob) in restore.items():
             subprocess.run(("git", "update-index", "--add", "--cacheinfo",
-                            f"100644,{blob},{path}"),
+                            f"{mode},{blob},{path}"),
                            cwd=str(ROOT), env=env, check=True,
                            capture_output=True)
         out = subprocess.run(("git", "write-tree"), cwd=str(ROOT), env=env,
@@ -115,6 +169,17 @@ def _newest_marker(ref: str) -> str | None:
         if any(ln.strip().startswith(TRAILER) for ln in body.splitlines()):
             return sha.strip()
     return None
+
+
+def _downstream_commits(marker: str, head: str) -> list[tuple[str, list[str]]]:
+    """(summary, changed paths) for each replica commit after `marker`."""
+    log = git("log", "--format=%x1e%h %an: %s", "--name-only", f"{marker}..{head}")
+    out = []
+    for entry in log.split("\x1e"):
+        lines = [ln for ln in entry.splitlines() if ln.strip()]
+        if lines:
+            out.append((lines[0], lines[1:]))
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -165,8 +230,14 @@ def main(argv: list[str] | None = None) -> int:
                   "downstream commits cannot be detected. Checking is skipped "
                   "for this sync; the commit below plants the marker.")
         else:
-            extra = [c for c in git("log", "--format=%h %an: %s",
-                                    f"{marker}..{head}").splitlines() if c.strip()]
+            # A commit that changes only replica-local paths loses nothing:
+            # those paths are read back from the replica below.
+            extra = []
+            for summary, paths in _downstream_commits(marker, head):
+                if all(is_local(p) for p in paths):
+                    print(f"  replica-local commit, kept: {summary}")
+                else:
+                    extra.append(summary)
             if extra:
                 sys.exit(
                     "REFUSED: the replica has commits of its own since "
@@ -181,32 +252,71 @@ def main(argv: list[str] | None = None) -> int:
     # Read the local-only files back from the replica. Absent there means the
     # list is wrong or a previous sync already dropped the file; either way a
     # human has to look, so stop.
-    restore: dict[str, str] = {}
+    # Upstream must not carry a replica-local path. The restore below would
+    # silently replace it with the replica's copy, or keep a file the replica
+    # had deleted.
+    leaked = [p for p in files_at(base) if is_local(p)]
+    if leaked:
+        sys.exit(f"FAILED: {args.base} carries replica-local paths: {leaked}. "
+                 "Those belong to the replica only. Remove them here.")
+
+    restore: dict[str, tuple[str, str]] = {}
     for path, why in LOCAL_ONLY:
-        blob = blob_at("FETCH_HEAD", path)
-        if blob is None:
+        found = files_at("FETCH_HEAD", path)
+        if path not in found:
             sys.exit(f"FAILED: {path} is not in the replica's "
                      f"{args.replica_branch} — it {why}. Either it was lost by "
                      f"an earlier sync (restore it there first) or this list is "
                      f"out of date.")
-        restore[path] = blob
-        print(f"  keeping {path} ({blob[:8]}) — {why}")
+        restore[path] = found[path]
+        print(f"  keeping {path} ({found[path][1][:8]}) — {why}")
+    for path, why in LOCAL_OPTIONAL:
+        found = files_at("FETCH_HEAD", path)
+        restore.update(found)
+        if found:
+            print(f"  keeping {path} ({len(found)} file(s)) — {why}")
+
+    # Refresh each copy from its upstream source. A copy that matches no
+    # version the source ever had was edited in the replica, and the refresh
+    # would delete that edit without an error.
+    derived: dict[str, tuple[str, str]] = {}
+    for copy, source, why in DERIVED:
+        if copy not in restore:
+            continue
+        src = files_at(base, source).get(source)
+        if src is None:
+            sys.exit(f"FAILED: the replica keeps {copy}, a copy of {source}, "
+                     f"and {args.base} has no {source}.")
+        held = restore[copy][1]
+        if (held != src[1] and held not in source_versions(base, source)
+                and not args.discard_downstream):
+            sys.exit(f"REFUSED: the replica's {copy} ({held[:8]}) matches no "
+                     f"version of {source} here, so it was edited in the "
+                     f"replica. Bring that edit to {source} first. Pass "
+                     "--discard-downstream only to throw it away.")
+        derived[copy] = src
+        state = "unchanged" if held == src[1] else f"{held[:8]} -> {src[1][:8]}"
+        print(f"  refreshing {copy} from {source} ({state}) — {why}")
+    restore.update(derived)
 
     tree = build_tree(base, restore)
 
     # Verify, do not trust. Two directions:
-    #   1. every declared file is present and byte-identical to the replica's
+    #   1. every declared file is present, with the replica's blob and mode
+    #      (or, for a copy, its source's)
     #   2. nothing ELSE differs from base — a sync must not invent changes
-    for path, blob in restore.items():
-        got = git("rev-parse", f"{tree}:{path}").strip()
-        if got != blob:
-            sys.exit(f"FAILED: {path} came out as {got[:8]}, expected "
-                     f"{blob[:8]} — the restore did not take")
+    got_files = files_at(tree, *restore) if restore else {}
+    for path, want in restore.items():
+        got = got_files.get(path)
+        if got != want:
+            sys.exit(f"FAILED: {path} came out as {got}, expected {want} — "
+                     "the restore did not take")
     unexpected = [p for p in changed_paths(base, tree) if p not in restore]
     if unexpected:
         sys.exit("FAILED: the synced tree differs from "
                  f"{args.base} beyond the local-only list: {unexpected}")
-    print(f"  tree {tree[:8]} = {args.base} + {len(restore)} local-only file(s)")
+    print(f"  tree {tree[:8]} = {args.base} + {len(restore) - len(derived)} "
+          f"local-only file(s) + {len(derived)} refreshed cop(ies)")
 
     msg = (Path(args.message_file).read_text(encoding="utf-8")
            if args.message_file else f"sync the replica with {base[:7]}\n")

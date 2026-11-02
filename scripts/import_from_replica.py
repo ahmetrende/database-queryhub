@@ -52,7 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # Paths that belong to the replica and must never travel upstream. One list,
 # declared by the sync script, so the two directions cannot disagree about
 # which files are the replica's own.
-from sync_downstream_replica import LOCAL_ONLY  # noqa: E402
+from sync_downstream_replica import is_local  # noqa: E402
 
 TRAILER = "Upstream-Commit:"
 
@@ -83,14 +83,20 @@ def newest_marker(ref: str) -> str | None:
 
 
 def theirs(baseline: str, ref: str) -> list[dict]:
-    """Commits on the replica after the baseline — theirs by definition."""
+    """Commits on the replica after the baseline — theirs by definition.
+
+    A commit that changes only replica-local paths is left out: there is
+    nothing in it to import, and its author did not write anything here."""
     out = []
-    log = git("log", "--reverse", "--no-merges",
-              "--format=%H%x00%an%x00%ae%x00%s", f"{baseline}..{ref}")
-    for line in log.splitlines():
-        if not line.strip():
+    log = git("log", "--reverse", "--no-merges", "--name-only",
+              "--format=%x1e%H%x00%an%x00%ae%x00%s", f"{baseline}..{ref}")
+    for entry in log.split("\x1e"):
+        lines = [ln for ln in entry.splitlines() if ln.strip()]
+        if not lines:
             continue
-        sha, an, ae, subject = line.split("\x00", 3)
+        sha, an, ae, subject = lines[0].split("\x00", 3)
+        if lines[1:] and all(is_local(p) for p in lines[1:]):
+            continue
         out.append({"sha": sha, "name": an, "email": ae, "subject": subject})
     return out
 
@@ -102,9 +108,8 @@ def changed(baseline: str, ref: str) -> list[str]:
     CODEOWNERS names reviewers of the downstream org, and importing it would
     push that file into every other consumer of this repository, including the
     public one."""
-    local = {p for p, _ in LOCAL_ONLY}
     return [p for p in git("diff", "--name-only", baseline, ref).splitlines()
-            if p.strip() and p.strip() not in local]
+            if p.strip() and not is_local(p.strip())]
 
 
 def coauthors(commits: list[dict]) -> list[str]:
@@ -204,15 +209,15 @@ def main(argv: list[str] | None = None) -> int:
 
     commits = theirs(baseline, ref)
     paths = changed(baseline, ref)
-    if not commits and not paths:
-        print(f"  nothing to import — the replica is at our own {baseline[:8]}")
+    if not paths:
+        print(f"  nothing to import — since our own {baseline[:8]} the replica "
+              "changed only its own paths")
         return 0
 
     print(f"  baseline {baseline[:8]} → replica {ref[:8]}")
     for c in commits:
         print(f"    {c['sha'][:8]}  {c['name']:<22} {c['subject'][:60]}")
-    print(f"  {len(paths)} file(s) to import"
-          + (f", {len(LOCAL_ONLY)} replica-local path(s) excluded" if LOCAL_ONLY else ""))
+    print(f"  {len(paths)} file(s) to import; replica-local paths are excluded")
     if args.dry_run:
         print("\ndry run — nothing written.")
         return 0

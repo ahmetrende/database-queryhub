@@ -134,3 +134,14 @@ def test_the_entrypoint_supports_what_the_chart_sets():
                  "QH_SKIP_MIGRATIONS", "QH_SKIP_IF_MIGRATIONS_PENDING"):
         assert name in entrypoint, name
     assert '"${1:-}" = "init"' in entrypoint
+
+
+def test_the_entrypoint_removes_an_env_master_key_before_the_app_starts():
+    """QH_MASTER_KEY is for injectors that set only environment variables. The
+    key goes to a 0600 file, and the app process must not inherit the variable."""
+    entrypoint = (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+    assert "QH_MASTER_KEY:-" in entrypoint
+    unset = entrypoint.index("unset QH_MASTER_KEY\n")
+    assert unset < entrypoint.index('exec "$@"')
+    assert unset < entrypoint.index('"${1:-}" = "init"')
+    assert "set QH_MASTER_KEY or QH_MASTER_KEY_SOURCE, not both" in entrypoint
