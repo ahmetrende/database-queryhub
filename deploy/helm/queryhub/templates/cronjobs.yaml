@@ -1,0 +1,119 @@
+{{- /*
+Without persistence the result files live in an emptyDir of the app pod that no
+job can reach. A job with mountData then still runs (the cleanup also purges
+database rows) but mounts nothing.
+*/}}
+{{- range $name, $job := .Values.jobs }}
+{{- if $job.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ printf "%s-%s" (include "queryhub.fullname" $) $name | trunc 52 | trimSuffix "-" }}
+  labels:
+    {{- include "queryhub.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: job
+    queryhub.io/job: {{ $name }}
+spec:
+  schedule: {{ required (printf "jobs.%s.schedule is required" $name) $job.schedule | quote }}
+  {{- with $.Values.jobDefaults.timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  # One run at a time: a slow run is never doubled by the next one.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ $.Values.jobDefaults.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ $.Values.jobDefaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $.Values.jobDefaults.failedJobsHistoryLimit }}
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "queryhub.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: job
+        queryhub.io/job: {{ $name }}
+    spec:
+      # The next scheduled run is the retry.
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ $job.activeDeadlineSeconds | default 1800 }}
+      template:
+        metadata:
+          labels:
+            {{- include "queryhub.selectorLabels" $ | nindent 12 }}
+            app.kubernetes.io/component: job
+            queryhub.io/job: {{ $name }}
+            {{- with $.Values.podLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "queryhub.serviceAccountName" $ }}
+          automountServiceAccountToken: {{ $.Values.serviceAccount.automountToken }}
+          {{- with $.Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml $.Values.podSecurityContext | nindent 12 }}
+          {{- with $.Values.hostAliases }}
+          hostAliases:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if and $job.mountData $.Values.persistence.enabled }}
+          # A ReadWriteOnce volume is available on one node only, so this job
+          # runs on the node of the app pod.
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      {{- include "queryhub.selectorLabels" $ | nindent 22 }}
+                      app.kubernetes.io/component: app
+          {{- else }}
+          {{- with $.Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- end }}
+          {{- with $.Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: job
+              image: {{ include "queryhub.image" $ }}
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              args:
+                {{- toYaml (required (printf "jobs.%s.args is required" $name) $job.args) | nindent 16 }}
+              securityContext:
+                {{- toYaml $.Values.containerSecurityContext | nindent 16 }}
+              envFrom:
+                {{- include "queryhub.commonEnvFrom" $ | nindent 16 }}
+              env:
+                {{- include "queryhub.commonEnv" $ | nindent 16 }}
+                - name: QH_SKIP_MIGRATIONS
+                  value: "1"
+                # A new image can start a run before the init container has
+                # applied its migrations. Such a run does nothing.
+                - name: QH_SKIP_IF_MIGRATIONS_PENDING
+                  value: "1"
+              volumeMounts:
+                {{- include "queryhub.commonMounts" $ | nindent 16 }}
+                {{- if and $job.mountData $.Values.persistence.enabled }}
+                - name: data
+                  mountPath: /var/lib/queryhub
+                {{- end }}
+              resources:
+                {{- toYaml ($job.resources | default $.Values.jobDefaults.resources) | nindent 16 }}
+          volumes:
+            {{- include "queryhub.commonVolumes" $ | nindent 12 }}
+            {{- if and $job.mountData $.Values.persistence.enabled }}
+            - name: data
+              persistentVolumeClaim:
+                claimName: {{ include "queryhub.dataClaimName" $ }}
+            {{- end }}
+{{- end }}
+{{- end }}

@@ -33,11 +33,27 @@ def _pins() -> dict[str, str]:
     return pins
 
 
+# The extras the image carries, so that one image runs every profile
+# (scripts/lock_image_deps.sh passes the same list to `uv pip compile`).
+IMAGE_EXTRAS = ("slack", "mssql", "aws", "clickhouse")
+
+
 def _declared() -> list[Requirement]:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     reqs = [Requirement(r) for r in project["project"]["dependencies"]]
     reqs += [Requirement(r) for r in project["build-system"]["requires"]]
+    extras = project["project"]["optional-dependencies"]
+    for extra in IMAGE_EXTRAS:
+        reqs += [Requirement(r) for r in extras[extra]]
     return reqs
+
+
+def test_the_lock_script_and_the_lock_name_the_image_extras():
+    script = (ROOT / "scripts" / "lock_image_deps.sh").read_text(encoding="utf-8")
+    header = LOCK.read_text(encoding="utf-8").splitlines()[1]
+    for extra in IMAGE_EXTRAS:
+        assert f"--extra {extra}" in script
+        assert f"--extra {extra}" in header
 
 
 def test_every_declared_dependency_is_pinned_within_its_range():

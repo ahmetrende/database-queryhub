@@ -114,6 +114,8 @@ fails for the user, not for us.
       the next box). So you have to maintain the tag, not remove it.
 - [ ] Reference the **version** tag in any deployment, not `latest`. A SQL
       gateway should not change without your knowledge because a tag moved.
+- [ ] Bump `appVersion` in `deploy/helm/queryhub/Chart.yaml` to the release
+      version. If you forget, `tests/test_helm_chart.py` fails.
 
 ## After the release
 

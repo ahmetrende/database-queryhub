@@ -1,12 +1,16 @@
-# QueryHub — web (vanilla) profile in a container.
+# QueryHub in a container: one image for every process.
 #
 # Two stages so the runtime image carries no Node and no build tooling. The
 # frontend is built HERE, at image build time: a fresh clone that skipped
 # `npm run build` used to serve nothing, so the build cannot be optional.
 #
-# The image runs the web app only — the vanilla profile, which is the whole
-# product without Slack. Add `[slack]` and run `python -m queryhub.main`
-# alongside it if you want the Slack surface.
+# The default command runs the web app. The same image also runs the Slack bot
+# (`python -m queryhub.main`) and every scheduled script under scripts/.
+# The image carries the Python extras of a full install (Slack, SQL Server,
+# AWS, ClickHouse), and the environment chooses the profile at run time: with
+# no SLACK_BOT_TOKEN the web app runs the vanilla profile.
+#
+# Kubernetes: deploy/helm/queryhub runs this image. Read deploy/KUBERNETES.md.
 
 # ---------------------------------------------------------------- frontend
 #
@@ -36,10 +40,30 @@ RUN npm ci --no-audit --no-fund && npm run build
 # ---------------------------------------------------------------- runtime
 FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS runtime
 
-# libpq for psycopg, and nothing else. No compiler: psycopg[binary] ships wheels.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends libpq5 \
- && rm -rf /var/lib/apt/lists/*
+# libpq for psycopg and the unixODBC library for pyodbc. No compiler: every
+# locked package ships wheels.
+#
+# QH_MSSQL_DRIVER=1 also installs Microsoft's ODBC Driver 18 for SQL Server,
+# which a SQL Server target needs. It is off by default because the driver is
+# not open source: it carries a Microsoft EULA, and the build accepts that
+# EULA (ACCEPT_EULA=Y) when you turn it on. See THIRD_PARTY_NOTICES.md.
+ARG QH_MSSQL_DRIVER=0
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends libpq5 libodbc2; \
+    if [ "$QH_MSSQL_DRIVER" = "1" ]; then \
+        apt-get install -y --no-install-recommends ca-certificates curl; \
+        . /etc/os-release; \
+        curl -fsSL -o /tmp/packages-microsoft-prod.deb \
+            "https://packages.microsoft.com/config/debian/${VERSION_ID}/packages-microsoft-prod.deb"; \
+        dpkg -i /tmp/packages-microsoft-prod.deb; \
+        rm /tmp/packages-microsoft-prod.deb; \
+        apt-get update; \
+        ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18; \
+        apt-get purge -y curl; \
+        apt-get autoremove -y; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
 
 # Run as a non-root user. The master key lives on a volume this user owns.
 RUN useradd --create-home --uid 10001 queryhub
@@ -68,7 +92,7 @@ COPY --from=frontend /build/QueryHubWeb/app/dist ./QueryHubWeb/app/dist
 # --no-deps: everything it needs is installed above. --no-build-isolation: the
 # build backend is in the lock too, so the build fetches nothing unlocked.
 RUN pip install --no-cache-dir --no-deps --no-build-isolation . \
- && mkdir -p /var/lib/queryhub /etc/queryhub \
+ && mkdir -p /var/lib/queryhub/results /var/lib/queryhub/imports /etc/queryhub \
  && chown -R queryhub:queryhub /app /var/lib/queryhub /etc/queryhub
 
 COPY docker/entrypoint.sh /usr/local/bin/queryhub-entrypoint
@@ -78,6 +102,7 @@ USER queryhub
 ENV PYTHONUNBUFFERED=1 \
     MASTER_KEY_PATH=/etc/queryhub/master.key \
     QH_RESULTS_DIR=/var/lib/queryhub/results \
+    QH_IMPORTS_DIR=/var/lib/queryhub/imports \
     QH_WEB_STATIC_DIR=/app/QueryHubWeb/app/dist
 
 # Build identity for the build stamp, since the installed package has no .git

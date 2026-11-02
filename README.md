@@ -359,6 +359,11 @@ Full walk-through, including how to run the Slack surface next to the web
 app: [deploy/INSTALL.md](deploy/INSTALL.md). Day-to-day operations:
 [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
+### On Kubernetes
+
+A Helm chart runs the web app and the Slack bot in one pod, and CronJobs run
+the scheduled scripts: [deploy/KUBERNETES.md](deploy/KUBERNETES.md).
+
 ### With or without Slack
 
 The base install runs **web-only**: no Slack workspace, no Slack SDK. The

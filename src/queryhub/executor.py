@@ -2854,7 +2854,18 @@ def dispatch_due(client: WebClient, batch_limit: int = 50) -> int:
 # CSV bulk import (COPY) — separate pipeline from the SQL query path
 # ===========================================================================
 
-IMPORT_DIR = Path("/var/lib/queryhub/imports")
+def _imports_dir() -> Path:
+    """Where uploaded CSV files wait for their import.
+
+    Env-configurable for the same reason as `_results_dir()`: the image runs
+    as a user who cannot write the default path. QH_IMPORTS_DIR overrides it
+    (the image sets it next to the results volume).
+    """
+    raw = (os.environ.get("QH_IMPORTS_DIR") or "").strip()
+    return Path(raw) if raw else Path("/var/lib/queryhub/imports")
+
+
+IMPORT_DIR = _imports_dir()
 
 
 def submit_import(import_row: dict, client: WebClient) -> None:

@@ -10,7 +10,8 @@ import threading
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from . import auth_events, db, executor, lifecycle, migration_state, targets
+from . import (auth_events, db, executor, health_server, lifecycle,
+               migration_state, targets)
 from .config import ENV
 from .slack_app import handlers, notifications
 
@@ -111,6 +112,21 @@ def main() -> int:
     auth_events_thread.start()
     log.info("Auth-events thread started")
 
+    # Health endpoint for a container platform (QH_HEALTH_PORT). It fails
+    # when a worker thread dies, so the platform restarts the process instead
+    # of leaving a bot that no longer dispatches scheduled requests. A drain
+    # stops the threads on purpose, so it counts as healthy: a probe must not
+    # kill a process that waits for its in-flight queries.
+    health = None
+    health_port = health_server.port_from_env()
+    if health_port is not None:
+        health = health_server.start(health_port, {
+            "scheduler": lambda: (lifecycle.is_draining()
+                                  or scheduler_thread.is_alive()),
+            "auth_events": lambda: (lifecycle.is_draining()
+                                    or auth_events_thread.is_alive()),
+        })
+
     stop = threading.Event()
 
     def _shutdown(signum, _frame):  # noqa: ANN001
@@ -155,6 +171,8 @@ def main() -> int:
             log.exception("error closing the Socket Mode handler")
         executor.shutdown()   # waits for in-flight queries (bounded by TimeoutStopSec)
         db.close_pool()
+        if health is not None:
+            health.shutdown()
     return 0
 
 

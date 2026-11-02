@@ -1,0 +1,21 @@
+QueryHub {{ .Values.image.tag }} is installed as {{ include "queryhub.fullname" . }}.
+
+1. Wait for the pod:
+     kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "queryhub.fullname" . }} --timeout=10m
+
+2. Read the init log (migrations, first admin):
+     kubectl -n {{ .Release.Namespace }} logs deployment/{{ include "queryhub.fullname" . }} -c init
+
+3. Open the web app:
+{{- if .Values.web.ingress.enabled }}
+{{- range .Values.web.ingress.hosts }}
+     https://{{ .host }}
+{{- end }}
+{{- else }}
+     kubectl -n {{ .Release.Namespace }} port-forward service/{{ include "queryhub.fullname" . }} 8080:{{ .Values.web.service.port }}
+     then http://localhost:8080
+{{- end }}
+
+The pod has one replica on purpose. Never run a second QueryHub (another
+release, or a host install) against the same metadata database: both would
+recover and run the same requests.

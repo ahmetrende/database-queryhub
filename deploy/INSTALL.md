@@ -1,5 +1,7 @@
 # Install (Linux + systemd)
 
+> **On Kubernetes?** Use the Helm chart. Read [KUBERNETES.md](KUBERNETES.md).
+
 > **Evaluating rather than deploying?** `docker compose up` at the repo root
 > gives you the whole thing — app, metadata database, and a seeded demo target —
 > in one command. It is explicitly not a deployment: fixed passwords, a

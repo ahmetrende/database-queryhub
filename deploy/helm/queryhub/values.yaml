@@ -1,0 +1,222 @@
+# QueryHub Helm chart. Read deploy/KUBERNETES.md before you install it.
+#
+# The chart runs ONE pod with two containers: `web` (the web app) and `bot`
+# (the Slack bot). They share one volume for the result files. The pod always
+# has one replica, because the bot recovers interrupted requests at start and
+# two copies would do that work twice.
+
+image:
+  # The image that you built from this repository (Dockerfile at the root).
+  # Both values are required: the chart never guesses an image.
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Secrets that you create before the install. The chart reads them and never
+# stores a credential in a value. deploy/KUBERNETES.md shows the commands.
+secrets:
+  # REQUIRED. Environment for every QueryHub container: BOT_DB_HOST,
+  # BOT_DB_PORT, BOT_DB_NAME, BOT_DB_USER, BOT_DB_PASSWORD and, for Slack,
+  # SLACK_BOT_TOKEN and SLACK_APP_TOKEN.
+  env: ""
+  # Optional. Environment for the web container only: SLACK_CLIENT_ID,
+  # SLACK_CLIENT_SECRET and OIDC_<ID>_*. Keep these out of `env`: the Slack
+  # SDK switches the bot to OAuth mode when it sees a client id.
+  webEnv: ""
+  # Optional. Environment for the init container only: BOT_DB_MIGRATOR_USER,
+  # BOT_DB_MIGRATOR_PASSWORD and BOT_DB_OWNER_ROLE (split metadata roles).
+  migratorEnv: ""
+  # REQUIRED. The Secret that holds the master key file. Every stored target
+  # credential is encrypted with this key: keep a copy outside the cluster.
+  masterKey:
+    name: ""
+    key: master.key
+
+# Plain (not secret) environment for every QueryHub container.
+env:
+  LOG_FORMAT: json
+  LOG_LEVEL: INFO
+
+# More environment entries for every QueryHub container, in the Kubernetes
+# EnvVar form (name/value or name/valueFrom).
+extraEnv: []
+
+slack:
+  # Runs the `bot` container. With false the web app runs alone (the
+  # "vanilla" profile) and also runs the scheduler.
+  enabled: true
+
+web:
+  # The address that people use, for example https://queryhub.example.com.
+  # It becomes WEB_BASE_URL. The sign-in providers need it for the callback.
+  baseUrl: ""
+  port: 8080
+  # Seconds to wait before the web process gets SIGTERM, so that the load
+  # balancer stops sending requests first.
+  preStopSleepSeconds: 5
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 2Gi
+  service:
+    type: ClusterIP
+    port: 80
+    annotations: {}
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: queryhub.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+    #  - secretName: queryhub-tls
+    #    hosts:
+    #      - queryhub.example.com
+
+bot:
+  # The bot's health endpoint (QH_HEALTH_PORT). Only the kubelet uses it.
+  healthPort: 8081
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 2Gi
+
+# The init container runs before the app containers on every pod start. It
+# applies the pending migrations (the ledger makes a re-run a no-op) and
+# creates the first admin account when adminUser is set.
+init:
+  # The first local admin account. Leave empty when people sign in with
+  # Slack or with company SSO.
+  adminUser: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+# The volume for result files (CSV, XLSX, ZIP) and uploaded CSV imports.
+# The bot writes a result, the web app serves it, and the cleanup job deletes
+# it after bot_config results_ttl_hours.
+persistence:
+  enabled: true
+  # Use an existing PersistentVolumeClaim instead of a new one.
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 20Gi
+  annotations: {}
+  # With enabled false the files go to an emptyDir of the pod, which is for an
+  # evaluation only. A restart loses them, and the cleanup job cannot reach
+  # them. The kubelet evicts the pod when they pass this size.
+  emptyDirSizeLimit: 5Gi
+
+# The time a stopping pod gets. It must be longer than the longest query
+# (bot_config query_timeout_sec, 300 by default): the app waits for the
+# queries that run before it stops.
+terminationGracePeriodSeconds: 360
+
+serviceAccount:
+  create: true
+  # The name to use. Empty means the chart's full name.
+  name: ""
+  # For AWS access (Secrets Manager, Athena, S3) put the IAM role here:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/<role-name>
+  annotations: {}
+  # The app never calls the Kubernetes API.
+  automountToken: false
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Fixed name-to-address entries in /etc/hosts of every pod. Use them for
+# database names that the cluster DNS cannot resolve.
+#   - ip: 192.0.2.10
+#     hostnames:
+#       - db1.internal.example.com
+hostAliases: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# More volumes and mounts for every QueryHub container. Example: a ConfigMap
+# that holds the What's-new file (bot_config web_changelog_path).
+extraVolumes: []
+extraVolumeMounts: []
+
+# Settings that every scheduled job gets.
+jobDefaults:
+  # A time zone name, for example Europe/Istanbul. Empty means UTC.
+  timeZone: ""
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  # A run that did not start within this time is skipped.
+  startingDeadlineSeconds: 120
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 1Gi
+
+# The scheduled scripts. Each enabled entry becomes one CronJob. `args` runs
+# after the image entrypoint, from /app. Set `mountData: true` for a job that
+# reads the result volume: it then runs on the node of the app pod, because
+# a ReadWriteOnce volume is available on one node only.
+jobs:
+  connection-health:
+    enabled: true
+    schedule: "* * * * *"
+    args: ["python", "scripts/check_connection_health.py"]
+    activeDeadlineSeconds: 300
+  schema-catalog:
+    enabled: true
+    schedule: "0 * * * *"
+    args: ["python", "scripts/refresh_schema_catalog.py"]
+    activeDeadlineSeconds: 3000
+  clickhouse-catalog:
+    # For ClickHouse targets only.
+    enabled: false
+    schedule: "* * * * *"
+    args: ["python", "scripts/refresh_schema_catalog.py", "--clickhouse-when-fresh"]
+    activeDeadlineSeconds: 300
+  expire-stale-pending:
+    enabled: true
+    schedule: "0 * * * *"
+    args: ["python", "scripts/expire_stale_pending.py", "--commit"]
+    activeDeadlineSeconds: 600
+  cleanup-results:
+    enabled: true
+    schedule: "0 2 * * *"
+    args: ["python", "scripts/cleanup_old_results.py"]
+    activeDeadlineSeconds: 1800
+    mountData: true
