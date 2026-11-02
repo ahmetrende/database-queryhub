@@ -3,17 +3,31 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from contextlib import contextmanager
 from typing import Any, Iterator
 
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+from psycopg_pool import ConnectionPool, PoolTimeout
 
 from .config import ENV
 
 log = logging.getLogger(__name__)
 
 _pool: ConnectionPool | None = None
+
+# The control DB can be unreachable at start (a host that has just booted, a
+# failover). The process must not stay broken until someone restarts it.
+# A failed connect leaves no pool behind. The next query tries again, at most
+# once per RETRY_COOLDOWN_SEC and for at most RETRY_WAIT_SEC. Inside the
+# cooldown a query fails at once, so a busy outage does not pile every worker
+# thread onto a connect that cannot work.
+RETRY_COOLDOWN_SEC = 5.0
+RETRY_WAIT_SEC = 5.0
+_FIRST_WAIT_SEC = 30.0
+_connect_failed_at: float | None = None  # time.monotonic() of the last failure
+_init_lock = threading.RLock()
 
 
 def _env_int(name: str, default: int, *, low: int, high: int) -> int:
@@ -50,8 +64,15 @@ def _conninfo() -> str:
     )
 
 
-def init_pool(min_size: int | None = None, max_size: int | None = None) -> None:
+def init_pool(min_size: int | None = None, max_size: int | None = None,
+              wait_timeout: float = _FIRST_WAIT_SEC) -> None:
     """Create the metadata connection pool (idempotent).
+
+    When the pool does not come up within `wait_timeout` seconds, this raises
+    and keeps no pool. psycopg_pool closes the pool itself after such a
+    timeout. This function used to keep that closed pool. Every later query
+    then failed with "the pool is already closed", and `pool_ready()` said
+    True, until the process restarted.
 
     Size comes from the environment rather than a constant. It was max_size=5,
     with all ~11 call sites passing nothing, no environment variable, and no
@@ -64,8 +85,10 @@ def init_pool(min_size: int | None = None, max_size: int | None = None) -> None:
     Env-only on purpose, not bot_config: reading bot_config needs the pool this
     function creates. Documented in .env.example and docs/CONFIGURATION.md.
     """
-    global _pool
-    if _pool is None:
+    global _pool, _connect_failed_at
+    with _init_lock:
+        if _pool is not None:
+            return
         if min_size is None:
             min_size = _env_int("QH_DB_POOL_MIN", 1, low=1, high=64)
         if max_size is None:
@@ -75,7 +98,7 @@ def init_pool(min_size: int | None = None, max_size: int | None = None) -> None:
                         "using %s for both", max_size, min_size, min_size)
             max_size = min_size
         log.info("metadata pool: min_size=%s max_size=%s", min_size, max_size)
-        _pool = ConnectionPool(
+        pool = ConnectionPool(
             conninfo=_conninfo(),
             min_size=min_size,
             max_size=max_size,
@@ -94,28 +117,60 @@ def init_pool(min_size: int | None = None, max_size: int | None = None) -> None:
                 ),
             },
         )
-        _pool.wait()
+        try:
+            pool.wait(timeout=wait_timeout)
+        except Exception:
+            pool.close()  # stops the pool's worker threads; safe to repeat
+            _connect_failed_at = time.monotonic()
+            raise
+        _pool = pool
+        _connect_failed_at = None
+
+
+def _ensure_pool() -> ConnectionPool:
+    """The pool, connecting again when an earlier attempt failed.
+
+    The first attempt waits as long as init_pool() does. A retry after a
+    failure waits RETRY_WAIT_SEC, and none starts inside RETRY_COOLDOWN_SEC of
+    the last failure.
+    """
+    pool = _pool
+    if pool is not None:
+        return pool
+    with _init_lock:
+        if _pool is None:
+            failed_at = _connect_failed_at
+            if failed_at is None:
+                init_pool()
+            else:
+                left = RETRY_COOLDOWN_SEC - (time.monotonic() - failed_at)
+                if left > 0:
+                    raise PoolTimeout("control database unreachable; the next "
+                                      f"connect attempt is in {left:.0f} s")
+                log.info("control database: connecting again")
+                init_pool(wait_timeout=RETRY_WAIT_SEC)
+                log.warning("control database: connected again")
+        assert _pool is not None
+        return _pool
 
 
 def close_pool() -> None:
-    global _pool
+    global _pool, _connect_failed_at
+    _connect_failed_at = None
     if _pool is not None:
         _pool.close()
         _pool = None
 
 
 def pool_ready() -> bool:
-    """True once the pool exists. For startup work that should be skipped,
+    """True once the pool is open. For startup work that should be skipped,
     not retried, when the control DB was unreachable at boot."""
     return _pool is not None
 
 
 @contextmanager
 def connection() -> Iterator[Any]:
-    if _pool is None:
-        init_pool()
-    assert _pool is not None
-    with _pool.connection() as conn:
+    with _ensure_pool().connection() as conn:
         yield conn
 
 
@@ -126,10 +181,7 @@ def transaction() -> Iterator[Any]:
     must succeed or fail together — most importantly when pairing a
     state-changing UPDATE with its audit_log INSERT, so we never end up
     with one without the other."""
-    if _pool is None:
-        init_pool()
-    assert _pool is not None
-    with _pool.connection() as conn:
+    with _ensure_pool().connection() as conn:
         try:
             with conn.cursor() as cur:
                 yield cur

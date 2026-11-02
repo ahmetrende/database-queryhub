@@ -96,8 +96,8 @@ def ledger_readable() -> bool | None:
 def applied_versions() -> set[str] | None:
     """The versions in the ledger. None when this process cannot read it."""
     if not db.pool_ready():
-        # No retry: db.fetch_one would open a pool that failed at boot, and
-        # that waits 30 seconds before it gives up.
+        # No retry here: db.fetch_one would try to open the pool that failed
+        # at boot, and that waits up to 5 seconds before it gives up.
         log.debug("migration check skipped: no connection pool")
         return None
     try:

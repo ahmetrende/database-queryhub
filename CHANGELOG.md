@@ -116,6 +116,13 @@ frontend and the endpoints it calls are explicitly outside it.
   looks as before. A copied row says "synced" and no longer names an internal table. The
   subtitle no longer says that every row is for reads only.
 
+### Fixed
+
+- **The web service connects to the control database again by itself.** After a start while the
+  database was unreachable, the service kept a closed connection pool. Every request failed and
+  `/readyz` stayed at 503 until a restart. A failed start now leaves no pool. A later request
+  connects again, at most once every 5 seconds, and `/readyz` answers 200 when it succeeds.
+
 ## [1.0.38] — 2026-10-25
 
 The results grid sorts, filters and totals in the page, and a result downloads as Excel CSV, JSON, Markdown or SQL INSERT. The editor formats SQL. A person can withdraw an auto-approve window request, and a request shows its steps. An approver can approve RO or RW, never DDL. The release adds migrations 195 and 196. Patch bump.

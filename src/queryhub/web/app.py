@@ -150,7 +150,9 @@ def create_app() -> FastAPI:
             # Start degraded rather than crash-looping if the control DB is
             # unreachable at boot: /readyz then reports unready so a
             # probe-driven deployment pulls this instance from rotation, and
-            # DB-touching routes 503 until the pool recovers.
+            # DB-touching routes fail until the DB is back. db.py leaves no
+            # pool behind and connects again on a later query (/readyz is
+            # one), so the service needs no restart.
             log.exception("control DB unreachable at startup — starting "
                           "degraded; /readyz will report unready")
         # The banner reads bot_config (base_url), i.e. the pool that may have
