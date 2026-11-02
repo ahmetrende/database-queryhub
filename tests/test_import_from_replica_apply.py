@@ -92,3 +92,18 @@ def test_the_source_no_longer_switches_branches_in_place():
     src = (SCRIPTS / "import_from_replica.py").read_text(encoding="utf-8")
     assert 'git("checkout", "-q", "-b"' not in src
     assert "worktree" in src and "--3way" in src
+
+
+def test_replica_local_paths_and_commits_are_not_imported(repo):
+    """The replica keeps its own deploy under .cd/. Importing it would push that
+    org's hosts and secret paths into every consumer of this repository."""
+    r, base = repo
+    _git(r, "checkout", "-q", "-b", "replica", base)
+    (r / ".cd").mkdir()
+    _commit(r, "add the deploy", **{".cd/values.yaml": "a: 1\n"})
+    _commit(r, "their change", **{"f.py": "a\nb\nc\nd\n"})
+    ref = _git(r, "rev-parse", "HEAD").strip()
+    _git(r, "checkout", "-q", "main")
+
+    assert imp.changed(base, ref) == ["f.py"]
+    assert [c["subject"] for c in imp.theirs(base, ref)] == ["their change"]

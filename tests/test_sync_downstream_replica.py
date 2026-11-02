@@ -147,6 +147,110 @@ def test_the_remote_is_not_hardcoded():
 
 
 def test_every_local_only_entry_carries_its_reason():
-    for path, why in sync.LOCAL_ONLY:
+    entries = [*sync.LOCAL_ONLY, *sync.LOCAL_OPTIONAL,
+               *((copy, why) for copy, _, why in sync.DERIVED)]
+    for path, why in entries:
         assert path and why, "an entry with no reason will not survive review"
         assert len(why) > 20, f"{path}'s reason is too thin to be useful"
+
+
+# ---------------------------------------------------------------------------
+# replica-local directories, optional files and derived copies
+# ---------------------------------------------------------------------------
+
+COPY = ".cd/docker/Dockerfile.queryhub"
+
+
+def _commit(repo, msg, files=None, modes=None):
+    for path, text in (files or {}).items():
+        f = repo / path
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text)
+    for path, mode in (modes or {}).items():
+        (repo / path).chmod(mode)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", msg)
+
+
+def _sha(out):
+    return [w for w in out.replace("\n", " ").split() if len(w) == 40][-1]
+
+
+def test_is_local_covers_the_directory_and_nothing_next_to_it():
+    assert sync.is_local(".cd/helm/prod/queryhub-web.yaml")
+    assert sync.is_local(".github/CODEOWNERS")
+    assert sync.is_local(".github/workflows/deploy-prod.yml")
+    assert sync.is_local(COPY)
+    assert not sync.is_local(".cdx/file")
+    assert not sync.is_local(".github/workflows/ci.yml")
+    assert not sync.is_local("Dockerfile")
+
+
+def test_a_local_directory_survives_the_sync_with_its_modes(world, capsys):
+    up, rep = world
+    _commit(rep, "add the deploy", {
+        ".cd/helm/Chart.yaml": "name: q\n",
+        ".cd/helm/prod/web.yaml": "replicas: 1\n",
+        ".cd/run.sh": "#!/bin/sh\n",
+        ".github/workflows/deploy-prod.yml": "name: deploy\n",
+    }, {".cd/run.sh": 0o755})
+    assert _run(rep) == 0
+    sha = _sha(capsys.readouterr().out)
+    names = _git(up, "diff", "--name-only", "HEAD", sha).stdout.split()
+    assert sorted(names) == sorted([
+        CODEOWNERS, ".cd/helm/Chart.yaml", ".cd/helm/prod/web.yaml",
+        ".cd/run.sh", ".github/workflows/deploy-prod.yml"])
+    mode = _git(up, "ls-tree", sha, ".cd/run.sh").stdout.split()[0]
+    assert mode == "100755", "the restore dropped the executable bit"
+
+
+def test_upstream_that_carries_a_local_path_is_refused(world):
+    up, rep = world
+    _commit(up, "leak", {".cd/helm/Chart.yaml": "name: q\n"})
+    with pytest.raises(SystemExit) as e:
+        _run(rep)
+    assert "replica-local" in str(e.value)
+    assert ".cd/helm/Chart.yaml" in str(e.value)
+
+
+def test_a_copy_is_refreshed_from_its_source(world, capsys):
+    up, rep = world
+    _commit(up, "image v1", {"Dockerfile": "FROM a:1\n"})
+    _commit(rep, "copy v1", {COPY: "FROM a:1\n"})
+    _commit(up, "image v2", {"Dockerfile": "FROM a:2\n"})
+    assert _run(rep) == 0
+    sha = _sha(capsys.readouterr().out)
+    assert _git(up, "cat-file", "-p", f"{sha}:{COPY}").stdout == "FROM a:2\n"
+
+
+def test_a_copy_is_never_created(world, capsys):
+    up, rep = world
+    _commit(up, "image", {"Dockerfile": "FROM a:1\n"})
+    assert _run(rep) == 0
+    sha = _sha(capsys.readouterr().out)
+    probe = _git(up, "cat-file", "-e", f"{sha}:{COPY}", check=False)
+    assert probe.returncode != 0, "the sync created a copy the replica did not hold"
+
+
+def test_a_copy_edited_in_the_replica_stops_the_sync(world):
+    """A refresh would delete that edit without an error."""
+    up, rep = world
+    _commit(up, "image", {"Dockerfile": "FROM a:1\n"})
+    _commit(rep, "edit the copy", {COPY: "FROM edited\n"})
+    with pytest.raises(SystemExit) as e:
+        _run(rep)
+    assert "REFUSED" in str(e.value) and COPY in str(e.value)
+
+
+def test_replica_commits_on_local_paths_do_not_block_the_next_sync(world, capsys):
+    up, rep = world
+    _git(rep, "commit", "-q", "--allow-empty", "-m",
+         "sync\n\nUpstream-Commit: " + "0" * 40)
+    _commit(rep, "add the deploy", {".cd/helm/Chart.yaml": "name: q\n"})
+    assert _run(rep) == 0
+    assert "replica-local commit, kept" in capsys.readouterr().out
+
+    _commit(rep, "their own code", {"app.py": "print('theirs')\n"})
+    with pytest.raises(SystemExit) as e:
+        _run(rep)
+    assert "REFUSED" in str(e.value) and "their own code" in str(e.value)

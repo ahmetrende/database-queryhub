@@ -107,7 +107,7 @@ def test_the_replicas_own_files_do_not_travel_upstream(monkeypatch):
 def test_both_directions_read_one_list():
     # Two lists would eventually disagree about which files are the replica's.
     src = (SCRIPTS / "import_from_replica.py").read_text(encoding="utf-8")
-    assert "from sync_downstream_replica import LOCAL_ONLY" in src
+    assert "from sync_downstream_replica import is_local" in src
 
 
 def test_every_author_is_kept(monkeypatch):

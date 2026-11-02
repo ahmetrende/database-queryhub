@@ -2,8 +2,9 @@
 # Container start-up: make the process able to run before running it.
 #
 # Order matters and each step is idempotent, because a container restarts.
-#   1. master key      — copied from QH_MASTER_KEY_SOURCE, or generated once
-#                        into the mounted volume, mode 0600
+#   1. master key      — written from QH_MASTER_KEY or copied from
+#                        QH_MASTER_KEY_SOURCE, or generated once into the
+#                        mounted volume, mode 0600
 #   2. wait for the DB — compose's depends_on only waits for the container
 #   3. migrations      — the ledger makes re-application a no-op; skipped
 #                        when QH_SKIP_MIGRATIONS=1
@@ -15,7 +16,21 @@
 set -eu
 
 KEY="${MASTER_KEY_PATH:-/etc/queryhub/master.key}"
-if [ -n "${QH_MASTER_KEY_SOURCE:-}" ]; then
+if [ -n "${QH_MASTER_KEY:-}" ]; then
+    # Some secret injectors (a Vault webhook, for example) set environment
+    # variables and cannot write files. The key then comes in QH_MASTER_KEY.
+    # Write it to MASTER_KEY_PATH with mode 0600, and remove the variable
+    # below, so that the app process never holds the key in its environment.
+    if [ -n "${QH_MASTER_KEY_SOURCE:-}" ]; then
+        echo "queryhub: set QH_MASTER_KEY or QH_MASTER_KEY_SOURCE, not both" >&2
+        exit 1
+    fi
+    # The same atomic write as below: a temporary file, then a rename.
+    if [ "$(cat "$KEY" 2>/dev/null)" != "$QH_MASTER_KEY" ]; then
+        ( umask 077 && printf '%s\n' "$QH_MASTER_KEY" > "$KEY.tmp.$$" && mv -f "$KEY.tmp.$$" "$KEY" )
+        echo "queryhub: master key written from QH_MASTER_KEY to $KEY"
+    fi
+elif [ -n "${QH_MASTER_KEY_SOURCE:-}" ]; then
     # A Kubernetes Secret mounts read-only, and with an fsGroup its file is
     # group-readable. crypto.py refuses a key that group or other can read, so
     # copy it to MASTER_KEY_PATH with mode 0600 (an in-memory volume there).
@@ -45,6 +60,7 @@ fi
 # crypto.py refuses a key readable by group or other, so fix an inherited mode
 # rather than failing at the first decrypt.
 chmod 600 "$KEY" 2>/dev/null || true
+unset QH_MASTER_KEY
 
 echo "queryhub: waiting for ${BOT_DB_HOST:-db}:${BOT_DB_PORT:-5432}"
 i=0
