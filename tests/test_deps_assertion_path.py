@@ -141,3 +141,30 @@ def test_a_websocket_with_an_assertion_is_refused_before_verification(monkeypatc
     with pytest.raises(Exception) as e:
         deps.current_user(conn)
     assert e.value.status_code == 401
+
+
+def test_one_helper_turns_an_assertion_into_claims(monkeypatch):
+    """`assertion_claims` is the one place that turns an assertion into a
+    person. The idp door of /mcp calls it too, so the two cannot drift."""
+    seen = {}
+
+    def capture(token, method, path, body):
+        seen.update(token=token, method=method, path=path, body=body)
+        return idp_assertion.Principal("U123", "Deniz Arslan")
+
+    monkeypatch.setattr(deps.idp_assertion, "verify", capture)
+    claims = deps.assertion_claims("tok", "POST", "/mcp", b"{}")
+    assert claims == {"sub": "U123", "name": "Deniz Arslan", "provider": "idp", "sid": None}
+    assert seen == {"token": "tok", "method": "POST", "path": "/mcp", "body": b"{}"}
+
+
+@pytest.mark.parametrize("code,person", [("not_onboarded", True), ("replayed", False)])
+def test_a_refusal_says_whether_it_is_about_the_person(monkeypatch, code, person):
+    def refuse(*a, **k):
+        raise idp_assertion.AssertionError_(code, "detail for the log")
+    monkeypatch.setattr(deps.idp_assertion, "verify", refuse)
+    with pytest.raises(deps.AssertionRefused) as e:
+        deps.assertion_claims("tok", "POST", "/mcp", b"{}")
+    assert e.value.person is person
+    assert e.value.code == (code if person else "unauthenticated")
+    assert "detail for the log" not in e.value.message

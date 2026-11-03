@@ -278,6 +278,7 @@ def test_the_replica_line_comes_before_the_success_line():
 
 def test_only_a_super_admin_is_shown_the_replica_name(monkeypatch):
     monkeypatch.setattr(routes_queries, "_alias_of", lambda tid: {99: "exc-orders-r1"}.get(tid))
+    monkeypatch.setattr(routes_queries, "_conn_state_resolver", lambda uid: lambda tid: "ok")
     asked = []
     monkeypatch.setattr(admins, "is_super_admin", lambda uid: asked.append(uid) or uid == ME)
     row = _replica_row(2.3)
@@ -288,6 +289,7 @@ def test_only_a_super_admin_is_shown_the_replica_name(monkeypatch):
 def test_a_chosen_replica_or_a_primary_run_has_no_name_and_costs_no_read(monkeypatch):
     """The executor writes `run_notes.replica` for an automatic route only."""
     monkeypatch.setattr(routes_queries, "_alias_of", lambda tid: "exc-orders-r1")
+    monkeypatch.setattr(routes_queries, "_conn_state_resolver", lambda uid: lambda tid: "ok")
     asked = []
     monkeypatch.setattr(admins, "is_super_admin", lambda uid: asked.append(uid) or True)
     chosen = _row(executed_target_id=99, run_on="replica:99",
@@ -300,6 +302,7 @@ def test_a_chosen_replica_or_a_primary_run_has_no_name_and_costs_no_read(monkeyp
 
 def test_run_notes_stored_as_text_are_read(monkeypatch):
     monkeypatch.setattr(routes_queries, "_alias_of", lambda tid: "exc-orders-r1")
+    monkeypatch.setattr(routes_queries, "_conn_state_resolver", lambda uid: lambda tid: "ok")
     monkeypatch.setattr(admins, "is_super_admin", lambda uid: True)
     row = _replica_row(1.0)
     row["run_notes"] = json.dumps(row["run_notes"])
@@ -325,6 +328,7 @@ def _get(web, monkeypatch, row, super_admin=False):
     monkeypatch.setattr(routes_queries.db, "fetch_one", lambda sql, p=None: dict(row))
     monkeypatch.setattr(routes_queries.db, "fetch_all", lambda sql, p=None: [])
     monkeypatch.setattr(routes_queries, "_alias_of", lambda tid: {7: "prod-main", 99: "exc-orders-r1"}.get(tid))
+    monkeypatch.setattr(routes_queries, "_conn_state_resolver", lambda uid: lambda tid: "ok")
     monkeypatch.setattr(routes_queries.people, "display_name", lambda *a, **k: "Sam Ellis")
     monkeypatch.setattr(admins, "is_super_admin", lambda uid: super_admin)
     r = web.get(f"/api/queries/{row['id']}")
@@ -363,6 +367,7 @@ def test_a_pending_request_costs_no_extra_read(web, monkeypatch):
     monkeypatch.setattr(routes_queries.db, "fetch_one", lambda sql, p=None: reads.append(sql) or dict(row))
     monkeypatch.setattr(routes_queries.db, "fetch_all", lambda sql, p=None: reads.append(sql) or [])
     monkeypatch.setattr(routes_queries, "_alias_of", lambda tid: "prod-main")
+    monkeypatch.setattr(routes_queries, "_conn_state_resolver", lambda uid: lambda tid: "ok")
     monkeypatch.setattr(routes_queries.people, "display_name", lambda *a, **k: "Sam Ellis")
     assert web.get("/api/queries/77").status_code == 200
     # The whitelist check, the request row and the audit rows, as before. The new

@@ -37,7 +37,7 @@ from .. import (cancellation, core_submit, db, engines, origins, pending_expiry,
                pre_flight, profile_sync, query_safety, requesters, result_export)
 from .. import config as cfg
 from . import deps, mapping, sessions
-from .routes_data import _alias_of, _target_by_alias
+from .routes_data import _alias_of, _conn_state_resolver, _target_by_alias
 
 log = logging.getLogger(__name__)
 
@@ -968,6 +968,19 @@ def explain_query(body: ExplainIn, claims: dict = Depends(deps.current_user)):
 
 # ---- GET /queries/:id ---------------------------------------------------------
 
+def _usable_target(row: dict, uid: str) -> tuple[str | None, str | None]:
+    """The connection and the database of a request, for a tab that opens it.
+
+    Only a connection that the person can use now. For a target that is
+    retired, gone or outside the person's grants, both are None. The tab then
+    opens with no connection, as Welcome opens such a history row, and the
+    editor says why and runs nothing."""
+    tid = row.get("target_server_id")
+    if tid is None or _conn_state_resolver(uid)(tid) != "ok":
+        return None, None
+    return _alias_of(tid), row.get("database_name")
+
+
 def _own_request(request_id: int, uid: str) -> dict:
     row = db.fetch_one(
         "SELECT * FROM requests WHERE id = %s AND requester_slack_id = %s",
@@ -1157,8 +1170,23 @@ def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
         "SELECT actor_slack_id, actor_name, action, created_at, details "
         "FROM audit_log WHERE request_id = %s ORDER BY id",
         (request_id,))
+    connection_id, database_id = _usable_target(row, claims["sub"])
     return {
         "id": str(row["id"]),
+        # What the request was, so a link to it (?request=<id>) can open it as a
+        # tab. The text is the stored one, with a password literal masked. The
+        # person asking owns the request (`_own_request`).
+        "sql": row["query"],
+        "connectionId": connection_id,
+        "databaseId": database_id,
+        # Where the request came from. A link to a request from Claude names its tab.
+        "origin": row.get("origin") or "slack",
+        # When it was sent. A tab that a link or a reload opened has no local
+        # submit time, and the waiting card counts from this one.
+        "submittedAt": mapping.iso(row.get("created_at")),
+        # When the requester first read it after it ended (POST .../seen). The
+        # portal keeps a request from Claude in Current session until then.
+        "seenAt": mapping.iso(row.get("requester_seen_at")),
         "status": mapping.status_to_web(row["status"]),
         "awaitingDba": mapping.awaiting_dba(row["status"]),
         "classification": mapping.classification_of(row["query"]),
@@ -1188,6 +1216,30 @@ def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
         "timeline": mapping.timeline(row, audit_rows, people.display_name,
                                      claims["sub"]),
     }
+
+
+@router.post("/queries/{request_id}/seen")
+def query_seen(request_id: int, claims: dict = Depends(deps.current_user)):
+    """The requester has read this request after it ended.
+
+    The portal sends this when a tab shows an ended request. It keeps a
+    request from Claude in Current session until then. The first call records
+    the time and every later call returns it, so a second tab or a reload
+    changes nothing. A read by Claude through the MCP door never comes here.
+    """
+    deps.require_whitelisted(claims)
+    row = _own_request(request_id, claims["sub"])
+    if row.get("status") not in mapping.ENDED_STATUSES:
+        raise deps._error(409, "not_ended", "The request has not ended yet.")
+    seen = row.get("requester_seen_at")
+    if seen is None:
+        with db.transaction() as cur:
+            cur.execute(
+                "UPDATE requests SET requester_seen_at = COALESCE(requester_seen_at, NOW()) "
+                "WHERE id = %s RETURNING requester_seen_at", (request_id,))
+            got = cur.fetchone()
+        seen = got["requester_seen_at"] if got else None
+    return {"seenAt": mapping.iso(seen)}
 
 
 # ---- results -------------------------------------------------------------------

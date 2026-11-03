@@ -18,14 +18,16 @@ from pydantic import BaseModel, Field
 from .. import (admins, auto_approve, db, engines, errors, favorites, people, query_safety,
                replicas, schema_catalog, targets, teams)
 from .. import config as cfg
+from .. import db_scope
 from . import deps, mapping
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", dependencies=[Depends(deps.block_pw_gate)])
 
-# The control-plane DB is hidden from every listing, same as Slack.
-_HIDDEN_DATABASES = {"postgres"}
+# The control-plane DB is hidden from every listing, same as Slack. The rule
+# for who sees which database lives in `db_scope`, shared with the MCP tools.
+_HIDDEN_DATABASES = db_scope.HIDDEN_DATABASES
 
 # Ceiling on how many tables one database contributes to the /connections
 # payload. 200 was far too low and failed silently: the biggest database in
@@ -86,36 +88,8 @@ def _conn_state_resolver(uid: str):
 
 # ---- /connections -----------------------------------------------------------
 
-def _catalog_databases(target_id: int) -> list[str]:
-    rows = db.fetch_all(
-        "SELECT DISTINCT database_name FROM schema_tables "
-        "WHERE target_server_id = %s ORDER BY database_name",
-        (target_id,),
-    )
-    return [r["database_name"] for r in rows
-            if r["database_name"] not in _HIDDEN_DATABASES]
-
-
-def _catalog_databases_map(target_ids: list[int]) -> dict[int, list[str]]:
-    """`_catalog_databases` for many targets in one query.
-
-    The connections payload asked per target, which is one round trip per row
-    on a screen whose whole job is to render every row: 117 targets, 117
-    queries. Same filter, same order, one statement -- a target with no
-    snapshot is absent from the map, exactly as the single-target version
-    returns [] for it."""
-    ids = list(dict.fromkeys(int(t) for t in target_ids))
-    if not ids:
-        return {}
-    out: dict[int, list[str]] = {}
-    for r in db.fetch_all(
-            "SELECT DISTINCT target_server_id AS t, database_name AS d "
-            "  FROM schema_tables WHERE target_server_id = ANY(%s) "
-            " ORDER BY target_server_id, database_name", (ids,)):
-        if r["d"] in _HIDDEN_DATABASES:
-            continue
-        out.setdefault(r["t"], []).append(r["d"])
-    return out
+_catalog_databases = db_scope.catalog_databases
+_catalog_databases_map = db_scope.catalog_databases_map
 
 
 def _catalog_functions(target_id: int, database: str) -> list[dict]:
@@ -290,25 +264,7 @@ def connections(claims: dict = Depends(deps.current_user)):
         grant = grants.get(t.id)
         if grant is None:
             continue
-        allowed = grant["allowed_databases"]  # None = all
-        dbs = sorted(allowed) if allowed is not None else catalog_dbs.get(t.id, [])
-        if not dbs:
-            # Only fall back to the target's default DB when the grant is
-            # UNRESTRICTED. A restricted grant that lists only hidden DBs
-            # (e.g. {'postgres'}) must NOT expose the default_database the
-            # user isn't actually granted — skip the target entirely.
-            if allowed is None:
-                dbs = [t.default_database]
-            else:
-                continue
-        # Filter AFTER the fallback, never before. `default_database` is
-        # `postgres` on most of this fleet, so a target whose catalog is empty
-        # -- which is every target between being enabled and its first schema
-        # snapshot -- used to fall back to exactly the database that is meant to
-        # be invisible, and the earlier filter had already run. It reached a
-        # user's sidebar that way. Filtering here covers both the catalog list
-        # and the fallback with one pass.
-        dbs = [d for d in dbs if d not in _HIDDEN_DATABASES]
+        dbs = db_scope.visible_databases(t, grant, catalog_dbs.get(t.id, []))
         if not dbs:
             continue
         plan.append((t, grant, dbs))
@@ -568,7 +524,8 @@ def history(limit: int = 50, claims: dict = Depends(deps.current_user)):
         # The tier the submit stored: re-reading the query text misreads a script.
         "       required_tier, "
         # What `ranOn` reads, as the status poll does.
-        "       executed_at, executed_target_id, executed_tier, engine "
+        "       executed_at, executed_target_id, executed_tier, engine, origin, "
+        "       requester_seen_at "
         # status <> 'draft': a reserved id from an open tab is not history.
         "FROM requests WHERE requester_slack_id = %s AND status <> 'draft' "
         "ORDER BY id DESC LIMIT %s",
@@ -644,10 +601,7 @@ def _granted_db(uid: str, alias: str, dbname: str):
     grant = teams.effective_grant_for_user(uid, t.id)
     if grant is None:
         return None, None
-    allowed = grant["allowed_databases"]
-    if allowed is not None and dbname not in allowed:
-        return None, None
-    if dbname in _HIDDEN_DATABASES:
+    if not db_scope.grant_covers(grant, dbname):
         return None, None
     return t, grant
 

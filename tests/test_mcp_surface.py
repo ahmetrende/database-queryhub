@@ -5,26 +5,26 @@ same classification, same approval, same audit, same masking. These tests pin
 the handful of things that are specific to this door, each of which is a way
 the door could quietly become wider than the other two.
 
-The tools import no SDK, which is what lets this file run without
-`queryhub[mcp]` installed. That is the same property that makes the extra
-genuinely optional rather than nominally so, so it is asserted here too.
+Nothing here imports an MCP SDK: the door speaks the protocol itself.
 """
 import inspect
 
 import pytest
 
-from queryhub.mcp_server import caller, policy, server, tools
+from queryhub.mcp_server import caller, catalog, policy, tools
 
 
 # --- the door is shut until an operator opens it -----------------------------
 
 
-def test_installing_the_dependency_does_not_open_the_door():
-    """Two separate switches on purpose. Adding a package to a venv is not a
-    decision to expose production databases to a program."""
+def test_a_deploy_does_not_open_the_door():
+    """A deploy is not a decision to expose production databases to a
+    program. The key is new and off by default: `mcp_enabled` switched the old
+    stdio server, and an install where it is `on` must not get an open door."""
     src = inspect.getsource(policy)
-    assert 'ENABLED_KEY = "mcp_enabled"' in src
+    assert 'ENABLED_KEY = "mcp_door_enabled"' in src
     assert 'get_setting(ENABLED_KEY, "off")' in src
+    assert '"mcp_enabled"' not in src
 
 
 def test_every_tool_checks_the_switch(monkeypatch):
@@ -121,45 +121,27 @@ def test_an_unknown_caller_is_refused_the_way_the_other_doors_refuse():
     implicitly. A door that agreed about identity but not about who is
     admitted would widen access by existing."""
     src = inspect.getsource(caller.acting_principal)
-    assert "admins.is_admin(pid) or requesters.is_allowed(pid)" in src
+    assert "admins.is_admin(bound) or requesters.is_allowed(bound)" in src
 
 
 def test_a_missing_caller_raises_rather_than_defaulting():
     """A tool running with no caller is a tool running with no grants to
     check."""
     src = inspect.getsource(caller.acting_principal)
-    assert 'raise CallerError(\n            "no_caller"' in src
+    assert 'raise CallerError("no_caller"' in src
     assert "return None" not in src
 
 
-def test_an_unexpanded_placeholder_says_so(monkeypatch):
-    """Measured against a real editor: Claude Code does NOT expand `${VAR}` in
-    an MCP config's `env` block -- it passes the text through. The value then
-    arrives as the placeholder, the whitelist refuses it, and the reader is
-    told they are not whitelisted, which sends them to look at their QueryHub
-    account instead of their config.
-
-    A refusal that names the wrong thing costs more than no refusal.
-    """
+def test_the_environment_never_names_a_person(monkeypatch):
+    """The old stdio server read `QH_MCP_PRINCIPAL`. Outside a call that the
+    door bound, no person exists, whatever the environment holds."""
     import os
-    monkeypatch.setitem(os.environ, caller.ENV_VAR, "${QH_MCP_PRINCIPAL}")
+    monkeypatch.setitem(os.environ, "QH_MCP_PRINCIPAL", "U0EXAMPLE001")
+    monkeypatch.setattr(caller.admins, "is_admin", lambda p: True)
     with pytest.raises(caller.CallerError) as e:
         caller.acting_principal()
-    assert e.value.code == "unexpanded_placeholder"
-    assert "did not expand" in e.value.message
-
-
-def test_the_client_config_does_not_try_to_expand_a_variable():
-    """The `env` block is gone for the same reason: it was actively harmful,
-    handing the server a literal instead of an identity. The variable is
-    inherited from the environment the client itself runs in."""
-    import json
-    import pathlib
-    cfg = json.loads((pathlib.Path(__file__).resolve().parents[1]
-                      / ".mcp.json").read_text(encoding="utf-8"))
-    server_cfg = cfg["mcpServers"]["queryhub"]
-    assert "env" not in server_cfg
-    assert "$" not in json.dumps(server_cfg)
+    assert e.value.code == "no_caller"
+    assert "QH_MCP_PRINCIPAL" not in inspect.getsource(caller)
 
 
 # --- what a program may never ask -------------------------------------------
@@ -207,7 +189,7 @@ def test_another_persons_request_is_indistinguishable_from_a_missing_one():
 def test_an_ungranted_connection_is_indistinguishable_from_an_unknown_one():
     """Otherwise a caller enumerates real server names by watching which
     refusal comes back."""
-    src = inspect.getsource(tools._target_or_refuse)
+    src = inspect.getsource(tools._granted)
     assert "effective_grant_for_user" in src
     assert src.count("unknown_connection") == 1
 
@@ -215,29 +197,14 @@ def test_an_ungranted_connection_is_indistinguishable_from_an_unknown_one():
 # --- the transport stays thin ------------------------------------------------
 
 
-def test_the_sdk_is_not_needed_to_import_or_test_this():
-    """What makes the extra optional in fact rather than in the README."""
-    for mod in (policy, caller, tools):
+def test_no_sdk_and_no_stdio_server():
+    """The door speaks the protocol itself, and the stdio server is gone: MCP
+    reaches QueryHub through the portal only."""
+    import importlib.util
+    for mod in (policy, caller, tools, catalog):
         assert "import mcp" not in inspect.getsource(mod)
-    src = inspect.getsource(server.build)
-    assert "from mcp.server.mcpserver import MCPServer" in src
-
-
-def test_the_adapter_decides_nothing():
-    """Everything decidable lives in tools and policy. An authorization check
-    that drifts into the transport is one the tests above stop covering."""
-    src = inspect.getsource(server)
-    for forbidden in ("is_admin", "effective_grant", "tier_allowed",
-                      "acting_principal", "required_mode"):
-        assert forbidden not in src, forbidden
-
-
-def test_a_refusal_reaches_the_caller_as_words():
-    """An exception escaping to the protocol becomes an opaque internal error,
-    and an assistant that gets one retries the same call."""
-    src = inspect.getsource(server.build)
-    assert "except tools.ToolError" in src
-    assert '"message": e.message' in src
+    for name in ("server", "__main__"):
+        assert importlib.util.find_spec(f"queryhub.mcp_server.{name}") is None, name
 
 
 def test_the_origin_says_which_door():
@@ -276,6 +243,9 @@ def test_both_halves_are_capped_and_say_when_they_truncate():
     assert "Use a more specific `table` filter" in src
 
 
+RESTRICTED_TO_APP = {"mode": "ro", "allowed_databases": {"app"}}
+
+
 def test_a_loose_filter_cannot_pull_hundreds_of_tables_in_full(monkeypatch):
     """`table="a"` matched 2,073 tables on the largest database. Each one
     carries every column. The cap is in the SQL, so the columns of the tables
@@ -296,7 +266,7 @@ def test_a_loose_filter_cannot_pull_hundreds_of_tables_in_full(monkeypatch):
     class _T:
         id, alias = 7, "prod-main"
     monkeypatch.setattr(tools, "_me", lambda: "U0EXAMPLE001")
-    monkeypatch.setattr(tools, "_target_or_refuse", lambda uid, c: _T())
+    monkeypatch.setattr(tools, "_granted", lambda uid, c: (_T(), RESTRICTED_TO_APP))
     monkeypatch.setattr(tools.db, "fetch_all", fetch_all)
     monkeypatch.setattr(tools.db, "fetch_one", fetch_one)
     out = tools.describe_database("prod-main", "app", table="a")
@@ -311,8 +281,8 @@ def test_a_loose_filter_cannot_pull_hundreds_of_tables_in_full(monkeypatch):
 def test_a_short_answer_needs_no_count(monkeypatch):
     calls = []
     monkeypatch.setattr(tools, "_me", lambda: "U0EXAMPLE001")
-    monkeypatch.setattr(tools, "_target_or_refuse",
-                        lambda uid, c: type("T", (), {"id": 7, "alias": "prod-main"})())
+    monkeypatch.setattr(tools, "_granted", lambda uid, c: (
+        type("T", (), {"id": 7, "alias": "prod-main"})(), RESTRICTED_TO_APP))
     monkeypatch.setattr(tools.db, "fetch_all", lambda sql, params=None: [
         {"schema_name": "public", "table_name": "users", "relkind": "table",
          "column_name": c, "data_type": "text", "is_pk": c == "id"} for c in ("email", "id")])
@@ -327,7 +297,7 @@ def test_submitting_waits_for_an_auto_approved_result():
     it two fresh connections to the target; making the caller poll adds its own
     interval on top of a wait that was already over."""
     src = inspect.getsource(tools.submit_query)
-    assert "_await_result(rid, wait)" in src
+    assert "_await_result(rid, wait, started)" in src
     assert "wait_seconds: int = DEFAULT_WAIT_SECONDS" in inspect.getsource(tools.submit_query)
 
 

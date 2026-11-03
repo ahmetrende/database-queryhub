@@ -60,6 +60,55 @@ def _own_ui_allowed_users() -> set[str]:
     return {part.strip() for part in raw.split(",") if part.strip()}
 
 
+class AssertionRefused(Exception):
+    """An identity assertion that this service refused, in the words that the
+    caller may see.
+
+    `person` is true for a refusal about the person (no account, outside the
+    domain, an address that two people share). Its code and its message say
+    what to do. Every other refusal is a seam failure: the code is
+    `unauthenticated`, the message is generic, and only the log names the
+    cause.
+    """
+
+    def __init__(self, code: str, message: str, person: bool):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.person = person
+
+
+def assertion_claims(raw: str, method: str, target: str, body: bytes) -> dict:
+    """The session claims of a request that the panel proves with an
+    assertion (AUTH.md section 1.2), or AssertionRefused.
+
+    One answer for every route that takes an assertion: the proxied `/api`
+    routes (through `current_user`) and the idp door of `/mcp`. Each route
+    picks its own status code. The person and the refusal codes come from
+    here only.
+    """
+    try:
+        principal = idp_assertion.verify(raw, method, target, body)
+    except idp_assertion.AssertionError_ as e:
+        log.warning("idp assertion refused: %s", e.code)
+        # A refusal about the person names its code, so the panel can tell
+        # the person what to do. A seam failure stays generic.
+        person = idp_assertion.PERSON_MESSAGES.get(e.code)
+        if person is not None:
+            raise AssertionRefused(e.code, person, True) from e
+        raise AssertionRefused("unauthenticated",
+                               "Refused: the identity assertion is not valid.",
+                               False) from e
+    # No `sid`: a proxied request has no server-side session to revoke. Its
+    # bound is the 60-second lifetime plus the panel's own revocation.
+    # `name` is carried so the 41 `claims.get("name") or uid` call sites
+    # render a person rather than a raw principal id. It comes from the
+    # requesters/admins row, not from the token's `name` claim: the panel
+    # says who is acting, this service says what it knows about them.
+    return {"sub": principal.id, "name": principal.name,
+            "provider": "idp", "sid": None}
+
+
 def current_user(conn: HTTPConnection) -> dict:
     """AUTH.md §3 — runs on every protected route, cheap:
     token extract → signature+exp → revocation lookup. Returns the
@@ -92,32 +141,17 @@ def current_user(conn: HTTPConnection) -> dict:
             raise _error(401, "unauthenticated",
                          "Refused: websockets do not accept identity assertions.")
         try:
-            principal = idp_assertion.verify(
+            # No `sid` in these claims, and the early return here is what
+            # keeps the liveness lookup below from running for a proxied
+            # request (see assertion_claims).
+            return assertion_claims(
                 raw,
                 conn.scope.get("method", "GET"),
                 _request_target(conn),
                 conn.scope.get("_body", b""),
             )
-        except idp_assertion.AssertionError_ as e:
-            log.warning("idp assertion refused: %s", e.code)
-            # A refusal about the person (no account, outside the domain, an
-            # address that two people share) names its code, so the panel can
-            # tell the person what to do. A seam failure stays generic.
-            person = idp_assertion.PERSON_MESSAGES.get(e.code)
-            if person is not None:
-                raise _error(401, e.code, person) from e
-            raise _error(401, "unauthenticated",
-                         "Refused: the identity assertion is not valid.") from e
-        # No `sid`: a proxied request has no server-side session to revoke.
-        # Its bound is the 60-second lifetime plus the panel's own revocation,
-        # so the liveness lookup below must not run for it — which the early
-        # return here is what guarantees.
-        # `name` is carried so the 41 `claims.get("name") or uid` call sites
-        # render a person rather than a raw principal id. It comes from the
-        # requesters/admins row, not from the token's `name` claim: the panel
-        # says who is acting, this service says what it knows about them.
-        return {"sub": principal.id, "name": principal.name,
-                "provider": "idp", "sid": None}
+        except AssertionRefused as e:
+            raise _error(401, e.code, e.message) from e
 
     token = conn.cookies.get(SESSION_COOKIE)
     if not token:

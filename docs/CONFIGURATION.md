@@ -116,6 +116,22 @@ default instead of stopping the process.
 > the build if the code reads a key that no migration seeds. Migration 079 is
 > the pattern to copy.
 
+## MCP door (Claude Code)
+
+The MCP door lets a person use QueryHub from Claude Code, through the portal.
+Claude Code connects to the portal, and the portal calls `POST /mcp` with its
+identity assertion. See `docs/MCP.md`. The door is off until an operator turns
+it on. The app reads every key below on each call, so a change needs no
+restart.
+
+| Key | Default | What it does |
+|---|---|---|
+| `mcp_door_enabled` | `off` | The switch. `on` = the door accepts tool calls from the portal. `off` = the door refuses every call. The old stdio server read `mcp_enabled`. QueryHub reads that key no more, so an install where it is `on` still gets a closed door. |
+| `mcp_max_tier` | `ro` | The highest tier a program may submit through the door: `ro`, `rw` or `ddl`. An unknown value reads as `ro`. A person always approves an RW or DDL request from MCP. Waivers and super-admin self-approval do not apply. |
+| `mcp_result_mode` | `metadata_only` | What a program may read of a result. `metadata_only` = the status, the row count and the column names, and no row. The person opens the result in the web UI. `masked_rows` = the masked rows too. The rows then reach the model. An unknown value reads as `metadata_only`. |
+| `mcp_portal_url` | `""` | The address of QueryHub in the portal, such as `https://portal.example.com/queryhub`. Every request from Claude comes back with the link `<address>?request=<id>`. Empty or not an absolute http(s) address = no link. |
+| `mcp_rate_limit_per_minute` | `60` | How many tool calls one person may make in one minute. More calls get `rate_limited`. |
+
 ## Query execution, safety & limits
 
 | Key | Default | What it does |

@@ -141,8 +141,9 @@ the cause, and `error.message` tells the person what to do:
 | `bad_domain` | The address is outside `web_allowed_email_domain`. | Refused: this address is outside the allowed domain. |
 | `ambiguous_address` | Rows of two or more different people have the address. | Refused: two QueryHub accounts share this address. Ask an admin to fix it. |
 
-QueryHub sends these codes only after the signature, the request binding
-and the `jti` pass. So a forged token cannot find out whether an address
+The MCP door (`/mcp`) uses the same codes and messages, with 403 for these
+three (section 9). QueryHub sends these codes only after the signature, the
+request binding and the `jti` pass. So a forged token cannot find out whether an address
 has an account. Every other refusal is a seam failure, a fault of the
 portal, the keys or the configuration: `expired`, `clock_ahead`,
 `too_long_lived`, `bad_signature`, `bad_audience`, `bad_issuer`,
@@ -509,3 +510,28 @@ well, disable the `requesters` row (or the `local_users` row).
   expired session.)
 - Sign out → `POST /api/auth/signout`. It revokes the server-side session,
   not only the cookies.
+
+---
+
+## 9. MCP identity
+
+Claude Code connects to the portal with a personal access token. QueryHub
+never sees the token. The portal sends each tool call to `POST /mcp` with its
+identity assertion (section 1.2), bound to `POST`, `/mcp` and the exact body.
+`mcp_door_enabled` closes the door. `docs/MCP.md` has the whole flow.
+
+- `deps.assertion_claims` turns the assertion into one person. The proxied
+  `/api` routes use the same helper, so the rules and the codes are the same.
+- A refusal about the person (`not_onboarded`, `bad_domain`,
+  `ambiguous_address`) is 403 with its code and message. A seam failure is 401
+  `unauthenticated` with the generic message. Only the log line names its
+  cause. No 401 of this door names a sign-in: the caller is the portal.
+- A request with no assertion gets 401 `unauthenticated`. Its message names
+  Connect Claude Code in the portal.
+- The person must be an enabled requester or an admin. A disabled row gets 403
+  `not_whitelisted`, because this door has no sign-in that refuses it.
+- A request with an assertion and a bearer token gets 400
+  `ambiguous_credentials`, before QueryHub spends the `jti`.
+- No session exists. The bound of a call is the 60-second life of its
+  assertion. The portal ends the token: a revoked token stops working in at
+  most 15 minutes, when the short session of the portal ends.

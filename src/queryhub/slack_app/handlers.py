@@ -50,7 +50,7 @@ def _kill_switch_message() -> str:
 from slack_bolt import Ack, App
 from slack_sdk.web import WebClient
 
-from .. import access_requests, admins, audit, auto_approve, auto_approve_limits, auto_approve_requests, bundles, csv_import, db, engines, executor, favorites, grants, idp_sync_guard, manual_runs, pre_flight, profile_sync, query_safety, ratings, requesters, schema_catalog, targets, teams, templates
+from .. import access_requests, admins, audit, auto_approve, auto_approve_limits, auto_approve_requests, bundles, csv_import, db, db_scope, engines, executor, favorites, grants, idp_sync_guard, manual_runs, pre_flight, profile_sync, query_safety, ratings, requesters, schema_catalog, targets, teams, templates
 from .. import config as cfg
 from .. import core_submit
 from .. import core_decide
@@ -1471,12 +1471,8 @@ def _validate_batch_item(
 
     allowed_dbs = grant["allowed_databases"]
     if allowed_dbs is not None and database not in allowed_dbs:
-        sample = ", ".join(f"`{d}`" for d in sorted(allowed_dbs)[:8])
-        more = "" if len(allowed_dbs) <= 8 else f" (+{len(allowed_dbs) - 8} more)"
-        errors[b_database] = (
-            f"You don't have access to database `{database}` on this "
-            f"server. Allowed: {sample}{more}."
-        )
+        errors[b_database] = db_scope.no_access_message(
+            target.alias, database, db_scope.usable_databases(target, grant))
         return None, errors
 
     # Tier for THIS database, not the target-wide max (see the cross-product note in

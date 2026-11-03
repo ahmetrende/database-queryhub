@@ -1,0 +1,141 @@
+{
+  "version": "25d463864419bb730a56c2af992cb5d972fc714085c5e917fe3ad263307b59be",
+  "tools": [
+    {
+      "name": "list_connections",
+      "description": "Lists the connections and databases that you can query, with your tier on each database. Call this tool first. Use only the names that it returns. `maxTier` is the highest tier that QueryHub accepts. `resultMode` tells what you can read of a result.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "describe_database",
+      "description": "Returns the table names in a database. If you pass `table`, it returns the columns of the tables whose names contain that text.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "type": "string",
+            "description": "A connection name from `queryhub_list_connections`."
+          },
+          "database": {
+            "type": "string",
+            "description": "A database name from `queryhub_list_connections`."
+          },
+          "table": {
+            "type": "string",
+            "description": "Part of a table name. Optional."
+          }
+        },
+        "required": [
+          "connection",
+          "database"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "classify_sql",
+      "description": "Returns the tier that a statement needs, and whether QueryHub accepts the statement. This tool is optional. `queryhub_submit_query` does the same checks.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "type": "string",
+            "description": "A connection name from `queryhub_list_connections`."
+          },
+          "sql": {
+            "type": "string",
+            "description": "One SQL statement."
+          }
+        },
+        "required": [
+          "connection",
+          "sql"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "submit_query",
+      "description": "Submits one statement for the person. If QueryHub auto-approves the statement, the tool waits for the result. Put no personal data and no secret in the statement. Show the person `requestUrl`. A person always approves a write (RW) and a schema change (DDL). If `decision` is `needs_approval`, poll `queryhub_query_status`. Do not submit the same statement again. If QueryHub refuses the statement, read the reason and change the statement.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "type": "string",
+            "description": "A connection name from `queryhub_list_connections`."
+          },
+          "sql": {
+            "type": "string",
+            "description": "One SQL statement."
+          },
+          "database": {
+            "type": "string",
+            "description": "A database name from `queryhub_list_connections`."
+          },
+          "justification": {
+            "type": "string",
+            "description": "Why the person needs this data."
+          },
+          "wait_seconds": {
+            "type": "integer",
+            "description": "How long to wait for the result. Default 20. Maximum 20.",
+            "maximum": 20
+          }
+        },
+        "required": [
+          "connection",
+          "sql",
+          "database"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "query_status",
+      "description": "Returns the status of a request that you submitted. Approval takes minutes, so poll this tool. Do not submit the statement again. Show the person `requestUrl`.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "integer",
+            "description": "The `requestId` from `queryhub_submit_query`."
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "fetch_result",
+      "description": "Returns the row count and the column names of a completed request. While `resultMode` is `metadata_only`, you read no rows. Tell the person to open `requestUrl` to see the result. Do not ask the person to paste the result. Only in `masked_rows` mode does it also return a page of rows.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "integer",
+            "description": "The `requestId` from `queryhub_submit_query`."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "The first row to return. Default 0. Used in `masked_rows` mode only."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "How many rows. Default 50. Maximum 200. Used in `masked_rows` mode only."
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

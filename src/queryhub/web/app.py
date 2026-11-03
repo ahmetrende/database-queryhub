@@ -289,7 +289,7 @@ def create_app() -> FastAPI:
     # ---- routers ------------------------------------------------------
     # Auth (login, OAuth round-trip, refresh, sign-out) is routes_auth;
     # it is a router like the rest rather than a block inside this factory.
-    from . import routes_admin, routes_data, routes_queries, routes_requests
+    from . import routes_admin, routes_data, routes_mcp, routes_queries, routes_requests
     app.include_router(routes_auth.router)
 
     # Avatar bytes come from our own origin so the CSP can stay at
@@ -300,6 +300,9 @@ def create_app() -> FastAPI:
     app.include_router(routes_queries.router)
     app.include_router(routes_requests.router)
     app.include_router(routes_admin.router)
+    # The MCP door has its own identity. It is not under /api, so no web
+    # dependency judges it. See routes_mcp.
+    app.include_router(routes_mcp.router)
 
     # The notice page for a person the own UI refuses. No session is needed:
     # that person is the one who has none that works. See portal_redirect.
@@ -430,6 +433,13 @@ def create_app() -> FastAPI:
         # frontend because this is the same value the backend gates every Slack
         # code path on, so the copy cannot drift from the behaviour.
         out["slackEnabled"] = bool(cfg.ENV.slack_enabled)
+        # How to connect Claude Code: `{"mode": "idp"}`, through the portal.
+        # Present only while that way works, so the Welcome page never shows
+        # one that does not. See routes_mcp.connect_info.
+        from . import routes_mcp
+        claude = routes_mcp.connect_info()
+        if claude is not None:
+            out["claudeMcp"] = claude
         if block is not None:
             out["admin"] = block   # drives the Developer↔Admin toggle + super-only nav
         return out

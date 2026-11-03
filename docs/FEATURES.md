@@ -89,7 +89,7 @@ this page when QueryHub is the right shape.
   DB is never grantable here.
 - **Slash sub-commands** — `/sql help`, `/sql whoami`, `/sql history`,
   `/sql teams`, `/sql batch`, `/sql tables`, `/sql schema`,
-  `/sql findcol`. Admin-only: `/sql grant`, `/sql revoke`, `/sql roles`,
+  `/sql findcol`, `/sql claude`. Admin-only: `/sql grant`, `/sql revoke`, `/sql roles`,
   `/sql pending`, `/sql kill`. `/sql kill` also needs a DBA: a permanent,
   unscoped admin (`docs/AUTH.md` §3.1). QueryHub generates the help list
   from the registry, so the list stays current automatically.

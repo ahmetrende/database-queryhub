@@ -85,6 +85,12 @@ def status_to_web(status: str) -> str:
     return _STATUS_TO_WEB.get(status, "pending")
 
 
+#: The statuses after which a request changes no more. A request that a DBA
+#: runs by hand (`awaiting_dba_manual`) has not ended yet.
+ENDED_STATUSES = frozenset({"completed", "failed", "rejected", "changes_requested",
+                            "cancelled", "expired"})
+
+
 def awaiting_dba(status: str | None) -> bool:
     """Handed to a DBA to run by hand. Shown as "failed" (see above), so this
     is the one field that tells the two apart."""
@@ -238,6 +244,12 @@ def history_entry(row: dict, alias_of: "callable",
         "awaitingDba": awaiting_dba(row["status"]),
         "rowCount": row.get("row_count"),
         "createdAt": iso(row.get("created_at")),
+        # Where the request came from. The page opens a tab for each request
+        # from Claude, so it has to tell them apart.
+        "origin": row.get("origin") or "slack",
+        # When the requester first read the request after it ended. The portal
+        # keeps a request from Claude in Current session until then.
+        "seenAt": iso(row.get("requester_seen_at")),
         "approver": approver_label(row.get("decided_by_slack_id"),
                                    row.get("decided_by_name"), name_of,
                                    row.get("requester_slack_id")),

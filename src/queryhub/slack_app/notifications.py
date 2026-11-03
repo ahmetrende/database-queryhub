@@ -332,6 +332,18 @@ def _request_blocks(
          "elements": [{"type": "mrkdwn",
                        "text": "  ·  ".join(second_row_bits)}]},
     ]
+    # A program wrote this statement. The approver must know it before they
+    # read the SQL. This shows for every tier. For RW and DDL it matters most,
+    # since a person always decides those.
+    is_mcp = origins.normalize(request.get("origin")) == origins.MCP
+    if is_mcp:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (
+                f"*Claude wrote this statement* through MCP, "
+                f"for <@{request['requester_slack_id']}>. "
+                f"Read the SQL and the justification with care.")},
+        })
     # Static risk hint from the pre-flight EXPLAIN plan (seq scans / cost /
     # est rows). Informational only — the admin still decides. Omitted when
     # no plan was captured (DDL / transport fail-open / pre-flight off).
@@ -340,6 +352,15 @@ def _request_blocks(
         blocks.append({
             "type": "context",
             "elements": [{"type": "mrkdwn", "text": risk}],
+        })
+    elif is_mcp and safety.main_tier != "ro":
+        # No plan exists for this statement, DDL for example. Say so, so an
+        # empty space is not read as a clean result.
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn",
+                          "text": "_Pre-flight: no plan or estimate for this "
+                                  "statement. Read the SQL with care._"}],
         })
     if safety.is_destructive:
         kw_list = safety.keywords_found or ["WRITE"]

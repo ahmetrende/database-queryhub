@@ -88,8 +88,18 @@ def test_history_entry_shape():
         "awaitingDba": False,
         "rowCount": 1,
         "createdAt": "2026-07-14T12:53:00+00:00",
+        # A row with no origin is a Slack request.
+        "origin": "slack",
+        # Nobody read it after it ended yet.
+        "seenAt": None,
         "approver": "alex.kim",
     }
+    # A request from Claude says so. The page opens a tab for it.
+    assert mapping.history_entry({**row, "origin": "mcp"}, lambda tid: "alpha-admin")["origin"] == "mcp"
+    # The first read after the end. The portal keeps a Claude request in Current session until then.
+    seen = mapping.history_entry({**row, "requester_seen_at": datetime(2026, 7, 14, 13, 0, tzinfo=timezone.utc)},
+                                 lambda tid: "alpha-admin")
+    assert seen["seenAt"] == "2026-07-14T13:00:00+00:00"
 
 
 def test_saved_entry_label_fallback():

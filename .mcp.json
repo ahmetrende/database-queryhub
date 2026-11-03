@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "queryhub": {
-      "command": ".venv/bin/python",
-      "args": ["-m", "queryhub.mcp_server"]
-    }
-  }
-}

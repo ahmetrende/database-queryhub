@@ -194,6 +194,7 @@ def _status(web, monkeypatch, row, actions):
             {"actor_slack_id": None, "actor_name": None, "action": a,
              "created_at": NOW, "details": {}} for a in actions])
     monkeypatch.setattr(routes_queries, "_alias_of", lambda tid: "prod-main")
+    monkeypatch.setattr(routes_queries, "_conn_state_resolver", lambda uid: lambda tid: "ok")
     monkeypatch.setattr(routes_queries.people, "display_name", lambda *a, **k: "Sam Ellis")
     r = web.get(f"/api/queries/{row['id']}")
     assert r.status_code == 200, r.text

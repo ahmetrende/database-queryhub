@@ -23,6 +23,7 @@ be the permissive one.
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlsplit
 
 from .. import config as cfg
 
@@ -35,9 +36,17 @@ _TIERS = ("ro", "rw", "ddl")
 #: The key an operator sets to widen this door. Absent means `ro`.
 CEILING_KEY = "mcp_max_tier"
 
-#: Whether the door answers at all. Absent means off: installing the extra
-#: dependency must not be the same act as opening the door.
-ENABLED_KEY = "mcp_enabled"
+#: What a program may read of a result. `metadata_only` (the default) sends the
+#: status, the row count and the column names. `masked_rows` also sends the
+#: masked rows. The rows then reach the model, so the default is the closed one.
+RESULT_MODE_KEY = "mcp_result_mode"
+_RESULT_MODES = ("metadata_only", "masked_rows")
+
+#: Whether the door answers at all. Absent means off: deploying the door must
+#: not be the same act as opening it. A new key on purpose: `mcp_enabled`
+#: switched the old stdio server, and an install where it is `on` must not get
+#: an open door from a deploy.
+ENABLED_KEY = "mcp_door_enabled"
 
 
 def enabled() -> bool:
@@ -48,6 +57,57 @@ def enabled() -> bool:
     require reasoning about the second.
     """
     return (cfg.get_setting(ENABLED_KEY, "off") or "off").strip().lower() == "on"
+
+
+def result_mode() -> str:
+    """What a program may read of a result, right now.
+
+    Read per call, like the ceiling, so a change needs no restart. Fail closed:
+    an unset, empty or unknown value reads as `metadata_only`. A typo must
+    never be the value that sends rows out.
+    """
+    raw = (cfg.get_setting(RESULT_MODE_KEY, "metadata_only") or "metadata_only").strip().lower()
+    if raw not in _RESULT_MODES:
+        log.warning("%s is set to %r, which is not one of %s — using 'metadata_only'",
+                    RESULT_MODE_KEY, raw, ", ".join(_RESULT_MODES))
+        return "metadata_only"
+    return raw
+
+
+def rows_allowed() -> bool:
+    """Whether result rows may reach the program."""
+    return result_mode() == "masked_rows"
+
+
+def portal_base() -> str | None:
+    """The address of QueryHub in the portal, from `mcp_portal_url`, with no
+    trailing slash. None while the setting is empty or not an absolute http(s)
+    address with no user part and no fragment.
+
+    The portal is the only web UI of the MCP door: the person opens a request
+    at `<address>?request=<id>`.
+    """
+    raw = (cfg.get_setting("mcp_portal_url", "") or "").strip().rstrip("/")
+    parts = urlsplit(raw)
+    if (parts.scheme in ("http", "https") and parts.netloc and not parts.fragment
+            and not parts.query and not parts.username and not parts.password):
+        return raw
+    return None
+
+
+def request_url(request_id: int) -> str | None:
+    """The link to one request in the portal, or None when the portal address
+    is unknown.
+
+    The link opens the request as a tab of the person's workspace in the
+    portal. It goes back to the person, who may be an approver, so they can
+    act on it. It carries no secret and no identity: the portal signs the
+    person in, and QueryHub shows a request only to its owner.
+    """
+    base = portal_base()
+    if base is None:
+        return None
+    return f"{base}?request={int(request_id)}"
 
 
 def max_tier() -> str:

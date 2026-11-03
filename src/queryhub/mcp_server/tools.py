@@ -1,10 +1,9 @@
 """The work behind each MCP tool, as plain functions.
 
-No SDK here on purpose. `server` is a thin adapter that registers these, so
-the package imports and its tests run without `queryhub[mcp]` installed, and
-the optional dependency is optional in fact rather than in the README. It also
-means these can be exercised directly, which is how the tests below reach the
-authorization decisions without standing up a protocol.
+No SDK here on purpose. `catalog.call` runs these for the `POST /mcp` door
+(`web/routes_mcp.py`), which speaks the protocol itself. The tests can call
+them directly, so they reach the authorization decisions without standing up
+a protocol.
 
 Every function resolves its own caller through `caller.acting_principal()` and
 none of them takes a "who" argument. See this package's docstring for why that
@@ -18,8 +17,9 @@ import logging
 import time
 from pathlib import Path
 
-from .. import admins, core_submit, db, engines, origins, query_safety, targets, teams
-from . import caller, policy
+from .. import (admins, auto_approve, core_submit, db, db_scope, engines, errors, origins,
+                query_safety, targets, teams)
+from . import caller, catalog, policy
 
 log = logging.getLogger(__name__)
 
@@ -37,10 +37,11 @@ MAX_TABLES = 300
 MAX_DETAIL_TABLES = 25
 
 #: How long `submit_query` will wait for a result before handing back an
-#: id to poll. Under the timeout an MCP client typically applies, so the
-#: wait ends in an answer rather than in the client giving up.
-DEFAULT_WAIT_SECONDS = 25
-MAX_WAIT_SECONDS = 60
+#: id to poll: the default and the maximum. Under the time limits of the
+#: portal, so the wait ends in an answer rather than in the portal giving up.
+#: See `catalog.WAIT_SECONDS`.
+DEFAULT_WAIT_SECONDS = catalog.WAIT_SECONDS
+MAX_WAIT_SECONDS = catalog.WAIT_SECONDS
 
 #: Rows returned inline when the wait pays off. Small: the point is to
 #: answer in one round trip, not to move the whole result into a context.
@@ -60,7 +61,7 @@ def _require_enabled() -> None:
     if not policy.enabled():
         raise ToolError("disabled",
                         "Refused: the QueryHub MCP server is off. To enable it, "
-                        "an operator sets `mcp_enabled` to `on`.")
+                        "an operator sets `mcp_door_enabled` to `on`.")
 
 
 def _me() -> str:
@@ -71,21 +72,27 @@ def _me() -> str:
         raise ToolError(e.code, e.message) from e
 
 
-def _target_or_refuse(uid: str, connection: str):
-    """Resolve an alias the caller named, and refuse it if they hold no grant.
+def _granted(uid: str, connection: str):
+    """Resolve an alias the caller named, with the caller's grant on it.
 
-    Unknown and ungranted are the same answer, which is the rule the web door
-    already applies: distinguishing them lets a caller enumerate real server
-    names by watching which refusal comes back.
+    Refuses it if they hold no grant. Unknown and ungranted are the same
+    answer, which is the rule the web door already applies: distinguishing
+    them lets a caller enumerate real server names by watching which refusal
+    comes back.
     """
     t = targets.by_alias(connection)
-    if t is not None and teams.effective_grant_for_user(uid, t.id) is None:
-        t = None
-    if t is None:
+    grant = teams.effective_grant_for_user(uid, t.id) if t is not None else None
+    if t is None or grant is None:
         raise ToolError("unknown_connection",
                         f"There is no connection named '{connection}' that you "
-                        f"can use. Call `list_connections` to see your connections.")
-    return t
+                        f"can use. Call {catalog.named('list_connections')} to see "
+                        f"your connections.")
+    return t, grant
+
+
+def _target_or_refuse(uid: str, connection: str):
+    """`_granted`, for a caller that needs only the target."""
+    return _granted(uid, connection)[0]
 
 
 def _classify(sql: str, engine: str) -> tuple[str, list[str]]:
@@ -110,25 +117,51 @@ def _classify(sql: str, engine: str) -> tuple[str, list[str]]:
 
 
 def list_connections() -> dict:
-    """Every database this caller may query, and at what tier."""
+    """Every database this caller may query, and at what tier.
+
+    The list is the one the web UI shows (`db_scope.visible_databases`): the
+    same databases for the same person. The names are always listed, also for
+    an unrestricted grant, so an assistant never has to guess them.
+    """
     uid = _me()
     # Except a super-admin, nobody is shown more than RO on an Athena archive
     # (engines.shown_tier); asked only if an archive row would change.
     is_super = functools.cache(lambda: admins.is_super_admin(uid))
+    # A read replica is not a connection of its own (replicas.py).
+    fleet = [t for t in targets.list_enabled()
+             if getattr(t, "replica_of", None) is None]
+    grants = teams.effective_grants_for_user(uid, [t.id for t in fleet])
+    granted = [(t, g) for t in fleet if (g := grants.get(t.id)) is not None]
+    # Not `catalog`: that name is the module that names the tools.
+    catalogued = db_scope.catalog_databases_map([t.id for t, _g in granted])
     out = []
-    for t in targets.list_enabled():
-        grant = teams.effective_grant_for_user(uid, t.id)
-        if grant is None:
+    for t, grant in granted:
+        names = db_scope.visible_databases(t, grant, catalogued.get(t.id, []))
+        if not names:
             continue
-        allowed = grant["allowed_databases"]
+        server_tier = grant["mode"] or "ro"
+        entries = []
+        for name in names:
+            # A restricted grant is a short list, and its databases can differ
+            # in tier. An unrestricted grant can list hundreds, so it shows the
+            # server tier. `submit_query` checks the tier again per database.
+            tier = (teams.effective_mode_for_database(uid, t.id, name)
+                    if grant["allowed_databases"] is not None else server_tier)
+            if tier is None:
+                continue
+            entries.append({
+                "name": name,
+                "tier": engines.shown_tier(t.engine, tier, is_super).upper()})
+        if not entries:
+            continue
         out.append({
             "connection": t.alias,
             "engine": t.engine,
-            "tier": engines.shown_tier(t.engine, grant["mode"] or "ro", is_super).upper(),
-            "databases": sorted(allowed) if allowed is not None else None,
-            "allDatabases": allowed is None,
+            "tier": engines.shown_tier(t.engine, server_tier, is_super).upper(),
+            "databases": entries,
         })
-    return {"connections": out, "maxTier": policy.max_tier().upper()}
+    return {"connections": out, "maxTier": policy.max_tier().upper(),
+            "resultMode": policy.result_mode()}
 
 
 def describe_database(connection: str, database: str,
@@ -147,7 +180,14 @@ def describe_database(connection: str, database: str,
     quiet reads as "that is all there is", which is worse than a short answer.
     """
     uid = _me()
-    t = _target_or_refuse(uid, connection)
+    t, grant = _granted(uid, connection)
+    # A database outside the person's list gets one answer, whether it exists
+    # or not. The first read below cannot tell the two apart for an
+    # unrestricted grant, so the list decides.
+    usable =db_scope.usable_databases(t, grant)
+    if database not in usable:
+        raise ToolError("no_access",
+                        db_scope.no_access_message(t.alias, database, usable))
     want = (table or "").strip().lower()
 
     if not want:
@@ -163,9 +203,8 @@ def describe_database(connection: str, database: str,
         if not rows:
             raise ToolError(
                 "no_catalog",
-                f"No catalogued schema exists for '{database}' on '{connection}'. "
-                f"Two causes are possible: you hold no grant for that database, "
-                f"or its first schema snapshot has not run yet.")
+                f"The schema of '{database}' on '{connection}' is not catalogued "
+                f"yet. The first snapshot has not run.")
         more = len(rows) > MAX_TABLES
         rows = rows[:MAX_TABLES]
         return {
@@ -204,8 +243,8 @@ def describe_database(connection: str, database: str,
         raise ToolError(
             "no_match",
             f"No catalogued table in '{database}' on '{connection}' matches "
-            f"'{table}'. To see the table names, call `describe_database` "
-            f"without `table`.")
+            f"'{table}'. To see the table names, call "
+            f"{catalog.named('describe_database')} without `table`.")
     tables: dict[tuple, dict] = {}
     for r in rows:
         e = tables.setdefault((r["schema_name"], r["table_name"]),
@@ -258,10 +297,19 @@ def classify_sql(connection: str, sql: str) -> dict:
 # --- submitting --------------------------------------------------------------
 
 
-def submit_query(connection: str, database: str | None, sql: str,
+def submit_query(connection: str, sql: str, database: str,
                  justification: str | None = None,
                  wait_seconds: int = DEFAULT_WAIT_SECONDS) -> dict:
     """Submit a statement. Governed exactly as a Slack or web submit is.
+
+    The parameters follow the catalog: `connection`, `sql` and `database` are
+    required, the rest are optional. `catalog.call` passes only the arguments
+    that the client sent, so every optional argument has a default here.
+
+    `database` is required, unlike in Slack and the web UI. A person sees the
+    database that the form picks. A program that leaves it out sends the
+    statement to the default database of the connection, which it never
+    chose.
 
     The tier ceiling is checked here, before `validate_submission`, so a
     refusal costs nothing and reads as a policy answer rather than a
@@ -273,7 +321,12 @@ def submit_query(connection: str, database: str | None, sql: str,
     programs should not be able to ask the question at all -- the argument
     that reaches this function is the one an assistant can be talked into
     setting.
+
+    `wait_seconds` counts from the start of this call, not from the start of
+    the wait. A client has one time limit for the whole call, and the checks,
+    the pre-flight plan and the notices before the wait use seconds of it.
     """
+    started = time.monotonic()
     uid = _me()
     t = _target_or_refuse(uid, connection)
 
@@ -301,16 +354,21 @@ def submit_query(connection: str, database: str | None, sql: str,
         unmasked=False,
     )
     if isinstance(prep, core_submit.Rejection):
-        raise ToolError(prep.reason or prep.field, prep.message)
+        return _duplicate_or_refuse(prep, uid, t, database, sql)
 
     outcome = core_submit.create_request(prep)
     if isinstance(outcome, core_submit.Rejection):
-        raise ToolError(outcome.reason or outcome.field, outcome.message)
+        # The guard runs again inside the transaction, so a call that raced
+        # its own retry lands here.
+        return _duplicate_or_refuse(outcome, uid, t, database, sql)
 
-    # Same fan-out the web submit does: admins are told, and the executor is
-    # dispatched for an auto-approved request. `dm_requester=False` because the
-    # caller is a program that gets its answer from `query_status`, not a DM.
-    core_submit.dispatch_and_notify(None, prep, outcome, dm_requester=False)
+    # Same fan-out the web submit does, with the same Slack client: admins are
+    # told, and the executor is dispatched for an auto-approved request. The
+    # door runs in the web process, so it uses the web's client, which is None
+    # while Slack is off. `dm_requester=False` because the caller is a program
+    # that gets its answer from `query_status`, not a DM.
+    from ..web.routes_queries import _bot_client
+    core_submit.dispatch_and_notify(_bot_client(), prep, outcome, dm_requester=False)
 
     rid = outcome.row["id"]
     out = {
@@ -319,25 +377,122 @@ def submit_query(connection: str, database: str | None, sql: str,
         "decision": "auto_approved" if outcome.auto_approved else "needs_approval",
         "status": outcome.row.get("status"),
     }
+    _add_request_link(out, rid)
     if not outcome.auto_approved:
         # Waiting here would burn the whole budget and still return nothing: a
         # human approval is minutes, not seconds.
-        out["note"] = ("QueryHub notified a DBA. Approval is a human step and "
-                       "takes minutes. Poll `query_status` with this `requestId` "
-                       "for the outcome.")
+        out["note"] = (f"QueryHub notified a DBA. Approval is a human step and "
+                       f"takes minutes. Poll {catalog.named('query_status')} with "
+                       f"this `requestId` for the outcome.")
         return out
 
     wait = max(0, min(int(wait_seconds), MAX_WAIT_SECONDS))
     if wait:
-        final = _await_result(rid, wait)
+        final = _await_result(rid, wait, started)
         out.update(final)
     else:
-        out["note"] = "Poll `query_status` with this `requestId` for the outcome."
+        out["note"] = (f"Poll {catalog.named('query_status')} with this `requestId` "
+                       f"for the outcome.")
     return out
 
 
-def _await_result(request_id: int, seconds: int) -> dict:
+#: The statuses of a request that still waits or runs. The duplicate guard of
+#: `core_submit` also counts `changes_requested`, but such a request does not
+#: move again: a DBA asked for another statement. So a second submit of it
+#: gets the guard's refusal, not "poll this request".
+_OPEN_STATUSES = ("pending", "approved", "scheduled", "executing")
+
+
+def _duplicate_or_refuse(rejection, uid: str, target, database: str | None,
+                         sql: str) -> dict:
+    """The answer for the request that already holds this statement, or the
+    refusal.
+
+    A client that gave up on a slow call sends the same call again. The
+    duplicate guard refuses that second submit, and the model then has no
+    request id to poll. So a duplicate answers like a submit, for the request
+    that holds the statement, with `duplicate: true`. Every other refusal,
+    and a duplicate whose request this lookup cannot find, raises as before.
+
+    The limit of open requests runs before the guard in
+    `validate_submission`. A person at the limit meets it first, also when
+    the statement already waits, so that refusal asks too.
+    """
+    if rejection.reason == "duplicate" or rejection.field == "rate_limit":
+        row = _open_request(uid, target, database, sql)
+        if row is not None:
+            out = {
+                "requestId": row["id"],
+                "requiredTier": (row["required_tier"] or "").upper() or None,
+                "decision": _decision(row),
+                "status": row["status"],
+                "duplicate": True,
+            }
+            _add_request_link(out, row["id"])
+            out["note"] = (f"You submitted this statement before. It is request "
+                           f"{row['id']}. Do not submit it again. Poll "
+                           f"{catalog.named('query_status')} with this `requestId`.")
+            return out
+    raise ToolError(rejection.reason or rejection.field, rejection.message)
+
+
+def _open_request(uid: str, target, database: str | None, sql: str) -> dict | None:
+    """The newest request of this person that holds this statement on this
+    target and database, while it waits or runs.
+
+    The match of the duplicate guard: the same requester, target, database
+    and statement. It resolves the database as `validate_submission` does.
+
+    None for a statement with a password literal. QueryHub stores it masked,
+    so `WHERE password = 'a'` and `WHERE password = 'b'` have one stored
+    form, and the guard inside `create_request` refuses the second as a
+    duplicate of the first. The stored form cannot say which one waits, and
+    the answer for the other one would hand the model a result for a
+    statement it did not send. So that refusal stays.
+    """
+    query = (sql or "").strip()
+    if query_safety.mask_password_literals(query) != query:
+        return None
+    return db.fetch_one(
+        "SELECT id, status, required_tier, decided_by_slack_id "
+        "  FROM requests "
+        " WHERE requester_slack_id = %s AND target_server_id = %s "
+        "   AND database_name = %s AND query = %s AND status = ANY(%s) "
+        " ORDER BY id DESC LIMIT 1",
+        (uid, target.id, database or target.default_database, query,
+         list(_OPEN_STATUSES)))
+
+
+def _decision(row: dict) -> str:
+    """`needs_approval` while a person must decide, `auto_approved` when
+    QueryHub approved the request, and `approved` when a person did."""
+    if row["status"] == "pending":
+        return "needs_approval"
+    if row.get("decided_by_slack_id") == auto_approve.AUTO_DECIDED_BY:
+        return "auto_approved"
+    return "approved"
+
+
+def _add_request_link(out: dict, request_id: int) -> None:
+    """Add the link to this request in the person's QueryHub workspace.
+
+    The link opens the request as a tab of the workspace in the portal: the
+    SQL, the state, and the result when it ran. The approvers get the request
+    in Slack and in their queue, so the person needs no forwarding step.
+    Absent when the portal address is unknown, so Claude never shows a broken
+    link.
+    """
+    link = policy.request_url(request_id)
+    if link:
+        out["requestUrl"] = link
+
+
+def _await_result(request_id: int, seconds: int, started: float | None = None) -> dict:
     """Block until the request settles, or until the budget runs out.
+
+    The budget counts from `started` (a `time.monotonic()` value) when it is
+    given, and from now when it is not. A budget that the work before the
+    wait used up still reads the status once.
 
     Measured on this fleet: a trivial auto-approved statement takes about 1.4
     seconds end to end, most of it two fresh connections to the target -- one
@@ -349,22 +504,28 @@ def _await_result(request_id: int, seconds: int) -> dict:
     picks its own interval, and whatever it picks is added to a wait that was
     already over. One call in, one answer out.
 
-    This blocks the server for the duration, which is fine while the transport
-    is stdio and serves one caller. An HTTP transport serving several will need
-    this to run per-connection rather than per-process; the deadline is bounded
-    for that reason.
+    This blocks the thread that runs the call for the duration. The door
+    (`web/routes_mcp.py`) runs each call in its own worker thread, so the wait
+    is per call and not per process. It also caps the calls that run at once.
+    The deadline is bounded for that reason.
     """
-    deadline = time.monotonic() + seconds
+    deadline = (time.monotonic() if started is None else started) + seconds
     delay = 0.15
     while True:
         row = db.fetch_one(
-            "SELECT status, row_count, error_message, csv_file_path "
+            "SELECT status, row_count, truncated, required_tier, query, "
+            "       error_message, csv_file_path "
             "  FROM requests WHERE id = %s", (request_id,))
         status = (row or {}).get("status")
-        if status in ("completed", "failed", "rejected", "cancelled"):
+        if row is not None and status in ("completed", "failed", "rejected", "cancelled"):
             out = {"status": status, "rowCount": row["row_count"],
-                   "error": row["error_message"]}
-            if status == "completed" and row["csv_file_path"]:
+                   "error": _error_text(row)}
+            if status == "completed" and not policy.rows_allowed():
+                # Counts and column names, never a value. A write has no file,
+                # and its count is the rows it changed.
+                out.update(_metadata(row))
+                _result_link(out)
+            elif status == "completed" and row["csv_file_path"]:
                 try:
                     page = fetch_result(request_id, 0, INLINE_ROWS)
                     out["columns"] = page.get("columns")
@@ -379,7 +540,7 @@ def _await_result(request_id: int, seconds: int) -> dict:
             return {"status": status,
                     "note": (f"The request is still {status} after {seconds} "
                              f"seconds. The wait ended, but the work continues. "
-                             f"Poll `query_status` for the outcome.")}
+                             f"Poll {catalog.named('query_status')} for the outcome.")}
         time.sleep(delay)
         delay = min(delay * 1.5, 1.0)   # tight at first, then back off
 
@@ -390,8 +551,8 @@ def _await_result(request_id: int, seconds: int) -> dict:
 def _own(request_id: int, uid: str) -> dict:
     row = db.fetch_one(
         "SELECT id, status, requester_slack_id, target_server_id, "
-        "       database_name, query, row_count, error_message, "
-        "       csv_file_path, created_at, completed_at "
+        "       database_name, query, row_count, truncated, required_tier, "
+        "       error_message, csv_file_path, created_at, completed_at "
         "  FROM requests WHERE id = %s", (request_id,))
     # Not found and not yours are one answer, so a caller cannot count other
     # people's requests by watching which refusal comes back.
@@ -400,30 +561,112 @@ def _own(request_id: int, uid: str) -> dict:
     return row
 
 
+_KINDS = {"ro": "read", "rw": "write", "ddl": "ddl"}
+
+
+def _kind(row: dict) -> str | None:
+    """`read`, `write` or `ddl`, from the tier the request needed."""
+    return _KINDS.get((row.get("required_tier") or "").lower())
+
+
+def _error_text(row: dict) -> str | None:
+    """The stored error, safe to send out.
+
+    The executor stores a cleaned message. While the door sends no rows, the
+    text is cleaned again, since a database can echo a value in an error
+    (`invalid input syntax for type integer: "Jordan Ray"`). That clean hides
+    the values with PII masking off too. Cleaning a clean text changes nothing.
+    """
+    text = row.get("error_message")
+    if not text or policy.rows_allowed():
+        return text
+    return errors.scrub(text, query=row.get("query"), hide_values=True)
+
+
+def _columns_of(row: dict) -> list[str] | None:
+    """The column names of a stored result: the header line and nothing else.
+
+    None when the request has no readable file: it has no result set, the file
+    is gone, or it holds one result for each statement.
+    """
+    path = row.get("csv_file_path")
+    if not path:
+        return None
+    p = Path(path)
+    if not p.is_file() or p.suffix.lower() != ".csv":
+        return None
+    with p.open(newline="", encoding="utf-8") as fh:
+        try:
+            return next(csv.reader(fh))
+        except StopIteration:
+            return []
+
+
+def _metadata(row: dict) -> dict:
+    """What a program may read of a request that ran, in any result mode.
+
+    A count and the names of the columns. No value of the result is here. For a
+    read, `rowCount` is the rows in the result file, which stops at the row cap
+    (`max_rows`), so `truncated` says the real number may be higher. For a
+    write, `rowCount` is the rows the statement changed. It has no cap.
+    """
+    out = {
+        "kind": _kind(row),
+        "rowCount": row["row_count"],
+        "truncated": bool(row.get("truncated")),
+        "columns": _columns_of(row),
+    }
+    if out["truncated"]:
+        out["note"] = (f"The result holds {row['row_count']} rows, which is the row "
+                       f"limit. The query returned more rows than that.")
+    return out
+
+
+def _result_link(out: dict) -> None:
+    """Say that the rows stay in QueryHub, while the door sends none."""
+    if policy.rows_allowed():
+        return
+    out["rowsHidden"] = True
+    out["resultNote"] = ("QueryHub sends no result rows to Claude. The person opens "
+                         "the request in QueryHub to read the result. The link is "
+                         "`requestUrl`.")
+
+
 def query_status(request_id: int) -> dict:
     """Where one submission has got to."""
     uid = _me()
     row = _own(int(request_id), uid)
-    return {
+    out = {
         "requestId": row["id"],
         "status": row["status"],
+        "kind": _kind(row),
         "rowCount": row["row_count"],
-        "error": row["error_message"],
+        "truncated": bool(row["truncated"]),
+        "error": _error_text(row),
         "hasResult": bool(row["csv_file_path"]),
         "createdAt": row["created_at"].isoformat() if row["created_at"] else None,
         "completedAt": (row["completed_at"].isoformat()
                         if row["completed_at"] else None),
     }
+    _add_request_link(out, row["id"])
+    if row["status"] == "completed":
+        out["columns"] = _columns_of(row)
+        _result_link(out)
+    return out
 
 
 def fetch_result(request_id: int, offset: int = 0, limit: int = 50) -> dict:
     """A page of a completed result, read from the stored masked CSV.
 
+    Only while `mcp_result_mode` is `masked_rows`. In the default mode this
+    returns the counts and the column names and no row.
+
     The stored file is the masked one -- the executor writes it that way -- so
     reading it here cannot expose what a person reading the same result would
     not see. That is the property that makes this tool safe to hand to a
     program, and it holds because this reads the artefact rather than
-    re-running the query.
+    re-running the query. A result that a super-admin ran without masking is
+    refused, because its stored file is not masked.
     """
     uid = _me()
     row = _own(int(request_id), uid)
@@ -431,9 +674,24 @@ def fetch_result(request_id: int, offset: int = 0, limit: int = 50) -> dict:
         raise ToolError("not_ready",
                         f"Request {row['id']} is not completed. Its status is "
                         f"'{row['status']}'.")
+    if not policy.rows_allowed():
+        # The default. A count and the column names, and the way to the result
+        # in the web UI. This never opens the rows of the file.
+        meta = {"requestId": row["id"], **_metadata(row)}
+        _add_request_link(meta, row["id"])
+        _result_link(meta)
+        return meta
     if not row["csv_file_path"]:
         return {"requestId": row["id"], "kind": "affected",
                 "affected": row["row_count"], "rows": [], "columns": []}
+    # A super-admin can run their own request without masking. That file holds
+    # the real values, and it never goes to a model.
+    from ..web.routes_queries import _ran_unmasked
+    if _ran_unmasked(row["id"]):
+        raise ToolError(
+            "unmasked_result",
+            f"Request {row['id']} ran without masking. QueryHub does not send "
+            f"its rows through MCP. Open the result in the web UI.")
     p = Path(row["csv_file_path"])
     if not p.is_file():
         raise ToolError("expired",
