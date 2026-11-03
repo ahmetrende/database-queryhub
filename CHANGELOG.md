@@ -9,6 +9,19 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ## [Unreleased]
 
+### Upgrading
+
+- **Apply migrations 201 to 204 before you restart.** They add the MCP
+  switches, the result mode, `requests.requester_seen_at` and the audit of the
+  MCP switches.
+- **The stdio MCP server is gone.** This release removes
+  `python -m queryhub.mcp_server`, `QH_MCP_PRINCIPAL`, the `.mcp.json` of
+  the repository and the optional `mcp` dependency. MCP reaches QueryHub
+  through the portal only. A person who used the stdio server connects
+  Claude Code through the portal.
+- **QueryHub reads `mcp_enabled` no more.** The new switch `mcp_door_enabled`
+  is off on every install, so a deploy never opens the door.
+
 ### Changed
 
 - **`/sql grant` can give auto-approve again.** The modal has a new field, "Access ends": no
@@ -112,6 +125,62 @@ frontend and the endpoints it calls are explicitly outside it.
   filters. The view `p_metrics_request_facts` adds the column `origin` (migration 200). A blank
   value reads as `slack`. An unknown value shows under its own name.
 
+- **Claude Code reaches QueryHub through the portal.** A person connects Claude
+  Code to the portal with a personal access token that holds the QueryHub
+  permission `mcp:use`. The portal answers `initialize` and `tools/list` from
+  `docs/mcp-tools.idp.json`, and sends each tool call to `POST /mcp` with its
+  identity assertion, bound to the exact body. QueryHub finds the person with
+  the same helper and the same codes as the proxied `/api` routes. `/mcp` runs
+  the same tools, grants, approval, masking and audit as Slack. It is off until
+  `mcp_door_enabled` is `on`. `docs/MCP.md` has the design and the setup.
+- **Only the portal calls `/mcp`.** A call with no assertion gets 401, and the
+  message names Connect Claude Code in the portal. A refusal before a message
+  is a JSON-RPC error with `data.code`. Every answer carries the catalog
+  version in `x-queryhub-catalog`. QueryHub keeps no MCP session.
+- **The tool descriptions carry the rules.** The portal sends its own
+  instructions, so the model reads the rules of QueryHub in the descriptions:
+  show `requestUrl`, poll and do not submit again, no rows in `metadata_only`,
+  a person approves RW and DDL, read the refusal.
+  `python -m queryhub.mcp_server.catalog --door idp` makes the file, and
+  a test fails while the file is old. `submit_query` waits at most 20 seconds.
+- **`submit_query` needs a database.** Slack and the web UI fall back to the
+  default database of the connection. A program never chose that database, so
+  a call without `database` gets `bad_arguments`.
+- **A second submit of a waiting statement answers with that request.** A
+  client that gave up on a slow call can send it again. `submit_query` now
+  returns the waiting request with `"duplicate": true`, not a refusal. The
+  match is exact: the same person, connection, database and statement.
+- **`/api/me` and `/sql claude` say how to connect.** `claudeMcp` is
+  `{"mode": "idp"}` while the door is on and the identity assertions are on.
+  `/sql claude` sends the person to Connect Claude Code in the portal.
+- **Claude reads no result row.** The setting `mcp_result_mode` (migration 202)
+  is `metadata_only` by default. `submit_query`, `query_status` and
+  `fetch_result` then return the status, the row count, the kind (read, write or
+  DDL) and the column names. They return no value of the result, and an error
+  text is cleaned again. The person opens the result in the web UI. Set
+  `masked_rows` to send the masked rows too. A result that a super-admin ran
+  without masking never goes out. An unknown value reads as `metadata_only`.
+- **The link to a request opens it in the portal.** Every request from Claude
+  comes back with `requestUrl`, `<mcp_portal_url>?request=<id>`. The portal opens
+  the request as a tab of the workspace. Without `mcp_portal_url`, no link
+  comes back.
+- **A request from Claude stays in Current session until the person reads it.**
+  The portal sends `POST /api/queries/<id>/seen` when a tab shows an ended
+  request. `GET /api/history` and `GET /api/queries/<id>` return that time as
+  `seenAt`. Migration 203 adds `requests.requester_seen_at` and marks the
+  ended requests of the old stdio server as read.
+- **A write from MCP always needs a person.** RW and DDL requests from MCP skip
+  waivers, super-admin self-approval and the fingerprint cache, so they always
+  need a justification. RO keeps the normal rules. The approval message in Slack
+  says that Claude wrote the statement.
+- **A second person approves a write from MCP.** The person who sent an RW or
+  DDL request through MCP cannot approve it, and an admin is no exception. On
+  Slack and on the web, an admin can still approve their own request.
+- **`bot_config` keys for MCP are seeded** (migrations 201 and 202):
+  `mcp_door_enabled`, `mcp_max_tier`, `mcp_rate_limit_per_minute`,
+  `mcp_portal_url` and `mcp_result_mode`. Migration 204 audits a change of
+  `mcp_door_enabled`, `mcp_max_tier` or `mcp_result_mode` like the kill switch.
+
 - **The audit screen shows the channel of a request.** Each request row has a small pill
   with the door the request came through: Slack, Web, IdP or MCP. The side panel has a
   "Channel" line. `POST /api/admin/audit/search` adds `origin` (the stored value) and
@@ -132,6 +201,15 @@ frontend and the endpoints it calls are explicitly outside it.
   A "Show all" link opens the full list, and "Show fewer" folds it back. A short list
   looks as before. A copied row says "synced" and no longer names an internal table. The
   subtitle no longer says that every row is for reads only.
+- **A person sees one list of databases on every surface.** The web UI, the MCP
+  tools and the submit check use `db_scope.py`. `list_connections` now names
+  every database, also for an unrestricted grant, with the tier of each
+  database for a restricted grant. The field `allDatabases` is gone.
+- **One answer for a database you may not use.** A database outside your grant,
+  and a database that does not exist, both give "You have no access to
+  database `X` on `alias`." The answer then lists the databases that you may
+  use, at most eight. The old answer for an unknown database listed every
+  database on the server. This covers Slack, the web UI and MCP.
 
 ### Fixed
 

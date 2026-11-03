@@ -353,7 +353,10 @@ def test_the_mcp_connection_list_shows_ro_on_an_archive(monkeypatch, people):
     from queryhub.mcp_server import policy, tools
     monkeypatch.setattr(tools, "_me", lambda: BYPASS)
     monkeypatch.setattr(tools.targets, "list_enabled", lambda: [LEDGER, ARCHIVE])
-    monkeypatch.setattr(tools.teams, "effective_grant_for_user", lambda uid, tid: DDL_EVERYWHERE)
+    monkeypatch.setattr(tools.teams, "effective_grants_for_user",
+                        lambda uid, ids: {tid: DDL_EVERYWHERE for tid in ids})
+    monkeypatch.setattr(tools.db_scope, "catalog_databases_map",
+                        lambda ids: {tid: ["ledger"] for tid in ids})
     monkeypatch.setattr(tools.admins, "is_super_admin", _super)
     monkeypatch.setattr(policy, "max_tier", lambda: "ro")
     got = {c["connection"]: c["tier"] for c in tools.list_connections()["connections"]}

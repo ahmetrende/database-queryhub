@@ -62,14 +62,6 @@ file-level copyleft and neither is modified here.
 | `mssql` | `pyodbc` | MIT |
 | `aws` | `boto3` | Apache-2.0 |
 | `clickhouse` | `clickhouse-driver` (with `pytz`, `tzlocal`) | MIT |
-| `mcp` | `mcp` | MIT |
-
-`mcp` is the Model Context Protocol SDK, and the extra that brings the
-most with it: thirteen packages, including `httpx2` — a second HTTP client
-alongside the `httpx` the core already uses. That is the price of speaking
-a protocol other tools already speak rather than inventing one, and it is
-why the MCP surface is an extra: nothing in the core imports it, so an
-install that does not want the door never carries them.
 
 `pyodbc` needs Microsoft's ODBC Driver for SQL Server (`msodbcsql18`), which is
 **not** installed by QueryHub and is **not** open source — it carries its own

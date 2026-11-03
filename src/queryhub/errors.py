@@ -332,7 +332,7 @@ def _hide_data_values(msg: str, query: str | None) -> str:
 
 
 def scrub(raw: str | Exception, *, query: str | None = None,
-          requester_data: bool = False) -> str:
+          requester_data: bool = False, hide_values: bool | None = None) -> str:
     """Return a Slack-modal- and DM-safe error message (plain text, ≤500
     chars, no mrkdwn). Strips libpq's verbose error envelope to its first
     informative line, drops the LINE/DETAIL/HINT trailers (which often
@@ -345,7 +345,9 @@ def scrub(raw: str | Exception, *, query: str | None = None,
     the requester wrote as `query`: a value found in it stays visible, and a
     name that is not in it is hidden too (see `_NAME_ECHO_PATTERNS`). Pass
     `requester_data=True` where the values came from the requester's own upload,
-    such as a CSV import, and nothing is hidden."""
+    such as a CSV import, and nothing is hidden. `hide_values` overrides the PII
+    switch: True hides the values with masking off, as the MCP door does while
+    it sends no rows."""
     text = _unwrap_driver_tuple(str(raw).strip())
     msg = ""
     # 1. Prefer an explicit ERROR: / FATAL: line if present.
@@ -408,9 +410,9 @@ def scrub(raw: str | Exception, *, query: str | None = None,
     # neither may break error reporting.
     try:
         from . import pii
-        masking = pii.is_enabled()
+        masking = pii.is_enabled() if hide_values is None else hide_values
     except Exception:
-        masking = False
+        masking = bool(hide_values)
     if masking:
         msg = msg[:_WORK_LIMIT]
         if not requester_data:

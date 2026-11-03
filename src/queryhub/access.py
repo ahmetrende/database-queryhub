@@ -690,6 +690,10 @@ def can_approve(principal_id: str, request: dict) -> bool:
     # write the query and wave it through, which is the whole of the review
     # gone. The old model had no scoped approvers, so this rule is new because
     # the thing it guards is new.
+    #
+    # The admin exemption does not cover a write from the MCP door.
+    # `admins.can_approve` refuses that case before it calls this function
+    # (`admins.own_mcp_write`).
     if request.get("requester_slack_id") == principal_id and \
             not any(r["role"] == "admin" for r in rows):
         return False

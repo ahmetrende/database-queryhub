@@ -198,6 +198,7 @@ def test_the_status_endpoint_carries_ran_on(web, monkeypatch):
     monkeypatch.setattr(routes_queries.db, "fetch_all",
                         lambda sql, p=None: seen.append(sql) or [dict(a) for a in audits])
     monkeypatch.setattr(routes_queries, "_alias_of", _alias_of)
+    monkeypatch.setattr(routes_queries, "_conn_state_resolver", lambda uid: lambda tid: "ok")
     monkeypatch.setattr(routes_queries.people, "display_name", lambda *a, **k: "Ex")
     r = web.get("/api/queries/5")
     assert r.status_code == 200, r.text
@@ -215,8 +216,117 @@ def test_ran_on_is_null_before_the_run_on_the_status_poll(web, monkeypatch):
     monkeypatch.setattr(routes_queries.db, "fetch_one", lambda sql, p=None: dict(row))
     monkeypatch.setattr(routes_queries.db, "fetch_all", lambda sql, p=None: [])
     monkeypatch.setattr(routes_queries.people, "display_name", lambda *a, **k: "Ex")
+    monkeypatch.setattr(routes_queries, "_alias_of", lambda tid: "example-pg")
+    monkeypatch.setattr(routes_queries, "_conn_state_resolver", lambda uid: lambda tid: "ok")
     body = web.get("/api/queries/6").json()
     assert "ranOn" in body and body["ranOn"] is None
+    # The status also says what the request was, so `?request=<id>` can open it.
+    assert body["sql"] == "SELECT 1" and body["connectionId"] == "example-pg"
+    # And when it was sent: the waiting card of a tab that a link opened counts from it.
+    assert body["submittedAt"] == mapping.iso(NOW)
+
+
+@pytest.mark.parametrize("origin, want", [("mcp", "mcp"), ("web", "web"), ("slack", "slack"),
+                                          (None, "slack")])
+def test_the_status_says_where_the_request_came_from(web, monkeypatch, origin, want):
+    # A link to a request from Claude names its tab by this field. A row with no
+    # origin is a Slack request, as everywhere else in the web layer.
+    row = _row(id=7, requester_slack_id=SUPER, status="pending", query="SELECT 1",
+               created_at=NOW, executed_at=None, origin=origin)
+    monkeypatch.setattr(routes_queries.db, "fetch_one", lambda sql, p=None: dict(row))
+    monkeypatch.setattr(routes_queries.db, "fetch_all", lambda sql, p=None: [])
+    monkeypatch.setattr(routes_queries.people, "display_name", lambda *a, **k: "Ex")
+    monkeypatch.setattr(routes_queries, "_alias_of", lambda tid: "example-pg")
+    monkeypatch.setattr(routes_queries, "_conn_state_resolver", lambda uid: lambda tid: "ok")
+    assert web.get("/api/queries/7").json()["origin"] == want
+
+
+class _SeenTxn:
+    """db.transaction() for the first-read mark: records each statement and
+    answers RETURNING with `stamp`."""
+
+    def __init__(self, stamp):
+        self.stamp, self.sql = stamp, []
+
+    @contextlib.contextmanager
+    def __call__(self):
+        txn = self
+
+        class _Cur:
+            def execute(self, sql, params=None):
+                txn.sql.append((" ".join(sql.split()), params))
+
+            def fetchone(self):
+                return {"requester_seen_at": txn.stamp}
+        yield _Cur()
+
+
+def _status_env(monkeypatch, row):
+    monkeypatch.setattr(routes_queries.db, "fetch_one", lambda sql, p=None: dict(row))
+    monkeypatch.setattr(routes_queries.db, "fetch_all", lambda sql, p=None: [])
+    monkeypatch.setattr(routes_queries.people, "display_name", lambda *a, **k: "Ex")
+    monkeypatch.setattr(routes_queries, "_alias_of", lambda tid: "example-pg")
+    monkeypatch.setattr(routes_queries, "_conn_state_resolver", lambda uid: lambda tid: "ok")
+    txn = _SeenTxn(NOW)
+    monkeypatch.setattr(routes_queries.db, "transaction", txn)
+    return txn
+
+
+@pytest.mark.parametrize("status", sorted(mapping.ENDED_STATUSES))
+def test_the_first_read_of_an_ended_request_is_recorded(web, monkeypatch, status):
+    # The portal keeps a request from Claude in Current session until its
+    # requester has read it after it ended. A tab that shows it sends this.
+    row = _row(id=8, requester_slack_id=SUPER, status=status, query="SELECT 1",
+               created_at=NOW, origin="mcp", requester_seen_at=None)
+    txn = _status_env(monkeypatch, row)
+    r = web.post("/api/queries/8/seen")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"seenAt": mapping.iso(NOW)}
+    assert txn.sql == [("UPDATE requests SET requester_seen_at = COALESCE(requester_seen_at, NOW()) "
+                        "WHERE id = %s RETURNING requester_seen_at", (8,))]
+
+
+@pytest.mark.parametrize("status", ["pending", "approved", "scheduled", "executing",
+                                    "awaiting_dba_manual"])
+def test_a_request_that_has_not_ended_cannot_be_seen(web, monkeypatch, status):
+    row = _row(id=8, requester_slack_id=SUPER, status=status, query="SELECT 1",
+               created_at=NOW, origin="mcp", requester_seen_at=None)
+    txn = _status_env(monkeypatch, row)
+    r = web.post("/api/queries/8/seen")
+    assert r.status_code == 409 and r.json()["error"]["code"] == "not_ended"
+    assert txn.sql == []
+
+
+def test_a_second_read_keeps_the_first_time(web, monkeypatch):
+    first = datetime(2026, 9, 28, 11, 0, tzinfo=timezone.utc)
+    row = _row(id=8, requester_slack_id=SUPER, status="completed", query="SELECT 1",
+               created_at=NOW, origin="mcp", requester_seen_at=first)
+    txn = _status_env(monkeypatch, row)
+    assert web.post("/api/queries/8/seen").json() == {"seenAt": mapping.iso(first)}
+    assert txn.sql == []
+
+
+def test_the_status_poll_reads_the_mark_and_writes_nothing(web, monkeypatch):
+    row = _row(id=8, requester_slack_id=SUPER, status="completed", query="SELECT 1",
+               created_at=NOW, origin="mcp", requester_seen_at=None)
+    txn = _status_env(monkeypatch, row)
+    assert web.get("/api/queries/8").json()["seenAt"] is None
+    row["requester_seen_at"] = NOW
+    assert web.get("/api/queries/8").json()["seenAt"] == mapping.iso(NOW)
+    assert txn.sql == []
+
+
+def test_only_the_requester_marks_a_request(web, monkeypatch):
+    _status_env(monkeypatch, {})
+    monkeypatch.setattr(routes_queries.db, "fetch_one", lambda sql, p=None: None)
+    assert web.post("/api/queries/8/seen").status_code == 404
+
+
+def test_history_rows_say_when_the_requester_saw_them(web, monkeypatch):
+    rows = [_hrow(2, origin="mcp", requester_seen_at=NOW), _hrow(1, origin="mcp")]
+    _history_env(monkeypatch, rows, [])
+    got = {h["id"]: h["seenAt"] for h in web.get("/api/history").json()["history"]}
+    assert got == {"2": mapping.iso(NOW), "1": None}
 
 
 # --- GET /history ------------------------------------------------------------------------
@@ -278,6 +388,20 @@ def test_history_rows_carry_the_same_ran_on_as_the_status_poll(web, monkeypatch)
     for row in rows:
         mine = [a for a in (forced, started_auto) if a["request_id"] == row["id"]]
         assert got[str(row["id"])] == mapping.ran_on(row, mine, _alias_of)
+
+
+def test_history_rows_say_where_the_request_came_from(web, monkeypatch):
+    # The page opens a tab for each request from Claude, so a row names its origin.
+    # A row with no origin is a Slack request, as everywhere else in the web layer.
+    rows = [_hrow(3, origin="mcp"), _hrow(2, origin="web"), _hrow(1, origin=None)]
+    seen = _history_env(monkeypatch, rows, [])
+    r = web.get("/api/history")
+    assert r.status_code == 200, r.text
+    assert {h["id"]: h["origin"] for h in r.json()["history"]} == {
+        "3": "mcp", "2": "web", "1": "slack"}
+    # The query reads the column. A mapper alone would pass on a stub row.
+    sql = " ".join(next(q for q, _ in seen["sql"] if q.startswith("SELECT id, query")).split())
+    assert ", origin, requester_seen_at FROM requests" in sql
 
 
 def test_history_reads_the_audit_rows_once_and_only_for_runs(web, monkeypatch):

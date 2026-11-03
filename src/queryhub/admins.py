@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from . import access, db
+from . import access, db, origins
 
 
 # ===========================================================================
@@ -286,11 +286,46 @@ def _scope_admits_legacy(scope: dict, request: dict) -> bool:
     return True
 
 
+def own_mcp_write(principal_id: str, request: dict) -> bool:
+    """Whether this request is a RW or DDL write that this person sent through
+    the MCP door.
+
+    The door sends every such write to a person (`human_only` in core_submit).
+    The person who asked Claude for the write does not count, and an admin is
+    no exception: a second person reads what the model wrote (operator
+    decision, 2026-11-03). The other channels keep the admin exemption in
+    `access.can_approve`.
+
+    Some callers pass a row without `origin`. Then this function reads the
+    stored origin, so a short row cannot skip this rule.
+    """
+    if not principal_id or request.get("requester_slack_id") != principal_id:
+        return False
+    if request_tier(request) == "ro":
+        return False
+    if "origin" in request:
+        origin = request["origin"]
+    elif request.get("id") is not None:
+        row = db.fetch_one("SELECT origin FROM requests WHERE id = %s",
+                           (request["id"],))
+        origin = row["origin"] if row else None
+    else:
+        # Not a query request: an access request or a window request. These
+        # never come from the MCP door.
+        return False
+    return origins.normalize(origin) == origins.MCP
+
+
 def can_approve(admin_slack_id: str, request: dict) -> bool:
     """True iff the admin has at least one candidate row (permanent or
     temp) that admits this request. Out-of-scope candidates don't
-    veto — only the absence of any in-scope candidate does."""
+    veto — only the absence of any in-scope candidate does.
+
+    One exception comes first, in both models: nobody approves their own
+    write from the MCP door (`own_mcp_write`)."""
     if not request:
+        return False
+    if own_mcp_write(admin_slack_id, request):
         return False
     if _v2():
         return access.can_approve(admin_slack_id, request)

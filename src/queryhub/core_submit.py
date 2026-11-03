@@ -25,9 +25,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import admins, ast_safety, audit, auto_approve, db, engines, pre_flight
+from . import admins, ast_safety, audit, auto_approve, db, db_scope, engines, pre_flight
 from . import config as cfg
-from . import profile_sync, query_safety, query_secrets, replicas, requesters, targets, teams
+from . import (origins, profile_sync, query_safety, query_secrets, replicas, requesters,
+               targets, teams)
 
 log = logging.getLogger(__name__)
 
@@ -335,6 +336,23 @@ def validate_submission(
 
     database = database_name or target.default_database
 
+    # Is this database one the requester may use on this server?
+    #
+    # One answer for every "no": a database outside the grant, and a database
+    # the catalog does not know. A different answer for each would tell the
+    # requester which database names exist on a server they hold only part of,
+    # and the old unknown-database message listed up to eight of them. The
+    # grant is checked first for the same reason: a name outside the grant
+    # never reaches the catalog lookup.
+    #
+    # The answer still lists databases, but only the ones the requester may
+    # use (`db_scope.usable_databases`). That list does not change with the
+    # refused name, and it shows the correct name after a typo.
+    allowed_dbs = grant["allowed_databases"]
+    if allowed_dbs is not None and database not in allowed_dbs:
+        return Rejection("database", db_scope.no_access_message(
+            target.alias, database, db_scope.usable_databases(target, grant)))
+
     # Does the database the requester NAMED exist on the server they named?
     #
     # Only what they typed, never the fallback: a `default_database` that is
@@ -356,32 +374,14 @@ def validate_submission(
     # since the last hourly snapshot; measured over the whole request history
     # (6,027 with a named database) it would have refused two, one of them
     # this incident and the other a database that has since moved to its own
-    # server. So the message names what the catalog does know -- a real new
-    # database then reads as "the catalog has not caught up", not as a typo.
+    # server.
     if database_name:
         try:
             auto_approve.validate_scope(target.id, database_name)
         except auto_approve.ScopeError:
-            known = [r["d"] for r in db.fetch_all(
-                "SELECT DISTINCT database_name AS d FROM schema_tables "
-                " WHERE target_server_id = %s ORDER BY 1", (target.id,))]
-            sample = ", ".join(f"`{d}`" for d in known[:8])
-            more = "" if len(known) <= 8 else f" (+{len(known) - 8} more)"
-            return Rejection(
-                "database",
-                f"`{target.alias}` has no database named `{database_name}`. "
-                f"It may be a database from another server. Databases on "
-                f"`{target.alias}`: {sample}{more}.")
-
-    # allowed_databases is None = no restriction; non-None set = whitelist.
-    allowed_dbs = grant["allowed_databases"]
-    if allowed_dbs is not None and database not in allowed_dbs:
-        sample = ", ".join(f"`{d}`" for d in sorted(allowed_dbs)[:8])
-        more = "" if len(allowed_dbs) <= 8 else f" (+{len(allowed_dbs) - 8} more)"
-        return Rejection(
-            "database",
-            f"You don't have access to database `{database}` on this "
-            f"server. Allowed: {sample}{more}.")
+            return Rejection("database", db_scope.no_access_message(
+                target.alias, database_name,
+                db_scope.usable_databases(target, grant)))
 
     # Mode permission check (ro < rw < ddl). Resolve the tier for THIS specific
     # database — not grant["mode"], which is the max tier across every grant on
@@ -431,9 +431,14 @@ def validate_submission(
     # same question (auto_approve.decision): on an Athena archive that is a
     # read by an admin, the owning team's lead or a waiver holder, and
     # everyone else's request reaches an approver.
+    #
+    # A write from the MCP door is never exempt. create_request sends it to a
+    # person whatever the waivers say (`human_only`), and that person needs the
+    # reason.
     justification = (justification or "").strip() or None
     auto_approve_exempt = False
-    if not justification and not (schedule_date or schedule_time):
+    mcp_write = origins.normalize(origin) == origins.MCP and required_mode != "ro"
+    if not justification and not (schedule_date or schedule_time) and not mcp_write:
         try:
             auto_approve_exempt = (
                 admins.is_super_admin(user_id)
@@ -835,9 +840,18 @@ def create_request(
     # the archive rule's basis (`basis`, no waiver id). The waivers a target
     # turns away (engine_config.auto_approve: false) are kept, so that a holder
     # whose reads skip review everywhere else is told why this one waits.
+    #
+    # Not for a write that came through the MCP door. There a program wrote the
+    # SQL, so a person must read every RW and DDL request before it runs. No
+    # waiver, no super-admin self-approval and no cache hit replaces that. RO
+    # keeps the person's normal rules: its result is masked, and a review for
+    # each read would make the door useless. Any tier that is not exactly `ro`
+    # counts as a write, so an unknown value waits for a person too.
+    human_only = prep.origin == origins.MCP and prep.required_mode != "ro"
     refused: list[dict] = []
-    aa_now = auto_approve.decision(prep.user_id, prep.required_mode, prep.target,
-                                   prep.database, refused=refused)
+    aa_now = (None if human_only else
+              auto_approve.decision(prep.user_id, prep.required_mode, prep.target,
+                                    prep.database, refused=refused))
     aa_warn = None
     if aa_now is None and refused:
         log.info("auto-approve: waiver %s not applied for %s on %s: auto-approve "
@@ -861,7 +875,7 @@ def create_request(
     # auto-approve at every tier (RO/RW/DDL), in every channel, always with a
     # full audit trail. Server-enforced from the submitter's identity — never
     # a client-supplied flag. (Scope confirmed with the operator.)
-    super_auto = admins.is_super_admin(prep.user_id)
+    super_auto = not human_only and admins.is_super_admin(prep.user_id)
 
     # Fingerprint approval cache (RO only): a repeat RO query whose
     # parameter-agnostic fingerprint matches a prior completed request
@@ -1064,6 +1078,8 @@ def create_request(
                     submit_details["user_agent"] = prep.user_agent
             if prep.run_on:
                 submit_details["run_on"] = prep.run_on
+            if human_only:
+                submit_details["human_approval_forced"] = True
             audit.log_in(cur, row["id"], prep.user_id, prep.user_name,
                          "submitted", submit_details)
 

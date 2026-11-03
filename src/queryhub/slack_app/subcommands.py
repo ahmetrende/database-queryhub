@@ -24,7 +24,7 @@ from .. import (admins, audit, auto_approve_limits, bundles, csv_import, db, eng
                 templates)
 from .. import config as cfg
 from .. import targets as targets_mod
-from . import admin_grant, modal, notifications
+from . import admin_grant, claude_cmd, modal, notifications
 
 log = logging.getLogger(__name__)
 
@@ -952,6 +952,7 @@ _SUBCOMMANDS: list[tuple[str, callable, bool, str]] = [
     ("tables",  _handle_tables,  False, "List the tables on a target: `/sql tables <target>[/<db>] [pattern]`"),
     ("schema",  _handle_schema,  False, "Show the columns and indexes of a table: `/sql schema <target>[/<db>] <table>`"),
     ("findcol", _handle_findcol, False, "Search column names on all your targets: `/sql findcol <pattern>`"),
+    ("claude",  claude_cmd.handle, False, claude_cmd.DESCRIPTION),
     ("grant",   _handle_grant,   True,  "Grant a user access to a target. You pick the user, the RDS and the tier."),
     ("revoke",  _handle_revoke,  True,  "Revoke a user's access to a target"),
     ("roles",   _handle_roles,   True,  "Show the roles and grants of all users"),

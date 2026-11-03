@@ -265,6 +265,7 @@ def test_the_status_endpoint_tells_the_whole_story(web, monkeypatch):
     monkeypatch.setattr(routes_queries.db, "fetch_all",
                         lambda sql, p=None: [dict(a) for a in audits])
     monkeypatch.setattr(routes_queries, "_alias_of", lambda tid: "prod-main")
+    monkeypatch.setattr(routes_queries, "_conn_state_resolver", lambda uid: lambda tid: "ok")
     monkeypatch.setattr(routes_queries.people, "display_name", lambda *a, **k: "Jordan Ray")
     body = web.get("/api/queries/5").json()
     assert body["approver"] == "auto-approve"
@@ -283,6 +284,7 @@ def test_the_status_endpoint_hands_the_audit_rows_to_the_feed(web, monkeypatch):
     monkeypatch.setattr(routes_queries.db, "fetch_all",
                         lambda sql, p=None: [dict(a) for a in audits])
     monkeypatch.setattr(routes_queries, "_alias_of", lambda tid: "prod-main")
+    monkeypatch.setattr(routes_queries, "_conn_state_resolver", lambda uid: lambda tid: "ok")
     monkeypatch.setattr(routes_queries.people, "display_name", lambda *a, **k: "x")
     body = web.get("/api/queries/5").json()
     assert body["messages"][1]["text"] == "Auto-approved by QueryHub: auto-approve grant #12."

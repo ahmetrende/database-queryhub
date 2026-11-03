@@ -174,6 +174,7 @@ def test_the_detail_route_serves_the_timeline(web, monkeypatch):
     monkeypatch.setattr(routes_queries.db, "fetch_one", lambda sql, p=None: dict(row))
     monkeypatch.setattr(routes_queries.db, "fetch_all", lambda sql, p=None: [])
     monkeypatch.setattr(routes_queries, "_alias_of", lambda tid: "prod-main")
+    monkeypatch.setattr(routes_queries, "_conn_state_resolver", lambda uid: lambda tid: "ok")
     monkeypatch.setattr(routes_queries.people, "display_name",
                         lambda *a, **k: "Sam Ellis")
     r = web.get("/api/queries/41")
