@@ -3648,7 +3648,9 @@ def handle_grant_target_changed(ack: Ack, body: dict, client: WebClient) -> None
                 allowed_tiers=grants.allowed_tiers(cap),
                 grantees=grantees, target_initial_options=target_opts,
                 tier=tier, reason=reason, target_ids=target_ids,
-                auto_approve=admin_grant.auto_approve_tier(st) is not None))
+                auto_approve=admin_grant.auto_approve_tier(st) is not None,
+                ends=admin_grant.ends_value(st),
+                max_days=auto_approve_limits.max_days()))
     except Exception:
         log.exception("grant: views_update after target change failed")
 
@@ -3677,6 +3679,10 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
     reason = (state.get(admin_grant.B_REASON, {}).get(admin_grant.A_REASON, {})
               .get("value"))
     auto_tier = admin_grant.auto_approve_tier(state)
+    # The access ends this many days from now, and its auto-approve with it.
+    ends_days = admin_grant.ends_days(state)
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=ends_days)
+                  if ends_days else None)
 
     target_ids: list[int] = []
     for o in tsels:
@@ -3706,10 +3712,14 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
         except ValueError as e:
             errors[admin_grant.B_AUTO] = str(e)
     if auto_tier and admin_grant.B_AUTO not in errors:
-        # An auto-approve rule needs an end date, and this modal has no end date
-        # field, so the box cannot make a rule from here. `grants.grant` refuses
-        # it too (`check_waiver_end`). Said beside the box, before any write.
-        errors[admin_grant.B_AUTO] = auto_approve_limits.SLACK_NEEDS_END_MESSAGE
+        # The auto-approve takes the access's end, and a rule needs an end no
+        # later than `auto_approve_max_days` from now. `grants.grant` refuses
+        # it too (`check_waiver_end`). Said beside the end field, before any
+        # write.
+        try:
+            grants.check_waiver_end(auto_tier, expires_at)
+        except auto_approve_limits.EndRefused as e:
+            errors[admin_grant.B_ENDS] = e.message
     if errors:
         ack({"response_action": "errors", "errors": errors})
         return
@@ -3741,14 +3751,15 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
                     grantee_id=grantee, grantee_profile=profile,
                     target_id=tid, mode=tier, databases=dbs, reason=reason,
                     notify=False,  # one combined DM per grantee, below
-                    auto_approve_tier=auto_tier)
+                    expires_at=expires_at, auto_approve_tier=auto_tier)
                 whitelisted = whitelisted or res["whitelisted_now"]
                 if res.get("auto_approve"):
                     waived.append(res["auto_approve"])
                     wrote_waiver = wrote_waiver or bool(res["auto_approve"]["written"])
             grants.notify_grantee(grantee, user["id"], aliases, tier, dbs,
                                   whitelisted,
-                                  auto_approve_tier=auto_tier if wrote_waiver else None)
+                                  auto_approve_tier=auto_tier if wrote_waiver else None,
+                                  expires_at=expires_at)
             granted.append(f"<@{grantee}>"
                            + (" (whitelisted)" if whitelisted else ""))
         except Exception:
@@ -3757,8 +3768,9 @@ def handle_grant_submission(ack: Ack, body: dict, client: WebClient) -> None:
 
     scope = ", ".join(dbs) if dbs else "all databases"
     tlist = ", ".join(f"`{a}`" for a in aliases)
+    until = grants.until_text(expires_at)
     msg = (f":white_check_mark: Granted *{tier.upper()}* on {tlist} ({scope}) "
-           f"to {', '.join(granted)}." if granted
+           f"to {', '.join(granted)}{until}." if granted
            else ":x: The bot wrote no grant.")
     if auto_tier and granted:
         msg += "\n" + _grant_waiver_summary(auto_tier, waived)

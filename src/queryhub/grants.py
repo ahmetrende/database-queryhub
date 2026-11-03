@@ -618,15 +618,16 @@ def notify_grantee(grantee_id: str, granter_id: str | None,
                    aliases: list[str], mode: str,
                    databases: list[str] | None,
                    whitelisted: bool = False,
-                   auto_approve_tier: str | None = None) -> None:
+                   auto_approve_tier: str | None = None,
+                   expires_at=None) -> None:
     """The ONE 'you were granted access' DM, used by every grant path so the
     wording is identical whether the grant came from /sql grant, a script,
     or anywhere else. `aliases` is one or more target aliases sharing the
     same tier + database scope (the Slack modal grants several at once).
     `auto_approve_tier` adds one line when an auto-approve waiver was written
-    with the grant. Best-effort and self-contained (builds its own Slack
-    client from the bot token); never raises — a notification failure must
-    not undo a committed grant."""
+    with the grant. `expires_at` names the day the access ends. Best-effort
+    and self-contained (builds its own Slack client from the bot token);
+    never raises — a notification failure must not undo a committed grant."""
     try:
         from slack_sdk.web import WebClient
 
@@ -637,19 +638,32 @@ def notify_grantee(grantee_id: str, granter_id: str | None,
         client.chat_postMessage(
             channel=opened["channel"]["id"],
             text=grant_message(aliases, mode, databases, granter_id,
-                               whitelisted, auto_approve_tier),
+                               whitelisted, auto_approve_tier, expires_at),
         )
     except Exception:
         log.exception("grantee notification failed for %s", grantee_id)
 
 
+def until_text(expires_at) -> str:
+    """` until <date>` for a Slack message, or `""` when there is no end.
+
+    Slack shows the date in each reader's own time zone. The fallback, for a
+    client that cannot, is the UTC time."""
+    if not expires_at:
+        return ""
+    at = _aware(expires_at)
+    fallback = at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return f" until <!date^{int(at.timestamp())}^{{date_pretty}} at {{time}}|{fallback}>"
+
+
 def grant_message(aliases: list[str], mode: str, databases: list[str] | None,
                   granter_id: str | None = None, whitelisted: bool = False,
-                  auto_approve_tier: str | None = None) -> str:
+                  auto_approve_tier: str | None = None, expires_at=None) -> str:
     """The text of the grantee's DM, apart from sending it."""
     tlist = ", ".join(f"`{a}`" for a in aliases) if aliases else "a target"
     scope = ", ".join(databases) if databases else "all databases"
     by = f" by <@{granter_id}>" if granter_id else ""
+    until = until_text(expires_at)
     extra = " You're now set up in QueryHub." if whitelisted else ""
     auto = ""
     if auto_approve_tier:
@@ -657,7 +671,7 @@ def grant_message(aliases: list[str], mode: str, databases: list[str] | None,
         auto = (f" Queries up to *{auto_approve_tier.upper()}* {where} run "
                 f"without waiting for approval.")
     return (f":white_check_mark: You've been granted *{mode.upper()}* "
-            f"access to {tlist} ({scope}){by}.{extra}{auto} "
+            f"access to {tlist} ({scope}){by}{until}.{extra}{auto} "
             f"Use `/sql` to submit queries.")
 
 

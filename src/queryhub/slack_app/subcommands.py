@@ -20,7 +20,7 @@ from datetime import timezone
 
 from slack_sdk.web import WebClient
 
-from .. import (admins, audit, bundles, csv_import, db, engines, grants, schema_catalog, teams,
+from .. import (admins, audit, auto_approve_limits, bundles, csv_import, db, engines, grants, schema_catalog, teams,
                 templates)
 from .. import config as cfg
 from .. import targets as targets_mod
@@ -913,7 +913,8 @@ def _handle_grant(user_id, rest, client, respond, body):
         client.views_open(
             trigger_id=trigger_id,
             view=admin_grant.grant_modal(
-                allowed_tiers=grants.allowed_tiers(cap)),
+                allowed_tiers=grants.allowed_tiers(cap),
+                max_days=auto_approve_limits.max_days()),
         )
     except Exception:
         log.exception("views_open failed for /sql grant")
