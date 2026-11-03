@@ -51,13 +51,6 @@ CLOCK_SKEW = timedelta(minutes=5)
 RULE_TIERS = ("ro", "rw")
 TIER_MESSAGE = "An auto-approve rule can be RO or RW. Schema changes always need a DBA."
 
-# The Slack grant modal has no end date field, so it cannot make a rule.
-SLACK_NEEDS_END_MESSAGE = (
-    "An auto-approve rule needs an end date, and this form has no end date "
-    "field. Clear the box and grant the access. Then add the auto-approve in "
-    "the web app, under Access, Auto-approve.")
-
-
 class RuleRefused(ValueError):
     """A new auto-approve rule that the app does not make.
 

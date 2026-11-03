@@ -2306,8 +2306,9 @@ The limit applies to every path in the app that writes a rule:
   and the answer says how many (`autoApproveSkippedDdl`).
 - the approval of a window request: a window that is longer than the limit is
   refused (`window_too_long`). You can reject it.
-- the Slack `/sql grant` modal: it has no end date field, so its auto-approve
-  box is refused. Grant the access in Slack. Add the auto-approve in the web app.
+- the Slack `/sql grant` modal: the auto-approve box needs a pick in "Access
+  ends" other than "No end date". The picks are 7, 30 and 90 days below the
+  limit, and the limit. The access and its auto-approve end on the same day.
 
 The refusal is HTTP 400 with the code `end_required`, `end_too_far` or
 `end_in_past`.

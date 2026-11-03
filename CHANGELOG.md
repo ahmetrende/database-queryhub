@@ -11,6 +11,13 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **`/sql grant` can give auto-approve again.** The modal has a new field, "Access ends": no
+  end date, or 7, 30 or 90 days (the picks stop at `auto_approve_max_days`). The auto-approve
+  box needs an end, so QueryHub refused it on every submit since the end limit came in. Now the
+  box works when the admin picks an end. The access and its auto-approve end on the same day, as on the
+  web grant form. The grantee's DM and the admin's summary name the end. The Reason label no
+  longer reads "(optional) (optional)".
+
 - **The Steps list on the Messages tab shows exact times and the wait between steps.** Each row
   starts with the same clock as the Messages lines. Then come the step, its outcome and the wait
   since the step before ("+2 min 14 s"). The head names the whole run. The last dot turns red for

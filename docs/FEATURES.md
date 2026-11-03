@@ -80,8 +80,9 @@ this page when QueryHub is the right shape.
 - **Slack-native access grants** — the `admins.can_grant` capability gates
   this feature (super-admins implicitly). `/sql grant` opens a modal to grant
   access: you pick the Slack user, one or more RDS targets, the tier
-  (RO/RW/DDL) and an optional database restriction. You can also add
-  auto-approve for their read-only queries, written with the grant. Granting
+  (RO/RW/DDL), an optional database restriction and when the access ends. You
+  can also add auto-approve for their read-only queries, written with the grant.
+  The auto-approve needs an end date and ends with the access. Granting
   also whitelists the user if needed (a grant is otherwise dormant), DMs them,
   and audits it. `/sql revoke` lists a user's grants and removes any. A granter
   cannot exceed their own tier ceiling or scope, and the bot's own control-plane

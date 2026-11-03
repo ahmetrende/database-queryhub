@@ -1,7 +1,8 @@
 """Slack UI for /sql grant + /sql revoke — the admin access-granting tools.
 
 Grant modal: pick a Slack user, a target (RDS), tier, optional database
-restriction + reason, and optionally auto-approve for their read-only queries.
+restriction + reason, when the access ends, and optionally auto-approve for
+their read-only queries.
 Revoke modal: pick a user, see their active grants, revoke any with a button.
 Authorization + DB writes live in `grants.py`; Bolt registrations in
 `handlers.py`. Imports no other slack_app module.
@@ -26,6 +27,13 @@ B_DBS = "blk_grant_dbs"
 A_DBS = "act_grant_dbs"
 B_REASON = "blk_grant_reason"
 A_REASON = "act_grant_reason"
+# When the access ends. The auto-approve below takes the same end, and an
+# auto-approve rule needs one (auto_approve_limits), so the box needs a pick
+# other than "No end date". The picks are the web form's: 7, 30 and 90 days
+# where they fit, and the limit itself.
+B_ENDS = "blk_grant_ends"
+A_ENDS = "act_grant_ends"
+ENDS_NONE = "none"
 # Auto-approve with the grant: one checkbox, read-only only. RO is at or below
 # every tier the modal can grant, so the box can never ask for more than the
 # grant gives; RW waivers stay on the web screen, where the tier is picked.
@@ -36,7 +44,7 @@ _AUTO_OPTION = {
     "text": {"type": "plain_text", "text": "Auto-approve read-only queries"},
     "description": {"type": "plain_text",
                     "text": "Their RO queries on these targets run without "
-                            "waiting for approval."},
+                            "waiting for approval, until the access ends."},
     "value": AUTO_RO,
 }
 
@@ -45,6 +53,17 @@ REVOKE_CALLBACK = "admin_revoke_modal"
 B_REVOKE_USER = "blk_revoke_user"
 A_REVOKE_USER = "act_revoke_user"       # users_select, dispatch_action
 ACTION_REVOKE_ONE = "act_revoke_one"    # per-grant button
+
+
+def end_choices(max_days: int) -> list[int]:
+    """The end picks in days: 7, 30 and 90 where they are below the limit of an
+    auto-approve rule, and the limit itself. The same list as the web form."""
+    return [d for d in (7, 30, 90) if d < max_days] + [max_days]
+
+
+def _ends_option(value: str) -> dict:
+    text = "No end date" if value == ENDS_NONE else f"{value} days"
+    return {"text": {"type": "plain_text", "text": text}, "value": value}
 
 
 def grant_modal(
@@ -56,10 +75,14 @@ def grant_modal(
     reason: str | None = None,
     target_ids: list[int] | None = None,
     auto_approve: bool = False,
+    ends: str | None = None,
+    max_days: int = 90,
 ) -> dict:
     """Build the grant modal. Tier options are limited to what the granting
     admin may hand out (grants.allowed_tiers). `auto_approve` pre-ticks the
-    auto-approve box, so a re-render keeps it.
+    auto-approve box, so a re-render keeps it. `ends` is the picked end
+    ("none" or a number of days), kept the same way. `max_days` is the limit
+    of an auto-approve rule (auto_approve_limits.max_days).
 
     The target multi-select uses dispatch_action: when it changes, a handler
     stores the picked target ids in private_metadata and re-renders the view.
@@ -98,6 +121,11 @@ def grant_modal(
                                             "text": "Example: onboarding to the auth team"}}
     if reason:
         reason_element["initial_value"] = reason
+
+    ends_options = [_ends_option(ENDS_NONE)] + [
+        _ends_option(str(d)) for d in end_choices(max_days)]
+    ends_initial = next((o for o in ends_options if o["value"] == ends),
+                        ends_options[0])
 
     auto_element: dict = {"type": "checkboxes", "action_id": A_AUTO,
                           "options": [_AUTO_OPTION]}
@@ -147,9 +175,21 @@ def grant_modal(
                                             "text": "First pick the target(s). Then pick the databases."}},
             },
             {
+                # Slack adds "(optional)" to the label of an optional input.
                 "type": "input", "block_id": B_REASON, "optional": True,
-                "label": {"type": "plain_text", "text": "Reason (optional)"},
+                "label": {"type": "plain_text", "text": "Reason"},
                 "element": reason_element,
+            },
+            {
+                "type": "input", "block_id": B_ENDS,
+                "label": {"type": "plain_text", "text": "Access ends"},
+                "hint": {"type": "plain_text",
+                         "text": f"Auto-approve needs an end date, at most {max_days} "
+                                 "days from now. The access and its auto-approve "
+                                 "end together."},
+                "element": {"type": "static_select", "action_id": A_ENDS,
+                            "options": ends_options,
+                            "initial_option": ends_initial},
             },
             {
                 # Written in the same transaction as the grant, per database,
@@ -161,6 +201,24 @@ def grant_modal(
             },
         ],
     }
+
+
+def ends_value(state_values: dict) -> str | None:
+    """The picked end as the modal stores it ("none" or a number of days), or
+    None in a view built before the field."""
+    return (((state_values.get(B_ENDS) or {}).get(A_ENDS) or {})
+            .get("selected_option") or {}).get("value")
+
+
+def ends_days(state_values: dict) -> int | None:
+    """The picked end in days, or None for "No end date". A view built before
+    the field, or a value that is not a whole number above 0, reads as None."""
+    value = ends_value(state_values)
+    try:
+        days = int(value) if value and value != ENDS_NONE else None
+    except ValueError:
+        return None
+    return days if days and days > 0 else None
 
 
 def auto_approve_tier(state_values: dict) -> str | None:
