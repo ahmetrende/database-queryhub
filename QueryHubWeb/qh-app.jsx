@@ -46,7 +46,10 @@ function qhLoadWorkspace() {
     const fresh = w.tabs.filter(t => !t.touchedAt || (now - t.touchedAt) < QH_WS_TTL);
     if (!fresh.length) return null;
     let maxN = 0;
-    const tabs = fresh.map(t => { const n = parseInt(String(t.id).replace(/\D/g, '')) || 0; if (n > maxN) maxN = n; return { id: t.id, kind: t.kind, name: t.name, sql: t.sql, conn: t.conn, db: t.db, reqId: t.reqId, qid: t.qid, touchedAt: t.touchedAt || now, dirty: false, result: null, status: null, runMs: null, messages: [], audit: [] }; });
+    const tabs = fresh.map(t => { const n = parseInt(String(t.id).replace(/\D/g, '')) || 0; if (n > maxN) maxN = n; return { id: t.id, kind: t.kind, name: t.name, sql: t.sql, conn: t.conn, db: t.db, reqId: t.reqId, qid: t.qid, touchedAt: t.touchedAt || now, dirty: false, result: null, status: null, runMs: null, messages: [], audit: [],
+      // 2026-11-09: a tab saved without the flag gets it from qhNameTabs (legacy rule).
+      autoName: (t.autoName === true || t.autoName === false) ? t.autoName : undefined,
+      unpicked: t.unpicked === true ? true : undefined }; });
     TAB_SEQ = Math.max(TAB_SEQ, maxN + 1);
     return { tabs, activeId: fresh.some(t => t.id === w.activeId) ? w.activeId : tabs[0].id };
   } catch (e) { return null; }
@@ -151,7 +154,7 @@ function useServerClassify(sql, connId, dbId) {
     keyRef.current = key;
     const timer = setTimeout(() => {
       api.classify({ connectionId: connId, databaseId: dbId, sql: trimmed })
-        .then(r => { if (keyRef.current === key) setVerdict(r); })
+        .then(r => { if (keyRef.current === key) setVerdict(r ? { ...r, forKey: key } : r); })
         // A failed classify must not break typing or block submission — the
         // local hint stays in charge and the server still has the final say at
         // submit time.
@@ -160,6 +163,9 @@ function useServerClassify(sql, connId, dbId) {
     return () => clearTimeout(timer);
   }, [key]);
 
+  // The verdict can be for an older text until the new answer lands. The tier
+  // chip may show it meanwhile. `forKey` says which text it judged, so the
+  // blocker line never marks text the server has not seen.
   return verdict;
 }
 
@@ -236,7 +242,7 @@ function App() {
       wsInit.current = {
         tabs: [
           welcomeTab(),
-          { id: 't1', name: 'Query 1', sql: '', conn: null, db: null, unpicked: true, dirty: false, result: null, status: null, runMs: null, messages: [], audit: [], touchedAt: Date.now() },
+          { id: 't1', name: 'Query 1', sql: '', conn: null, db: null, unpicked: true, autoName: true, dirty: false, result: null, status: null, runMs: null, messages: [], audit: [], touchedAt: Date.now() },
         ], activeId: 'welcome',
       };
     }
@@ -417,7 +423,8 @@ function App() {
         e.preventDefault();
         const snap = closedStack.current.pop();
         if (!snap) { pushToast('No recently closed tabs to reopen.'); return; }
-        const f = freshTab({ name: snap.name, sql: snap.sql, conn: snap.conn, db: snap.db, dirty: true });
+        const f = freshTab({ name: snap.name, sql: snap.sql, conn: snap.conn, db: snap.db, dirty: true,
+          autoName: (snap.autoName === true || snap.autoName === false) ? snap.autoName : undefined });
         setTabs(ts => [...ts, f]); setActiveId(f.id);
         try { localStorage.setItem(QH_CLOSED_KEY, JSON.stringify(closedStack.current)); } catch (err) {}
       }
@@ -429,7 +436,9 @@ function App() {
     try {
       const slim = { activeId, savedAt: Date.now(), tabs: tabs.map(t => ({ id: t.id, kind: t.kind, name: t.name, sql: t.sql, conn: t.conn, db: t.db, // reqId is persisted so a reload does not change the number a tab has
         // been showing. Without it every reload would reserve a new id.
-        reqId: t.reqId, qid: t.qid, touchedAt: t.touchedAt || Date.now() })) };
+        reqId: t.reqId, qid: t.qid, touchedAt: t.touchedAt || Date.now(),
+        // 2026-11-09: an auto-named tab and a tab with no target yet stay so after a reload.
+        autoName: t.autoName, unpicked: t.unpicked === true ? true : undefined })) };
       localStorage.setItem(QH_WS_KEY, JSON.stringify(slim));
     } catch (e) {}
   }, [tabs, activeId]);
@@ -533,6 +542,13 @@ function App() {
       : { ...x, conn: conns[0].id, db: (conns[0].databases[0] || {}).id || null }));
   }, [conns]);
 
+  // 2026-11-09: an auto-named tab follows its target (qhNameTabs in qh-data.jsx).
+  // A layout effect, so a new name shows in the same frame as the new target.
+  // qhNameTabs returns the same array when nothing changes, so this does not loop.
+  React.useLayoutEffect(() => {
+    setTabs(ts => qhNameTabs(ts, conns));
+  }, [tabs, conns]);
+
   // Fetch the active db's schema so autocomplete has real columns.
   useEffect(() => { loadSchema(tab.conn, tab.db); }, [tab.conn, tab.db, loadSchema]);
 
@@ -592,6 +608,13 @@ function App() {
       provisional: false,
     };
   }, [server, tab.sql]);
+  // The words the server's pre-flight blocks, for the editor's wavy line.
+  // Only an answer for exactly this text draws it.
+  const serverKey = tab.conn + '|' + tab.db + '|' + tab.sql;
+  const blockerRanges = React.useMemo(
+    () => (server && server.blocked && server.forKey === serverKey
+      ? qhBlockerRanges(tab.sql, server.blockers || []) : []),
+    [server, serverKey]);
   const pii = qhDetectPII(tab.sql);
   const conn = conns.find(c => c.id === tab.conn);
   const db = conn && conn.databases.find(d => d.id === tab.db);
@@ -641,6 +664,10 @@ function App() {
     const cols = new Set();
     const tableCols = {};
     const tableColsQ = {};      // "schema.table" -> columns, for qualified names
+    // The same columns with { name, type, nullable, pk }, for the Ctrl+Space
+    // column list. A value the payload does not carry stays blank.
+    const tableMeta = {};
+    const tableMetaQ = {};
     // `qualify[name]` is what actually gets inserted when a table is picked:
     // the real schema from the catalog, not the old public/dbo guess. When a
     // bare name exists in two schemas we leave it unqualified rather than
@@ -650,8 +677,11 @@ function App() {
     refs.forEach(({ s, n }) => {
       const entry = (sch && (sch.tables[(s ? s + '.' : '') + n] || sch.tables[n])) || null;
       const cs = entry ? entry.columns.map(c => c.name) : [];
+      const cm = entry ? entry.columns.map(c => ({ name: c.name, type: c.type || '',
+        nullable: typeof c.nullable === 'boolean' ? c.nullable : null, pk: !!c.pk })) : [];
       if (!tableCols[n]) tableCols[n] = cs;
-      if (s) tableColsQ[s + '.' + n] = cs;
+      if (!tableMeta[n]) tableMeta[n] = cm;
+      if (s) { tableColsQ[s + '.' + n] = cs; tableMetaQ[s + '.' + n] = cm; }
       cs.forEach(c => cols.add(c));
       seen[n] = (seen[n] || 0) + 1;
       if (s) qualify[n] = seen[n] > 1 ? null : s + '.' + n;
@@ -677,7 +707,7 @@ function App() {
     // server reads PostgreSQL's own catalog for it; other engines are not asked.
     const columnLookup = (tab.conn && tab.db && qhEngineId(conn && conn.engine) === 'postgres')
       ? qhLiveColumnLookup(liveCols.current, tab.conn, tab.db) : null;
-    return { tables: refs.map(r => r.n), columns: [...cols], dbs, tableCols, tableColsQ,
+    return { tables: refs.map(r => r.n), columns: [...cols], dbs, tableCols, tableColsQ, tableMeta, tableMetaQ,
              qualify, systemTables, functions, functionKind, columnLookup };
   }, [tab.conn, tab.db, schemaCache, conns]);
   const dbTier = db ? db.tier : 'RO';
@@ -760,17 +790,17 @@ function App() {
   const focusEditor = () => setEdFocus(x => x + 1);
 
   const newQueryOn = (c, db) => {
-    const f = freshTab({ name: c.name, conn: c.id, db: db ? db.id : c.databases[0].id });
+    const f = freshTab({ name: c.name, autoName: true, conn: c.id, db: db ? db.id : c.databases[0].id });
     setTabs(ts => [...ts, f]); setActiveId(f.id); focusEditor(); reserveFor(f.id);  };
 
   const pickDb = (c, d) => patch(activeId, { conn: c.id, db: d.id, unpicked: false });
 
   const loadSaved = (s) => {
-    const f = freshTab({ name: s.name, sql: s.sql, conn: s.conn, db: s.db, connState: s.state });
+    const f = freshTab({ name: s.name, autoName: false, sql: s.sql, conn: s.conn, db: s.db, connState: s.state });
     setTabs(ts => [...ts, f]); setActiveId(f.id); reserveFor(f.id);
     setSideMode('conns');  };
   const loadHistory = (h) => {
-    const f = freshTab({ name: h.sql.slice(0, 24), sql: h.sql, conn: h.conn, db: h.db, connState: h.state });
+    const f = freshTab({ name: h.sql.slice(0, 24), autoName: true, sql: h.sql, conn: h.conn, db: h.db, connState: h.state });
     setTabs(ts => [...ts, f]); setActiveId(f.id); reserveFor(f.id);  };
 
   // ---- requests that wait, and requests that a DBA sent back (2026-10-24) ----
@@ -784,7 +814,7 @@ function App() {
     setView('dev');
     const own = tabs.find(x => !x.kind && x.qid && String(x.qid) === p.id);
     if (own) { setActiveId(own.id); return; }
-    const f = freshTab({ name: p.title, sql: p.sql, conn: p.conn, db: p.db, qid: p.id, reqId: p.id, status: 'pending', submittedAt: p.since || null });
+    const f = freshTab({ name: p.title, autoName: true, sql: p.sql, conn: p.conn, db: p.db, qid: p.id, reqId: p.id, status: 'pending', submittedAt: p.since || null });
     setTabs(ts => [...ts, f]); setActiveId(f.id);
     track(f.id, p.id);
   };
@@ -819,7 +849,7 @@ function App() {
 
   const newTab = () => {
     const c = conns.find(x => x.id === tab.conn) || conns[0];
-    const f = freshTab(c ? { name: c.name, conn: c.id, db: tab.db, unpicked: true } : { unpicked: true });
+    const f = freshTab(c ? { name: QH_NEW_QUERY, autoName: true, conn: c.id, db: tab.db, unpicked: true } : { name: QH_NEW_QUERY, autoName: true, unpicked: true });
     setTabs(ts => [...ts, f]); setActiveId(f.id); reserveFor(f.id);  };
 
   // ---- Save/open a tab's SQL as a .sql file (client-side; no backend) ----
@@ -854,7 +884,8 @@ function App() {
   const openSqlFile = (name, text) => {
     const base = ((name || 'query').replace(/\.sql$/i, '')).trim() || 'Untitled query';
     const src = (tab && !tab.kind) ? tab : null;
-    const over = { name: base, sql: text || '' };
+    // A file names its tab, like a rename. A file with no name gets an auto name.
+    const over = { name: base, sql: text || '', autoName: !((name || '').replace(/\.sql$/i, '').trim()) };
     if (src) { over.conn = src.conn; over.db = src.db; }
     const f = freshTab(over);
     setTabs(ts => [...ts, f]); setActiveId(f.id); focusEditor();
@@ -890,7 +921,7 @@ function App() {
   };
   const performClose = (kind, id) => {
     const removed = victimsFor(kind, id).filter(t => t.sql && t.sql.trim());
-    for (const t of removed) closedStack.current.push({ name: t.name, sql: t.sql, conn: t.conn, db: t.db });
+    for (const t of removed) closedStack.current.push({ name: t.name, sql: t.sql, conn: t.conn, db: t.db, autoName: t.autoName });
     if (closedStack.current.length > 30) closedStack.current = closedStack.current.slice(-30);
     try { localStorage.setItem(QH_CLOSED_KEY, JSON.stringify(closedStack.current)); } catch (e) {}
     if (kind === 'others') closeOthersNow(id);
@@ -935,11 +966,11 @@ function App() {
   };
   const saveNamedSession = (name, dest) => {
     const nm = (name || '').trim(); if (!nm) return;
-    const snapTabs = tabs.filter(t => t.sql && t.sql.trim()).map(t => ({ name: t.name, sql: t.sql, conn: t.conn, db: t.db }));
+    const snapTabs = tabs.filter(t => t.sql && t.sql.trim()).map(t => ({ name: t.name, sql: t.sql, conn: t.conn, db: t.db, autoName: t.autoName === true }));
     if (!snapTabs.length) { pushToast('Nothing to save — all tabs are empty.'); return; }
     setSessionModal(false);
     if (dest === 'server') {
-      qhApi.saveSessionSrv({ name: nm, tabs: snapTabs.map(t => ({ name: t.name, sql: t.sql, connectionId: t.conn, databaseId: t.db })) })
+      qhApi.saveSessionSrv({ name: nm, tabs: snapTabs.map(t => ({ name: t.name, sql: t.sql, connectionId: t.conn, databaseId: t.db, autoName: t.autoName })) })
         .then(s => setSessions(list => [s, ...list.filter(x => !(x.dest === 'server' && x.name === nm))]))
         .catch(e => pushToast((e && e.message) || 'Could not save workspace to the server.'));
     } else {
@@ -950,7 +981,9 @@ function App() {
   };
   const restoreSession = (sess) => {
     if (!sess.tabs || !sess.tabs.length) return;
-    const fresh = sess.tabs.map(t => freshTab({ name: t.name, sql: t.sql, conn: t.conn, db: t.db }));
+    // No flag (an older server or session): qhNameTabs decides with the legacy rule.
+    const fresh = sess.tabs.map(t => freshTab({ name: t.name, sql: t.sql, conn: t.conn, db: t.db,
+      autoName: t.autoName === true ? true : undefined }));
     setTabs(ts => [...ts, ...fresh]); setActiveId(fresh[0].id); setSideMode('conns');    pushToast('Opened “' + sess.name + '” — ' + fresh.length + ' tab' + (fresh.length > 1 ? 's' : '') + '.');
   };
   const deleteSession = (id) => {
@@ -961,10 +994,22 @@ function App() {
   const duplicateTab = (id) => {
     const src = tabs.find(x => x.id === id);
     if (!src) return;
-    const clone = freshTab({ name: /\bcopy$/.test(src.name) ? src.name : src.name + ' copy', sql: src.sql, conn: src.conn, db: src.db });
+    // An auto-named copy gets the next number. A renamed tab's copy adds " copy".
+    const clone = src.autoName === true
+      ? freshTab({ name: src.name, autoName: true, sql: src.sql, conn: src.conn, db: src.db, unpicked: src.unpicked === true ? true : undefined })
+      : freshTab({ name: /\bcopy$/.test(src.name) ? src.name : src.name + ' copy', autoName: false, sql: src.sql, conn: src.conn, db: src.db });
     setTabs(ts => { const i = ts.findIndex(x => x.id === id); return i < 0 ? [...ts, clone] : [...ts.slice(0, i + 1), clone, ...ts.slice(i + 1)]; });
     setActiveId(clone.id);  };
-  const renameTab = (id, name) => { const nm = (name || '').trim(); if (nm) patch(id, { name: nm }); };
+  // 2026-11-09: a renamed tab keeps its name. An empty name makes it auto-named
+  // again. An unchanged name (double-click, then Enter) changes nothing.
+  const renameTab = (id, name) => {
+    const nm = (name || '').trim();
+    const cur = tabs.find(x => x.id === id);
+    if (!cur || cur.kind) return;
+    if (!nm) { if (cur.autoName !== true) patch(id, { autoName: true }); return; }
+    if (nm === cur.name) return;
+    patch(id, { name: nm, autoName: false });
+  };
   const copyTabSql = (id) => {
     const t = tabs.find(x => x.id === id);
     if (!t) return;
@@ -1258,7 +1303,11 @@ function App() {
   };
   const curSel = () => (selGet.current ? selGet.current() : '');
 
+  // Run, F5, Ctrl+Enter and F8 show the blocker line at once, without the
+  // typing pause.
+  const [issueSig, setIssueSig] = useState(0);
   const primary = () => {
+    setIssueSig(n => n + 1);
     // A selection always wins — see qhRunTarget for why, and for the case where
     // the selection has nothing runnable in it.
     const tgt = qhRunTarget(curSel(), tab.sql);
@@ -1277,6 +1326,7 @@ function App() {
 
   // F8 — submit the selected text as a one-off (server runs it as its own query)
   const runSelection = (selText) => {
+    setIssueSig(n => n + 1);
     if (busy || !tab.conn) return;
     const tgt = qhRunTarget(selText, '');
     if (tgt.kind === 'comments') { pushToast(QH_ONLY_COMMENTS); return; }
@@ -1339,7 +1389,7 @@ function App() {
     qhApi.cancelScheduledSrv(id).then(refreshScheduled).catch(() => {});
     setScheduled(list => list.filter(x => x.id !== id));
   };
-  const openScheduled = (s) => { const f = freshTab({ name: s.name, sql: s.sql, conn: s.conn, db: s.db }); setTabs(ts => [...ts, f]); setActiveId(f.id); };
+  const openScheduled = (s) => { const f = freshTab({ name: s.name, autoName: true, sql: s.sql, conn: s.conn, db: s.db }); setTabs(ts => [...ts, f]); setActiveId(f.id); };
 
   const exportResult = (format) => {
     if (!tab.result || tab.result.kind !== 'table') return;
@@ -1429,7 +1479,7 @@ function App() {
   const openTable = (c, db, table, opts) => {
     const o = opts || {};
     const nm = o.mode === 'count' ? table + ' · count' : table;
-    const f = freshTab({ name: nm, sql: qhSelectSql(c, db, table, o), conn: c.id, db: db.id });
+    const f = freshTab({ name: nm, autoName: false, sql: qhSelectSql(c, db, table, o), conn: c.id, db: db.id });
     setTabs(ts => [...ts, f]); setActiveId(f.id); focusEditor();  };
 
   const [sideWidth, setSideWidth] = useState(() => { const n = parseInt(localStorage.getItem('qh.sidewidth.v1'), 10); return (n >= 224 && n <= 560) ? n : 264; });
@@ -1647,7 +1697,7 @@ function App() {
                 onRequest={() => setReqOpen(true)} onDismiss={() => patch(activeId, { expired: null })} />
 
               <div className="qh-ed-host">
-                <SqlEditor value={tab.sql} onChange={onCode} docId={tab.id} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} formatSignal={fmtSig} />
+                <SqlEditor value={tab.sql} onChange={onCode} docId={tab.id} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} formatSignal={fmtSig} issues={blockerRanges} revealSignal={issueSig} />
               </div>
 
               <div className="qh-res-grip" onMouseDown={onDragStart}><span /></div>

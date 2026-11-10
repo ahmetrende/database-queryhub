@@ -1254,6 +1254,100 @@ function qhTabBindsOnClick(tab) {
   return !!tab && !tab.kind && tab.unpicked === true && !String(tab.sql || '').trim();
 }
 
+// ---------- Tab names (2026-11-09) ----------
+// A query tab that a person did not rename is auto-named (`autoName: true`).
+// Its name is `DB_NAME (SERVER_NAME)` with the full connection alias, for
+// example `shop (srv-alpha)`. A tab with no picked database is
+// `New query`. A repeat of an open auto name gets the smallest free number:
+// `shop (srv-alpha) 2`. A tab keeps its number when another tab closes.
+// A renamed tab keeps its name. Welcome, What's new and table tabs keep theirs.
+const QH_NEW_QUERY = 'New query';
+const QH_LEGACY_AUTO = /^(Untitled query|Query \d+|New query)$/;
+// No target yet: the tab is unpicked, or it has no connection or database.
+function qhTabNoTarget(tab) {
+  return !!tab && !tab.kind && (tab.unpicked === true || !tab.conn || !tab.db);
+}
+// The name before a number. Null when the connection is not known yet.
+function qhTabBaseName(tab, conns) {
+  if (!tab || tab.kind) return null;
+  if (qhTabNoTarget(tab)) return QH_NEW_QUERY;
+  const c = (conns || []).find(x => x && x.id === tab.conn);
+  if (!c) return null;
+  const d = (c.databases || []).find(x => x && x.id === tab.db);
+  return ((d && d.name) || String(tab.db)) + ' (' + (c.name || c.id) + ')';
+}
+// 1 for the bare base name, N for `base N` (N >= 2), 0 for any other name.
+function qhTabNameNumber(name, base) {
+  const n = String(name == null ? '' : name);
+  if (!base) return 0;
+  if (n === base) return 1;
+  if (n.slice(0, base.length + 1) !== base + ' ') return 0;
+  const rest = n.slice(base.length + 1);
+  return /^[1-9]\d*$/.test(rest) && Number(rest) >= 2 ? Number(rest) : 0;
+}
+// Is this tab auto-named? A tab loaded without the flag counts as auto-named
+// when its name is its connection's alias, an old default name, or the new
+// format for its own target. Null when that needs connections we do not have yet.
+function qhTabIsAuto(tab, conns) {
+  if (!tab || tab.kind) return false;
+  if (tab.autoName === true || tab.autoName === false) return tab.autoName;
+  const nm = String(tab.name == null ? '' : tab.name).trim();
+  if (!nm || QH_LEGACY_AUTO.test(nm)) return true;
+  const c = (conns || []).find(x => x && x.id === tab.conn);
+  if (!c) return null;
+  if (nm === (c.name || c.id)) return true;
+  return qhTabNameNumber(nm, qhTabBaseName(tab, conns)) > 0;
+}
+// The name an auto-named tab shows, given the other open tabs. The current
+// name stays when it fits the target and no other auto-named tab holds its
+// number. `New query` gets no number.
+function qhAutoTabName(tab, conns, openTabs) {
+  const base = qhTabBaseName(tab, conns);
+  if (!base) return tab ? tab.name : '';
+  if (base === QH_NEW_QUERY) return base;
+  const used = {};
+  (openTabs || []).forEach(o => {
+    if (!o || o === tab || o.id === tab.id || o.kind || o.autoName !== true) return;
+    const k = qhTabNameNumber(o.name, base);
+    if (k) used[k] = true;
+  });
+  const own = qhTabNameNumber(tab.name, base);
+  if (own && !used[own]) return tab.name;
+  let k = 1;
+  while (used[k]) k += 1;
+  return k === 1 ? base : base + ' ' + k;
+}
+// Name every auto-named tab. Returns the same array when nothing changes, so a
+// state update with it does nothing. A tab whose name already fits keeps it.
+// When two tabs hold the same number, the first one keeps it.
+function qhNameTabs(tabs, conns) {
+  if (!Array.isArray(tabs)) return tabs;
+  let changed = false;
+  const out = tabs.map(t => {
+    if (!t || t.kind || t.autoName === true || t.autoName === false) return t;
+    const a = qhTabIsAuto(t, conns);
+    if (a === null) return t;
+    changed = true;
+    return { ...t, autoName: a };
+  });
+  const kept = [], redo = [];
+  out.forEach((t, i) => {
+    if (!t || t.kind || t.autoName !== true) return;
+    const base = qhTabBaseName(t, conns);
+    if (!base) { kept.push(t); return; }
+    const k = qhTabNameNumber(t.name, base);
+    const clash = k > 0 && base !== QH_NEW_QUERY && kept.some(o => qhTabNameNumber(o.name, base) === k);
+    if (k > 0 && !clash) kept.push(t); else redo.push(i);
+  });
+  redo.forEach(i => {
+    const t = out[i];
+    const name = qhAutoTabName(t, conns, kept);
+    if (name !== t.name) { out[i] = { ...t, name }; changed = true; }
+    kept.push(out[i]);
+  });
+  return changed ? out : tabs;
+}
+
 // ---------- How a request ended, who waits, and where a bell item leads (2026-10-24, batch 2) ----------
 // The server sends `outcome` on GET /history, GET /queries/{id} and the queue:
 // withdrawn, expired, denied, changes_requested, or null. Its `status` shows the
@@ -1352,6 +1446,8 @@ function qhPendingRequests(tabs, history) {
 // client state: nothing is sent. The tab is picked (not `unpicked`), so a click in
 // the tree never rebinds it.
 function qhResubmitOver(src) {
+  // No `autoName` here on purpose: qhNameTabs decides it from the name, so a
+  // name a person gave survives and an automatic one follows the target.
   return { name: (src && src.name) || qhSqlStart(src && src.sql, 24), sql: (src && src.sql) || '', conn: src && src.conn, db: src && src.db, unpicked: false };
 }
 
@@ -1550,6 +1646,7 @@ Object.assign(window, {
   qhCustomTags, qhParseTagQuery, qhTagMatch, qhProviderGroups, qhTagVocab, qhTokenSuggest, qhApplyToken,
   qhAutoApproveRO, qhSchemaFor, qhSchemaOf, qhQualify, qhSelectSql,
   QH_PICK_HINT, qhTabBindsOnClick,
+  QH_NEW_QUERY, qhTabNoTarget, qhTabBaseName, qhTabNameNumber, qhTabIsAuto, qhAutoTabName, qhNameTabs,
   QH_OUTCOMES, qhOutcomeInfo, qhOutcomeMessages, qhHistoryRow, qhHistoryKind, QH_HIST_FILTERS, qhHistoryFilter, qhSqlStart,
   qhPendingRequests, qhResubmitOver, qhNotifSubject, qhEndNote,
   qhBrowserNotifStored, qhBrowserNotifStore, qhRaisedLoad, qhRaisedSave, qhBrowserNotifPermission, qhBrowserNotifEnable, qhRaiseBrowserNotifs,

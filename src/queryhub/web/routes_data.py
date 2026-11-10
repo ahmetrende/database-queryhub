@@ -489,6 +489,10 @@ def sessions_upsert(body: SessionIn, claims: dict = Depends(deps.current_user)):
         "sql": query_safety.mask_password_literals(t.get("sql") or ""),
         "connectionId": t.get("connectionId") or t.get("conn"),
         "databaseId": t.get("databaseId") or t.get("db"),
+        # The client names this tab after its database, not a person. It
+        # renames the tab when the tab moves to another database. The stored
+        # name is only what the tab showed at save time.
+        **({"autoName": True} if t.get("autoName") is True else {}),
     } for t in (body.tabs or [])]
     row = db.fetch_one(
         "INSERT INTO web_saved_sessions (slack_user_id, name, tabs, updated_at) "

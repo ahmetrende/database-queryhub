@@ -390,7 +390,7 @@
   .qh-tabs-fixed { display: flex; align-items: center; flex-shrink: 0; padding-right: 2px; border-left: 1px solid var(--stroke-light); background: var(--bg-light); }
   .qh-tab-new:disabled:hover { background: transparent; color: var(--fg-tertiary); }
   .qh-tab { display: flex; align-items: center; gap: 7px; padding: 0 10px 0 12px; cursor: pointer; position: relative;
-    border-right: 1px solid var(--stroke-light); color: var(--fg-tertiary); max-width: 200px; flex-shrink: 0; }
+    border-right: 1px solid var(--stroke-light); color: var(--fg-tertiary); flex: 0 1 auto; min-width: 104px; max-width: 320px; }
   .qh-tab:hover { background: var(--adaptive-light); }
   .qh-tab.is-active { background: var(--bg-white); color: var(--fg-primary); }
   .qh-tab.is-active::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--brand-green); }
@@ -400,6 +400,16 @@
   .qh-tab-home { display: inline-flex; align-items: center; justify-content: center; color: var(--fg-tertiary); flex-shrink: 0; }
   .qh-tab.is-active .qh-tab-home { color: var(--brand-green); }
   .qh-tab-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* 2026-11-09: tab names and widths. With room, a tab is as wide as its full
+     name, up to 320px. More tabs shrink together down to 104px, and the name
+     gets an ellipsis. Below that the strip scrolls. The dot and the close
+     button do not shrink. The active tab does not shrink below its name width,
+     so it is never narrower than the others. The tooltip has the full name. */
+  .qh-tab .qh-tab-name { flex: 1 1 auto; min-width: 0; }
+  .qh-tab.is-active { flex-shrink: 0; }
+  .qh-tab:has(.qh-tab-rename) { flex-shrink: 0; }
+  .qh-tab-rename { flex-shrink: 0; }
+  .qh-tab-dot.tier-none { background: var(--fg-tertiary); }
   .qh-tab-rename { width: 108px; font-family: inherit; font-size: 13px; font-weight: 500; color: var(--fg-primary); background: var(--bg-white); border: 1px solid var(--brand-green); border-radius: var(--r-2xs); padding: 1px 5px; outline: none; }
   .qh-tab-x { width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border: 0;
     background: transparent; border-radius: var(--r-2xs); cursor: pointer; color: var(--fg-tertiary); flex-shrink: 0; }
@@ -648,6 +658,18 @@
   .qh-ta { position: absolute; inset: 0; width: 100%; height: 100%; resize: none; background: transparent; outline: none;
     color: transparent; caret-color: var(--brand-green); overflow: auto; }
   .qh-ta::selection { background: var(--brand-adaptive-medium); }
+  /* 2026-11-09: inline pre-flight blockers. */
+  /* The overlay sits after .qh-pre and before .qh-ta in the DOM. All three are
+     absolute with no z-index, so DOM order stacks it above the highlight and
+     below the textarea. */
+  .qh-issues { color: transparent; pointer-events: none; }
+  .qh-issue { background: none; color: transparent; text-decoration: underline wavy var(--fg-danger);
+    text-decoration-thickness: 1.5px; text-underline-offset: 3px; text-decoration-skip-ink: none; }
+  .qh-issue-tip { position: fixed; z-index: 96; max-width: 360px; padding: 6px 10px; background: var(--bg-white);
+    color: var(--fg-primary); border: 1px solid var(--stroke-danger); border-radius: var(--r-sm);
+    box-shadow: var(--shadow-medium); font-size: 12.5px; line-height: 1.45; white-space: pre-line; pointer-events: none; }
+  .qh-sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap; }
   /* Word wrap (⌥Z). Both layers take the same rules or the highlight overlay
      drifts off the text it is colouring; the horizontal scrollbar goes with the
      wrapping, since there is nothing left to scroll to. */
@@ -2927,6 +2949,19 @@
   [data-theme='dark'] .qh-res-tools-note.is-error { color: var(--fg-primary); }
   .qh-res-sum { flex-shrink: 0; display: flex; align-items: center; gap: 14px; padding: 3px 12px; border-top: 1px solid var(--stroke-medium); background: var(--bg-light); font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-secondary); white-space: nowrap; overflow: hidden; }
   .qh-res-pretty[aria-pressed='true'] { color: var(--fg-accent); }
+  /* 2026-11-09: Ctrl+Space column list. */
+  /* A row reads: name, PK mark, type, NULL flag. Type and flag are muted mono
+     in --fg-secondary. The list is wider than the normal one and stays inside
+     the viewport. Tokens only, so the dark theme follows. */
+  .qh-ac-ed.is-cols { min-width: 260px; max-width: min(520px, calc(100vw - 16px)); }
+  .qh-ac-ed.is-cols .qh-ac-ed-opt { display: grid; grid-template-columns: minmax(0, 1fr) 24px minmax(0, 12em) 64px; gap: 8px; }
+  .qh-ac-ed-pk { font-family: var(--font-sans); font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-align: center; color: var(--fg-accent); border-radius: var(--r-2xs); }
+  .qh-ac-ed-pk:not(:empty) { background: var(--brand-adaptive-light); padding: 1px 0; }
+  .qh-ac-ed-dtype, .qh-ac-ed-null { font-family: var(--qh-mono); font-size: 11px; color: var(--fg-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qh-ac-ed-null { text-align: right; }
+  .qh-ac-ed-group { display: flex; align-items: baseline; gap: 8px; padding: 8px 8px 4px; cursor: default; font-family: var(--font-sans); font-size: 11px; font-weight: 600; color: var(--fg-secondary); }
+  .qh-ac-ed-group:not(:first-child) { margin-top: 4px; border-top: 1px solid var(--stroke-medium); }
+  .qh-ac-ed-galias { font-family: var(--qh-mono); font-weight: 400; }
 
 /* ---- local additions (CODE-owned; override the design above) ---- */
 /* CODE-owned CSS layered ON TOP of the design CSS.

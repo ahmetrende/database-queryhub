@@ -1036,6 +1036,10 @@ tabs and their SQL. Distinct from `web_sessions`: user content, not auth. A
 workspace is purged after `web_session_retention_days` (default 30) without a
 touch.
 
+A tab in `tabs` can carry `autoName: true`. The client named that tab after
+its database, not a person, and renames it when the tab moves to another
+database. The stored `name` is only what the tab showed at save time.
+
 ### `web_notification_reads`
 
 Per-(principal, notification) read markers for the in-app feed, so the bell's

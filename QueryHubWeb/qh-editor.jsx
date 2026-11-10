@@ -183,11 +183,12 @@ function qhHighlight(code) {
 
 // Build schema-aware + keyword suggestions for the token left of the caret.
 const QH_KW_AFTER_TABLE = new Set(['from', 'join', 'into', 'update', 'table', 'truncate', 'describe']);
-function qhBuildSuggest(value, caret, schema, engineId) {
+// `opts.force` (Ctrl+Space) also answers with nothing typed: every name matches.
+function qhBuildSuggest(value, caret, schema, engineId, opts) {
   const before = value.slice(0, caret);
   const m = before.match(/[A-Za-z_][A-Za-z0-9_]*$/);
-  if (!m) return null;
-  const token = m[0];
+  if (!m && !(opts && opts.force)) return null;
+  const token = m ? m[0] : '';
   const start = caret - token.length;
   const dot = before[start - 1] === '.';
   const prevM = before.slice(0, dot ? start - 1 : start).match(/([A-Za-z_][A-Za-z0-9_]*)\s*$/);
@@ -331,12 +332,14 @@ function qhBuildSuggest(value, caret, schema, engineId) {
 // Tokens for the reader below: words, quoted identifiers, strings, numbers and
 // single punctuation characters, with comments and blanks dropped. `s`/`e` are
 // offsets into the text; `u` is a word in upper case.
-function qhSqlTokens(sql) {
+function qhSqlTokens(sql, keepComments) {
   const out = [];
   const re = /(--[^\n]*|\/\*[\s\S]*?(?:\*\/|$))|('(?:[^']|'')*'?)|("(?:[^"]|"")*"?|\[[^\]]*\]?)|(\$[A-Za-z_]*\$)|([A-Za-z_][A-Za-z0-9_$]*)|(\d+(?:\.\d+)?)|(\s+)|([\s\S])/g;
   let m;
   while ((m = re.exec(sql)) !== null) {
     const s = m.index;
+    // `keepComments` (the Ctrl+Space list) keeps them as 'cmt' tokens.
+    if (m[1] != null && keepComments) { out.push({ k: 'cmt', v: m[0], s, e: s + m[0].length, u: null }); continue; }
     if (m[1] != null || m[7] != null) continue;
     if (m[4] != null) {                       // a $tag$ … $tag$ string
       const close = sql.indexOf(m[4], re.lastIndex);
@@ -349,6 +352,60 @@ function qhSqlTokens(sql) {
     out.push({ k, v: m[0], s, e: s + m[0].length, u: k === 'word' ? m[0].toUpperCase() : null });
   }
   return out;
+}
+
+// Where the server pre-flight blockers point in the SQL. The first rule that
+// matches places each message: a quoted fragment, a named keyword, the word
+// "parse" or "syntax" (last word), else the first word. Returns
+// [{ start, end, message }] sorted by start. One range joins its messages.
+const QH_BLOCKER_PHRASES = ['EXPLAIN ANALYZE', 'SET LOCAL'];
+const QH_BLOCKER_WORDS = ('SELECT WITH INSERT UPDATE DELETE MERGE DROP TRUNCATE ALTER CREATE GRANT REVOKE ' +
+  'EXPLAIN SET COPY CALL DO VACUUM REINDEX CLUSTER LOCK COMMENT REFRESH').split(' ');
+const QH_BLOCKER_WORD_SET = new Set(QH_BLOCKER_WORDS);
+function qhBlockerRanges(sql, blockers) {
+  const text = String(sql || '');
+  if (!text || !Array.isArray(blockers) || !blockers.length) return [];
+  const words = qhSqlTokens(text).filter(t => t.k === 'word');
+  const lower = text.toLowerCase();
+  const byKey = new Map();
+  const add = (start, end, message) => {
+    const key = start + ':' + end;
+    const hit = byKey.get(key);
+    if (hit) hit.message += '\n' + message;
+    else byKey.set(key, { start, end, message });
+  };
+  blockers.forEach((raw) => {
+    const msg = String(raw == null ? '' : raw);
+    if (!msg) return;
+    // a. a quoted fragment
+    const qre = /`([^`]{1,60})`|'([^']{1,60})'|"([^"]{1,60})"/g;
+    let q;
+    while ((q = qre.exec(msg)) !== null) {
+      const frag = q[1] != null ? q[1] : q[2] != null ? q[2] : q[3];
+      const at = lower.indexOf(frag.toLowerCase());
+      if (at >= 0) { add(at, at + frag.length, msg); return; }
+    }
+    // b. a keyword that the message names in upper case
+    const named = (msg.match(/\b[A-Z]+\b/g) || []).filter(x => QH_BLOCKER_WORD_SET.has(x));
+    for (const ph of QH_BLOCKER_PHRASES) {
+      if (!new RegExp('\\b' + ph + '\\b').test(msg)) continue;
+      const [a, b] = ph.split(' ');
+      for (let i = 0; i + 1 < words.length; i++) {
+        if (words[i].u === a && words[i + 1].u === b) { add(words[i].s, words[i + 1].e, msg); return; }
+      }
+    }
+    // The words in the order the message names them: "CTE-embedded INSERT is
+    // not allowed inside WITH" points at the INSERT, not at the WITH.
+    for (const kw of named) {
+      const w = words.find(t => t.u === kw);
+      if (w) { add(w.s, w.e, msg); return; }
+    }
+    // c. the SQL could not be parsed
+    if (!words.length) return;
+    const w = /parse|syntax/i.test(msg) ? words[words.length - 1] : words[0];
+    add(w.s, w.e, msg);
+  });
+  return Array.from(byKey.values()).sort((x, y) => x.start - y.start);
 }
 
 // Words that end a FROM list, and words that cannot be a table or an alias.
@@ -370,6 +427,271 @@ function qhLookupCi(map, key, exact) {
   let hit, n = 0;
   for (const k of Object.keys(map)) if (k.toLowerCase() === want) { hit = map[k]; n++; }
   return n === 1 ? hit : undefined;
+}
+
+// A token that can be a table name or an alias.
+function qhFromIsName(t) {
+  return !!t && (t.k === 'qid' || (t.k === 'word' && !QH_NOT_NAME.has(t.u)));
+}
+// A name token as the server reads it: no quotes, doubled quotes undone.
+function qhFromUnquote(t) {
+  return t.k !== 'qid' ? t.v
+    : t.v[0] === '"' ? t.v.slice(1, -1).replace(/""/g, '"') : t.v.slice(1, -1).replace(/\]\]/g, ']');
+}
+
+// The FROM list of the query block at depth D, searched from token `from`.
+// Returns [{ parts, alias }] in FROM order, or null when the list cannot be
+// read exactly: a subquery or a function in FROM, NATURAL and USING joins,
+// column aliases. `loose` (the Ctrl+Space column list) also reads NATURAL and
+// USING joins, and a list that ends half typed (`FROM a JOIN `).
+function qhReadFromList(S, depth, from, D, loose) {
+  let f = -1;
+  for (let i = from; i < S.length; i++) {
+    if (depth[i] < D) break;
+    if (depth[i] > D || S[i].k !== 'word') continue;
+    if (S[i].u === 'FROM') { f = i; break; }
+    if (QH_FROM_END.has(S[i].u)) break;
+  }
+  if (f < 0) return null;
+  const F = [];
+  for (let i = f + 1; i < S.length; i++) {
+    if (depth[i] < D) break;
+    if (depth[i] === D && S[i].k === 'word' && QH_FROM_END.has(S[i].u)) break;
+    F.push({ t: S[i], d: depth[i] - D });
+  }
+
+  const top = (j) => F[j] && F[j].d === 0;
+  const word = (j, ...us) => top(j) && F[j].t.k === 'word' && us.includes(F[j].t.u);
+  const name = (j) => top(j) && qhFromIsName(F[j].t);
+  // The length of a join keyword run at j: 0 when there is none, -1 for a join
+  // whose columns cannot be listed exactly (NATURAL, APPLY).
+  const joinLen = (j) => {
+    if (word(j, 'NATURAL')) {
+      if (!loose) return -1;
+      const n = joinLen(j + 1);
+      return n > 0 ? n + 1 : -1;
+    }
+    if (word(j, 'CROSS', 'OUTER') && word(j + 1, 'APPLY')) return -1;
+    if (word(j, 'JOIN')) return 1;
+    if (word(j, 'INNER', 'CROSS') && word(j + 1, 'JOIN')) return 2;
+    if (word(j, 'LEFT', 'RIGHT', 'FULL')) {
+      if (word(j + 1, 'JOIN')) return 2;
+      if (word(j + 1, 'OUTER') && word(j + 2, 'JOIN')) return 3;
+    }
+    return 0;
+  };
+  let i = 0;
+  const readRef = () => {
+    if (word(i, 'ONLY')) i++;
+    if (!name(i)) return null;                              // a subquery, LATERAL, nothing
+    const parts = [F[i].t];
+    i++;
+    while (top(i) && F[i].t.v === '.' && name(i + 1)) { parts.push(F[i + 1].t); i += 2; }
+    if (top(i) && F[i].t.v === '(') return null;            // a table function
+    if (top(i) && F[i].t.v === '*') i++;                    // `t *`: t and its children
+    let alias = null;
+    if (word(i, 'AS')) { if (!name(i + 1)) return null; alias = F[i + 1].t; i += 2; }
+    else if (name(i)) { alias = F[i].t; i++; }
+    if (top(i) && F[i].t.v === '(') return null;            // column aliases rename the columns
+    if (word(i, 'WITH') && top(i + 1) && F[i + 1].t.v === '(') {  // T-SQL table hints
+      i += 2;
+      while (F[i] && !(top(i) && F[i].t.v === ')')) i++;
+      i++;
+    }
+    if (word(i, 'TABLESAMPLE')) return null;
+    return { parts, alias };
+  };
+  const refs = [];
+  for (;;) {
+    let joined = false;
+    if (refs.length) {
+      if (top(i) && F[i].t.v === ',') i++;
+      else {
+        const n = joinLen(i);
+        if (n <= 0) return null;
+        i += n;
+        joined = true;
+      }
+    }
+    if (loose && refs.length && i >= F.length) break;      // the next table is not typed yet
+    const r = readRef();
+    if (!r) return null;
+    refs.push(r);
+    if (joined) {
+      if (word(i, 'USING')) {
+        if (!loose) return null;
+        i++;
+        if (top(i) && F[i].t.v === '(') {
+          i++;
+          while (i < F.length && !(top(i) && F[i].t.v === ')')) i++;
+          i++;
+        }
+      }
+      if (word(i, 'ON')) {
+        i++;
+        while (i < F.length && !(top(i) && (F[i].t.v === ',' || joinLen(i) !== 0))) i++;
+      }
+    }
+    if (i >= F.length) break;
+  }
+  return refs;
+}
+
+// What the catalog holds for one FROM entry, from a qualified map and a bare
+// map. Qualified when written qualified. A bare name two schemas share is left
+// to the server, which resolves it with the search_path the query runs under.
+function qhRefLookup(r, sch, qMap, bareMap) {
+  const parts = r.parts.map(qhFromUnquote), exact = r.parts.some(p => p.k === 'qid');
+  if (parts.length >= 2) return qhLookupCi(qMap, parts[parts.length - 2] + '.' + parts[parts.length - 1], exact);
+  if (qhLookupCi(sch.qualify, parts[0], exact) !== null) return qhLookupCi(bareMap, parts[0], exact);
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Ctrl+Space column list
+//
+// In a column position of a SELECT (the select list, WHERE, ON, HAVING, GROUP
+// BY, ORDER BY), the columns of every table in that SELECT's FROM list, grouped
+// by table in FROM order. One table: bare names. Several: each name qualified
+// by the alias, or by the table name when there is no alias. A typed `t.`
+// lists t only, bare. Type, nullability and the primary key come from the
+// catalog (`tableMeta`). A table the catalog does not list asks `live(name)`
+// (names only). A table nobody knows lists nothing, never invented columns.
+//
+// Returns { kind: 'ready', start, end, slot, items, count },
+// { kind: 'lookup', names }, or null when the caret is not in a column position.
+// `slot` is where the reference starts, qualifier included.
+// ---------------------------------------------------------------------------
+const QH_CL_CLAUSE = new Set(['SELECT', 'WHERE', 'ON', 'HAVING', 'QUALIFY', 'PREWHERE']);
+const QH_CL_STOP = new Set(['FROM', 'JOIN', 'INTO', 'UPDATE', 'SET', 'VALUES', 'USING', 'LIMIT', 'OFFSET',
+  'FETCH', 'RETURNING', 'WINDOW', 'UNION', 'INTERSECT', 'EXCEPT', 'INSERT', 'DELETE', 'MERGE', 'TABLE', 'WITH']);
+// Words after which a column can start. After any other word (a name, AS,
+// NULL, END, ASC) the next word is an alias or a keyword.
+const QH_CL_LEAD = new Set(['SELECT', 'DISTINCT', 'ALL', 'WHERE', 'AND', 'OR', 'NOT', 'ON', 'BY', 'HAVING',
+  'WHEN', 'THEN', 'ELSE', 'CASE', 'LIKE', 'ILIKE', 'BETWEEN', 'IN', 'QUALIFY', 'PREWHERE', 'ANY', 'SOME']);
+
+// A string, quoted name or comment that the text has not closed yet.
+function qhClTokOpen(t) {
+  const v = t.v;
+  if (t.k === 'cmt') return v.startsWith('--') || !(v.length >= 4 && v.endsWith('*/'));
+  if (v[0] === '$') { const tag = v.match(/^\$[A-Za-z_]*\$/)[0]; return !(v.length >= 2 * tag.length && v.endsWith(tag)); }
+  if (v[0] === '[') return !(v.length >= 2 && v.endsWith(']'));
+  return v.length < 2 || (v.split(v[0]).length - 1) % 2 === 1;
+}
+
+function qhColumnList(sql, caret, schema, engineId, live) {
+  const text = String(sql || '');
+  const pm = text.slice(0, caret).match(/[A-Za-z_][A-Za-z0-9_]*$/);
+  const start = pm ? caret - pm[0].length : caret;
+  let qual = null, slot = start;
+  if (text[start - 1] === '.') {
+    const qm = text.slice(0, start - 1).match(/(?:[A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")*"|\[[^\]]*\])$/);
+    if (!qm) return null;
+    slot = start - 1 - qm[0].length;
+    if (text[slot - 1] === '.') return null;                // schema.table.col is not read here
+    qual = qm[0];
+  }
+  const all = qhSqlTokens(text, true);
+  for (const t of all) {                                    // inside a comment, a string or a quoted name
+    if (t.s >= caret) break;
+    if (t.k !== 'cmt' && t.k !== 'str' && t.k !== 'qid') continue;
+    if (caret < t.e || (caret === t.e && qhClTokOpen(t))) return null;
+  }
+  // The statement around the slot, without the slot's own tokens.
+  const toks = all.filter(t => t.k !== 'cmt' && !(t.e > slot && t.s < caret));
+  let a = 0, b = toks.length;
+  for (let i = 0; i < toks.length; i++) {
+    if (toks[i].v !== ';') continue;
+    if (toks[i].e <= slot) a = i + 1; else { b = i; break; }
+  }
+  const S = toks.slice(a, b);
+  const depth = [];
+  let d = 0;
+  for (const t of S) { if (t.v === ')') d--; depth.push(d); if (t.v === '(') d++; }
+  let p = -1;
+  for (let i = 0; i < S.length && S[i].s < slot; i++) p = i;
+  if (p < 0) return null;
+  const prev = S[p];
+  if (!qual) {
+    if (prev.k === 'num' || prev.k === 'str' || prev.k === 'qid' || prev.v === ')' || prev.v === ':') return null;
+    // A select-list star belongs to the * expansion. `a * b` is a product.
+    if (prev.v === '*' && (!S[p - 1] || S[p - 1].v === ',' || S[p - 1].v === '.'
+        || ['SELECT', 'DISTINCT', 'ALL'].includes(S[p - 1].u))) return null;
+    if (prev.k === 'word' && !QH_CL_LEAD.has(prev.u)) return null;
+  }
+  // The clause the slot is in. A function's or an expression's parens are
+  // left outwards, so `count(|)` is in the select list.
+  let D = depth[p] + (prev.v === '(' ? 1 : 0), c = -1;
+  for (let i = p; i >= 0; i--) {
+    if (depth[i] < D) D = depth[i];
+    if (depth[i] > D || S[i].k !== 'word') continue;
+    const u = S[i].u;
+    if (QH_CL_CLAUSE.has(u)) { c = i; break; }
+    if (u === 'BY' && S[i - 1] && ['GROUP', 'ORDER', 'PARTITION'].includes(S[i - 1].u)) { c = i; break; }
+    if (QH_CL_STOP.has(u)) return null;
+  }
+  if (c < 0) return null;
+  // The SELECT that owns the clause, then its FROM list, before or after the caret.
+  let sel = -1, Ds = depth[c];
+  for (let i = c; i >= 0; i--) {
+    if (depth[i] < Ds) Ds = depth[i];
+    if (depth[i] > Ds || S[i].k !== 'word') continue;
+    if (S[i].u === 'SELECT') { sel = i; break; }
+  }
+  if (sel < 0) return null;
+  const refs = qhReadFromList(S, depth, sel + 1, Ds, true);
+  if (!refs || !refs.length) return null;
+
+  const label = (r) => (r.alias || r.parts[r.parts.length - 1]);
+  let want = refs;
+  if (qual) {
+    const q = qhFromUnquote(qhSqlTokens(qual)[0]).toLowerCase();
+    want = refs.filter(r => qhFromUnquote(label(r)).toLowerCase() === q);
+    if (want.length !== 1) return null;
+  }
+  const sch = schema || {};
+  const colsOf = (r) => {
+    const meta = qhRefLookup(r, sch, sch.tableMetaQ, sch.tableMeta);
+    if (meta && meta.length) return meta;
+    const names = qhRefLookup(r, sch, sch.tableColsQ, sch.tableCols);
+    const got = (names && names.length) ? names : (live ? live(r.parts.map(x => x.v).join('.')) : null);
+    return Array.isArray(got) ? got.map(n => ({ name: n })) : got;
+  };
+  const cols = want.map(colsOf);
+  const names = want.filter((r, j) => cols[j] === undefined).map(r => r.parts.map(x => x.v).join('.'));
+  if (names.length) return { kind: 'lookup', names };
+
+  const quote = (n) => (typeof qhQuoteIdentFor === 'function' ? qhQuoteIdentFor(n, engineId) : qhQuoteIdent(n));
+  const lc = pm ? pm[0].toLowerCase() : '';
+  const multi = !qual && refs.length > 1;
+  const items = [];
+  let count = 0;
+  want.forEach((r, j) => {
+    const hit = (cols[j] || []).filter(col => col && String(col.name).toLowerCase().startsWith(lc));
+    if (!hit.length) return;
+    items.push({ type: 'group', header: true, key: 'g' + j, text: '',
+                 label: r.parts.map(x => x.v).join('.'), alias: r.alias ? r.alias.v : '' });
+    hit.forEach(col => {
+      const n = String(col.name);
+      items.push({ type: 'column', key: 'c' + j + ':' + n, label: n,
+                   text: multi ? label(r).v + '.' + quote(n) : quote(n),
+                   colType: col.type ? String(col.type) : '',
+                   nullable: typeof col.nullable === 'boolean' ? col.nullable : null,
+                   pk: !!col.pk });
+      count++;
+    });
+  });
+  return { kind: 'ready', start, end: caret, slot, items, count };
+}
+
+// The next row a key moves to in the completion list. Group headers are skipped.
+function qhAcStep(items, idx, dir) {
+  const n = items.length;
+  for (let k = 1; k <= n; k++) {
+    const j = (((idx + dir * k) % n) + n) % n;
+    if (!items[j].header) return j;
+  }
+  return idx;
 }
 
 function qhStarExpansion(sql, caret, schema, engineId, live) {
@@ -415,92 +737,13 @@ function qhStarExpansion(sql, caret, schema, engineId, live) {
   if (!sel) return null;
 
   // This SELECT's FROM list.
-  let f = -1;
-  for (let i = at + 1; i < S.length; i++) {
-    if (depth[i] < D) break;
-    if (depth[i] > D || S[i].k !== 'word') continue;
-    if (S[i].u === 'FROM') { f = i; break; }
-    if (QH_FROM_END.has(S[i].u)) break;
-  }
-  if (f < 0) return null;
-  const F = [];
-  for (let i = f + 1; i < S.length; i++) {
-    if (depth[i] < D) break;
-    if (depth[i] === D && S[i].k === 'word' && QH_FROM_END.has(S[i].u)) break;
-    F.push({ t: S[i], d: depth[i] - D });
-  }
+  const refs = qhReadFromList(S, depth, at + 1, D, false);
+  if (!refs) return null;
 
-  const top = (j) => F[j] && F[j].d === 0;
-  const word = (j, ...us) => top(j) && F[j].t.k === 'word' && us.includes(F[j].t.u);
-  const name = (j) => top(j) && isName(F[j].t);
-  // The length of a join keyword run at j: 0 when there is none, -1 for a join
-  // whose columns cannot be listed exactly (NATURAL, APPLY).
-  const joinLen = (j) => {
-    if (word(j, 'NATURAL') || (word(j, 'CROSS', 'OUTER') && word(j + 1, 'APPLY'))) return -1;
-    if (word(j, 'JOIN')) return 1;
-    if (word(j, 'INNER', 'CROSS') && word(j + 1, 'JOIN')) return 2;
-    if (word(j, 'LEFT', 'RIGHT', 'FULL')) {
-      if (word(j + 1, 'JOIN')) return 2;
-      if (word(j + 1, 'OUTER') && word(j + 2, 'JOIN')) return 3;
-    }
-    return 0;
-  };
-  let i = 0;
-  const readRef = () => {
-    if (word(i, 'ONLY')) i++;
-    if (!name(i)) return null;                              // a subquery, LATERAL, nothing
-    const parts = [F[i].t];
-    i++;
-    while (top(i) && F[i].t.v === '.' && name(i + 1)) { parts.push(F[i + 1].t); i += 2; }
-    if (top(i) && F[i].t.v === '(') return null;            // a table function
-    if (top(i) && F[i].t.v === '*') i++;                    // `t *`: t and its children
-    let alias = null;
-    if (word(i, 'AS')) { if (!name(i + 1)) return null; alias = F[i + 1].t; i += 2; }
-    else if (name(i)) { alias = F[i].t; i++; }
-    if (top(i) && F[i].t.v === '(') return null;            // column aliases rename the columns
-    if (word(i, 'WITH') && top(i + 1) && F[i + 1].t.v === '(') {  // T-SQL table hints
-      i += 2;
-      while (F[i] && !(top(i) && F[i].t.v === ')')) i++;
-      i++;
-    }
-    if (word(i, 'TABLESAMPLE')) return null;
-    return { parts, alias };
-  };
-  const refs = [];
-  for (;;) {
-    let joined = false;
-    if (refs.length) {
-      if (top(i) && F[i].t.v === ',') i++;
-      else {
-        const n = joinLen(i);
-        if (n <= 0) return null;
-        i += n;
-        joined = true;
-      }
-    }
-    const r = readRef();
-    if (!r) return null;
-    refs.push(r);
-    if (joined) {
-      if (word(i, 'USING')) return null;
-      if (word(i, 'ON')) {
-        i++;
-        while (i < F.length && !(top(i) && (F[i].t.v === ',' || joinLen(i) !== 0))) i++;
-      }
-    }
-    if (i >= F.length) break;
-  }
-
-  const unq = (t) => (t.k !== 'qid' ? t.v
-    : t.v[0] === '"' ? t.v.slice(1, -1).replace(/""/g, '"') : t.v.slice(1, -1).replace(/\]\]/g, ']'));
+  const unq = qhFromUnquote;
   const sch = schema || {};
   const colsOf = (r) => {
-    const parts = r.parts.map(unq), exact = r.parts.some(p => p.k === 'qid');
-    let cols;
-    if (parts.length >= 2) cols = qhLookupCi(sch.tableColsQ, parts[parts.length - 2] + '.' + parts[parts.length - 1], exact);
-    // A bare name two schemas share is left to the server, which resolves it
-    // with the search_path the query itself will run under.
-    else if (qhLookupCi(sch.qualify, parts[0], exact) !== null) cols = qhLookupCi(sch.tableCols, parts[0], exact);
+    const cols = qhRefLookup(r, sch, sch.tableColsQ, sch.tableCols);
     if (cols && cols.length) return cols;
     return live ? live(r.parts.map(p => p.v).join('.')) : null;
   };
@@ -524,8 +767,39 @@ function qhStarExpansion(sql, caret, schema, engineId, live) {
 }
 const QH_AC_TYPE_LABEL ={ keyword: 'kw', table: 'table', column: 'col', database: 'db', system: 'system', function: 'fn', expand: 'all cols' };
 
-function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, schema, engineId, focusSignal, formatSignal, revealRange, docId }) {
+function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, schema, engineId, focusSignal, formatSignal, revealRange, docId, issues, revealSignal }) {
   const taRef = React.useRef(null);
+  const issueRef = React.useRef(null);
+  const tipRef = React.useRef(null);
+  // Pre-flight blockers (see qhBlockerRanges). The underline hides while you
+  // type and returns 1 s after the last typing edit.
+  const [issuesShown, setIssuesShown] = React.useState(true);
+  const [tip, setTip] = React.useState(null); // { i, msg, rect } — viewport coords
+  const issueTimer = React.useRef(null);
+  const ownVal = React.useRef(value);         // the last text this editor committed
+  const issueEdit = (kind) => {
+    clearTimeout(issueTimer.current);
+    setTip(null);
+    if (kind === 'type' || kind === 'back' || kind === 'fwd' || kind === 'compose') {
+      setIssuesShown(false);
+      issueTimer.current = setTimeout(() => setIssuesShown(true), 1000);
+    } else setIssuesShown(true);
+  };
+  React.useEffect(() => () => clearTimeout(issueTimer.current), []);
+  // Text that did not come from a commit (a tab switch, a loaded query, undo or
+  // redo) shows the marks at once.
+  React.useEffect(() => {
+    if (value === ownVal.current) return;
+    ownVal.current = value;
+    clearTimeout(issueTimer.current);
+    setTip(null);
+    setIssuesShown(true);
+  }, [value]);
+  React.useEffect(() => {
+    if (revealSignal == null) return;
+    clearTimeout(issueTimer.current);
+    setIssuesShown(true);
+  }, [revealSignal]);
   const preRef = React.useRef(null);
   const gutRef = React.useRef(null);
   const measRef = React.useRef(null);
@@ -540,6 +814,10 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
   const [charW, setCharW] = React.useState(fontSize * 0.6);
   const [ac, setAc] = React.useState(null); // {items, idx, top, lineTop, left, start, end} — viewport coords
   const acRef = React.useRef(null);
+  // This render's list, for handlers that run before the next render.
+  const acNow = React.useRef(null);
+  acNow.current = ac;
+  const openRef = React.useRef(null);     // the newest openAC, for a late lookup answer
   const [dragOver, setDragOver] = React.useState(false);
   const lines = value.split('\n');
   const lh = Math.round(fontSize * 1.55);
@@ -558,6 +836,8 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
   // history before the parent hears of it.
   const commit = (next, kind, before, after) => {
     qhUndoRecord(qhUndoDoc(histKey, value), next, { kind, before, after });
+    ownVal.current = next;
+    issueEdit(kind);
     onChange(next);
   };
   const step = (dir) => {
@@ -739,6 +1019,7 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
   const sync = () => {
     const ta = taRef.current;
     if (preRef.current) { preRef.current.scrollTop = ta.scrollTop; preRef.current.scrollLeft = ta.scrollLeft; }
+    if (issueRef.current) { issueRef.current.scrollTop = ta.scrollTop; issueRef.current.scrollLeft = ta.scrollLeft; }
     if (gutRef.current) gutRef.current.scrollTop = ta.scrollTop;
     if (ac) setAc(null);
   };
@@ -762,9 +1043,13 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     const top = r.top + 14 + (row + 1) * lh - ta.scrollTop + 2;
     return { top, lineTop: top - lh - 2, left: r.left + 16 + col * charW - ta.scrollLeft };
   };
-  const refreshAC = (ta, afterLookup) => {
+  const refreshAC = (ta, afterLookup, force) => {
     const caret = ta.selectionStart;
     if (caret !== ta.selectionEnd) { setAc(null); return; }
+    // A list that Ctrl+Space opened in a column position stays one while the
+    // caret stays in the same slot. Typing filters it.
+    const cur = acNow.current;
+    if (!force && cur && cur.cols && showColumns(ta, cur.slot, false)) return;
     // SELECT * expansion (see qhStarExpansion). A relation the catalog does not
     // list is asked about once; if the answer arrives while the caret is still
     // on the same star, the expansion is offered then.
@@ -780,10 +1065,10 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
       Promise.all(se.names.map(n => look.fetch(n))).then(() => {
         const t = taRef.current;
         if (t && t.value === v && t.selectionStart === caret && t.selectionEnd === caret
-            && document.activeElement === t) refreshAC(t, true);
+            && document.activeElement === t) refreshAC(t, true, force);
       });
     }
-    const s = qhBuildSuggest(ta.value, caret, sch, engineId);
+    const s = qhBuildSuggest(ta.value, caret, sch, engineId, force ? { force: true } : undefined);
     if (!s) { setAc(null); return; }
     const p = posAt(ta, s.start);
     setAc({ items: s.items, idx: 0, top: p.top, lineTop: p.lineTop, left: p.left, start: s.start, end: s.end });
@@ -800,6 +1085,45 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     commit(nv, 'complete', ta ? [ta.selectionStart, ta.selectionEnd] : null, [caret, caret]);
     requestAnimationFrame(() => { if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = caret; } });
   };
+
+  // The column list at the caret (see qhColumnList). With `slot`, only while the
+  // caret is still in that slot. With `ask`, it asks the server about the
+  // relations the catalog does not list, then opens the list again. It returns
+  // true when it handled the key.
+  const showColumns = (ta, slot, ask) => {
+    const caret = ta.selectionStart;
+    const look = sch.columnLookup || null;
+    const peek = look ? look.peek : null;
+    let cl = qhColumnList(ta.value, caret, sch, engineId, peek);
+    if (cl && cl.kind === 'lookup') {
+      if (ask) {
+        const v = ta.value;
+        Promise.all(cl.names.map(n => look.fetch(n))).then(() => {
+          const t = taRef.current;
+          if (t && t.value === v && t.selectionStart === caret && t.selectionEnd === caret
+              && document.activeElement === t && openRef.current) openRef.current(t, true);
+        }, () => {});
+        setAc(null);
+        return true;
+      }
+      // Not asked again: a relation nobody knows lists nothing.
+      cl = qhColumnList(ta.value, caret, sch, engineId, (n) => { const c = peek(n); return c === undefined ? null : c; });
+    }
+    if (!cl || cl.kind !== 'ready' || !cl.count) return false;
+    if (slot != null && cl.slot !== slot) return false;
+    const p = posAt(ta, cl.start);
+    setAc({ items: cl.items, idx: Math.max(0, cl.items.findIndex(it => !it.header)), top: p.top, lineTop: p.lineTop,
+            left: p.left, start: cl.start, end: cl.end, cols: true, slot: cl.slot });
+    return true;
+  };
+  // Ctrl+Space: the column list in a column position, else the normal list for
+  // the caret, also with nothing typed.
+  const openAC = (ta, afterLookup) => {
+    if (ta.selectionStart !== ta.selectionEnd) { setAc(null); return; }
+    if (showColumns(ta, null, !afterLookup)) return;
+    refreshAC(ta, false, true);
+  };
+  openRef.current = openAC;
 
   // Ctrl+C / Ctrl+X with nothing selected act on the caret's whole line,
   // newline included — VS Code's behaviour, and the thing people miss most
@@ -901,9 +1225,16 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
       if (!s.trim()) { const v = ta.value; const st = v.lastIndexOf('\n', ta.selectionStart - 1) + 1; let en = v.indexOf('\n', ta.selectionStart); if (en < 0) en = v.length; s = v.slice(st, en); }
       onRunSelection && onRunSelection(s); return;
     }
+    // Ctrl+Space opens the list at the caret. Ctrl on every OS, the Mac too.
+    if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === ' ' || e.code === 'Space')) {
+      e.preventDefault();
+      openAC(e.target);
+      return;
+    }
     if (ac && ac.items.length) {
-      if (e.key === 'ArrowDown') { e.preventDefault(); setAc(a => ({ ...a, idx: (a.idx + 1) % a.items.length })); return; }
-      if (e.key === 'ArrowUp') { e.preventDefault(); setAc(a => ({ ...a, idx: (a.idx - 1 + a.items.length) % a.items.length })); return; }
+      // Group headers of the column list are skipped.
+      if (e.key === 'ArrowDown') { e.preventDefault(); setAc(a => ({ ...a, idx: qhAcStep(a.items, a.idx, 1) })); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setAc(a => ({ ...a, idx: qhAcStep(a.items, a.idx, -1) })); return; }
       if (e.key === 'Enter' || e.key === 'Tab') {
         const it = ac.items[ac.idx];
         // Exact matches are listed so you can see the object exists, but
@@ -946,6 +1277,15 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
     el.style.top = top + 'px';
     el.style.left = left + 'px';
+    // Keep the picked row in view, with its group header when it is the first row.
+    const hi = el.querySelector('.qh-ac-ed-opt.is-hi');
+    if (hi) {
+      const lead = hi.previousElementSibling;
+      const hiTop = (lead && lead.classList.contains('qh-ac-ed-group') ? lead : hi).offsetTop;
+      const hiBot = hi.offsetTop + hi.offsetHeight;
+      if (hiTop < el.scrollTop) el.scrollTop = hiTop;
+      else if (hiBot > el.scrollTop + el.clientHeight) el.scrollTop = hiBot - el.clientHeight;
+    }
   });
 
   // `fixed` detaches from the caret as soon as anything scrolls, so close.
@@ -967,6 +1307,73 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close); };
   }, [!!ac]);
 
+  const issueList = Array.isArray(issues) ? issues : [];
+  const issuesOn = issuesShown && !ac && issueList.length > 0;
+  const issueHtml = React.useMemo(() => {
+    if (!issueList.length) return '';
+    let out = '', pos = 0;
+    issueList.forEach((r, i) => {
+      const s = Math.max(r.start, pos), e = Math.min(r.end, value.length);
+      if (e <= s) return;
+      out += qhEscape(value.slice(pos, s)) + `<mark class="qh-issue" data-i="${i}">` + qhEscape(value.slice(s, e)) + '</mark>';
+      pos = e;
+    });
+    return out + qhEscape(value.slice(pos)) + '\n';
+  }, [value, issues]);
+  const srText = issuesOn ? issueList.map(r => r.message).join(' ') : '';
+  // The overlay mounts only while it shows. It must start at the textarea's
+  // scroll position, or the line sits under the wrong word.
+  React.useLayoutEffect(() => {
+    const ta = taRef.current, el = issueRef.current;
+    if (ta && el) { el.scrollTop = ta.scrollTop; el.scrollLeft = ta.scrollLeft; }
+  }, [issuesOn, issueHtml]);
+
+  // The balloon is a hover tooltip, not a menu: it goes when the pointer leaves
+  // the text (see tests/test_dropdown_dismiss.py for the menu rule).
+  const hideTip = () => setTip(null);
+  // Find the marked word under the pointer. The textarea sits on top of the
+  // overlay, so this test uses the rectangles of the marks.
+  const onIssueMove = (e) => {
+    const host = issueRef.current;
+    if (!host) { if (tip) setTip(null); return; }
+    const marks = host.querySelectorAll('mark.qh-issue');
+    for (let n = 0; n < marks.length; n++) {
+      const rs = marks[n].getClientRects();
+      for (let j = 0; j < rs.length; j++) {
+        const r = rs[j];
+        if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+          const i = Number(marks[n].getAttribute('data-i'));
+          if (!tip || tip.i !== i) setTip({ i, msg: issueList[i].message, rect: { top: rs[0].top, bottom: rs[0].bottom, left: rs[0].left } });
+          return;
+        }
+      }
+    }
+    if (tip) setTip(null);
+  };
+
+  // The balloon is `fixed`, so it closes on scroll and resize like the list.
+  React.useEffect(() => {
+    if (!tip) return undefined;
+    const close = () => setTip(null);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close); };
+  }, [!!tip]);
+
+  // Place the balloon above the word with a 6px gap, or below it when there is
+  // no room above. Clamp it to the viewport with an 8px margin.
+  React.useLayoutEffect(() => {
+    const el = tipRef.current;
+    if (!tip || !el) return;
+    const w = el.offsetWidth, h = el.offsetHeight;
+    let top = tip.rect.top - h - 6;
+    if (top < 8) top = tip.rect.bottom + 6;
+    top = Math.max(8, Math.min(top, window.innerHeight - 8 - h));
+    const left = Math.max(8, Math.min(tip.rect.left, window.innerWidth - w - 8));
+    el.style.top = top + 'px';
+    el.style.left = left + 'px';
+  });
+
   return (
     <div className={'qh-editor' + (wrap ? ' is-wrap' : '')} style={{ '--ed-fs': fontSize + 'px', '--ed-lh': lh + 'px' }}>
       <span ref={measRef} className="qh-meas" aria-hidden="true">0000000000</span>
@@ -981,9 +1388,16 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
         <pre className="qh-pre" ref={preRef} aria-hidden="true">
           <code dangerouslySetInnerHTML={{ __html: qhHighlight(value) + '\n' }} />
         </pre>
+        {issuesOn && issueHtml && (
+          <pre className="qh-pre qh-issues" ref={issueRef} aria-hidden="true">
+            <code dangerouslySetInnerHTML={{ __html: issueHtml }} />
+          </pre>
+        )}
         <textarea
           ref={taRef}
           className="qh-ta"
+          onMouseMove={onIssueMove}
+          onMouseLeave={hideTip}
           value={value}
           spellCheck={false}
           autoCapitalize="off"
@@ -1014,17 +1428,34 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
           onDrop={onDrop}
         />
         {ac && ac.items.length > 0 && ReactDOM.createPortal(
-          <div className="qh-ac-ed" ref={acRef} style={{ top: ac.top, left: ac.left }}>
-            {ac.items.map((it, i) => (
-              <div key={it.type + it.text} className={'qh-ac-ed-opt' + (i === ac.idx ? ' is-hi' : '')}
+          <div className={'qh-ac-ed' + (ac.cols ? ' is-cols' : '')} ref={acRef} style={{ top: ac.top, left: ac.left }}>
+            {ac.items.map((it, i) => (it.header ? (
+              // A group header of the column list. It cannot be picked.
+              <div key={it.key} className="qh-ac-ed-group" aria-disabled="true"
+                onMouseDown={(e) => e.preventDefault()}>
+                <span className="qh-ac-ed-gname">{it.label}</span>
+                {it.alias ? <span className="qh-ac-ed-galias">{it.alias}</span> : null}
+              </div>
+            ) : (
+              <div key={it.key || (it.type + it.text)} className={'qh-ac-ed-opt' + (i === ac.idx ? ' is-hi' : '')}
                 onMouseEnter={() => setAc(a => ({ ...a, idx: i }))}
                 onMouseDown={(e) => { e.preventDefault(); accept(it); }}>
                 <span className="qh-ac-ed-name">{it.label}</span>
-                <span className={'qh-ac-ed-type ac-t-' + it.type}>{QH_AC_TYPE_LABEL[it.type]}</span>
+                {ac.cols ? (
+                  <React.Fragment>
+                    <span className="qh-ac-ed-pk">{it.pk ? 'PK' : ''}</span>
+                    <span className="qh-ac-ed-dtype">{it.colType}</span>
+                    <span className="qh-ac-ed-null">{it.nullable === true ? 'NULL' : it.nullable === false ? 'NOT NULL' : ''}</span>
+                  </React.Fragment>
+                ) : <span className={'qh-ac-ed-type ac-t-' + it.type}>{QH_AC_TYPE_LABEL[it.type]}</span>}
               </div>
-            ))}
+            )))}
           </div>, document.body)}
+        {tip && ReactDOM.createPortal(
+          <div className="qh-issue-tip" role="tooltip" ref={tipRef} style={{ top: tip.rect.top, left: tip.rect.left }}>{tip.msg}</div>,
+          document.body)}
       </div>
+      <div className="qh-sr-only" role="status" aria-live="polite">{srText}</div>
     </div>
   );
 }
@@ -1103,7 +1534,7 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
   const [editId, setEditId] = React.useState(null);
   const [draft, setDraft] = React.useState('');
   const cancelledRef = React.useRef(false);
-  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current line'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Tab', 'Indent'], ['⌥ / Alt + Z', 'Toggle word wrap'], ['⇧ + ⌥ / Alt + F', 'Format SQL'], ['⌥ / Alt + ← →', 'Previous / next result'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
+  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current line'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Ctrl + Space', 'Suggestions; in a SELECT, all columns'], ['Tab', 'Indent'], ['⌥ / Alt + Z', 'Toggle word wrap'], ['⇧ + ⌥ / Alt + F', 'Format SQL'], ['⌥ / Alt + ← →', 'Previous / next result'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
   const beginRename = (t) => { if (t.kind) return; setMenu(null); setEditId(t.id); setDraft(t.name); };
   const openMenu = (e, id) => { e.preventDefault(); e.stopPropagation(); setKb(false); setMenu({ x: Math.min(e.clientX, window.innerWidth - 200), y: e.clientY, id }); };
   React.useEffect(() => {
@@ -1119,10 +1550,10 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
       <div className="qh-tabs" ref={barRef}>
       {tabs.map(t => (
         <div key={t.id} className={'qh-tab' + (t.id === activeId ? ' is-active' : '') + (overId === t.id ? ' is-drop' : '') + (dragId === t.id ? ' is-dragging' : '')} onClick={() => onSelect(t.id)}
-          // DESIGN: the request id only sits in the strip on the ACTIVE tab — the
-          // one whose number you would quote. On the others it moves to hover,
-          // because in-flow-on-hover would resize the tab and shift the strip.
-          title={t.id !== activeId && t.reqId ? t.name + ' · request #' + t.reqId : undefined}
+          // 2026-11-09: the request id is no longer in the strip. Every tab, the
+          // active one too, has the full name and the request id on hover,
+          // because a narrow tab cuts its name.
+          title={t.name + (!t.kind && t.reqId ? ' · request #' + t.reqId : '')}
           draggable={editId !== t.id}
           onDragStart={(e) => { setDragId(t.id); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/x-qh-tab', t.id); } catch (err) {} }}
           onDragOver={(e) => { if (dragId && dragId !== t.id) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (overId !== t.id) setOverId(t.id); } }}
@@ -1137,7 +1568,8 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
           ) : t.kind === 'whatsnew' ? (
             <span className="qh-tab-home" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 3.9 4.3.6-3.1 3 .7 4.3-3.8-2-3.8 2 .7-4.3-3.1-3 4.3-.6z"/></svg></span>
           ) : (
-            <span className={'qh-tab-dot tier-' + t.tier.toLowerCase()} />
+            // A tab with no target yet has a grey dot: it has no tier to show.
+            <span className={'qh-tab-dot ' + (qhTabNoTarget(t) ? 'tier-none' : 'tier-' + String(t.tier || '').toLowerCase())} />
           )}
           {editId === t.id ? (
             <input className="qh-tab-rename" value={draft} autoFocus spellCheck={false}
@@ -1149,12 +1581,6 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
               onBlur={() => { if (cancelledRef.current) { cancelledRef.current = false; setEditId(null); return; } onRename(t.id, draft); setEditId(null); }} />
           ) : (
             <span className="qh-tab-name">{t.name}{t.dirty ? ' •' : ''}</span>
-          )}
-          {editId !== t.id && !t.kind && t.reqId && t.id === activeId && (
-            // The request id, known from the moment the tab opened — the number
-            // the requester quotes, watches and cancels by. A chip rather than
-            // part of the name, so renaming a tab cannot lose or fake it.
-            <span className="qh-tab-req" title={'Request #' + t.reqId}>#{t.reqId}</span>
           )}
           {editId !== t.id && (
             <button className="qh-tab-x" onClick={(e) => { e.stopPropagation(); onClose(t.id); }} aria-label="Close tab">
@@ -1245,4 +1671,5 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
 // same reason; qhUndoForget is also what sign-out calls.
 Object.assign(window, { SqlEditor, EditorTabs, qhHighlight, qhBuildSuggest, QH_REDACTED_LIT, qhRedactedAt,
   qhTextDiff, qhEditKind, qhUndoDoc, qhUndoRecord, qhUndoSeal, qhUndoStep, qhUndoForget,
-  qhSqlTokens, qhStarExpansion });
+  qhSqlTokens, qhStarExpansion, qhBlockerRanges, qhFromIsName, qhFromUnquote, qhReadFromList, qhRefLookup,
+  qhClTokOpen, qhColumnList, qhAcStep });

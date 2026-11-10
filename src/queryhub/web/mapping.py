@@ -287,7 +287,8 @@ def session_entry(row: dict) -> dict:
         "dest": "server",
         "savedAt": iso(row.get("updated_at")),
         "tabs": [{"name": t.get("name"), "sql": t.get("sql") or "",
-                  "conn": t.get("connectionId"), "db": t.get("databaseId")}
+                  "conn": t.get("connectionId"), "db": t.get("databaseId"),
+                  "autoName": t.get("autoName") is True}
                  for t in (row.get("tabs") or [])],
     }
 
