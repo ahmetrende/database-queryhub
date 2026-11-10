@@ -363,6 +363,11 @@
   .qh-saved { position: relative; cursor: pointer; display: block; width: 100%; text-align: left; }
   .qh-row-del { position: absolute; top: 7px; right: 7px; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border: 0; background: transparent; border-radius: var(--r-2xs); color: var(--fg-tertiary); cursor: pointer; opacity: 0; transition: opacity var(--d-fast-02) var(--ease-standard); }
   .qh-saved:hover .qh-row-del { opacity: 1; }
+  /* Insert at caret, left of Delete (saved queries only). Keyboard focus shows both. */
+  .qh-saved.has-ins .qh-saved-name { padding-right: 50px; }
+  .qh-row-ins { position: absolute; top: 7px; right: 33px; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border: 0; background: transparent; border-radius: var(--r-2xs); color: var(--fg-tertiary); cursor: pointer; opacity: 0; transition: opacity var(--d-fast-02) var(--ease-standard); }
+  .qh-saved:hover .qh-row-ins, .qh-saved:focus-within .qh-row-ins, .qh-saved:focus-within .qh-row-del { opacity: 1; }
+  .qh-row-ins:hover { background: var(--brand-adaptive-light); color: var(--fg-accent); }
   .qh-row-del:hover { background: var(--danger-adaptive-light); color: var(--fg-danger); }
   .qh-saved-top { display: flex; align-items: center; gap: 8px; }
   .qh-saved-top .qh-saved-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
@@ -410,6 +415,12 @@
   .qh-tab:has(.qh-tab-rename) { flex-shrink: 0; }
   .qh-tab-rename { flex-shrink: 0; }
   .qh-tab-dot.tier-none { background: var(--fg-tertiary); }
+  /* 2026-11-10: a PROD tab has a thin orange top line, in the colour of the
+     PROD env chip. Every other tab has no colour. The active marker (::after)
+     and the tier dot do not change. */
+  .qh-tab.is-prod::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--warning-solid-medium); pointer-events: none; }
+  [data-theme='dark'] .qh-tab.is-prod::before { background: var(--warning-solid-light); }
+  .qh-ac-ed-pii { display: inline-flex; align-items: center; margin-left: 6px; vertical-align: -1px; color: var(--fg-warning); }
   .qh-tab-rename { width: 108px; font-family: inherit; font-size: 13px; font-weight: 500; color: var(--fg-primary); background: var(--bg-white); border: 1px solid var(--brand-green); border-radius: var(--r-2xs); padding: 1px 5px; outline: none; }
   .qh-tab-x { width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border: 0;
     background: transparent; border-radius: var(--r-2xs); cursor: pointer; color: var(--fg-tertiary); flex-shrink: 0; }
@@ -425,7 +436,9 @@
   .qh-kb-btn { width: 34px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border: 0; background: transparent; border-radius: var(--r-xs); cursor: pointer; color: var(--fg-tertiary); }
   .qh-kb-btn:hover { background: var(--adaptive-medium); color: var(--fg-secondary); }
   .qh-wrapt.is-on, .qh-wrapt.is-on:hover { background: var(--brand-adaptive-medium); color: var(--fg-accent); box-shadow: inset 0 0 0 1px var(--stroke-accent); }
-  .qh-kb-pop { position: absolute; top: 34px; right: 6px; z-index: 60; width: 280px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-md); box-shadow: var(--shadow-medium); padding: 10px; }
+  .qh-kb-pop { position: absolute; top: 34px; right: 6px; z-index: 60; width: 280px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-md); box-shadow: var(--shadow-medium); padding: 10px;
+    max-height: calc(100vh - 96px); overflow-y: auto; }
+  .qh-kb-sub { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--stroke-light); }
   .qh-kb-title { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--fg-tertiary); padding: 2px 4px 8px; }
   .qh-kb-row { display: flex; align-items: center; gap: 10px; padding: 5px 4px; font-size: 12.5px; color: var(--fg-secondary); }
   .qh-kbd { flex-shrink: 0; min-width: 82px; text-align: center; font-family: var(--qh-mono); font-size: 11px; font-weight: 600; color: var(--fg-primary); background: var(--bg-light); border: 1px solid var(--stroke-medium); border-bottom-width: 2px; border-radius: var(--r-xs); padding: 3px 7px; }
@@ -658,6 +671,9 @@
   .qh-ta { position: absolute; inset: 0; width: 100%; height: 100%; resize: none; background: transparent; outline: none;
     color: transparent; caret-color: var(--brand-green); overflow: auto; }
   .qh-ta::selection { background: var(--brand-adaptive-medium); }
+  /* The empty-editor hint (QH_EDITOR_HINT). The textarea's text is transparent,
+     so the hint needs its own colour. Firefox dims a placeholder: opacity 1. */
+  .qh-ta::placeholder { color: var(--fg-tertiary); opacity: 1; }
   /* 2026-11-09: inline pre-flight blockers. */
   /* The overlay sits after .qh-pre and before .qh-ta in the DOM. All three are
      absolute with no z-index, so DOM order stacks it above the highlight and
@@ -697,6 +713,10 @@
   .ac-t-table { color: #15688C; background: var(--sup-blue-light); }
   .ac-t-column { color: var(--fg-secondary); background: var(--adaptive-bold); }
   .ac-t-database { color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  .ac-t-schema, .ac-t-index { color: var(--fg-secondary); background: var(--adaptive-bold); }
+  /* A snippet (QH_SNIPPETS): the key, then what it inserts in a quieter tone. */
+  .ac-t-snippet { color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  .qh-ac-ed-desc { margin-left: 8px; font-family: var(--font-sans); font-size: 11.5px; color: var(--fg-tertiary); }
   [data-theme='dark'] .ac-t-table { color: #7FD2F5; background: rgba(102,204,255,0.12); }
 
   /* ---------- results grip ---------- */
@@ -2832,6 +2852,11 @@
        Denied                           --danger-solid-medium on the red tint (st-rejected)
                                          4.98;  #FF5151 4.95
      A state is never colour alone: each pill has its own word. */
+  /* 2026-11-10 JOIN suggestions */
+  /* A JOIN suggestion that a foreign key gives carries a small FK mark. */
+  .qh-ac-ed-fk { flex: none; display: inline-flex; align-items: center; margin-left: 0; padding: 0 4px; border-radius: var(--r-2xs); font-size: 10px; font-weight: 600; line-height: 14px; vertical-align: 1px; color: var(--fg-tertiary); background: var(--adaptive-bold); }
+  /* 2026-11-10: the Run button names a selection, and this says its size. */
+  .qh-sel-lines { font-size: 12px; color: var(--fg-tertiary); white-space: nowrap; flex-shrink: 0; }
   .qh-wait-pill { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; box-sizing: border-box; border-radius: var(--r-full); font-size: 13px; font-weight: 600; white-space: nowrap; cursor: default; flex-shrink: 0;
     color: var(--warning-solid-strong); background: var(--warning-adaptive-light); box-shadow: inset 0 0 0 1px var(--warning-adaptive-strong); }
   .st-withdrawn { color: var(--system-solid-light); background: var(--adaptive-medium); }
@@ -2855,6 +2880,19 @@
   .qh-wait-row:hover { background: var(--bg-light); box-shadow: inset 0 0 0 1px var(--warning-adaptive-strong); }
   .qh-wait-name { font-size: 12.5px; font-weight: 600; color: var(--fg-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .qh-wait-meta { font-size: 11px; color: var(--fg-secondary); font-family: var(--qh-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* History search: text, a date range and Export CSV, above the chips. The sidebar is narrow. */
+  .qh-hsearch { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 8px; }
+  .qh-hsearch-box { position: relative; display: flex; }
+  .qh-hsearch-input, .qh-hsearch-date { width: 100%; min-width: 0; height: 28px; padding: 0 8px; border: 1px solid var(--stroke-strong); border-radius: var(--r-xs); background: var(--bg-white); color: var(--fg-primary); font-family: inherit; font-size: 12px; box-sizing: border-box; }
+  .qh-hsearch-input { padding-right: 26px; }
+  .qh-hsearch-input:focus-visible, .qh-hsearch-date:focus-visible { outline: none; border-color: var(--brand-adaptive-strong); box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-hsearch-clear { position: absolute; right: 2px; top: 2px; width: 24px; height: 24px; border: 0; border-radius: var(--r-xs); background: transparent; color: var(--fg-tertiary); font-size: 15px; line-height: 1; cursor: pointer; }
+  .qh-hsearch-clear:hover { background: var(--adaptive-medium); color: var(--fg-primary); }
+  .qh-hsearch-dates { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
+  .qh-hsearch-date { padding: 0 4px; font-size: 11px; }
+  .qh-hsearch-foot { display: flex; align-items: center; gap: 6px; min-height: 24px; }
+  .qh-hsearch-note { flex: 1; min-width: 0; font-size: 11px; color: var(--fg-secondary); }
+  .qh-hsearch-export { flex: none; }
   /* History filter chips: All / Approved / Denied / Expired / Withdrawn. */
   .qh-hfilters { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 10px; }
   .qh-hfilter { height: 24px; padding: 0 10px; border-radius: var(--r-full); border: 1px solid var(--stroke-strong); background: transparent; color: var(--fg-secondary); font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
@@ -2962,6 +3000,22 @@
   .qh-ac-ed-group { display: flex; align-items: baseline; gap: 8px; padding: 8px 8px 4px; cursor: default; font-family: var(--font-sans); font-size: 11px; font-weight: 600; color: var(--fg-secondary); }
   .qh-ac-ed-group:not(:first-child) { margin-top: 4px; border-top: 1px solid var(--stroke-medium); }
   .qh-ac-ed-galias { font-family: var(--qh-mono); font-weight: 400; }
+  /* 2026-11-10 Generate script as */
+  /* The group title in the grid's right-click menu is a muted label, not a
+     button. The four items under it are indented under the title. */
+  .qh-ctx-head { padding: 6px 10px 2px; cursor: default; font-family: var(--font-sans); font-size: 11px; font-weight: 600; color: var(--fg-secondary); }
+  .qh-ctxmenu button.qh-ctx-script { padding-left: 18px; }
+  /* 2026-11-10 Quick info on hover */
+  /* The card over a table or column name in the editor. It uses the tokens of
+     the blocker balloon, with a neutral border. The tokens switch for dark. It
+     takes no pointer events, so it never takes focus or hides the text. */
+  .qh-hover-card { position: fixed; z-index: 96; max-width: 360px; padding: 6px 10px; background: var(--bg-white);
+    color: var(--fg-primary); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm);
+    box-shadow: var(--shadow-medium); font-family: var(--qh-mono); font-size: 12px; line-height: 1.45;
+    white-space: pre; pointer-events: none; }
+  .qh-hover-card > div { overflow: hidden; text-overflow: ellipsis; }
+  .qh-hover-card .qh-hover-head { font-weight: 600; }
+  .qh-hover-card > div + div { color: var(--fg-secondary); }
 
 /* ---- local additions (CODE-owned; override the design above) ---- */
 /* CODE-owned CSS layered ON TOP of the design CSS.

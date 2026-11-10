@@ -9,6 +9,7 @@ import { bareWindow, loadInto } from './_load.mjs';
 import { page, web, jsdomOpts as opts } from './_mount.mjs';
 
 const app = web('qh-app.jsx');
+const data = web('qh-data.jsx');
 
 test('the tier words in prose', () => {
   const { qhTierProse } = loadInto(bareWindow(), 'qh-data.jsx');
@@ -19,7 +20,8 @@ test('the tier words in prose', () => {
 });
 
 test('the action bar says Submit for DBA approval, Withdraw, and the new tier words', () => {
-  assert.match(app, /'Run' : 'Submit for DBA approval'/);
+  assert.match(app, /let primaryLabel = qhPrimaryLabel\(!!isSuper, autoApprove, selLines > 0\);/);
+  assert.match(data, /return selection \? 'Submit selection for DBA approval' : 'Submit for DBA approval';/);
   assert.match(app, /status === 'running' \? 'Stop' : 'Withdraw'/);
   assert.match(app, /const tierLabel = qhTierProse\(classify\.tier\);/);
   assert.doesNotMatch(app, /'Submit for approval'|'Cancel request'|Schema \(DDL\)|Read\/Write/);

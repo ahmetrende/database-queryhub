@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 
 import psycopg
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from .. import (admins, auto_approve, db, engines, errors, favorites, people, query_safety,
@@ -516,10 +517,65 @@ def sessions_delete(session_id: int, claims: dict = Depends(deps.current_user)):
 
 # ---- /history ---------------------------------------------------------------
 
+# A search text that names one request: "123" or "#123".
+_HISTORY_ID = re.compile(r"#?([0-9]{1,18})")
+
+
+def _like_escape(text: str) -> str:
+    """Make `%`, `_` and the backslash literal inside an ILIKE ... ESCAPE '\\'."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _day_start(d: date, tz_minutes: int = 0) -> datetime:
+    """Midnight at the start of `d` on the caller's clock. `tz_minutes` is
+    the caller's offset east of UTC (180 for UTC+3)."""
+    return datetime(d.year, d.month, d.day,
+                    tzinfo=timezone(timedelta(minutes=tz_minutes)))
+
+
+def _history_filter(q: str | None, since: date | None,
+                    until: date | None, tz_minutes: int = 0) -> tuple[str, list]:
+    """The extra WHERE text and its parameters for a history search.
+
+    No filter gives an empty string, so the SQL is the old SQL exactly. Values
+    always go in as parameters, never into the SQL text. The days are days on
+    the caller's clock (`tz_minutes`), so "From 10 Nov" in UTC+3 starts at
+    21:00 UTC on 9 Nov.
+    """
+    parts: list[str] = []
+    params: list = []
+    text = (q or "").strip()
+    if text:
+        like = "%" + _like_escape(text) + "%"
+        cond = "query ILIKE %s ESCAPE '\\' OR database_name ILIKE %s ESCAPE '\\'"
+        params += [like, like]
+        m = _HISTORY_ID.fullmatch(text)
+        if m:
+            cond += " OR id = %s"
+            params.append(int(m.group(1)))
+        parts.append("(" + cond + ")")
+    if since:
+        parts.append("created_at >= %s")
+        params.append(_day_start(since, tz_minutes))
+    if until:
+        # The whole end day counts: up to the start of the next day.
+        parts.append("created_at < %s")
+        params.append(_day_start(until + timedelta(days=1), tz_minutes))
+    return "".join(" AND " + p for p in parts), params
+
+
 @router.get("/history")
-def history(limit: int = 50, claims: dict = Depends(deps.current_user)):
+def history(limit: int = 50,
+            q: str | None = Query(None, max_length=200),
+            since: date | None = None,
+            until: date | None = None,
+            tz: int = Query(0, ge=-840, le=840),
+            claims: dict = Depends(deps.current_user)):
     deps.require_whitelisted(claims)
     limit = max(1, min(int(limit), 200))
+    if since and until and until < since:
+        raise deps._error(400, "bad_request", "The end date is before the start date.")
+    extra_sql, extra_params = _history_filter(q, since, until, tz)
     rows = db.fetch_all(
         "SELECT id, query, target_server_id, database_name, status, "
         "       row_count, created_at, decided_by_slack_id, decided_by_name, "
@@ -528,12 +584,13 @@ def history(limit: int = 50, claims: dict = Depends(deps.current_user)):
         # The tier the submit stored: re-reading the query text misreads a script.
         "       required_tier, "
         # What `ranOn` reads, as the status poll does.
-        "       executed_at, executed_target_id, executed_tier, engine, origin, "
-        "       requester_seen_at "
+        # completed_at: what `durationMs` reads, with executed_at.
+        "       executed_at, completed_at, executed_target_id, executed_tier, engine, "
+        "       origin, requester_seen_at "
         # status <> 'draft': a reserved id from an open tab is not history.
-        "FROM requests WHERE requester_slack_id = %s AND status <> 'draft' "
-        "ORDER BY id DESC LIMIT %s",
-        (claims["sub"], limit),
+        "FROM requests WHERE requester_slack_id = %s AND status <> 'draft'"
+        + extra_sql + " ORDER BY id DESC LIMIT %s",
+        (claims["sub"], *extra_params, limit),
     )
     state_of = _conn_state_resolver(claims["sub"])
     # One lookup for the page. `decided_by_name` is a snapshot like every other

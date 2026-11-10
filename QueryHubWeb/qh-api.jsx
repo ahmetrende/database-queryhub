@@ -135,7 +135,19 @@ const qhApi = {
   // the UI builds the "ran on" sentence (the server sends none for a forced run).
   connectionReplicas: (conn) => qhFetch('/connections/' + encodeURIComponent(conn) + '/replicas'),
   saved:       ()      => qhFetch('/saved'),
-  history:     (n=50)  => qhFetch('/history?limit=' + n),
+  // `f` is an optional search: { q, since, until }. `since` and `until` are
+  // 'YYYY-MM-DD' days on this browser's clock: `tz` sends the offset east of
+  // UTC in minutes. The server includes the whole `until` day. Rows carry
+  // durationMs (null until the run ends).
+  history:     (n=50, f) => {
+    const p = new URLSearchParams({ limit: String(n) });
+    const q = f && f.q != null ? String(f.q).trim() : '';
+    if (q) p.set('q', q);
+    if (f && f.since) p.set('since', f.since);
+    if (f && f.until) p.set('until', f.until);
+    if (f && (f.since || f.until)) p.set('tz', String(-new Date().getTimezoneOffset()));
+    return qhFetch('/history?' + p.toString());
+  },
   // Reserve the id a new tab will submit under, so the number on screen is the
   // real request id from the first keystroke rather than appearing after submit.
   reserveDraft: ()      => qhFetch('/queries/draft', { method: 'POST' }),

@@ -93,6 +93,8 @@ def test_history_entry_shape():
         # Nobody read it after it ended yet.
         "seenAt": None,
         "approver": "alex.kim",
+        # The row has no executed_at or completed_at, so no duration.
+        "durationMs": None,
     }
     # A request from Claude says so. The page opens a tab for it.
     assert mapping.history_entry({**row, "origin": "mcp"}, lambda tid: "alpha-admin")["origin"] == "mcp"

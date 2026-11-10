@@ -695,6 +695,8 @@ function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, r
 // ---------- Sidebar ----------
 // `qhAgo` lives in qh-data.jsx — it was defined here too, with a different
 // signature, and the later load won for both callers (see the note there).
+// Insert at caret: an arrow into a text caret.
+const ICN_INSERT = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12h11M10 7l5 5-5 5"/><path d="M19 4v16"/></svg>;
 const ICN_TRASH = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6M10 11v6M14 11v6"/></svg>;
 function OriginBadge({ dest }) {
   const local = dest === 'local';
@@ -729,15 +731,21 @@ function QhConnSkeleton() {
   );
 }
 
-function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, pending, onOpenPending, onResubmit, histFocus, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
+function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onInsertSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, pending, onOpenPending, onResubmit, histFocus, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
   const [open, setOpen] = React.useState(() => ({ 'prod-main': true, 'prod-replica': true }));
   // History (2026-10-24): which group the chips show, and the row that a bell
   // item points at. `histFocus` is { id, n }: the parent bumps `n` for each ask.
   const [hfilter, setHfilter] = React.useState('all');
   const [hflash, setHflash] = React.useState(null);
+  // History search (2026-11-10): the text and the date range. See below.
+  const [hq, setHq] = React.useState('');
+  const [hsince, setHsince] = React.useState('');
+  const [huntil, setHuntil] = React.useState('');
   React.useEffect(() => {
     if (!histFocus || mode !== 'history') return;
     setHfilter('all');
+    // A bell item points at one row. A search could hide it, so it ends.
+    setHq(''); setHsince(''); setHuntil('');
     const id = String(histFocus.id);
     const t = setTimeout(() => {
       const el = Array.from(document.querySelectorAll('.qh-side [data-hist-id]')).find(x => x.getAttribute('data-hist-id') === id);
@@ -747,6 +755,43 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
     const t2 = setTimeout(() => setHflash(null), 2600);
     return () => { clearTimeout(t); clearTimeout(t2); };
   }, [histFocus, mode]);
+  // History search (2026-11-10): text, a date range and a CSV export. When one
+  // of the three is set, the list shows the server's search result and not the
+  // `history` prop. The status chips still apply on top of it.
+  const [hsearch, setHsearch] = React.useState(null);
+  const hseq = React.useRef(0);
+  const hsActive = !!(hq.trim() || hsince || huntil);
+  React.useEffect(() => {
+    // Each new input gets a number. The list ignores a late answer to an older input.
+    const n = ++hseq.current;
+    if (!hsActive) { setHsearch(null); return undefined; }
+    setHsearch(s => ({ rows: s ? s.rows : [], error: null, loading: true }));
+    const t = setTimeout(() => {
+      Promise.resolve()
+        .then(() => qhApi.history(200, { q: hq.trim(), since: hsince, until: huntil }))
+        .then(r => {
+          if (n !== hseq.current) return;
+          setHsearch({ rows: ((r && r.history) || []).map(qhHistoryRow), error: null, loading: false });
+        })
+        .catch(e => {
+          if (n !== hseq.current) return;
+          setHsearch({ rows: [], error: (e && e.message) || 'unknown error', loading: false });
+        });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [hq, hsince, huntil]);
+  const hbase = hsActive ? ((hsearch && hsearch.rows) || []) : (history || []);
+  const hvisible = qhHistoryFilter(hbase, hfilter);
+  const hexport = () => {
+    const url = URL.createObjectURL(new Blob([qhHistoryCsv(hvisible)], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = qhHistoryCsvName(new Date());
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
   const [q, setQ] = React.useState('');
   const sqlFileRef = React.useRef(null);
   const onSqlFileChosen = (e) => {
@@ -967,10 +1012,22 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
           // The row says it BEFORE it is clicked: opening a query only to find
           // its target unreachable is the same information one click later.
           const cs = qhConnState(s.state);
+          // A saved query is also a snippet of the person's own (2026-11-10,
+          // Devart D1). The Insert button puts its SQL at the editor's caret,
+          // and so does a drag onto the editor. QH_DRAG_BLOCK tells the editor
+          // to put it on lines of its own. A click still opens a new tab.
           return (
-          <div key={s.id} className="qh-saved" onClick={() => onLoadSaved(s)} title="Open in a new tab">
+          <div key={s.id} className={'qh-saved' + (onInsertSaved ? ' has-ins' : '')} onClick={() => onLoadSaved(s)}
+            title={onInsertSaved ? 'Open in a new tab. Drag it into the editor to insert the SQL at the caret.' : 'Open in a new tab'}
+            draggable={!!onInsertSaved}
+            onDragStart={onInsertSaved ? (e) => {
+              e.dataTransfer.setData('text/plain', s.sql || '');
+              e.dataTransfer.setData(QH_DRAG_BLOCK, '1');
+              e.dataTransfer.effectAllowed = 'copy';
+            } : undefined}>
             <div className="qh-saved-name">{s.name}</div>
             <div className="qh-saved-meta"><OriginBadge dest={s.dest} /><span>{s.conn} · {s.db}</span>{cs && <span className="qh-conn-state" title={cs.why + ' The query still opens.'}>{cs.word}</span>}</div>
+            {onInsertSaved && <button className="qh-row-ins" onClick={(e) => { e.stopPropagation(); onInsertSaved(s); }} title="Insert at caret" aria-label="Insert saved query at caret">{ICN_INSERT}</button>}
             <button className="qh-row-del" onClick={(e) => { e.stopPropagation(); onDeleteSaved(s.id); }} title="Delete" aria-label="Delete saved query">{ICN_TRASH}</button>
           </div>
           );
@@ -1027,20 +1084,49 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
             ))}
           </div>
         )}
-        {mode === 'history' && history.length > 0 && (
+        {mode === 'history' && (history.length > 0 || hsActive) && (
+          <div className="qh-hsearch" role="search" aria-label="Search history">
+            <div className="qh-hsearch-box">
+              <input className="qh-hsearch-input" type="text" value={hq} maxLength={200}
+                placeholder="Search SQL, database or #id" aria-label="Search history"
+                onChange={(e) => setHq(e.target.value)} />
+              {hq && <button className="qh-hsearch-clear" onClick={() => setHq('')} title="Clear the search" aria-label="Clear the search">×</button>}
+            </div>
+            <div className="qh-hsearch-dates">
+              <input className="qh-hsearch-date" type="date" value={hsince} max={huntil || undefined} aria-label="From date" onChange={(e) => setHsince(e.target.value)} />
+              <input className="qh-hsearch-date" type="date" value={huntil} min={hsince || undefined} aria-label="To date" onChange={(e) => setHuntil(e.target.value)} />
+            </div>
+            <div className="qh-hsearch-foot">
+              <span className="qh-hsearch-note" aria-live="polite">
+                {hsActive && hsearch && hsearch.error ? 'Search failed: ' + hsearch.error
+                  : hsActive && hsearch && !hsearch.loading
+                    ? hsearch.rows.length + (hsearch.rows.length === 1 ? ' match' : ' matches') + (hsearch.rows.length >= 200 ? ' · Showing the newest 200' : '')
+                    : hsActive ? 'Searching…' : ''}
+              </span>
+              <button className="qh-btn qh-btn-ghost qh-btn-sm qh-hsearch-export" disabled={hvisible.length === 0} onClick={hexport} title="Download the rows in this list as a CSV file">Export CSV</button>
+            </div>
+          </div>
+        )}
+        {mode === 'history' && (history.length > 0 || hsActive) && (
           <div className="qh-hfilters" role="group" aria-label="Filter history by how the request ended">
             {QH_HIST_FILTERS.map(([key, label]) => (
               <button key={key} className={'qh-hfilter' + (hfilter === key ? ' is-on' : '')} aria-pressed={hfilter === key} onClick={() => setHfilter(key)}>{label}</button>
             ))}
           </div>
         )}
-        {mode === 'history' && history.length > 0 && qhHistoryFilter(history, hfilter).length === 0 && (
+        {mode === 'history' && !hsActive && history.length > 0 && hvisible.length === 0 && (
           <div className="qh-side-empty">
             <div className="qh-side-empty-title">Nothing here</div>
             <div className="qh-side-empty-sub">No request in your history ended this way. Pick All to see every request.</div>
           </div>
         )}
-        {mode === 'history' && qhHistoryFilter(history, hfilter).map(h => {
+        {mode === 'history' && hsActive && hsearch && !hsearch.loading && !hsearch.error && hvisible.length === 0 && (
+          <div className="qh-side-empty">
+            <div className="qh-side-empty-title">No match</div>
+            <div className="qh-side-empty-sub">No request matches this search. Change the text or the dates.</div>
+          </div>
+        )}
+        {mode === 'history' && hvisible.map(h => {
           const cs = qhConnState(h.state);
           return (
           <div key={h.id} className={'qh-hist-item' + (hflash === String(h.id) ? ' is-flash' : '')} data-hist-id={h.id}>
@@ -1052,7 +1138,7 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
                 <span className="qh-hist-when">{h.when}</span>
               </div>
               <div className="qh-hist-sql">{h.sql}</div>
-              <div className="qh-hist-meta">{h.conn} · {h.db}{h.approver ? ' · ' + qhPersonName(h.approver) : ''}{cs && <span className="qh-conn-state" title={cs.why + ' The query still opens.'}>{cs.word}</span>}</div>
+              <div className="qh-hist-meta">{h.conn} · {h.db}{h.approver ? ' · ' + qhPersonName(h.approver) : ''}{h.durationMs != null ? ' · ' + qhDurationLabel(h.durationMs) : ''}{cs &&<span className="qh-conn-state" title={cs.why + ' The query still opens.'}>{cs.word}</span>}</div>
             </button>
             {h.outcome === 'changes_requested' && onResubmit && (
               <button className="qh-btn qh-btn-ghost qh-btn-sm qh-hist-resub" onClick={() => onResubmit(h)} title="Open a new tab with this SQL and this target">Edit and resubmit</button>
@@ -1442,7 +1528,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
 }
 
 // ---------- Bottom results panel ----------
-function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement, ranOn, pending, onWithdraw, outcome, endNote, onResubmit, slackEnabled, timeline }) {
+function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement, ranOn, pending, onWithdraw, outcome, endNote, onResubmit, slackEnabled, timeline, sourceSql, pkOf }) {
   const [exp, setExp] = React.useState(false);
   // The Export menu is long. The panel sits at the bottom of the window, so the
   // menu measures the room below and above the button when it opens, and goes
@@ -1460,6 +1546,11 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
   // second table existed on the server and was unreachable from the UI.
   const stN = (result && result.statement) || 1;
   const stCount = (result && result.statementCount) || 1;
+  // The statement that produced the table on screen, for "Generate script as".
+  // `sourceSql` is the whole text that ran. A split that does not match the
+  // server's statement count gives no statement, so the script says table_name.
+  const stParts = sourceSql && typeof qhSplitStatements === 'function' ? qhSplitStatements(sourceSql) : [];
+  const stSql = stParts.length === stCount ? (stParts[stN - 1] || null) : null;
   const multi = stCount > 1;
   // The position lives ON the Results tab (CODE brief 2026-08-24). In the action
   // row it sat at the opposite end from the tabs, at 11.5px, beside Export: a
@@ -1632,7 +1723,7 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
             here instead of "Run a query to see results here." */}
         {tab === 'results' && !result && pending && <PendingCard since={pending.since} expiresAt={pending.expiresAt} onWithdraw={onWithdraw} slackEnabled={slackEnabled} />}
         {tab === 'results' && !result && !pending && status === 'rejected' && qhOutcomeInfo(outcome) && <EndedCard outcome={outcome} note={endNote} onResubmit={onResubmit} />}
-        {tab === 'results' && !(!result && (pending || (status === 'rejected' && qhOutcomeInfo(outcome)))) && <ResultsView key={'st' + stN} result={result} status={status} onToast={onToast} colMeta={colMeta} unmasked={unmasked} />}
+        {tab === 'results' && !(!result && (pending || (status === 'rejected' && qhOutcomeInfo(outcome)))) && <ResultsView key={'st' + stN} result={result} status={status} onToast={onToast} colMeta={colMeta} unmasked={unmasked} engineId={qhEngineId(conn && conn.engine)} sourceSql={stSql} pkOf={pkOf} />}
         {tab === 'plan' && <PlanView plan={plan} />}
         {tab === 'messages' && <MessagesView messages={messages} timeline={timeline} />}
         {tab === 'audit' && <RunAuditView audit={audit} />}
@@ -1717,7 +1808,11 @@ function PlanView({ plan }) {
 }
 
 const QH_PAGE_SIZES = [100, 500, 1000];
-function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked }) {
+// `engineId`, `sourceSql` and `pkOf` feed "Generate script as" (2026-11-10).
+// `sourceSql` is the statement that produced the result. It must be the SQL
+// that ran, not the editor text, which can change after the run. `pkOf(sql)`
+// gives the primary key columns that UPDATE may use, or [].
+function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, engineId, sourceSql, pkOf }) {
   // Sort and filter (2026-10-25). `result` below is the derived view. It is the
   // same object as `baseResult` when there is no sort and no filter, so paging,
   // selection and copy work on the sorted and filtered rows with no other change.
@@ -1841,7 +1936,9 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked })
       setSel(new Set([keyOf(ri, ci)])); setColSel(new Set());
       setAnchor({ r: ri, c: ci }); setCursor({ r: ri, c: ci });
     }
-    setGmenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.min(e.clientY, window.innerHeight - 190), r: ri, c: ci });
+    // The menu holds the "Generate script as" group since 2026-11-10, so it
+    // needs more room below the pointer. It scrolls when the window is short.
+    setGmenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 380)), r: ri, c: ci });
   };
   const menuCopy = (withHeaders) => {
     const text = selectionClipboardText(withHeaders);
@@ -1962,6 +2059,45 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked })
     }
     return sel.size ? buildCopy('\t') : '';
   };
+  // "Generate script as" (2026-11-10) reads the same rows and columns as the
+  // clipboard text above. Selected columns give every loaded row up to 5,000.
+  // Cells give their rows and the union of their columns, the header line that
+  // "Copy with headers" writes. A ragged selection fills each row to that union.
+  const selectionScriptData = () => {
+    if (colSel.size) {
+      const ci = [...colSel].sort((a, b) => a - b);
+      return { ci, src: result.slice(0, Math.min(total, 5000)) };
+    }
+    if (!sel.size) return null;
+    const ri = [...new Set([...sel].map(k => Number(k.split(':')[0])))].sort((a, b) => a - b);
+    const ci = [...new Set([...sel].map(k => Number(k.split(':')[1])))].sort((a, b) => a - b);
+    return { ci, src: ri.map(r => rows[r]).filter(Boolean) };
+  };
+  // Copies the script through the grid's copy path. It opens no tab and runs
+  // nothing. Without a usable primary key, UPDATE writes a placeholder.
+  const menuScript = (kind) => {
+    setGmenu(null);
+    const d = selectionScriptData();
+    const types = {};
+    cols.forEach((c) => {
+      const t = (result.colTypes && result.colTypes[c]) || (colMeta && colMeta[c] && colMeta[c].type);
+      if (t) types[c] = t;
+    });
+    const text = d ? qhResultScript(kind, {
+      columns: d.ci.map(i => cols[i]),
+      rows: d.src.map(r => d.ci.map(i => r[cols[i]])),
+      allColumns: cols,
+      fullRows: d.src.map(r => cols.map(c => r[c])),
+      table: qhResultScriptTable(sourceSql, engineId),
+      engineId, masked: piiSet, pkCols: (pkOf && sourceSql) ? pkOf(sourceSql) : [], types,
+    }) : '';
+    if (!text) { onToast && onToast('Nothing selected to copy.'); return; }
+    const label = QH_RESULT_SCRIPT_LABELS[kind] || 'SQL';
+    qhCopyText(text).then(ok => onToast && onToast(ok
+      ? 'Copied the ' + label + ' script.'
+      : 'Could not copy — the browser blocked clipboard access.'));
+  };
+  const scriptKinds = typeof qhResultScriptKinds === 'function' ? qhResultScriptKinds(engineId || 'postgres') : [];
   // Keyboard cell navigation. Selection used to be mouse-only: without this,
   // a keyboard-only user could read the grid but never select or copy a cell.
   // Arrows move the cursor and select that one cell; Shift+arrow extends the
@@ -2237,6 +2373,15 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked })
           <div className="qh-ctxmenu" style={{ left: gmenu.x, top: gmenu.y }}>
             <button onClick={() => menuCopy(false)}>Copy</button>
             <button onClick={() => menuCopy(true)}>Copy with headers</button>
+            {scriptKinds.length > 0 && (
+              <>
+                <div className="qh-ctx-sep" />
+                <div className="qh-ctx-head" role="presentation">Generate script as</div>
+                {scriptKinds.map(k => (
+                  <button key={k} className="qh-ctx-script" onClick={() => menuScript(k)}>{QH_RESULT_SCRIPT_LABELS[k]}</button>
+                ))}
+              </>
+            )}
             <div className="qh-ctx-sep" />
             <button onClick={() => { if (gmenu.c != null) { setColSel(new Set([gmenu.c])); setSel(new Set()); } setGmenu(null); }}>Select column</button>
             <button onClick={() => { selectAll(); setGmenu(null); }}>Select all</button>

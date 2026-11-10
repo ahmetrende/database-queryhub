@@ -2247,11 +2247,14 @@ const qhApi = {
 
   // ---- saved / history / sessions / scheduled ----
   saved: () => mockDelay(() => ({ saved: MOCK.savedSrv.map(s => ({ ...s, connectionState: connStateFor(s.connectionId) })) })),
-  history: () => mockDelay(() => {
+  // Same search as the server: `f` = { q, since, until }, dates as local days.
+  history: (n, f) => mockDelay(() => {
     mockSeedLifecycle();
     const rows = (window.QH_HISTORY || []).map((h, i) => ({
       id: h.id, sql: h.sql, connectionId: h.conn, databaseId: h.db, tier: h.tier, status: h.status,
       rowCount: h.rows, approver: h.approver, createdAt: isoAgo(1000 * 60 * (2 + i * 37)),
+      // Some runs have a duration, so the row meta shows one.
+      durationMs: h.status === 'done' ? [850, 1240, 65000, 4300][i % 4] : null,
       // The server sends `outcome` on every row: a refusal is `denied`.
       outcome: h.status === 'rejected' ? 'denied' : null,
       connectionState: connStateFor(h.conn), awaitingDba: false,
@@ -2274,9 +2277,21 @@ const qhApi = {
         return { id: r.id, sql: r.sql, connectionId: r.conn, databaseId: r.db, tier: r.tier, status: st.status,
           rowCount: null, approver: st.status === 'pending' || st.status === 'rejected' ? null : 'dba.amara',
           createdAt: new Date(r.t0).toISOString(), outcome: st.outcome || null, awaitingDba: !!st.awaitingDba,
-          connectionState: connStateFor(r.conn), ranOn: null };
+          connectionState: connStateFor(r.conn), ranOn: null, durationMs: null };
       });
-    return { history: [...rows, ...live].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)) };
+    let all = [...rows, ...live].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+    const q = f && f.q != null ? String(f.q).trim().toLowerCase() : '';
+    if (q) {
+      const idm = /^#?([0-9]{1,18})$/.exec(q);
+      all = all.filter(h => String(h.sql || '').toLowerCase().includes(q) ||
+        String(h.databaseId || '').toLowerCase().includes(q) ||
+        (idm && String(h.id) === idm[1]));
+    }
+    const day = h => { const d = new Date(h.createdAt || 0); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+    if (f && f.since) all = all.filter(h => day(h) >= f.since);
+    if (f && f.until) all = all.filter(h => day(h) <= f.until);
+    if (f && f.since && f.until && f.until < f.since) return mockFail('The end date is before the start date.', 400, 'bad_request');
+    return { history: typeof n === 'number' ? all.slice(0, Math.max(1, Math.min(n, 200))) : all };
   }),
   saveSnippet: (b) => mockDelay(() => {
     const row = { id: mockId('srv'), name: b.name, connectionId: b.connectionId, databaseId: b.databaseId, sql: b.sql };

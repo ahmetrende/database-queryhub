@@ -592,8 +592,14 @@ function App() {
   // know the target's engine, the grant, or the auto-approve windows. The
   // server's verdict replaces it once POST /classify answers, so the tier chip
   // and the Run-vs-Submit label reflect what will actually happen.
-  const localClassify = qhClassify(tab.sql);
-  const server = useServerClassify(tab.sql, tab.conn, tab.db);
+  // A selection that Run would send alone is what the verdicts judge
+  // (2026-11-10): the tier, the label, the reason rule, the blocker line, the
+  // risk hints, the PII chip and Explain. The editor reports it.
+  const [sel, setSel] = useState(null);
+  const selLines = sel ? sel.lines : 0;
+  const judged = qhJudgedText(sel, tab.sql);
+  const localClassify = qhClassify(judged.text);
+  const server = useServerClassify(judged.text, tab.conn, tab.db);
   const classify = React.useMemo(() => {
     if (!server) return localClassify;
     return {
@@ -607,15 +613,15 @@ function App() {
       blockers: server.blockers,
       provisional: false,
     };
-  }, [server, tab.sql]);
+  }, [server, judged.text]);
   // The words the server's pre-flight blocks, for the editor's wavy line.
   // Only an answer for exactly this text draws it.
-  const serverKey = tab.conn + '|' + tab.db + '|' + tab.sql;
+  const serverKey = tab.conn + '|' + tab.db + '|' + judged.text;
   const blockerRanges = React.useMemo(
     () => (server && server.blocked && server.forKey === serverKey
-      ? qhBlockerRanges(tab.sql, server.blockers || []) : []),
-    [server, serverKey]);
-  const pii = qhDetectPII(tab.sql);
+      ? qhShiftRanges(qhBlockerRanges(judged.text, server.blockers || []), judged.offset) : []),
+    [server, serverKey, judged.offset]);
+  const pii = qhDetectPII(judged.text);
   const conn = conns.find(c => c.id === tab.conn);
   const db = conn && conn.databases.find(d => d.id === tab.db);
   // The tab points at something that is not in the payload at all. Prefer the
@@ -668,20 +674,31 @@ function App() {
     // column list. A value the payload does not carry stays blank.
     const tableMeta = {};
     const tableMetaQ = {};
+    // Per table: its schema, the row estimate and the indexes, for the hover
+    // card and the JOIN suggestions (2026-11-10). Keyed like tableMeta.
+    const tableInfo = {};
+    const tableInfoQ = {};
     // `qualify[name]` is what actually gets inserted when a table is picked:
     // the real schema from the catalog, not the old public/dbo guess. When a
     // bare name exists in two schemas we leave it unqualified rather than
     // guess wrong — the tree still offers both, fully qualified.
     const qualify = {};
     const seen = {};
+    // Bare column names that are PII in at least one table, for the mark in the
+    // list that opens while typing (2026-11-10).
+    const piiColumns = new Set();
     refs.forEach(({ s, n }) => {
       const entry = (sch && (sch.tables[(s ? s + '.' : '') + n] || sch.tables[n])) || null;
       const cs = entry ? entry.columns.map(c => c.name) : [];
       const cm = entry ? entry.columns.map(c => ({ name: c.name, type: c.type || '',
-        nullable: typeof c.nullable === 'boolean' ? c.nullable : null, pk: !!c.pk })) : [];
+        nullable: typeof c.nullable === 'boolean' ? c.nullable : null, pk: !!c.pk, pii: !!c.pii,
+        fk: c.fk ? String(c.fk) : null })) : [];
+      const ti = entry ? { schema: entry.schema || s || null, approxRows: entry.approxRows == null ? null : entry.approxRows,
+        indexes: Array.isArray(entry.indexes) ? entry.indexes : [] } : null;
+      if (entry) entry.columns.forEach(c => { if (c.pii) piiColumns.add(c.name); });
       if (!tableCols[n]) tableCols[n] = cs;
-      if (!tableMeta[n]) tableMeta[n] = cm;
-      if (s) { tableColsQ[s + '.' + n] = cs; tableMetaQ[s + '.' + n] = cm; }
+      if (!tableMeta[n]) { tableMeta[n] = cm; tableInfo[n] = ti; }
+      if (s) { tableColsQ[s + '.' + n] = cs; tableMetaQ[s + '.' + n] = cm; tableInfoQ[s + '.' + n] = ti; }
       cs.forEach(c => cols.add(c));
       seen[n] = (seen[n] || 0) + 1;
       if (s) qualify[n] = seen[n] > 1 ? null : s + '.' + n;
@@ -702,13 +719,16 @@ function App() {
     const functions = (db && db.functions) || [];
     const functionKind = {};
     ((db && db.functionRefs) || []).forEach(f => { functionKind[f.n] = f.k; });
+    // Schema names, for DROP SCHEMA and GRANT ... ON SCHEMA (qhSuggestContext).
+    const schemas = [...new Set(refs.map(r => r.s).concat(((db && db.functionRefs) || []).map(f => f.s))
+      .filter(Boolean))].sort();
     // The `SELECT *` expansion asks the target about a relation the catalog
     // does not list (a partition, a table newer than the snapshot). The
     // server reads PostgreSQL's own catalog for it; other engines are not asked.
     const columnLookup = (tab.conn && tab.db && qhEngineId(conn && conn.engine) === 'postgres')
       ? qhLiveColumnLookup(liveCols.current, tab.conn, tab.db) : null;
     return { tables: refs.map(r => r.n), columns: [...cols], dbs, tableCols, tableColsQ, tableMeta, tableMetaQ,
-             qualify, systemTables, functions, functionKind, columnLookup };
+             qualify, systemTables, functions, functionKind, columnLookup, piiColumns, tableInfo, tableInfoQ, schemas };
   }, [tab.conn, tab.db, schemaCache, conns]);
   const dbTier = db ? db.tier : 'RO';
   // Prefer the server's answer on both of these. The local fallback is only in
@@ -741,7 +761,7 @@ function App() {
   const editorEngine = qhEngineId(conn && conn.engine);
   const busy = tab.status === 'pending' || tab.status === 'approved' || tab.status === 'running';
   const killed = !!(admin.killSwitch && admin.killSwitch.enabled);
-  const riskHints = qhRiskHints(tab.sql, classify);
+  const riskHints = qhRiskHints(judged.text, classify);
   const riskTop = riskHints.some(h => h.level === 'high') ? 'high' : riskHints.some(h => h.level === 'med') ? 'med' : 'low';
   // Whether the result ON SCREEN came back unmasked. The result's own flag is the
   // truth — the toggle may already have been switched back since — and
@@ -752,7 +772,10 @@ function App() {
   const resConn = conns.find(c => c.id === (tab.ranConn || tab.conn));
 
   // keep tab tier dot synced for tabs bar
-  const tabsForBar = tabs.map(x => ({ ...x, tier: qhClassify(x.sql).tier }));
+  // `env` is the tab connection's environment. EditorTabs gives a PROD tab its
+  // orange top line from it (qhTabIsProd, 2026-11-10).
+  const tabsForBar = tabs.map(x => ({ ...x, tier: qhClassify(x.sql).tier,
+    env: x.kind ? undefined : ((conns.find(c => c.id === x.conn) || {}).env) }));
   const queryTabsForBar = tabsForBar.filter(x => !x.kind);
   // A single click on a database uses it in this tab only while the tab is blank and unpicked.
   const bindOnClick = qhTabBindsOnClick(tab);
@@ -799,6 +822,14 @@ function App() {
     const f = freshTab({ name: s.name, autoName: false, sql: s.sql, conn: s.conn, db: s.db, connState: s.state });
     setTabs(ts => [...ts, f]); setActiveId(f.id); reserveFor(f.id);
     setSideMode('conns');  };
+  // "Insert at caret" on a saved query (2026-11-10, Devart D1): the SqlEditor
+  // of the open tab puts the SQL at its caret. A page with no editor (Home,
+  // What's new) opens the query in a new tab, as a click on the row does.
+  const [insSig, setInsSig] = useState(null);   // { text, n } for SqlEditor insertSignal
+  const insertSaved = (s) => {
+    if (tab.kind || view !== 'dev') { loadSaved(s); return; }
+    setInsSig(x => ({ text: s.sql || '', n: (x ? x.n : 0) + 1 }));
+  };
   const loadHistory = (h) => {
     const f = freshTab({ name: h.sql.slice(0, 24), autoName: true, sql: h.sql, conn: h.conn, db: h.db, connState: h.state });
     setTabs(ts => [...ts, f]); setActiveId(f.id); reserveFor(f.id);  };
@@ -1169,7 +1200,10 @@ function App() {
         // instead, which is why qid below comes from the RESPONSE, not from here.
         draftId: cur.reqId || null,
       });
+      // `ranSql` and `ranDb` are the text and the database that ran. "Generate
+      // script as" in Results reads the table and its key from them.
       patch(id, { qid: r.id, reqId: r.id, status: r.status, ranUnmasked: !!cur.unmasked, ranConn: cur.conn, expired: null,
+        ranSql: sqlOverride || cur.sql, ranDb: cur.db,
         // The server's own time of the submit, when it sends one (the local clock was set above).
         ...(r.createdAt ? { submittedAt: r.createdAt } : null) });
       if (cur.justification) setReasons(rs => qhSaveReason(rs, cur.justification));
@@ -1235,10 +1269,10 @@ function App() {
   // EXPLAIN preview (read-only, no execution). Server plans a single RO
   // statement and returns the plan + risk hints; we show them in the Plan tab.
   const explain = async () => {
-    if (!tab.sql.trim() || busy || !tab.conn) return;
+    if (!judged.text.trim() || busy || !tab.conn) return;
     if (!['RO', 'RW'].includes(classify.tier)) { pushToast('Plan preview is for read-only or read-write queries (not DDL).'); return; }
     try {
-      const view = await qhApi.explain({ connectionId: tab.conn, databaseId: tab.db, sql: tab.sql });
+      const view = await qhApi.explain({ connectionId: tab.conn, databaseId: tab.db, sql: judged.text.trim() });
       patch(activeId, { plan: view });
       setResTab('plan');
     } catch (e) { pushToast((e && e.message) || 'Could not preview the plan.'); }
@@ -1570,7 +1604,7 @@ function App() {
       canRefresh={!!(user && user.role !== 'developer')} onRefreshSchema={refreshSchema}
       onToast={pushToast}
       active={{ conn: tab.conn, db: tab.db }} onPick={pickDb} bindOnClick={bindOnClick}
-      saved={savedList} onLoadSaved={loadSaved} onDeleteSaved={deleteSaved}
+      saved={savedList} onLoadSaved={loadSaved} onInsertSaved={insertSaved} onDeleteSaved={deleteSaved}
       sessions={sessions} onSaveSession={() => setSessionModal(true)} onRestoreSession={restoreSession} onDeleteSession={deleteSession}
       scheduled={scheduled} onOpenScheduled={openScheduled} onCancelScheduled={cancelScheduled}
       history={history} onLoadHistory={loadHistory} pending={pendingReqs} onOpenPending={openPending} onResubmit={resubmitFrom} histFocus={histFocus}
@@ -1673,7 +1707,7 @@ function App() {
               <ActionBar
                 pickHint={bindOnClick}
                 conn={conn} db={db} connAlias={tab.conn} dbAlias={tab.db} dbTier={dbTier} classify={classify} pii={pii}
-                autoApprove={autoApprove} tierExceedsGrant={tierExceedsGrant} busy={busy} status={tab.status}
+                autoApprove={autoApprove} tierExceedsGrant={tierExceedsGrant} busy={busy} status={tab.status} selLines={selLines}
                 hasSql={!!tab.sql.trim()} onPrimary={primary} onExplain={explain} killed={killed}
                 riskHints={riskHints} riskTop={riskTop} onCancelRun={cancelRun}
                 redacted={redactedIn(tab.sql).length} onRevealRedacted={revealRedacted}
@@ -1697,7 +1731,7 @@ function App() {
                 onRequest={() => setReqOpen(true)} onDismiss={() => patch(activeId, { expired: null })} />
 
               <div className="qh-ed-host">
-                <SqlEditor value={tab.sql} onChange={onCode} docId={tab.id} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} formatSignal={fmtSig} issues={blockerRanges} revealSignal={issueSig} />
+                <SqlEditor value={tab.sql} onChange={onCode} docId={tab.id} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} onSelectionChange={setSel} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} formatSignal={fmtSig} insertSignal={insSig} issues={blockerRanges} revealSignal={issueSig} />
               </div>
 
               <div className="qh-res-grip" onMouseDown={onDragStart}><span /></div>
@@ -1706,7 +1740,9 @@ function App() {
                   audit={tab.audit} status={tab.status} awaitingDba={tab.awaitingDba} runMs={tab.runMs} onExport={exportResult} plan={tab.plan} onToast={pushToast} reqId={tab.reqId}
                   unmasked={resUnmasked} conn={resConn} onStatement={pickStatement} ranOn={tab.ranOn}
                   pending={tab.status === 'pending' ? { since: tab.submittedAt || null, expiresAt: tab.expiresAt || null } : null}
-                  onWithdraw={cancelRun} outcome={tab.outcome || null} endNote={qhEndNote(tab.messages, tab.outcome)} onResubmit={() => resubmitFrom(tab)} slackEnabled={slackOn} timeline={tab.timeline || null} />
+                  onWithdraw={cancelRun} outcome={tab.outcome || null} endNote={qhEndNote(tab.messages, tab.outcome)} onResubmit={() => resubmitFrom(tab)} slackEnabled={slackOn} timeline={tab.timeline || null}
+                  sourceSql={tab.ranSql || null}
+                  pkOf={(sql) => (tab.ranConn === tab.conn && tab.ranDb === tab.db ? qhResultScriptPk(sql, editorSchema) : [])} />
               </div>
             </>
           )}
@@ -2248,7 +2284,7 @@ function RunOnToggle({ conn, runOn, tier, onRunOn, tight }) {
 }
 
 // ---------- Action bar (target context + security + actions) ----------
-function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn }) {
+function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn, selLines }) {
   const runOnConflict = !!(runOnConn && runOn && runOn.mode === 'replica' && hasSql && !classify.empty && classify.tier !== 'RO');
   const tierLabel = qhTierProse(classify.tier);
   const highRisks = (riskHints || []).filter(h => h.level !== 'low');
@@ -2262,7 +2298,9 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
     setSchedPos({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) });
     setSchedOpen(true);
   };
-  let primaryLabel = autoApprove ? 'Run' : 'Submit for DBA approval';
+  // A super-admin's run never waits for a DBA, so it looks like a run.
+  const runsNow = autoApprove || !!isSuper;
+  let primaryLabel = qhPrimaryLabel(!!isSuper, autoApprove, selLines > 0);
   if (killed) primaryLabel = 'Paused (kill switch)';
   else if (runOnConflict && !busy) primaryLabel = 'Reads only';
   else if (busy) primaryLabel = status === 'running' ? 'Running…' : 'Approved — running…';
@@ -2298,16 +2336,17 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
           <span className="qh-pulse" />Waiting for a DBA
         </span>
       ) : (
-      <button className={'qh-btn qh-btn-primary qh-run' + (autoApprove ? '' : ' is-approval') + (busy ? ' is-waiting' : '')}
+      <button className={'qh-btn qh-btn-primary qh-run' + (runsNow ? '' : ' is-approval') + (busy ? ' is-waiting' : '')}
         data-kbd={QH_KBD.run}
         onClick={() => onPrimary()} disabled={!hasSql || busy || tierExceedsGrant || killed || runOnConflict}
         title={runOnConflict ? 'This tab runs on ' + runOn.name + ', and a replica runs read-only statements only. Switch Runs on to Auto or Primary, or make the statement read-only.' : undefined}>
         {busy && <span className="qh-spin light" />}
-        {!busy && autoApprove && <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M7 5v14l11-7z"/></svg>}
-        {!busy && !autoApprove && <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>}
+        {!busy && runsNow && <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M7 5v14l11-7z"/></svg>}
+        {!busy && !runsNow && <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>}
         {primaryLabel}
       </button>
       )}
+      {selLines > 0 && !busy && <span className="qh-sel-lines">{selLines === 1 ? '1 line selected' : selLines + ' lines selected'}</span>}
 
       {/* One button for "stop this", from the moment there is something to
           stop. What it DOES depends on how far the request got, and the label

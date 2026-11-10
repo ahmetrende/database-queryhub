@@ -257,7 +257,20 @@ def history_entry(row: dict, alias_of: "callable",
         # shows the first four as `rejected`.
         **({"outcome": request_outcome(row.get("status"), actions_of(row["id"]))}
            if actions_of else {}),
+        # How long the run took, in whole ms. Null until both ends are known.
+        "durationMs": run_duration_ms(row.get("executed_at"), row.get("completed_at")),
     }
+
+
+def run_duration_ms(executed_at, completed_at) -> int | None:
+    """completed_at minus executed_at in whole ms. None when one is missing.
+    Never negative: a clock skew gives 0, not a minus sign."""
+    if not executed_at or not completed_at:
+        return None
+    try:
+        return max(0, int(round((completed_at - executed_at).total_seconds() * 1000)))
+    except Exception:
+        return None
 
 
 def saved_entry(row: dict, alias_of: "callable",

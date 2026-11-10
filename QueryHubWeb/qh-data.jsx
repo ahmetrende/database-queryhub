@@ -1164,6 +1164,43 @@ function qhRunTarget(selText, allText) {
   return all ? { kind: 'all', sql: all } : { kind: 'empty' };
 }
 
+// How many lines the editor's selection holds, for the Run button's label
+// (2026-11-10). 0 means the button runs the whole tab: nothing is selected,
+// the selection is only blanks, or it is the whole text (Ctrl+A).
+function qhSelectionLines(value, start, end) {
+  const v = String(value == null ? '' : value);
+  if (start == null || end == null || start === end) return 0;
+  const sel = v.slice(Math.min(start, end), Math.max(start, end));
+  if (!sel.trim() || sel.trim() === v.trim()) return 0;
+  return sel.replace(/\n+$/, '').split('\n').length;
+}
+
+// The text the editor's verdicts judge (2026-11-10): the selection when Run
+// would send only the selection, else the whole tab. `offset` is where that
+// text starts in the tab, so a range found in it can be drawn in the tab.
+// `sel` is what the editor reports: { lines, start, text } or null.
+function qhJudgedText(sel, sql) {
+  if (sel && sel.lines > 0 && typeof sel.text === 'string' && sel.text.trim()) {
+    return { text: sel.text, offset: sel.start || 0, selection: true };
+  }
+  return { text: String(sql == null ? '' : sql), offset: 0, selection: false };
+}
+
+// Moves ranges found in the judged text to their place in the tab.
+function qhShiftRanges(ranges, offset) {
+  if (!offset) return ranges || [];
+  return (ranges || []).map(r => ({ ...r, start: r.start + offset, end: r.end + offset }));
+}
+
+// The Run button's label. A super-admin never waits for a DBA, so the button
+// says Execute, also for a statement that the pre-flight blocks. A selection
+// runs alone, and the label says so.
+function qhPrimaryLabel(isSuper, autoApprove, selection) {
+  if (isSuper) return selection ? 'Execute selection' : 'Execute';
+  if (autoApprove) return selection ? 'Run selection' : 'Run';
+  return selection ? 'Submit selection for DBA approval' : 'Submit for DBA approval';
+}
+
 // ---- long target names ------------------------------------------------
 // Real fleets give every host the same head: `svc-prod-orders`,
 // `svc-prod-billing`, `svc-prod-catalog`. In a list where every row carries it,
@@ -1392,7 +1429,46 @@ function qhHistoryRow(h) {
     awaitingDba: !!h.awaitingDba, ranOn: h.ranOn || null,
     state: h.connectionState || null,
     outcome: h.outcome || null, createdAt: h.createdAt || null,
+    durationMs: typeof h.durationMs === 'number' ? h.durationMs : null,
   };
+}
+
+// How long a run took, short: '850 ms', '1.2 s', '2 min 5 s'. Null gives ''.
+function qhDurationLabel(ms) {
+  if (typeof ms !== 'number' || !isFinite(ms) || ms < 0) return '';
+  if (ms < 1000) return Math.round(ms) + ' ms';
+  if (ms < 60000) return (Math.floor(ms / 100) / 10).toFixed(1) + ' s';
+  const s = Math.floor(ms / 1000);
+  return Math.floor(s / 60) + ' min ' + (s % 60) + ' s';
+}
+
+// One CSV cell (RFC 4180). A cell that a spreadsheet would read as a formula
+// gets a leading quote mark, so opening the file runs nothing.
+function qhCsvCell(v) {
+  let s = v == null ? '' : String(v);
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+// The history rows on screen as CSV text, one line per request.
+const QH_HIST_CSV_COLS = ['id', 'created_at', 'status', 'outcome', 'tier', 'connection', 'database', 'rows', 'duration_ms', 'approver', 'sql'];
+function qhHistoryCsv(rows) {
+  const lines = [QH_HIST_CSV_COLS.join(',')];
+  (rows || []).forEach(h => {
+    if (!h) return;
+    // The approver as the row shows it: a name, not a login.
+    const who = h.approver ? (typeof qhPersonName === 'function' ? qhPersonName(h.approver) : h.approver) : '';
+    lines.push([h.id, h.createdAt, h.status, h.outcome, h.tier, h.conn, h.db, h.rows,
+      h.durationMs, who, h.sql].map(qhCsvCell).join(','));
+  });
+  return lines.join('\r\n') + '\r\n';
+}
+
+// The file name of a history export: queryhub-history-YYYY-MM-DD.csv (local date).
+function qhHistoryCsvName(date) {
+  const d = date instanceof Date ? date : new Date();
+  const two = n => String(n).padStart(2, '0');
+  return 'queryhub-history-' + d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) + '.csv';
 }
 
 // Which group a history row belongs to, for the filter chips. Pending requests
@@ -1631,7 +1707,7 @@ function qhTimelineTotal(rows) {
 }
 
 Object.assign(window, {
-  qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhConfirmReasons, qhSplitReasons,
+  qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhSelectionLines, qhPrimaryLabel, qhJudgedText, qhShiftRanges, qhConfirmReasons, qhSplitReasons,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,
   qhClassify, qhDetectPII, qhMockResult, qhAffectedInfo, qhTabAfterResult, qhAutoTierState, qhMaskValue, qhStripComments, qhSplitStatements,
@@ -1641,13 +1717,14 @@ Object.assign(window, {
   QH_SHOW_ENV_TAGS, qhEnvChipWord,
   qhThemeFor, qhApplyTheme, QH_TIER_PROSE, qhTierProse, QH_TIER_BLURB, qhTierLockWhy,
   qhAskWaiting, qhAskAt, qhAskWindowLabel, qhAskFor, qhAskWindowEnds,
-  QH_ENGINES, qhEngineId, qhEngine, qhEngineReadOnly, qhEngineBadge, qhEngineLogo, qhQuoteIdentFor, qhServerRoles,
+  QH_ENGINES, qhEngineId, qhEngine, qhIsReservedWord, qhEngineReadOnly, qhEngineBadge, qhEngineLogo, qhQuoteIdentFor, qhServerRoles,
   QH_PROVIDERS, QH_TAG_KEYS, QH_TAG_RESERVED, qhProviderLogo, qhProvider, qhTags, qhHosting, qhHostingFull, qhEndpointHover,
   qhCustomTags, qhParseTagQuery, qhTagMatch, qhProviderGroups, qhTagVocab, qhTokenSuggest, qhApplyToken,
   qhAutoApproveRO, qhSchemaFor, qhSchemaOf, qhQualify, qhSelectSql,
   QH_PICK_HINT, qhTabBindsOnClick,
   QH_NEW_QUERY, qhTabNoTarget, qhTabBaseName, qhTabNameNumber, qhTabIsAuto, qhAutoTabName, qhNameTabs,
   QH_OUTCOMES, qhOutcomeInfo, qhOutcomeMessages, qhHistoryRow, qhHistoryKind, QH_HIST_FILTERS, qhHistoryFilter, qhSqlStart,
+  qhDurationLabel, qhCsvCell, QH_HIST_CSV_COLS, qhHistoryCsv, qhHistoryCsvName,
   qhPendingRequests, qhResubmitOver, qhNotifSubject, qhEndNote,
   qhBrowserNotifStored, qhBrowserNotifStore, qhRaisedLoad, qhRaisedSave, qhBrowserNotifPermission, qhBrowserNotifEnable, qhRaiseBrowserNotifs,
   qhAccessSummary, qhGrantEnd, qhTimelineRows, qhTimelineTotal, qhSpanText, qhStepClock, QH_STEP_WORDS, QH_STEP_OUTCOMES, QH_STEP_TONES,
