@@ -925,6 +925,415 @@ const QH_NOT_NAME = new Set([...QH_FROM_END, 'ON', 'USING', 'JOIN', 'INNER', 'LE
 const QH_STAR_STOP = new Set(['FROM', 'WHERE', 'GROUP', 'HAVING', 'ORDER', 'LIMIT', 'OFFSET', 'UNION',
   'INTERSECT', 'EXCEPT', 'INTO', 'VALUES', 'SET', 'ON', 'USING', 'JOIN', 'RETURNING', 'WINDOW']);
 
+// ---------------------------------------------------------------------------
+// Code analysis (2026-11-10, Devart H1)
+//
+// Rules that read the SQL in the browser and mark a word with a wavy line,
+// as the pre-flight blockers do. A finding is advice: it never stops a run.
+//   level    warn: the statement is probably wrong or holds a session open.
+//            info: the statement works, but a better form exists.
+//   engines  the engine ids that get the rule. null = every engine.
+//   write    the rule is about a write, so a read-only engine skips it.
+// The rules read qhSqlTokens, so a string, a quoted name or a comment never
+// matches. qhLint(sql, engineId) returns [{ start, end, level, message }]
+// sorted by start. app/test/code-analysis.test.mjs covers each rule.
+// ---------------------------------------------------------------------------
+// Words that open a condition. A `= NULL` after one of them is a test.
+const QA_COND = new Set(['WHERE', 'ON', 'HAVING', 'WHEN', 'AND', 'OR', 'NOT', 'IF', 'WHILE']);
+// Words after which a `= NULL` is an assignment or an alias, not a test.
+const QA_ASSIGN = new Set(['SET', 'DECLARE', 'SELECT', 'VALUES', 'UPDATE', 'INSERT', 'RETURNING',
+  'THEN', 'ELSE', 'BY', 'DEFAULT', 'USING']);
+// Words before `(` that are not a function call.
+const QA_NOT_FUNC = new Set(['IN', 'EXISTS', 'ANY', 'ALL', 'SOME', 'VALUES', 'AND', 'OR', 'NOT',
+  'SELECT', 'ARRAY', 'ROW', 'WHERE', 'CASE', 'WHEN', 'THEN', 'ELSE', 'ON', 'USING', 'AS', 'OVER']);
+// Words inside a call that are not a column: parts of the call's own syntax.
+const QA_ARG_WORDS = new Set(('AS FROM FOR AND OR NOT NULL TRUE FALSE CASE WHEN THEN ELSE END IS IN ' +
+  'DISTINCT YEAR MONTH DAY HOUR MINUTE SECOND WEEK QUARTER EPOCH DOW DOY ISODOW INTERVAL BOTH LEADING ' +
+  'TRAILING USING VARCHAR CHAR CHARACTER VARYING TEXT INT INTEGER BIGINT SMALLINT NUMERIC DECIMAL DATE ' +
+  'TIME TIMESTAMP TIMESTAMPTZ BOOLEAN REAL FLOAT DOUBLE PRECISION NVARCHAR MAX JSON JSONB UUID ZONE AT ' +
+  'WITH WITHOUT CURRENT_DATE CURRENT_TIMESTAMP CURRENT_TIME LOCALTIMESTAMP').split(' '));
+const QA_CMP_WORDS = new Set(['LIKE', 'ILIKE', 'IN', 'BETWEEN', 'SIMILAR']);
+
+// The operator made of adjacent punctuation tokens that ends just before
+// token i: { s: index of its first token, v: its text }.
+function qaOpBefore(S, i) {
+  let k = i - 1, v = '';
+  while (k >= 0 && S[k].k === 'p' && '<>!='.includes(S[k].v) && (k === i - 1 || S[k].e === S[k + 1].s)) {
+    v = S[k].v + v;
+    k--;
+  }
+  return { s: k + 1, v };
+}
+// The operator that starts at token i, as text ('' when there is none).
+function qaOpAt(S, i) {
+  let v = '';
+  for (let k = i; k < S.length && S[k].k === 'p' && '<>!='.includes(S[k].v) && (k === i || S[k - 1].e === S[k].s); k++) v += S[k].v;
+  return v;
+}
+// The index of the `)` that closes the `(` at index i, or -1.
+function qaClose(S, depth, i) {
+  for (let k = i + 1; k < S.length; k++) if (S[k].v === ')' && depth[k] === depth[i]) return k;
+  return -1;
+}
+// A token that names a column or a table: a quoted name, or a word that is
+// not part of the call syntax and not a function name. A word after `@` or
+// `:` is a parameter.
+function qaIsName(S, k) {
+  const t = S[k];
+  if (!t) return false;
+  if (t.k === 'qid') return true;
+  if (t.k !== 'word' || QA_ARG_WORDS.has(t.u)) return false;
+  if (S[k + 1] && S[k + 1].v === '(') return false;
+  const p = S[k - 1];
+  return !(p && p.k === 'p' && (p.v === '@' || p.v === ':') && p.e === t.s);
+}
+// The last index of a dotted name that starts at k (`a.b.c`), or -1.
+function qaNameEnd(S, k) {
+  const ok = (t) => t && (t.k === 'qid' || (t.k === 'word' && !QH_NOT_NAME.has(t.u)));
+  if (!ok(S[k])) return -1;
+  let e = k;
+  while (S[e + 1] && S[e + 1].v === '.' && ok(S[e + 2])) e += 2;
+  return e;
+}
+// The word that tells what token i is part of: walk back over nested
+// parentheses, leave a parenthesis outward, stop at a word of `stops`.
+function qaClauseOf(S, depth, i, stops) {
+  let d = depth[i];
+  for (let k = i - 1; k >= 0; k--) {
+    if (depth[k] > d) continue;
+    if (depth[k] < d) d = depth[k];
+    if (S[k].k === 'word' && stops.has(S[k].u)) return S[k].u;
+  }
+  return null;
+}
+// A type word in a column definition: the token before it is the column's
+// name (or TYPE, AS, RETURNS), and that name follows `(`, `,`, COLUMN or ADD.
+function qaIsColumnType(S, i) {
+  const p = S[i - 1], pp = S[i - 2];
+  if (!p) return false;
+  if (p.k === 'word' && (p.u === 'TYPE' || p.u === 'AS' || p.u === 'RETURNS')) return true;
+  if (p.k !== 'qid' && p.k !== 'word') return false;
+  return !!pp && (pp.v === '(' || pp.v === ',' || pp.u === 'COLUMN' || pp.u === 'ADD');
+}
+
+const QH_LINT_RULES = [
+  { id: 'QA101', level: 'warn', title: 'Comparison with NULL', engines: null, check(c) {
+    c.S.forEach((t, i) => {
+      if (t.u !== 'NULL') return;
+      const op = qaOpBefore(c.S, i);
+      if (op.v !== '=' && op.v !== '<>' && op.v !== '!=') return;
+      if (!QA_COND.has(qaClauseOf(c.S, c.depth, op.s, new Set([...QA_COND, ...QA_ASSIGN])) || '')) return;
+      c.hit(op.s, i, op.v === '=' ? 'A comparison with NULL is never true. Use IS NULL.'
+        : 'A comparison with NULL is never true. Use IS NOT NULL.');
+    });
+  } },
+  { id: 'QA102', level: 'warn', title: 'WHEN NULL in a simple CASE', engines: null, check(c) {
+    const { S, depth } = c;
+    S.forEach((t, i) => {
+      if (t.u !== 'CASE' || !S[i + 1] || S[i + 1].u === 'WHEN') return;
+      let nest = 0;
+      for (let j = i; j < S.length && depth[j] >= depth[i]; j++) {
+        if (depth[j] !== depth[i]) continue;
+        if (S[j].u === 'CASE') nest++;
+        else if (S[j].u === 'END' && --nest === 0) break;
+        else if (nest === 1 && S[j].u === 'WHEN' && S[j + 1] && S[j + 1].u === 'NULL') {
+          c.hit(j, j + 1, 'WHEN NULL never matches in a simple CASE. Write CASE WHEN x IS NULL.');
+        }
+      }
+    });
+  } },
+  { id: 'QA103', level: 'warn', title: 'NOT IN with a subquery', engines: null, check(c) {
+    const S = c.S;
+    S.forEach((t, i) => {
+      if (t.u === 'NOT' && S[i + 1] && S[i + 1].u === 'IN' && S[i + 2] && S[i + 2].v === '('
+          && S[i + 3] && (S[i + 3].u === 'SELECT' || S[i + 3].u === 'WITH')) {
+        c.hit(i, i + 1, 'NOT IN gives no rows when the subquery returns a NULL. Use NOT EXISTS.');
+      }
+    });
+  } },
+  { id: 'QA104', level: 'info', title: 'Comma join', engines: null, check(c) {
+    const { S, depth } = c;
+    S.forEach((t, i) => {
+      if (t.u !== 'FROM' || (S[i - 1] && S[i - 1].u === 'DISTINCT')) return;
+      // The FROM must belong to a query at its own depth, not to a call
+      // such as EXTRACT(YEAR FROM d).
+      let owner = false;
+      for (let k = i - 1; k >= 0 && depth[k] >= depth[i]; k--) {
+        if (depth[k] === depth[i] && S[k].k === 'word' && (S[k].u === 'SELECT' || S[k].u === 'DELETE' || S[k].u === 'UPDATE')) { owner = true; break; }
+      }
+      if (!owner) return;
+      for (let j = i + 1; j < S.length && depth[j] >= depth[i]; j++) {
+        if (depth[j] > depth[i]) continue;
+        if (S[j].v === ';' || (S[j].k === 'word' && QH_FROM_END.has(S[j].u))) break;
+        if (S[j].v !== ',') continue;
+        const e = qaNameEnd(S, j + 1);
+        if (e < 0 || (S[e + 1] && S[e + 1].v === '(')) continue;
+        c.hit(j, e, 'A comma join is a cross join until WHERE links the tables. Write JOIN ... ON.');
+      }
+    });
+  } },
+  { id: 'QA105', level: 'info', title: 'Leading wildcard', engines: null, check(c) {
+    c.likes((k, body) => {
+      if (body.startsWith('%')) c.hit(k, k, 'A pattern that starts with % cannot use an index. The server reads every row.');
+    });
+  } },
+  { id: 'QA106', level: 'info', title: 'LIKE without a wildcard', engines: null, check(c) {
+    c.likes((k, body) => {
+      const wild = c.engine === 'mssql' ? /[%_[]/ : /[%_]/;
+      if (!wild.test(body)) c.hit(k, k, 'LIKE without % or _ matches the whole value. Use =.');
+    });
+  } },
+  { id: 'QA107', level: 'info', title: 'Function on a column in WHERE', engines: null, check(c) {
+    const { S, depth } = c;
+    S.forEach((w, i) => {
+      if (w.u !== 'WHERE') return;
+      for (let j = i + 1; j < S.length && depth[j] >= depth[i]; j++) {
+        if (depth[j] === depth[i] && (S[j].v === ';' || (S[j].k === 'word' && QH_FROM_END.has(S[j].u) && S[j].u !== 'WHERE'))) break;
+        const f = S[j];
+        if (f.k !== 'word' || QA_NOT_FUNC.has(f.u) || !S[j + 1] || S[j + 1].v !== '(') continue;
+        const p = S[j - 1];
+        if (!p || !(p.v === '(' || (p.k === 'word' && (p.u === 'WHERE' || p.u === 'AND' || p.u === 'OR' || p.u === 'NOT')))) continue;
+        const close = qaClose(S, depth, j + 1);
+        if (close < 0) continue;
+        let col = false;
+        for (let k = j + 2; k < close && !col; k++) col = qaIsName(S, k);
+        if (!col) continue;
+        const n = S[close + 1];
+        const cmp = n && ((n.k === 'p' && qaOpAt(S, close + 1)) || (n.k === 'word' && (QA_CMP_WORDS.has(n.u)
+          || (n.u === 'NOT' && S[close + 2] && QA_CMP_WORDS.has(S[close + 2].u)))));
+        if (cmp) c.hit(j, close, 'A function on a column in WHERE keeps the server from using an index on that column. Compare the bare column.');
+      }
+    });
+  } },
+  { id: 'QA108', level: 'info', title: 'UNION without ALL', engines: null, check(c) {
+    c.S.forEach((t, i) => {
+      const n = c.S[i + 1];
+      if (t.u === 'UNION' && !(n && (n.u === 'ALL' || n.u === 'DISTINCT'))) {
+        c.hit(i, i, 'UNION keeps one copy of each row, and that needs a sort. Use UNION ALL when the parts cannot repeat.');
+      }
+    });
+  } },
+  { id: 'QA109', level: 'info', title: 'ORDER BY a column number', engines: null, check(c) {
+    const { S, depth } = c;
+    const ends = new Set(['LIMIT', 'OFFSET', 'FETCH', 'FOR', 'UNION', 'INTERSECT', 'EXCEPT', 'OPTION', 'ROWS', 'RANGE', 'SETTINGS']);
+    S.forEach((t, i) => {
+      if (t.u !== 'ORDER' || !S[i + 1] || S[i + 1].u !== 'BY') return;
+      let start = true;
+      for (let j = i + 2; j < S.length && depth[j] >= depth[i]; j++) {
+        if (depth[j] > depth[i]) { start = false; continue; }
+        if (S[j].v === ';' || S[j].v === ')' || (S[j].k === 'word' && ends.has(S[j].u))) break;
+        if (S[j].v === ',') { start = true; continue; }
+        const n = S[j + 1];
+        if (start && S[j].k === 'num' && (!n || n.v === ',' || n.v === ';' || n.v === ')' || ['ASC', 'DESC', 'NULLS'].includes(n.u) || ends.has(n.u))) {
+          c.hit(j, j, 'ORDER BY a column number breaks when the select list changes. Name the column.');
+        }
+        start = false;
+      }
+    });
+  } },
+  { id: 'QA110', level: 'warn', title: 'INSERT without a column list', engines: null, write: true, check(c) {
+    const S = c.S;
+    S.forEach((t, i) => {
+      if (t.u !== 'INSERT') return;
+      const k = S[i + 1] && S[i + 1].u === 'INTO' ? i + 2 : i + 1;
+      const e = qaNameEnd(S, k);
+      if (e < 0) return;
+      const n = S[e + 1], n2 = S[e + 2];
+      const bare = n && (n.u === 'VALUES' || n.u === 'SELECT' || n.u === 'WITH'
+        || (n.v === '(' && n2 && (n2.u === 'SELECT' || n2.u === 'WITH')));
+      if (bare) c.hit(i, e, 'INSERT without a column list breaks when the table gets a new column. Name the columns.');
+    });
+  } },
+  { id: 'QA111', level: 'warn', title: 'No WHERE', engines: null, write: true, check(c) {
+    const v = c.verb;
+    if (v == null || (c.S[v].u !== 'UPDATE' && c.S[v].u !== 'DELETE')) return;
+    if (c.S[v].u === 'UPDATE' && c.S[v + 1] && c.S[v + 1].u === 'STATISTICS') return;
+    if (c.S.some((t, i) => t.u === 'WHERE' && c.depth[i] === c.depth[v])) return;
+    c.hit(v, v, c.S[v].u === 'UPDATE' ? 'UPDATE without WHERE changes every row of the table.'
+      : 'DELETE without WHERE deletes every row of the table.');
+  } },
+  { id: 'QA201', level: 'warn', title: 'pg_sleep', engines: ['postgres'], check(c) {
+    c.S.forEach((t, i) => {
+      if (/^PG_SLEEP(_FOR|_UNTIL)?$/.test(t.u || '') && c.S[i + 1] && c.S[i + 1].v === '(') {
+        c.hit(i, i, 'pg_sleep keeps a connection and its transaction open while it waits.');
+      }
+    });
+  } },
+  { id: 'QA202', level: 'info', title: 'money type', engines: ['postgres'], check(c) {
+    if (!c.ddl) return;
+    c.S.forEach((t, i) => {
+      if (t.u === 'MONEY' && qaIsColumnType(c.S, i)) c.hit(i, i, 'money rounds by lc_monetary, a server setting. Use numeric.');
+    });
+  } },
+  { id: 'QA203', level: 'info', title: 'char(n) type', engines: ['postgres'], check(c) {
+    if (!c.ddl) return;
+    c.S.forEach((t, i) => {
+      if ((t.u !== 'CHAR' && t.u !== 'CHARACTER') || !qaIsColumnType(c.S, i)) return;
+      const n = c.S[i + 1];
+      if (n && n.u === 'VARYING') return;
+      const e = n && n.v === '(' ? qaClose(c.S, c.depth, i + 1) : i;
+      c.hit(i, e < 0 ? i : e, 'char(n) pads each value with spaces. Use text or varchar.');
+    });
+  } },
+  { id: 'QA204', level: 'info', title: 'timestamp without time zone', engines: ['postgres'], check(c) {
+    if (!c.ddl) return;
+    const S = c.S;
+    S.forEach((t, i) => {
+      if (t.u !== 'TIMESTAMP' || !qaIsColumnType(S, i)) return;
+      let k = i + 1;
+      if (S[k] && S[k].v === '(') { const e = qaClose(S, c.depth, k); k = e < 0 ? k : e + 1; }
+      if (S[k] && S[k].u === 'WITH') return;
+      const e = S[k] && S[k].u === 'WITHOUT' && S[k + 2] && S[k + 2].u === 'ZONE' ? k + 2 : k - 1;
+      c.hit(i, e, 'timestamp without time zone does not mark one moment. Use timestamptz.');
+    });
+  } },
+  { id: 'QA301', level: 'warn', title: 'Dirty read', engines: ['mssql'], check(c) {
+    c.S.forEach((t, i) => {
+      if (t.u === 'NOLOCK' || t.u === 'READUNCOMMITTED') c.hit(i, i, 'NOLOCK reads rows that are not committed. A row can show twice or not at all.');
+      else if (t.u === 'READ' && c.S[i + 1] && c.S[i + 1].u === 'UNCOMMITTED') {
+        c.hit(i, i + 1, 'READ UNCOMMITTED reads rows that are not committed. A row can show twice or not at all.');
+      }
+    });
+  } },
+  { id: 'QA302', level: 'warn', title: '@@IDENTITY', engines: ['mssql'], check(c) {
+    const S = c.S;
+    S.forEach((t, i) => {
+      if (t.v === '@' && S[i + 1] && S[i + 1].v === '@' && S[i + 2] && S[i + 2].u === 'IDENTITY'
+          && t.e === S[i + 1].s && S[i + 1].e === S[i + 2].s) {
+        c.hit(i, i + 2, '@@IDENTITY can return the id that a trigger made. Use SCOPE_IDENTITY().');
+      }
+    });
+  } },
+  { id: 'QA303', level: 'warn', title: 'Old large-object type', engines: ['mssql'], check(c) {
+    if (!c.ddl) return;
+    c.S.forEach((t, i) => {
+      if ((t.u === 'TEXT' || t.u === 'NTEXT' || t.u === 'IMAGE') && qaIsColumnType(c.S, i)) {
+        c.hit(i, i, 'SQL Server marks ntext, text and image as old types. Use nvarchar(max), varchar(max) or varbinary(max).');
+      }
+    });
+  } },
+  { id: 'QA304', level: 'warn', title: 'WAITFOR', engines: ['mssql'], check(c) {
+    c.S.forEach((t, i) => {
+      if (t.u !== 'WAITFOR') return;
+      const n = c.S[i + 1];
+      c.hit(i, n && (n.u === 'DELAY' || n.u === 'TIME') ? i + 1 : i, 'WAITFOR keeps the session open while it waits.');
+    });
+  } },
+  { id: 'QA401', level: 'info', title: 'count(DISTINCT)', engines: ['clickhouse'], check(c) {
+    const S = c.S;
+    S.forEach((t, i) => {
+      if (t.u === 'COUNT' && S[i + 1] && S[i + 1].v === '(' && S[i + 2] && S[i + 2].u === 'DISTINCT') {
+        c.hit(i, i + 2, 'count(DISTINCT) is exact and slow on a large table. uniq() is faster when an estimate is enough.');
+      }
+    });
+  } },
+  { id: 'QA402', level: 'info', title: 'FINAL', engines: ['clickhouse'], check(c) {
+    c.S.forEach((t, i) => {
+      const p = c.S[i - 1];
+      if (t.u === 'FINAL' && p && (p.k === 'qid' || (p.k === 'word' && !QH_NOT_NAME.has(p.u)))) {
+        c.hit(i, i, 'FINAL merges the data parts while the query reads them. The query is slower.');
+      }
+    });
+  } },
+  { id: 'QA501', level: 'warn', title: 'SELECT * on Athena', engines: ['athena'], check(c) {
+    const { S, depth } = c;
+    S.forEach((t, i) => {
+      if (t.v !== '*') return;
+      const p = S[i - 1];
+      let list = p && (p.u === 'SELECT' || p.u === 'DISTINCT' || p.u === 'ALL');
+      if (!list && p && p.v === ',') list = qaClauseOf(S, depth, i, new Set(['SELECT', ...QH_STAR_STOP])) === 'SELECT';
+      if (list) c.hit(i, i, 'Athena bills by the data that a query scans. SELECT * reads every column.');
+    });
+  } },
+  { id: 'QA502', level: 'info', title: 'ORDER BY without LIMIT', engines: ['athena'], check(c) {
+    const { S, depth } = c;
+    const at = S.findIndex((t, i) => t.u === 'ORDER' && depth[i] === 0 && S[i + 1] && S[i + 1].u === 'BY');
+    if (at < 0 || S.some((t, i) => depth[i] === 0 && (t.u === 'LIMIT' || t.u === 'FETCH'))) return;
+    c.hit(at, at + 1, 'ORDER BY without LIMIT sorts every row on one node. Add LIMIT.');
+  } },
+];
+
+// Run the rules for one engine over the text. Returns [{ start, end, level,
+// message }] sorted by start, with no overlap: a finding inside another one
+// joins its message to it.
+function qhLint(sql, engineId) {
+  const text = String(sql || '');
+  if (!text.trim()) return [];
+  const eng = String(engineId || 'postgres');
+  const info = (typeof QH_ENGINES !== 'undefined' && QH_ENGINES[eng]) || null;
+  const readOnly = info ? !!info.readOnly : (eng === 'clickhouse' || eng === 'athena');
+  const rules = QH_LINT_RULES.filter(r => (!r.engines || r.engines.includes(eng)) && !(r.write && readOnly));
+  const all = qhSqlTokens(text);
+  // Split into statements at a top-level `;`, with the depth of each token.
+  const stmts = [];
+  let cur = { S: [], depth: [] }, d = 0;
+  all.forEach((t) => {
+    if (t.v === '(') { cur.S.push(t); cur.depth.push(d); d++; return; }
+    if (t.v === ')') { d = Math.max(0, d - 1); cur.S.push(t); cur.depth.push(d); return; }
+    if (t.v === ';' && d === 0) { stmts.push(cur); cur = { S: [], depth: [] }; return; }
+    cur.S.push(t); cur.depth.push(d);
+  });
+  stmts.push(cur);
+  const found = [];
+  stmts.forEach(({ S, depth }) => {
+    if (!S.length) return;
+    // The statement's verb: its first word, or after WITH the first top-level
+    // SELECT, INSERT, UPDATE, DELETE or MERGE.
+    let verb = S.findIndex(t => t.k === 'word');
+    if (verb >= 0 && S[verb].u === 'WITH') {
+      verb = S.findIndex((t, i) => depth[i] === 0 && ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE'].includes(t.u));
+    }
+    const first = verb >= 0 ? S[verb].u : '';
+    const likes = (fn) => S.forEach((t, i) => {
+      if (t.u !== 'LIKE' && t.u !== 'ILIKE') return;
+      let k = i + 1;
+      if (S[k] && S[k].k === 'word' && S[k].u === 'N' && S[k + 1] && S[k + 1].k === 'str' && S[k].e === S[k + 1].s) k++;
+      if (S[k] && S[k].k === 'str' && S[k].v[0] === "'") fn(k, S[k].v.slice(1, -1));
+    });
+    rules.forEach((r) => {
+      const hit = (a, b, msg) => found.push({ start: S[a].s, end: S[b].e, level: r.level,
+        message: r.title + ' (' + r.id + ')\n' + msg });
+      r.check({ S, depth, engine: eng, verb: verb >= 0 ? verb : null, ddl: first === 'CREATE' || first === 'ALTER', hit, likes });
+    });
+  });
+  found.sort((x, y) => x.start - y.start || y.end - x.end);
+  const out = [];
+  found.forEach((f) => {
+    const last = out[out.length - 1];
+    if (last && f.start < last.end) {
+      if (!last.message.split('\n\n').includes(f.message)) last.message += '\n\n' + f.message;
+      last.end = Math.max(last.end, f.end);
+      if (f.level === 'warn') last.level = 'warn';
+      return;
+    }
+    out.push({ ...f });
+  });
+  return out;
+}
+
+// True when every row of a suggestion list inserts exactly the word that is
+// already typed (case ignored), for example `NULL` after `= NULL`. A snippet
+// inserts other text, so it always counts.
+function qhListAddsNothing(items, typed) {
+  const want = String(typed || '').toUpperCase();
+  const rows = (items || []).filter(it => !it.header);
+  return !!want && rows.length > 0 && rows.every(it => it.type !== 'snippet' && String(it.text || '').trim().toUpperCase() === want);
+}
+
+// The text of an overlay layer: the editor text with each range in a
+// <mark>. `cls` gives a range its class. A range that starts inside the one
+// before it is cut to the part after it.
+function qhMarkHtml(value, list, cls) {
+  let out = '', pos = 0;
+  list.forEach((r, i) => {
+    const s = Math.max(r.start, pos), e = Math.min(r.end, value.length);
+    if (e <= s) return;
+    out += qhEscape(value.slice(pos, s)) + `<mark class="${cls(r)}" data-i="${i}">` + qhEscape(value.slice(s, e)) + '</mark>';
+    pos = e;
+  });
+  return out + qhEscape(value.slice(pos)) + '\n';
+}
+
 // A case-insensitive lookup that only answers when exactly one key matches.
 function qhLookupCi(map, key, exact) {
   if (!map) return undefined;
@@ -1766,9 +2175,10 @@ function qhStarExpansion(sql, caret, schema, engineId, live) {
 const QH_AC_TYPE_LABEL ={ keyword: 'kw', table: 'table', column: 'col', database: 'db', system: 'system', function: 'fn', expand: 'all cols', join: 'join',
   procedure: 'proc', schema: 'schema', index: 'index', snippet: 'snip' };
 
-function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, onSelectionChange, schema, engineId, focusSignal, formatSignal, insertSignal, revealRange, docId, issues, revealSignal }) {
+function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, onSelectionChange, schema, engineId, focusSignal, formatSignal, insertSignal, revealRange, docId, issues, revealSignal, lints }) {
   const taRef = React.useRef(null);
   const issueRef = React.useRef(null);
+  const lintRef = React.useRef(null);         // the code-analysis layer (qhLint)
   const tipRef = React.useRef(null);
   // Pre-flight blockers (see qhBlockerRanges). The underline hides while you
   // type and returns 1 s after the last typing edit.
@@ -2083,6 +2493,7 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     const ta = taRef.current;
     if (preRef.current) { preRef.current.scrollTop = ta.scrollTop; preRef.current.scrollLeft = ta.scrollLeft; }
     if (issueRef.current) { issueRef.current.scrollTop = ta.scrollTop; issueRef.current.scrollLeft = ta.scrollLeft; }
+    if (lintRef.current) { lintRef.current.scrollTop = ta.scrollTop; lintRef.current.scrollLeft = ta.scrollLeft; }
     if (gutRef.current) gutRef.current.scrollTop = ta.scrollTop;
     if (ac) setAc(null);
   };
@@ -2165,7 +2576,9 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
               start: js.start, end: js.end });
       return;
     }
-    if (!s) { setAc(null); return; }
+    // A list that only repeats the typed word adds nothing, and while it is
+    // open it hides the wavy lines. Ctrl+Space still opens it.
+    if (!s || (!force && qhListAddsNothing(s.items, ta.value.slice(s.start, s.end)))) { setAc(null); return; }
     const p = posAt(ta, s.start);
     setAc({ items: s.items, idx: 0, top: p.top, lineTop: p.lineTop, left: p.left, start: s.start, end: s.end });
   };
@@ -2424,17 +2837,14 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
 
   const issueList = Array.isArray(issues) ? issues : [];
   const issuesOn = issuesShown && !ac && issueList.length > 0;
-  const issueHtml = React.useMemo(() => {
-    if (!issueList.length) return '';
-    let out = '', pos = 0;
-    issueList.forEach((r, i) => {
-      const s = Math.max(r.start, pos), e = Math.min(r.end, value.length);
-      if (e <= s) return;
-      out += qhEscape(value.slice(pos, s)) + `<mark class="qh-issue" data-i="${i}">` + qhEscape(value.slice(s, e)) + '</mark>';
-      pos = e;
-    });
-    return out + qhEscape(value.slice(pos)) + '\n';
-  }, [value, issues]);
+  const issueHtml = React.useMemo(
+    () => (issueList.length ? qhMarkHtml(value, issueList, () => 'qh-issue') : ''), [value, issues]);
+  // Code-analysis findings (qhLint): the same layer, with a softer line. It
+  // hides while the person types, as the blocker line does.
+  const lintList = Array.isArray(lints) ? lints : [];
+  const lintsOn = issuesShown && !ac && lintList.length > 0;
+  const lintHtml = React.useMemo(
+    () => (lintList.length ? qhMarkHtml(value, lintList, r => 'qh-lint lv-' + r.level) : ''), [value, lints]);
   const srText = issuesOn ? issueList.map(r => r.message).join(' ') : '';
   // The overlay mounts only while it shows. It must start at the textarea's
   // scroll position, or the line sits under the wrong word.
@@ -2442,24 +2852,31 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     const ta = taRef.current, el = issueRef.current;
     if (ta && el) { el.scrollTop = ta.scrollTop; el.scrollLeft = ta.scrollLeft; }
   }, [issuesOn, issueHtml]);
+  React.useLayoutEffect(() => {
+    const ta = taRef.current, el = lintRef.current;
+    if (ta && el) { el.scrollTop = ta.scrollTop; el.scrollLeft = ta.scrollLeft; }
+  }, [lintsOn, lintHtml]);
 
   // The balloon is a hover tooltip, not a menu: it goes when the pointer leaves
   // the text (see tests/test_dropdown_dismiss.py for the menu rule).
   const hideTip = () => setTip(null);
   // Find the marked word under the pointer. The textarea sits on top of the
   // overlay, so this test uses the rectangles of the marks.
+  // A blocker wins over a code-analysis finding on the same word.
   const onIssueMove = (e) => {
-    const host = issueRef.current;
-    if (!host) { if (tip) setTip(null); return; }
-    const marks = host.querySelectorAll('mark.qh-issue');
-    for (let n = 0; n < marks.length; n++) {
-      const rs = marks[n].getClientRects();
-      for (let j = 0; j < rs.length; j++) {
-        const r = rs[j];
-        if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
-          const i = Number(marks[n].getAttribute('data-i'));
-          if (!tip || tip.i !== i) setTip({ i, msg: issueList[i].message, rect: { top: rs[0].top, bottom: rs[0].bottom, left: rs[0].left } });
-          return;
+    const layers = [[issueRef.current, 'mark.qh-issue', issueList, 'issue'], [lintRef.current, 'mark.qh-lint', lintList, 'lint']];
+    for (const [host, sel, list, kind] of layers) {
+      if (!host) continue;
+      const marks = host.querySelectorAll(sel);
+      for (let n = 0; n < marks.length; n++) {
+        const rs = marks[n].getClientRects();
+        for (let j = 0; j < rs.length; j++) {
+          const r = rs[j];
+          if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+            const i = Number(marks[n].getAttribute('data-i'));
+            if (!tip || tip.i !== i || tip.kind !== kind) setTip({ i, kind, lv: list[i].level, msg: list[i].message, rect: { top: rs[0].top, bottom: rs[0].bottom, left: rs[0].left } });
+            return;
+          }
         }
       }
     }
@@ -2550,6 +2967,11 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
         <pre className="qh-pre" ref={preRef} aria-hidden="true">
           <code dangerouslySetInnerHTML={{ __html: qhHighlight(value) + '\n' }} />
         </pre>
+        {lintsOn && lintHtml && (
+          <pre className="qh-pre qh-lints" ref={lintRef} aria-hidden="true">
+            <code dangerouslySetInnerHTML={{ __html: lintHtml }} />
+          </pre>
+        )}
         {issuesOn && issueHtml && (
           <pre className="qh-pre qh-issues" ref={issueRef} aria-hidden="true">
             <code dangerouslySetInnerHTML={{ __html: issueHtml }} />
@@ -2626,7 +3048,7 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
             )))}
           </div>, document.body)}
         {tip && ReactDOM.createPortal(
-          <div className="qh-issue-tip" role="tooltip" ref={tipRef} style={{ top: tip.rect.top, left: tip.rect.left }}>{tip.msg}</div>,
+          <div className={'qh-issue-tip' + (tip.kind === 'lint' ? ' is-lint lv-' + tip.lv : '')} role="tooltip" ref={tipRef} style={{ top: tip.rect.top, left: tip.rect.left }}>{tip.msg}</div>,
           document.body)}
         {hover && !tip && ReactDOM.createPortal(
           // No tabIndex and no pointer events: the card never takes focus.
@@ -2659,7 +3081,7 @@ function qhTabIsProd(t) {
   return qhEnvChipWord(t.env) === 'PROD';
 }
 
-function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWrap, onFormat, onCloseOthers, onCloseRight, onCloseAll, onDuplicate, onRename, onCopySql, onDownloadSql, onReorder }) {
+function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWrap, lint, onToggleLint, lintCount, onFormat, onCloseOthers, onCloseRight, onCloseAll, onDuplicate, onRename, onCopySql, onDownloadSql, onReorder }) {
   const [kb, setKb] = React.useState(false);
   const [dragId, setDragId] = React.useState(null);
   const [overId, setOverId] = React.useState(null);
@@ -2830,6 +3252,16 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
         aria-pressed={wrap ? 'true' : 'false'} aria-label={wrap ? 'Word wrap on' : 'Word wrap off'}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h16"/><path d="M4 11.5h12a3 3 0 010 6h-4"/><path d="M15 14.5l-3 3 3 3"/></svg>
       </button>
+      {/* Code analysis (qhLint) on or off. The button counts the findings of
+          the open tab, so a person sees them without a scan of the text. */}
+      {onToggleLint && (
+        <button className={'qh-kb-btn qh-wrapt qh-lintt' + (lint ? ' is-on' : '')} onClick={onToggleLint}
+          data-kbd={lint ? 'Code analysis  ·  ' + (lintCount ? lintCount + (lintCount === 1 ? ' finding' : ' findings') : 'no findings') : 'Code analysis  ·  off'}
+          aria-pressed={lint ? 'true' : 'false'} aria-label={lint ? 'Code analysis on' : 'Code analysis off'}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h10M4 12h8M4 17h6"/><path d="M14 16l2.5 2.5L21 14"/></svg>
+          {lint && lintCount > 0 ? <span className="qh-lint-n">{lintCount}</span> : null}
+        </button>
+      )}
       <div className="qh-kb-wrap" ref={kbWrapRef}>
         <button ref={kbBtnRef} className="qh-kb-btn" onClick={() => {
           if (kb) { setKb(false); return; }
@@ -2864,7 +3296,7 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
 // a wrong pool looks like "autocomplete is being unhelpful", never like a bug.
 // The undo history's pieces and the * expansion reader are exported for the
 // same reason; qhUndoForget is also what sign-out calls.
-Object.assign(window, { SqlEditor, EditorTabs, QH_EDITOR_HINT, qhHighlight, qhBuildSuggest, qhSuggestContext, QH_REDACTED_LIT, qhRedactedAt,
+Object.assign(window, { SqlEditor, EditorTabs, QH_EDITOR_HINT, qhLint, qhListAddsNothing, QH_LINT_RULES, qhHighlight, qhBuildSuggest, qhSuggestContext, QH_REDACTED_LIT, qhRedactedAt,
   QH_SNIPPETS, QH_SNIPPET_CURSOR, QH_DRAG_BLOCK, qhSnippetsFor, qhSnippetText, qhInsertBlock, QH_KEYWORDS,
   qhTextDiff, qhEditKind, qhUndoDoc, qhUndoRecord, qhUndoSeal, qhUndoStep, qhUndoForget,
   qhSqlTokens, qhStarExpansion, qhBlockerRanges, qhFromIsName, qhFromUnquote, qhReadFromList, qhRefLookup,

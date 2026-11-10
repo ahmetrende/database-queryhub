@@ -684,6 +684,18 @@
   .qh-issue-tip { position: fixed; z-index: 96; max-width: 360px; padding: 6px 10px; background: var(--bg-white);
     color: var(--fg-primary); border: 1px solid var(--stroke-danger); border-radius: var(--r-sm);
     box-shadow: var(--shadow-medium); font-size: 12.5px; line-height: 1.45; white-space: pre-line; pointer-events: none; }
+  /* 2026-11-10: code analysis (qhLint). A finding is advice, so its line is
+     softer than a blocker's: amber wavy for warn, grey dotted for info. The
+     layer sits before .qh-issues in the DOM, so a blocker draws on top. */
+  .qh-lints { color: transparent; pointer-events: none; }
+  .qh-lint { background: none; color: transparent; text-decoration: underline wavy var(--stroke-warning);
+    text-decoration-thickness: 1.5px; text-underline-offset: 3px; text-decoration-skip-ink: none; }
+  .qh-lint.lv-info { text-decoration-style: dotted; text-decoration-color: var(--fg-tertiary); text-decoration-thickness: 2px; }
+  .qh-issue-tip.is-lint { border-color: var(--stroke-warning); }
+  .qh-issue-tip.is-lint.lv-info { border-color: var(--stroke-strong); }
+  .qh-lint-n { position: absolute; top: 1px; right: 1px; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 999px;
+    background: var(--warning-solid-medium); color: var(--fg-fix-white); font-size: 9px; font-weight: 700; line-height: 13px;
+    text-align: center; pointer-events: none; }
   .qh-sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden;
     clip: rect(0 0 0 0); white-space: nowrap; }
   /* Word wrap (⌥Z). Both layers take the same rules or the highlight overlay

@@ -759,6 +759,15 @@ function App() {
     requestAnimationFrame(() => { const el = whyRef.current; if (el) el.focus(); });
   };
   const editorEngine = qhEngineId(conn && conn.engine);
+  // Code analysis is on until the person turns it off. The choice stays in
+  // this browser only.
+  const [lint, setLint] = useState(() => { try { return localStorage.getItem('qh.lint.v1') !== '0'; } catch (e) { return true; } });
+  useEffect(() => { try { localStorage.setItem('qh.lint.v1', lint ? '1' : '0'); } catch (e) {} }, [lint]);
+  // Code analysis (qhLint) of the whole tab. The deferred text keeps typing
+  // fast in a long script: the rules run when the browser has time.
+  const lintText = React.useDeferredValue(tab.kind ? '' : (tab.sql || ''));
+  const lintRanges = React.useMemo(
+    () => (lint ? qhLint(lintText, editorEngine) : []), [lint, lintText, editorEngine]);
   const busy = tab.status === 'pending' || tab.status === 'approved' || tab.status === 'running';
   const killed = !!(admin.killSwitch && admin.killSwitch.enabled);
   const riskHints = qhRiskHints(judged.text, classify);
@@ -1685,7 +1694,7 @@ function App() {
                 : <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M16.5 9l-3 3 3 3"/></svg>}
             </button>
             <EditorTabs tabs={tabsForBar} activeId={activeId} onSelect={selectTab} onClose={(id) => requestClose('one', id)} onNew={newTab}
-              wrap={wrap} onToggleWrap={() => setWrap(w => !w)} onFormat={() => setFmtSig(n => n + 1)}
+              wrap={wrap} onToggleWrap={() => setWrap(w => !w)} lint={lint} onToggleLint={() => setLint(v => !v)} lintCount={lintRanges.length} onFormat={() => setFmtSig(n => n + 1)}
               onCloseOthers={(id) => requestClose('others', id)} onCloseRight={(id) => requestClose('right', id)} onCloseAll={() => requestClose('all', activeId)} onDuplicate={duplicateTab} onRename={renameTab} onCopySql={copyTabSql} onDownloadSql={requestDownloadSql} onReorder={reorderTabs} />
           </div>
 
@@ -1731,7 +1740,7 @@ function App() {
                 onRequest={() => setReqOpen(true)} onDismiss={() => patch(activeId, { expired: null })} />
 
               <div className="qh-ed-host">
-                <SqlEditor value={tab.sql} onChange={onCode} docId={tab.id} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} onSelectionChange={setSel} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} formatSignal={fmtSig} insertSignal={insSig} issues={blockerRanges} revealSignal={issueSig} />
+                <SqlEditor value={tab.sql} onChange={onCode} docId={tab.id} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} onSelectionChange={setSel} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} formatSignal={fmtSig} insertSignal={insSig} issues={blockerRanges} revealSignal={issueSig} lints={lintRanges} />
               </div>
 
               <div className="qh-res-grip" onMouseDown={onDragStart}><span /></div>
