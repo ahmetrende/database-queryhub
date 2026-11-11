@@ -169,7 +169,7 @@ function useServerClassify(sql, connId, dbId) {
   return verdict;
 }
 
-// The live half of the `SELECT *` expansion: the columns PostgreSQL reports
+// The live half of the `SELECT *` expansion: the columns the target reports
 // for one relation name (GET /connections/{c}/databases/{d}/columns). `peek`
 // answers from the cache without waiting — columns, null for "no such
 // relation" (asked again after a minute, in case it was just created), or
@@ -198,6 +198,23 @@ function qhLiveColumnLookup(cache, connId, dbId) {
   };
 }
 
+// The catalog check (the effect after loadSchema in App): every five minutes
+// while the page is visible, the stamp of the database in use. Only a changed
+// signature reloads. The snapshot time moves every hour on its own.
+const QH_SCHEMA_CHECK_MS = 5 * 60 * 1000;
+function qhStampChanged(held, now) {
+  return !!(held && now && held.sig && now.sig && held.sig !== now.sig);
+}
+// Databases this browser hides from the tree (qh.dbhide.v1): "conn/db" keys,
+// the same keys as the schema cache.
+const QH_DBHIDE_KEY = 'qh.dbhide.v1';
+function qhDbHideLoad() {
+  try {
+    const v = JSON.parse(localStorage.getItem(QH_DBHIDE_KEY));
+    return Array.isArray(v) ? v.filter(k => typeof k === 'string' && k.indexOf('/') > 0) : [];
+  } catch (e) { return []; }
+}
+
 function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
@@ -218,9 +235,13 @@ function App() {
     // just be a papercut on a shared machine.
     try {
       [QH_WS_KEY, QH_SAVED_KEY, QH_SESSIONS_KEY, QH_SCHEDULED_KEY,
-       QH_CLOSED_KEY, QH_SESSION_KEY, QH_NEWS_KEY, QH_CONNORG_KEY, QH_REASON_KEY].forEach(
+       QH_CLOSED_KEY, QH_SESSION_KEY, QH_NEWS_KEY, QH_CONNORG_KEY, QH_REASON_KEY,
+       QH_DBHIDE_KEY].forEach(
         (k) => localStorage.removeItem(k));
     } catch (e) { /* private mode / storage disabled — nothing to clear */ }
+    // The hidden-database list names the previous user's databases. Called
+    // from a click, after the render that declared it.
+    setHiddenDbs([]);
     // The editor's undo history is the same kind of data — the previous
     // user's SQL — and sign-out does not reload the page.
     qhUndoForget();
@@ -265,6 +286,10 @@ function App() {
   const [closePrompt, setClosePrompt] = useState(null);
   const [saveDest, setSaveDest] = useState('server');
   const [savedList, setSavedList] = useState(qhLoadSaved);
+  // Editor snippets (2026-11-11, Devart D3 and D4): the person's own and every
+  // shared one, from GET /snippets. The editor offers them by key (qhSnippetsFor).
+  const [userSnippets, setUserSnippets] = useState([]);
+  const [canDelShared, setCanDelShared] = useState(false);
   const [sessions, setSessions] = useState(qhLoadSessions);
   const [sessionModal, setSessionModal] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -276,10 +301,11 @@ function App() {
   const [lastSync, setLastSync] = useState(null);
   const mounted = useRef(false);
   const [toast, setToast] = useState(null);
+  const [toastKind, setToastKind] = useState(null);   // 'err' draws the alert icon
   const [view, setView] = useState(() => (typeof location !== 'undefined' && (location.hash || '').indexOf('#admin') === 0) ? 'admin' : 'dev'); // dev | admin (hash-synced)
   // "Viewing as" is gone (CODE 2026-09-23 (j) §1): the panel opens in the
   // caller's real role, read from user.role in AdminPanel.
-  const pushToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 4200); };
+  const pushToast = (msg, kind) => { setToast(msg); setToastKind(kind || null); setTimeout(() => setToast(null), 4200); };
   const admin = useAdminState(pushToast, view === 'admin',
                               !!(user && (user.role === 'dba' || user.role === 'super')));
 
@@ -359,7 +385,8 @@ function App() {
       (r.views || []).forEach(addTbl);   // views carry columns now too
       schemaReq.current[key] = Date.now();   // stamp: lets the TTL expire it
       setSchemaCache(prev => ({ ...prev, [key]: {
-        tables, views: (r.views || []).map(v => v.name) } }));
+        tables, views: (r.views || []).map(v => v.name),
+        stamp: { at: r.snapshotAt || null, sig: r.sig || null } } }));
     }).catch(() => { schemaReq.current[key] = false; });
   }, []);
 
@@ -490,6 +517,12 @@ function App() {
     setDevLoadError(false);
     setConnsLoading(true);
     setDevLoading(true);
+    // Snippets load on their own: a failed load leaves the built-in snippets,
+    // and it does not show the error of the whole sidebar.
+    qhApi.editorSnippets().then(r => {
+      setUserSnippets(Array.isArray(r.snippets) ? r.snippets : []);
+      setCanDelShared(!!r.canDeleteShared);
+    }).catch(() => {});
     const jobs = [
       qhApi.connections().then(r => setConns(r.connections || [])).finally(() => setConnsLoading(false)),
       qhApi.history().then(r => setHistory((r.history || []).map(qhHistoryRow))),
@@ -551,6 +584,44 @@ function App() {
 
   // Fetch the active db's schema so autocomplete has real columns.
   useEffect(() => { loadSchema(tab.conn, tab.db); }, [tab.conn, tab.db, loadSchema]);
+
+  // Databases hidden from the tree in this browser. They also leave the
+  // catalog check below.
+  const [hiddenDbs, setHiddenDbs] = useState(qhDbHideLoad);
+  useEffect(() => { try { localStorage.setItem(QH_DBHIDE_KEY, JSON.stringify(hiddenDbs)); } catch (e) {} }, [hiddenDbs]);
+  const toggleHiddenDb = (k) => setHiddenDbs(h => (h.includes(k) ? h.filter(x => x !== k) : [...h, k]));
+
+  // The catalog check. A tab left open all day kept the tables of the morning:
+  // loadSchema runs again only when the tab changes database. Every five
+  // minutes while the page is visible, ask for the stamp of the database in
+  // use (one small query on QueryHub's own database, never the target). When
+  // the signature changed, reload that schema and the connection list, which
+  // holds the tree's table names. A new table then shows without a page reload.
+  const schemaCacheRef = useRef(schemaCache);
+  schemaCacheRef.current = schemaCache;
+  const lastStampCheck = useRef(Date.now());
+  useEffect(() => {
+    const connId = tab.conn, dbId = tab.db, key = connId + '/' + dbId;
+    const check = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (Date.now() - lastStampCheck.current < QH_SCHEMA_CHECK_MS) return;
+      const held = schemaCacheRef.current[key];
+      if (!connId || !dbId || !held || hiddenDbs.includes(key)) return;
+      lastStampCheck.current = Date.now();
+      qhApi.schemaStamp(connId, dbId).then(r => {
+        if (qhStampChanged(held.stamp, r)) {
+          loadSchema(connId, dbId, true);
+          return qhApi.connections().then(res => setConns(res.connections || []));
+        }
+        // Same tables: keep them, and move the "as of" time.
+        setSchemaCache(prev => (prev[key] ? { ...prev, [key]: { ...prev[key],
+          stamp: { at: (r && r.snapshotAt) || null, sig: (r && r.sig) || null } } } : prev));
+      }).catch(() => {});
+    };
+    const iv = setInterval(check, 60 * 1000);
+    document.addEventListener('visibilitychange', check);
+    return () => { clearInterval(iv); document.removeEventListener('visibilitychange', check); };
+  }, [tab.conn, tab.db, hiddenDbs, loadSchema]);
 
   // ----- theme -----
   // 2026-10-24: the attribute is also written in the render body (qhApplyTheme,
@@ -719,17 +790,29 @@ function App() {
     const functions = (db && db.functions) || [];
     const functionKind = {};
     ((db && db.functionRefs) || []).forEach(f => { functionKind[f.n] = f.k; });
+    // Parameter info (qhSignaturesFor): the catalog signature of each routine,
+    // by its name in lower case. Two schemas can hold the same name.
+    const functionSigs = {};
+    ((db && db.functionRefs) || []).forEach((f) => {
+      const k = String(f.n).toLowerCase();
+      (functionSigs[k] = functionSigs[k] || []).push({ s: f.s || null, n: f.n, k: f.k, args: f.args == null ? '' : String(f.args), ret: f.ret ? String(f.ret) : '' });
+    });
     // Schema names, for DROP SCHEMA and GRANT ... ON SCHEMA (qhSuggestContext).
     const schemas = [...new Set(refs.map(r => r.s).concat(((db && db.functionRefs) || []).map(f => f.s))
       .filter(Boolean))].sort();
     // The `SELECT *` expansion asks the target about a relation the catalog
     // does not list (a partition, a table newer than the snapshot). The
-    // server reads PostgreSQL's own catalog for it; other engines are not asked.
-    const columnLookup = (tab.conn && tab.db && qhEngineId(conn && conn.engine) === 'postgres')
+    // server reads the engine's own catalog for it on every engine:
+    // pg_attribute, sys.columns, system.columns or the Glue table.
+    const columnLookup = (tab.conn && tab.db)
       ? qhLiveColumnLookup(liveCols.current, tab.conn, tab.db) : null;
+    // The $DB$, $SERVER$ and $USER$ markers of a snippet (qhSnippetText).
+    const context = { db: tab.db || '', server: conn ? String(conn.name || conn.id || '') : '',
+                      user: user ? (qhPersonName(user.name) || user.email || '') : '' };
     return { tables: refs.map(r => r.n), columns: [...cols], dbs, tableCols, tableColsQ, tableMeta, tableMetaQ,
-             qualify, systemTables, functions, functionKind, columnLookup, piiColumns, tableInfo, tableInfoQ, schemas };
-  }, [tab.conn, tab.db, schemaCache, conns]);
+             qualify, systemTables, functions, functionKind, functionSigs, columnLookup, piiColumns, tableInfo, tableInfoQ, schemas, context,
+             snippets: userSnippets };
+  }, [tab.conn, tab.db, schemaCache, conns, user, userSnippets]);
   const dbTier = db ? db.tier : 'RO';
   // Prefer the server's answer on both of these. The local fallback is only in
   // play before the first response (or if /classify is unreachable), and the
@@ -768,6 +851,19 @@ function App() {
   const lintText = React.useDeferredValue(tab.kind ? '' : (tab.sql || ''));
   const lintRanges = React.useMemo(
     () => (lint ? qhLint(lintText, editorEngine) : []), [lint, lintText, editorEngine]);
+  // The Problems tab (qhProblems, Devart H3): the pre-flight blockers of the
+  // text that runs, then each code analysis finding. Offsets are in tab.sql.
+  const lintFindings = React.useMemo(
+    () => (lint ? qhLintFindings(lintText, editorEngine) : []), [lint, lintText, editorEngine]);
+  const blockerRows = React.useMemo(
+    () => (server && server.blocked && server.forKey === serverKey
+      ? (server.blockers || []).map((m) => {
+        const r = qhShiftRanges(qhBlockerRanges(judged.text, [m]), judged.offset)[0];
+        return r ? { message: String(m), start: r.start, end: r.end } : { message: String(m) };
+      }) : []),
+    [server, serverKey, judged.offset]);
+  const problems = React.useMemo(
+    () => qhProblems(lintText, lintFindings, blockerRows), [lintText, lintFindings, blockerRows]);
   const busy = tab.status === 'pending' || tab.status === 'approved' || tab.status === 'running';
   const killed = !!(admin.killSwitch && admin.killSwitch.enabled);
   const riskHints = qhRiskHints(judged.text, classify);
@@ -999,6 +1095,15 @@ function App() {
     if (from < 0 || to < 0 || from === to) return ts;
     const arr = ts.slice(); const [m] = arr.splice(from, 1); arr.splice(to, 0, m); return arr;
   });
+  // The Snippets panel waits on these promises. A failed write keeps the form
+  // open with the server's message.
+  const saveEditorSnippet = (id, body) => (id ? qhApi.updateEditorSnippet(id, body) : qhApi.createEditorSnippet(body))
+    .then(row => {
+      setUserSnippets(list => (id ? list.map(x => (x.id === id ? row : x)) : [...list, row]));
+      pushToast('Snippet ' + row.key + ' is saved. Type ' + row.key + ' and press Tab in the editor.');
+    });
+  const deleteEditorSnippet = (id) => qhApi.deleteEditorSnippet(id)
+    .then(() => setUserSnippets(list => list.filter(x => x.id !== id)));
   const deleteSaved = (id) => {
     const s = savedList.find(x => x.id === id);
     if (s && s.dest === 'server') qhApi.deleteSnippet(id).catch(() => {});
@@ -1063,6 +1168,11 @@ function App() {
 
   const POLL_MS = 1500;
   const trackers = useRef({});
+  // Long-run notice: the request ids that this page saw before they ended.
+  // Only those raise a notice, so a reload or an old request raises none.
+  const liveRuns = useRef(new Set());
+  const tabsNow = useRef(tabs);
+  tabsNow.current = tabs;
   const stopTrack = (id) => {
     const tr = trackers.current[id];
     if (!tr) return;
@@ -1116,6 +1226,20 @@ function App() {
       ranOn: sres.ranOn || null, outcome: sres.outcome || null, expiresAt: sres.expiresAt || null,
       timeline: Array.isArray(sres.timeline) ? sres.timeline : null,
     } : x));
+    // A run that took at least the chosen time (qhLongRunNotice) ends with a
+    // toast. A hidden page also gets a browser notification when the bell
+    // switch is on. A click on it opens the tab.
+    const qkey = String(qid);
+    if (sres.status !== 'done' && sres.status !== 'failed' && sres.status !== 'rejected') liveRuns.current.add(qkey);
+    else if (liveRuns.current.delete(qkey)) {
+      const own = (tabsNow.current || []).find(x => x.id === id);
+      const note = qhLongRunNotice({ status: sres.status, runMs: sres.runMs, rowCount: sres.rowCount, name: own && own.name, awaitingDba: !!sres.awaitingDba }, qhLongRunLoad());
+      if (note) {
+        pushToast(note.text, sres.status === 'failed' ? 'err' : null);
+        qhRaiseRunNotif(note, { Ctor: window.Notification, hidden: document.hidden, on: qhBrowserNotifStored(), tag: 'qh-run-' + qkey,
+          onClick: () => { setView('dev'); setActiveId(id); } });
+      }
+    }
     if (sres.scheduledFor && sres.status !== 'running' && sres.status !== 'done'
         && new Date(sres.scheduledFor) > new Date()) { setResTab('messages'); return true; }
     if (sres.status === 'done' || sres.status === 'failed' || sres.status === 'rejected') {
@@ -1596,6 +1720,24 @@ function App() {
     } finally { setSchemaBusy(false); }
   };
 
+  // "Reload catalog", for every role: read QueryHub's copy of the catalog
+  // again, the schema of one database (or of every database of the server
+  // that this page already loaded) and the connection list. Nothing reaches
+  // the target. "Refresh schema" above reads the target first, admins only.
+  const reloadCatalog = async (connId, dbName) => {
+    const c = conns.find(x => x.id === connId);
+    if (!c) return;
+    (c.databases || []).filter(d => (dbName ? d.name === dbName : !!schemaCache[connId + '/' + d.id]))
+      .forEach(d => loadSchema(connId, d.id, true));
+    try {
+      const res = await qhApi.connections();
+      setConns(res.connections || []);
+      pushToast('Catalog reloaded · ' + connId + (dbName ? '/' + dbName : ''));
+    } catch (e) {
+      pushToast((e && e.message) || 'Catalog reload failed.');
+    }
+  };
+
   // Declared ABOVE sideEl, which calls it (Babel's var hoisting leaves it undefined otherwise).
   const isAdminUser = !!user && (user.role === 'dba' || user.role === 'super');
   const adminWaiting = admin.queue.length + (admin.manualRuns || []).length;
@@ -1611,9 +1753,11 @@ function App() {
   const sideEl = !t.hideSidebar && (
     <Sidebar modeEntry={modeEntry('side')} focusSearch={sideFocus} mode={sideMode} setMode={setSideMode} conns={conns} connsLoading={connsLoading} schemaCache={schemaCache} onLoadSchema={loadSchema} rolesCache={rolesCache} onLoadRoles={loadRoles}
       canRefresh={!!(user && user.role !== 'developer')} onRefreshSchema={refreshSchema}
+      onReloadCatalog={reloadCatalog} hiddenDbs={hiddenDbs} onToggleHiddenDb={toggleHiddenDb}
       onToast={pushToast}
       active={{ conn: tab.conn, db: tab.db }} onPick={pickDb} bindOnClick={bindOnClick}
       saved={savedList} onLoadSaved={loadSaved} onInsertSaved={insertSaved} onDeleteSaved={deleteSaved}
+      snippets={userSnippets} canDeleteShared={canDelShared} onSaveSnippet={saveEditorSnippet} onDeleteSnippet={deleteEditorSnippet}
       sessions={sessions} onSaveSession={() => setSessionModal(true)} onRestoreSession={restoreSession} onDeleteSession={deleteSession}
       scheduled={scheduled} onOpenScheduled={openScheduled} onCancelScheduled={cancelScheduled}
       history={history} onLoadHistory={loadHistory} pending={pendingReqs} onOpenPending={openPending} onResubmit={resubmitFrom} histFocus={histFocus}
@@ -1694,7 +1838,7 @@ function App() {
                 : <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M16.5 9l-3 3 3 3"/></svg>}
             </button>
             <EditorTabs tabs={tabsForBar} activeId={activeId} onSelect={selectTab} onClose={(id) => requestClose('one', id)} onNew={newTab}
-              wrap={wrap} onToggleWrap={() => setWrap(w => !w)} lint={lint} onToggleLint={() => setLint(v => !v)} lintCount={lintRanges.length} onFormat={() => setFmtSig(n => n + 1)}
+              wrap={wrap} onToggleWrap={() => setWrap(w => !w)} lint={lint} onToggleLint={() => setLint(v => !v)} lintCount={lintRanges.length} onFormat={() => setFmtSig(n => n + 1)} fmtEngine={editorEngine}
               onCloseOthers={(id) => requestClose('others', id)} onCloseRight={(id) => requestClose('right', id)} onCloseAll={() => requestClose('all', activeId)} onDuplicate={duplicateTab} onRename={renameTab} onCopySql={copyTabSql} onDownloadSql={requestDownloadSql} onReorder={reorderTabs} />
           </div>
 
@@ -1751,7 +1895,9 @@ function App() {
                   pending={tab.status === 'pending' ? { since: tab.submittedAt || null, expiresAt: tab.expiresAt || null } : null}
                   onWithdraw={cancelRun} outcome={tab.outcome || null} endNote={qhEndNote(tab.messages, tab.outcome)} onResubmit={() => resubmitFrom(tab)} slackEnabled={slackOn} timeline={tab.timeline || null}
                   sourceSql={tab.ranSql || null}
-                  pkOf={(sql) => (tab.ranConn === tab.conn && tab.ranDb === tab.db ? qhResultScriptPk(sql, editorSchema) : [])} />
+                  pkOf={(sql) => (tab.ranConn === tab.conn && tab.ranDb === tab.db ? qhResultScriptPk(sql, editorSchema) : [])}
+                  problems={problems} lintOn={lint}
+                  onProblem={(p) => { if (p && p.start != null) setReveal({ start: p.start, end: p.end, n: Date.now() }); }} />
               </div>
             </>
           )}
@@ -1782,8 +1928,10 @@ function App() {
           onSave={saveNamedSession} onCancel={() => setSessionModal(false)} />
       )}
       {toast && (
-        <div className="qh-toast">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        <div className={'qh-toast' + (toastKind === 'err' ? ' is-err' : '')}>
+          {toastKind === 'err'
+            ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+            : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>}
           {toast}
         </div>
       )}
@@ -1846,6 +1994,10 @@ function NotificationBell({ unseenNews, onOpenNews, onDismissNews, onOpenSubject
   // `raised` holds the ids that were already shown or seen, so an item raises one
   // Notification and a reload does not raise it again.
   const [browserOn, setBrowserOn] = useState(() => qhBrowserNotifStored());
+  // Long-run notice (qhLongRunNotice): the time a run must take before it
+  // ends with a notice. Stored in this browser.
+  const [longRun, setLongRun] = useState(() => qhLongRunLoad());
+  const longRunLabel = (QH_LONGRUN_CHOICES.find(([v]) => v === longRun) || [0, ''])[1];
   const [browserWhy, setBrowserWhy] = useState('');
   const raisedRef = useRef(null);
   if (raisedRef.current === null) raisedRef.current = qhRaisedLoad();
@@ -1949,6 +2101,16 @@ function NotificationBell({ unseenNews, onOpenNews, onDismissNews, onOpenSubject
               <span className="qh-notif-switch-label">Browser notifications</span>
             </label>
             <span className="qh-notif-switch-hint" id="qh-notif-browser-hint">{browserWhy || (browserOn ? 'On. A new item shows on your desktop.' : 'Off. Turn it on to see a new item on your desktop.')}</span>
+            <label className="qh-notif-longrun">
+              <span>Long-run notice</span>
+              <select value={String(longRun)} aria-describedby="qh-notif-longrun-hint"
+                onChange={(e) => { const v = Number(e.target.value); setLongRun(v); qhLongRunStore(v); }}>
+                {QH_LONGRUN_CHOICES.map(([v, l]) => <option key={v} value={String(v)}>{l}</option>)}
+              </select>
+            </label>
+            <span className="qh-notif-switch-hint" id="qh-notif-longrun-hint">{longRun
+              ? 'A run of ' + longRunLabel + ' or more shows a notice when it ends. If browser notifications are on, a hidden page also gets one.'
+              : 'Off. A long run ends with no notice.'}</span>
           </div>
         </div>
       </>)}

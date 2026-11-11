@@ -602,6 +602,40 @@ def catalog_rows(host, port, database, user, password, sql: str, *,
         conn.close()
 
 
+# One relation's columns, for the editor's `SELECT *` expansion when the
+# hourly snapshot does not list the relation yet. OBJECT_ID resolves the name
+# in the connected database (a one-part name through the login's default
+# schema, then dbo) and returns NULL for no such object or no permission. The
+# caller builds the name from at most two bracket-quoted parts, so OBJECT_ID
+# never sees a database part and cannot read another database.
+_LIVE_COLUMNS_SQL = """
+SELECT c.name, TYPE_NAME(c.user_type_id)
+  FROM sys.columns c
+ WHERE c.object_id = OBJECT_ID(?)
+ ORDER BY c.column_id
+"""
+
+
+def _bracket(part: str) -> str:
+    """[part], with a ] inside written twice, as T-SQL quotes a name."""
+    return "[" + part.replace("]", "]]") + "]"
+
+
+def live_columns(host, port, database, user, password, schema: str | None,
+                 table: str, *, timeout_sec: int = 3) -> list[tuple[str, str]]:
+    """[(column, type)] of `schema.table` (or `table`) in `database`, in
+    column order. An empty list when there is no such relation."""
+    name = ".".join(_bracket(p) for p in ([schema] if schema else []) + [table])
+    conn = connect(host, port, database, user, password,
+                   timeout_sec=timeout_sec, read_only=False)
+    try:
+        cur = conn.cursor()
+        cur.execute(_LIVE_COLUMNS_SQL, name)
+        return [(r[0], r[1]) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 def catalog_snapshot(host, port, database, user, password, *,
                      timeout_sec: int = 120) -> tuple[list[dict], list[dict]]:
     """Read one database's table + column catalog, returning (tables, columns)

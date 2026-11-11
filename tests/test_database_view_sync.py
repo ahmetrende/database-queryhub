@@ -92,8 +92,9 @@ def test_the_ui_drops_the_endpoint_when_there_is_none_rather_than_faking_one():
 def test_both_views_share_one_database_renderer():
     panels = _read("qh-panels.jsx")
     assert "const dbNode = (c, db, base" in panels, "the shared renderer is gone"
-    # the server tree renders databases through it at depth 1
-    assert "c.databases.map(db => dbNode(c, db, 1))" in panels
+    # the server tree renders databases through it at depth 1 (less the ones
+    # this browser hides, see shownDbs)
+    assert "shownDbs(c).map(db => dbNode(c, db, 1))" in panels
     # the flat list renders through it at depth 0
     assert "dbNode(row.c, row.db, 0" in panels
     # no second copy of the leaf structure

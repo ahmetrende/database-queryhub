@@ -13,7 +13,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 
 import psycopg
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .. import (admins, auto_approve, db, engines, errors, favorites, people, query_safety,
@@ -454,6 +454,85 @@ def saved_delete(saved_id: int, claims: dict = Depends(deps.current_user)):
         raise deps._error(404, "not_found", "No such saved query.")
 
 
+# ---- /snippets (editor snippets, Devart D3 and D4) ---------------------------
+#
+# The person's own snippets and every shared one (snippets.py). Only the owner
+# changes a snippet. The owner or an admin deletes it. Another person's
+# snippet answers 404, the same as a snippet that does not exist.
+
+class SnippetIn(BaseModel):
+    key: str = Field(max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    body: str = Field(max_length=100_000)
+    engine: str | None = Field(default=None, max_length=40)
+    folder: str | None = Field(default=None, max_length=500)
+    shared: bool = False
+
+
+def _snippet_values(body: SnippetIn) -> dict:
+    from .. import snippets
+    try:
+        return snippets.clean(key=body.key, description=body.description, body=body.body,
+                              engine=body.engine, folder=body.folder, is_shared=body.shared)
+    except snippets.SnippetError as e:
+        raise deps._error(422, e.code, str(e))
+
+
+def _snippet_out(row: dict, uid: str) -> dict:
+    return mapping.snippet_entry(row, uid, {})
+
+
+def _snippet_conflict(e) -> HTTPException:
+    return deps._error(409, e.code, str(e))
+
+
+@router.get("/snippets")
+def snippets_list(claims: dict = Depends(deps.current_user)):
+    deps.require_whitelisted(claims)
+    from .. import snippets
+    uid = claims["sub"]
+    rows = snippets.list_for(uid)
+    names = people.display_names({r["owner_id"] for r in rows if r["owner_id"] != uid})
+    return {"snippets": [mapping.snippet_entry(r, uid, names) for r in rows],
+            "canDeleteShared": _is_admin(uid)}
+
+
+@router.post("/snippets", status_code=201)
+def snippets_create(body: SnippetIn, claims: dict = Depends(deps.current_user)):
+    deps.require_whitelisted(claims)
+    from .. import snippets
+    values = _snippet_values(body)
+    try:
+        row = snippets.create(claims["sub"], values)
+    except snippets.SnippetError as e:
+        raise _snippet_conflict(e)
+    return _snippet_out(row, claims["sub"])
+
+
+@router.put("/snippets/{snippet_id}")
+def snippets_update(snippet_id: int, body: SnippetIn,
+                    claims: dict = Depends(deps.current_user)):
+    deps.require_whitelisted(claims)
+    from .. import snippets
+    values = _snippet_values(body)
+    try:
+        row = snippets.update(claims["sub"], snippet_id, values)
+    except snippets.SnippetError as e:
+        raise _snippet_conflict(e)
+    if row is None:
+        raise deps._error(404, "not_found", "No such snippet of yours.")
+    return _snippet_out(row, claims["sub"])
+
+
+@router.delete("/snippets/{snippet_id}", status_code=204)
+def snippets_delete(snippet_id: int, claims: dict = Depends(deps.current_user)):
+    deps.require_whitelisted(claims)
+    from .. import snippets
+    uid = claims["sub"]
+    if not snippets.delete(uid, snippet_id, is_admin=_is_admin(uid)):
+        raise deps._error(404, "not_found", "No such snippet of yours.")
+
+
 # ---- /sessions (server-synced named workspaces) -----------------------------
 #
 # Only dest="server" sessions live server-side (web_saved_sessions, mig 064);
@@ -681,6 +760,10 @@ def db_schema(conn: str, dbname: str, claims: dict = Depends(deps.current_user))
         raise deps._error(404, "not_found",
                           "Refused: the database is unknown, or you have no grant for it.")
 
+    # Read the stamp BEFORE the tables: when a snapshot lands between the two
+    # reads, the browser holds the older stamp and reloads at its next check.
+    # In the other order it would hold the newer stamp with the older tables.
+    stamp = schema_catalog.catalog_stamp(t.id, dbname)
     trows = db.fetch_all(
         "SELECT id, schema_name, table_name, relkind, row_estimate, indexes, "
         "       foreign_keys "
@@ -738,7 +821,20 @@ def db_schema(conn: str, dbname: str, claims: dict = Depends(deps.current_user))
                 "columns": columns,
                 "indexes": [mapping.parse_index(i) for i in (tr.get("indexes") or [])],
             })
-    return {"tables": tables, "views": views}
+    return {"tables": tables, "views": views, **stamp}
+
+
+@router.get("/connections/{conn}/databases/{dbname}/schema/stamp")
+def db_schema_stamp(conn: str, dbname: str, claims: dict = Depends(deps.current_user)):
+    """{snapshotAt, sig} of one database's catalog, the same values /schema
+    gives. A browser asks every five minutes and reloads /schema only when
+    `sig` changed. One aggregate query on the bot DB. It never asks the target."""
+    deps.require_whitelisted(claims)
+    t, _grant = _granted_db(claims["sub"], conn, dbname)
+    if t is None:
+        raise deps._error(404, "not_found",
+                          "Refused: the database is unknown, or you have no grant for it.")
+    return schema_catalog.catalog_stamp(t.id, dbname)
 
 
 # ---- columns of one relation, read live -------------------------------------
@@ -751,12 +847,19 @@ def db_schema(conn: str, dbname: str, claims: dict = Depends(deps.current_user))
 #
 # This reads the target's own catalog for that one relation: a fixed,
 # parameterised metadata query (no user SQL reaches the server), over a
-# short-lived READ ONLY connection with the RO login, the way the roles list
-# does. Only column names and types come back, which is what the snapshot
-# already shows for every other relation in a database the caller is granted.
-# `to_regclass` resolves the name like the query itself will (quoting,
-# schema, search_path) and returns NULL rather than raising when there is no
-# such relation.
+# short-lived connection with the RO login, the way the roles list does. Only
+# column names and types come back, which is what the snapshot already shows
+# for every other relation in a database the caller is granted.
+#
+# PostgreSQL: `to_regclass` resolves the name like the query itself will
+# (quoting, schema, search_path) and returns NULL rather than raising when
+# there is no such relation. The connection is READ ONLY.
+#
+# SQL Server, ClickHouse and Athena: the name is split into its parts here
+# (see _name_parts) and the read always names the granted database itself. A
+# name qualified with ANOTHER database (`otherdb.dbo.t`, `otherdb.t`) gets the
+# same 404 as a missing table, so no name from a database without a grant
+# comes back.
 
 _LIVE_COLUMNS_SQL = (
     "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod) "
@@ -779,13 +882,13 @@ def table_columns(conn: str, dbname: str, table: str = "",
         raise deps._error(404, "not_found",
                           "Refused: the database is unknown, or you have no grant for it.")
     if not _is_postgres(t):
-        raise deps._error(422, "unsupported",
-                          "QueryHub reads columns live on PostgreSQL only.")
+        rows = _other_live_columns(t, conn, dbname, name)
+        if not rows:
+            raise deps._error(404, "not_found", "No such table.")
+        return {"table": name, "columns": [{"name": n, "type": ty} for n, ty in rows]}
     user, password, why = _ro_login(t)
     if why:
-        raise deps._error(503, "server_error",
-                          "This connection has no read credential. "
-                          "Ask an admin to configure one.")
+        raise _no_read_login()
     try:
         with psycopg.connect(
             host=t.host, port=t.port, dbname=dbname,
@@ -803,6 +906,97 @@ def table_columns(conn: str, dbname: str, table: str = "",
     if not rows:
         raise deps._error(404, "not_found", "No such table.")
     return {"table": name, "columns": [{"name": n, "type": ty} for n, ty in rows]}
+
+
+def _no_read_login():
+    return deps._error(503, "server_error",
+                       "This connection has no read credential. "
+                       "Ask an admin to configure one.")
+
+
+# One part of a dotted name: "x", [x] or `x` (a doubled closing quote inside
+# stands for one), or a bare word. A part can have blanks around it.
+_NAME_PART_RE = re.compile(
+    r'\s*(?:"((?:[^"]|"")*)"|\[((?:[^\]]|\]\])*)\]|`((?:[^`]|``)*)`|([^\s."\[\]`]+))\s*')
+
+
+def _name_parts(name: str) -> list[str] | None:
+    """`dbo.[Order Lines]` -> ["dbo", "Order Lines"]: the parts of a dotted
+    relation name, unquoted. None when the name does not parse or a part is
+    empty (`db..t`)."""
+    parts, pos = [], 0
+    while True:
+        m = _NAME_PART_RE.match(name, pos)
+        if not m:
+            return None
+        dq, br, bt, bare = m.groups()
+        part = (dq.replace('""', '"') if dq is not None
+                else br.replace("]]", "]") if br is not None
+                else bt.replace("``", "`") if bt is not None else bare)
+        if not part:
+            return None
+        parts.append(part)
+        pos = m.end()
+        if pos == len(name):
+            return parts
+        if name[pos] != ".":
+            return None
+        pos += 1
+
+
+def _other_live_columns(t, conn: str, dbname: str, name: str) -> list[tuple[str, str]]:
+    """Columns of `name` in `dbname` on a SQL Server, ClickHouse or Athena
+    target: [(column, type)], or [] when this database has no such relation
+    or the name points at another database."""
+    engine = (getattr(t, "engine", None) or "").strip().lower()
+    if engine not in ("mssql", "clickhouse", "athena"):
+        raise deps._error(422, "unsupported",
+                          "QueryHub cannot read columns live on this engine.")
+    parts = _name_parts(name)
+    if not parts:
+        return []
+    try:
+        if engine == "athena":
+            from .. import athena_exec
+            acfg = athena_exec.config_of(t)
+            # Athena folds every name to lower case, quoted or not.
+            low = [p.lower() for p in parts]
+            if (len(low) > 3
+                    or (len(low) == 3 and low[0] != acfg["catalog"].lower())
+                    or (len(low) >= 2 and low[-2] != dbname.lower())):
+                return []
+            return athena_exec.live_columns(acfg, dbname, low[-1])
+        if engine == "mssql":
+            # db.schema.table, schema.table or table. SQL Server compares
+            # database names without case on a default server collation.
+            if len(parts) > 3 or (len(parts) == 3
+                                  and parts[0].casefold() != dbname.casefold()):
+                return []
+            schema = parts[-2] if len(parts) >= 2 else None
+        else:
+            # ClickHouse: db.table or table, and names keep their case.
+            if len(parts) > 2 or (len(parts) == 2 and parts[0] != dbname):
+                return []
+            schema = None
+        user, password, why = _ro_login(t)
+        if why:
+            raise _no_read_login()
+        if engine == "mssql":
+            from .. import mssql_exec
+            return mssql_exec.live_columns(t.host, t.port, dbname, user, password,
+                                           schema, parts[-1])
+        from .. import clickhouse_exec
+        return clickhouse_exec.live_columns(t.host, t.port, dbname, user, password,
+                                            parts[-1])
+    except HTTPException:
+        raise
+    except Exception as e:                          # noqa: BLE001
+        # The driver's own text can name a host, a login or a role ARN, so
+        # the caller gets a fixed sentence and the log keeps the type.
+        log.info("columns: live lookup of %r in %s/%s (%s) failed: %s",
+                 name, conn, dbname, engine, type(e).__name__)
+        raise deps._error(503, "server_error",
+                          "The server did not answer the column lookup.")
 
 
 # ---- server roles (SUPER-ONLY, live) ----------------------------------------

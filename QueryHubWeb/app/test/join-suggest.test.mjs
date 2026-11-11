@@ -128,7 +128,7 @@ test('CROSS, NATURAL, USING, a CTE and a subquery give null', () => {
 
 test('the editor puts JOIN items first and draws the FK mark', () => {
   const src = web('qh-editor.jsx');
-  assert.match(src, /qhJoinSuggestions\(ta\.value, caret, sch, engineId\) \|\| qhJoinOnSuggestions\(ta\.value, caret, sch, engineId\)/);
+  assert.match(src, /qhJoinSuggestions\(ta\.value, caret, sch, engineId, qhAliasRules\(qhAliasOptsLoad\(\)\.rules\)\) \|\| qhJoinOnSuggestions\(ta\.value, caret, sch, engineId\)/);
   assert.match(src, /items: js\.items\.concat\(s \? s\.items : \[\]\)/);
   assert.match(src, /className="qh-ac-ed-fk" title="Foreign key"/);
   assert.match(web('QueryHub.html'), /\.qh-ac-ed-fk \{/);

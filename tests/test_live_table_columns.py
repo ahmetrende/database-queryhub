@@ -3,8 +3,9 @@
 The editor's `SELECT *` expansion asks here when the schema catalog does not
 list the relation in FROM (a partition, a table newer than the snapshot). What
 matters is the shape of the read: the caller's grant decides, the query is
-fixed and parameterised (the name never becomes SQL), the connection is READ
-ONLY with a statement timeout, and only PostgreSQL is asked.
+fixed and parameterised (the name never becomes SQL), and the connection is
+READ ONLY with a statement timeout. SQL Server, ClickHouse and Athena are in
+tests/test_live_table_columns_engines.py.
 """
 from types import SimpleNamespace
 
@@ -115,11 +116,20 @@ def test_a_database_outside_the_grant_is_404_and_never_connects(live):
     assert live["connect_kwargs"] is None
 
 
-def test_only_postgres_is_asked(live):
-    live["granted"] = SimpleNamespace(**{**TARGET.__dict__, "engine": "mssql"})
+def test_an_engine_without_a_reader_is_refused(live):
+    live["granted"] = SimpleNamespace(**{**TARGET.__dict__, "engine": "mongodb"})
     with pytest.raises(HTTPException) as e:
         _call()
     assert _status(e) == (422, "unsupported")
+    assert live["connect_kwargs"] is None
+
+
+def test_other_engines_never_open_a_postgres_connection(live, monkeypatch):
+    # SQL Server, ClickHouse and Athena have readers of their own
+    # (tests/test_live_table_columns_engines.py); psycopg is not one of them.
+    monkeypatch.setattr(rd, "_other_live_columns", lambda t, c, d, n: [("a", "int")])
+    live["granted"] = SimpleNamespace(**{**TARGET.__dict__, "engine": "mssql"})
+    assert _call()["columns"] == [{"name": "a", "type": "int"}]
     assert live["connect_kwargs"] is None
 
 

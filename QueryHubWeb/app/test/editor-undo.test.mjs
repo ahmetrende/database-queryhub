@@ -330,9 +330,9 @@ test('a completion undoes to what was typed', dom, () => {
   ed.type('ord');
   assert.ok(ed.popup(), 'typing a table prefix should open the list');
   ed.press('Enter');
-  assert.equal(ed.text, 'SELECT * FROM orders');
+  assert.equal(ed.text, 'SELECT * FROM orders o', 'a table after FROM gets an alias');
   ed.undo();
-  assert.equal(ed.text, 'SELECT * FROM ord');
+  assert.equal(ed.text, 'SELECT * FROM ord', 'one step takes back the name and the alias');
   ed.undo();
   assert.equal(ed.text, 'SELECT * FROM ');
 });

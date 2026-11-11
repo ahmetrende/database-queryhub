@@ -360,6 +360,24 @@ def catalog_snapshot(host, port, database, user, password, *,
     return tables, columns
 
 
+def live_columns(host, port, database, user, password, table: str, *,
+                 timeout_sec: int = 10) -> list[tuple[str, str]]:
+    """[(column, type)] of `table` in `database`, in column order, for the
+    editor's `SELECT *` expansion. An empty list when there is no such table.
+    The database is a parameter that the caller fixes, so a name cannot point
+    the read at another database."""
+    c = client(host, port, database, user, password, timeout_sec=timeout_sec,
+               client_name="queryhub-web-columns")
+    try:
+        rows = c.execute(
+            "SELECT name, type FROM system.columns "
+            "WHERE database = %(db)s AND table = %(t)s ORDER BY position",
+            {"db": database, "t": table})
+        return [(n, ty) for n, ty in rows]
+    finally:
+        c.disconnect()
+
+
 def _relkind(engine: str) -> str:
     """The catalog's relkind for a ClickHouse table engine."""
     if engine in ("View", "LiveView", "WindowView"):

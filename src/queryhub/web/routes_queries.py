@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import csv
 import io
+import functools
 import json
 import logging
 import os
@@ -1685,6 +1686,17 @@ def _export_response(request_id: int, statement: int | None, claims: dict,
     index = statement or 1
     _check_export_size(p, index, max(1, cfg.get_int("result_export_max_rows", 100000)))
     make, media = _EXPORTS[fmt]
+    if fmt == "json" and p.suffix.lower() == ".csv":
+        # One table: the executor recorded its column types, so numbers,
+        # booleans and NULLs come out as JSON values (result_export.json_kind).
+        types = row.get("result_column_types")
+        if isinstance(types, str):
+            try:
+                types = json.loads(types)
+            except ValueError:
+                types = None
+        if isinstance(types, dict) and types:
+            make = functools.partial(result_export.stream_json, types=types)
     audit_mod.log(request_id, claims["sub"], claims.get("name"),
                   "web_result_downloaded",
                   {"format": fmt, "file": p.name,

@@ -103,7 +103,7 @@ function mountEditor(value) {
   const select = (a, b) => {
     ui.React.act(() => { ta.focus(); ta.setSelectionRange(a, b); ta.dispatchEvent(new ui.win.Event('select', { bubbles: true })); });
   };
-  return { seen, select };
+  return { seen, select, ta, win: ui.win };
 }
 
 test('the editor reports the selection when it changes, once per change', jsdomOpts, () => {
@@ -114,6 +114,18 @@ test('the editor reports the selection when it changes, once per change', jsdomO
   assert.deepEqual(ed.seen.map(x => (x ? x.lines : 0)), [0, 2, 0], 'start, a two-line part, then Ctrl+A');
   assert.deepEqual(ed.seen[1], { lines: 2, start: 10, text: TEXT.slice(10, 26) });
   assert.equal(ed.seen[2], null, 'Ctrl+A is no selection');
+});
+
+test('an input reports the selection in the next task, never inside the input event', jsdomOpts, async () => {
+  const ed = mountEditor(TEXT);
+  ed.select(10, 26);
+  assert.equal(ed.seen.length, 2);
+  ed.ta.setSelectionRange(11, 11);
+  ed.ta.dispatchEvent(new ed.win.Event('input', { bubbles: true }));
+  assert.equal(ed.seen.length, 2, 'nothing while the input event runs: React has not seen the new text yet');
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(ed.seen.length, 3, 'then the report comes');
+  assert.equal(ed.seen[2], null, 'the caret is no selection');
 });
 
 // ---------- the verdicts judge the selection ----------

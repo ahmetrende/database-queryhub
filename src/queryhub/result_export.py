@@ -40,15 +40,80 @@ def _fit(rows: Iterable[Sequence[str]], width: int) -> Iterator[list[str]]:
         yield cells
 
 
-def stream_json(columns: list[str], rows: Iterable[Sequence[str]]) -> Iterator[bytes]:
-    """Yield a JSON document: the column list and one object per row."""
+# JSON values from typed columns (2026-11-11). The stored result is a CSV
+# file, so every cell is text and a NULL is ''. With the column's SQL type
+# (requests.result_column_types) a cell becomes a JSON value: a number column
+# gives a JSON number (the text as it is, so a bigint keeps every digit), a
+# boolean column gives true or false, and an empty cell of a column that is not
+# text gives null. A text column keeps '' as "": there it can be an empty
+# string or NULL, and the file does not say which. A masked or odd value that
+# does not read as a number or a boolean stays a string. The web grid's
+# "Copy as JSON" uses the same rule (qhResJsonKind in qh-results-tools.jsx).
+_JSON_NUM_TYPES = re.compile(
+    r"^(u?int(2|4|8|16|32|64|128|256)?|integer|smallint|bigint|tinyint|mediumint"
+    r"|serial|bigserial|smallserial|numeric|decimal|real|float(4|8|32|64)?"
+    r"|double( precision)?|oid)$")
+_JSON_BOOL_TYPES = {"bool", "boolean", "bit"}
+_JSON_TEXT_TYPES = re.compile(
+    r"^(text|varchar|char|character( varying)?|nvarchar|nchar|ntext|bpchar|name"
+    r"|citext|string|fixedstring|str|sysname|xml|enum(8|16)?)$")
+_JSON_NUMBER = re.compile(r"^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$")
+
+
+def json_kind(sql_type) -> str:
+    """'num', 'bool', 'text' or 'other' for a column's SQL type. No type is 'text'."""
+    t = str(sql_type or "").strip().lower()
+    unwrapped = True
+    while unwrapped:                      # LowCardinality(Nullable(String))
+        unwrapped = False
+        for wrap in ("nullable(", "lowcardinality("):
+            if t.startswith(wrap) and t.endswith(")"):
+                t, unwrapped = t[len(wrap):-1].strip(), True
+    if not t:
+        return "text"
+    if t.endswith("[]") or t.startswith("array("):
+        return "other"
+    base = t.split("(", 1)[0].strip()
+    if _JSON_NUM_TYPES.match(base):
+        return "num"
+    if base in _JSON_BOOL_TYPES:
+        return "bool"
+    if _JSON_TEXT_TYPES.match(base):
+        return "text"
+    return "other"
+
+
+def json_cell(value: str, kind: str) -> str:
+    """The JSON text of one CSV cell of a column of `kind` (see json_kind)."""
+    if kind == "text":
+        return json.dumps(value, ensure_ascii=False)
+    if value == "":
+        return "null"
+    if kind == "num" and _JSON_NUMBER.match(value):
+        return value
+    if kind == "bool":
+        low = value.strip().lower()
+        if low in ("t", "true", "1"):
+            return "true"
+        if low in ("f", "false", "0"):
+            return "false"
+    return json.dumps(value, ensure_ascii=False)
+
+
+def stream_json(columns: list[str], rows: Iterable[Sequence[str]],
+                types: dict | None = None) -> Iterator[bytes]:
+    """Yield a JSON document: the column list and one object per row.
+
+    `types` maps a column name to its SQL type. Without it, every value is a
+    string, as before."""
     _check_columns(columns)
     names = [json.dumps(c, ensure_ascii=False) for c in columns]
+    kinds = [json_kind((types or {}).get(c)) for c in columns]
     head = json.dumps(columns, ensure_ascii=False, separators=(",", ":"))
     yield ('{"columns":' + head + ',"rows":[\n').encode("utf-8")
     first = True
     for cells in _fit(rows, len(columns)):
-        pairs = [n + ":" + json.dumps(v, ensure_ascii=False) for n, v in zip(names, cells)]
+        pairs = [n + ":" + json_cell(v, k) for n, v, k in zip(names, cells, kinds)]
         piece = "{" + ",".join(pairs) + "}"
         if not first:
             piece = ",\n" + piece

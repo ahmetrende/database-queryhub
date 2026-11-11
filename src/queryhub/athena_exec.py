@@ -188,6 +188,20 @@ def catalog_snapshot(cfg: dict, database: str,
     return tables, columns
 
 
+def live_columns(cfg: dict, database: str, table: str) -> list[tuple[str, str]]:
+    """[(column, type)] of one Glue table, partition keys last, for the
+    editor's `SELECT *` expansion. An empty list when there is no such table.
+    Glue stores names in lower case, so the caller gives `table` in lower case."""
+    try:
+        t = _glue(cfg).get_table(DatabaseName=database, Name=table)["Table"]
+    except Exception as e:                          # noqa: BLE001
+        if _error_code(e) == "EntityNotFoundException":
+            return []
+        raise
+    _table, columns = _table_rows(t, database)
+    return [(c["column_name"], c["data_type"]) for c in columns]
+
+
 def _count_partitions(glue, database: str, table: str) -> int | None:
     """How many partitions the table has, or None if we could not tell.
 

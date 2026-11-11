@@ -237,5 +237,5 @@ test('the new kinds have labels and the FK mark sits outside the name', () => {
   // a long name never cuts it.
   assert.match(src, /<\/span>\) : null}<\/span>\s*\{it\.fk \?/);
   assert.match(web('QueryHub.html'), /\.qh-ac-ed-fk \{ flex: none;/);
-  assert.match(web('qh-app.jsx'), /tableInfo, tableInfoQ, schemas \}/);
+  assert.match(web('qh-app.jsx'), /tableInfo, tableInfoQ, schemas, context,\n\s+snippets: userSnippets \}/);
 });

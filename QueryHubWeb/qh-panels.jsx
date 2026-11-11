@@ -161,7 +161,7 @@ function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, ri
   );
 }
 
-function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, open, setOpen, onPickDb, onOpenTable, onNewQuery, isSuper, canRefresh, onRefreshSchema, reveal, narrow, tagFilters, onToast }) {
+function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, open, setOpen, onPickDb, onOpenTable, onNewQuery, isSuper, canRefresh, onRefreshSchema, onReloadCatalog, hiddenDbs, onToggleHiddenDb, reveal, narrow, tagFilters, onToast }) {
   // A `provider:aws` token in the search box narrows the TREE, not just the
   // dropdown: the list you then browse is the answer to what you typed.
   const conns = React.useMemo(() => (
@@ -256,6 +256,23 @@ function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, r
   // (`connId/dbId`), so favouriting `analytics` on prod-main does not drag
   // prod-replica's `analytics` along with it.
   const dbKey = (c, db) => c.id + '/' + db.id;
+  // Databases hidden in this browser (qh.dbhide.v1, kept by App). They leave
+  // every tree view until "Show" lists them again, dimmed.
+  const hiddenSet = React.useMemo(() => new Set(hiddenDbs || []), [hiddenDbs]);
+  const [showHidden, setShowHidden] = React.useState(false);
+  const shownDbs = (c) => (showHidden ? (c.databases || []) : (c.databases || []).filter(db => !hiddenSet.has(dbKey(c, db))));
+  const hiddenN = React.useMemo(() => (allConns || []).reduce((n, c) =>
+    n + (c.databases || []).filter(db => hiddenSet.has(c.id + '/' + db.id)).length, 0), [allConns, hiddenSet]);
+  // "as of 10:05" (today) or "as of 9 Nov 10:05": when QueryHub last read
+  // this database's catalog, from the stamp the schema came with.
+  const asOf = (c, db) => {
+    const sch = schemaCache ? schemaCache[c.id + '/' + db.id] : null;
+    const at = sch && sch.stamp && sch.stamp.at ? new Date(sch.stamp.at) : null;
+    if (!at || isNaN(at)) return '';
+    const hm = at.toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    return ' · as of ' + (at.toDateString() === new Date().toDateString() ? hm
+      : at.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + ' ' + hm);
+  };
   const isDbFav = (k) => org.dbFavorites.includes(k);
   const toggleDbFav = (k) => setOrg(o => ({ ...o, dbFavorites: o.dbFavorites.includes(k) ? o.dbFavorites.filter(x => x !== k) : [...o.dbFavorites, k] }));
   const dbFolderOf = (k) => org.dbFolders.find(f => f.dbs.includes(k));
@@ -366,7 +383,7 @@ function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, r
       <div key={did}>
         <TreeRow depth={base} expandable open={isOpen(did)} onToggle={() => { tog(did); onLoadSchema && onLoadSchema(c.id, db.id); if (bindOnClick && onPickDb) onPickDb(c, db); }}
           icon={rightExtra !== undefined ? <img className="qh-engine-logo" src={qhEngineLogo(c)} alt={qhEngine(c).label} draggable={false} /> : TICN.db()}
-          label={db.name} sub={sub} tier={db.tier} active={act} drag={qhQuoteIdent(db.name)} dbDrag={dbDragKey} nodeId={did}
+          label={db.name} sub={sub} tier={db.tier} active={act} muted={hiddenSet.has(did)} drag={qhQuoteIdent(db.name)} dbDrag={dbDragKey} nodeId={did}
           title={(rightExtra !== undefined ? [db.name, c.name + ' · ' + c.engine, c.host ? c.host + (c.port ? ':' + c.port : '') : '', qhHosting(c)] : [db.name]).concat(['Click uses it in a blank tab.', 'Double-click opens a new query.', 'Right-click shows more.']).filter(Boolean).join('\n')}
           right={dbEnd && dbEnd.state === 'soon' ? <><span className="qh-tr-endsoon" title={dbEnd.title}>{dbEnd.short}</span>{rightExtra}</> : rightExtra}
           onCtx={(e) => openMenu(e, c, db)} onDbl={() => newQ(c, db)} />
@@ -420,7 +437,7 @@ function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, r
               right={<>{qhConnIdentity(c)}{c.disabled && <span className="qh-conn-off is-icon" aria-label="Disabled" title="Disabled — retired or parked. It would still answer, with stale data. Pick it only deliberately.">{TICN.off()}</span>}</>}
               onCtx={(e) => openConnMenu(e, c)} onDbl={() => { newQ(c, c.databases[0]); }} />
             {isOpen(sid) && (<>
-            {c.databases.map(db => dbNode(c, db, 1))}
+            {shownDbs(c).map(db => dbNode(c, db, 1))}
             {isSuper && (
               <>
                 <TreeRow depth={1} expandable open={isOpen(sid + '/roles')} onToggle={() => { tog(sid + '/roles'); onLoadRoles && onLoadRoles(c.id); }} muted icon={TICN.roles()} label={qhEngine(c).rolesLabel} right={<span className="qh-tr-count">{rolesCache && rolesCache[c.id] ? rolesCache[c.id].length : '…'}</span>} />
@@ -446,13 +463,13 @@ function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, r
   // list — GET /connections already returns only granted targets.
   const flatDbs = React.useMemo(() => {
     const rows = [];
-    (conns || []).forEach(c => (c.databases || []).forEach(db => rows.push({ c, db })));
+    (conns || []).forEach(c => shownDbs(c).forEach(db => rows.push({ c, db })));
     // Alphabetical, but disabled targets LAST — GET /connections already sends
     // them last (`enabled DESC, alias`) and a flat name sort would fold a
     // retired server back in among the live ones (CODE brief 2026-08-20 §5).
     rows.sort((a, b) => (a.c.disabled ? 1 : 0) - (b.c.disabled ? 1 : 0) || a.db.name.localeCompare(b.db.name) || a.c.name.localeCompare(b.c.name));
     return rows;
-  }, [conns]);
+  }, [conns, hiddenSet, showHidden]);
   // Two servers can hold a database of the same name (users on prod-main and on
   // prod-replica). Pretending they are one row would be a lie, so those rows
   // carry the server name; the unambiguous ones stay clean.
@@ -477,6 +494,8 @@ function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, r
   const ICN_FOLDER_DEL = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>;
   const ICN_FOLDER_NEW = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M12 11v6M9 14h6"/></svg>;
   const ICN_REFRESH = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 11-3-6.7M21 4v5h-5"/></svg>;
+  const ICN_RELOAD = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0115.5-6.2L21 8M21 3v5h-5M21 12a9 9 0 01-15.5 6.2L3 16M3 21v-5h5"/></svg>;
+  const ICN_EYE_OFF = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.6 5.1A10 10 0 0112 5c6 0 10 7 10 7a17 17 0 01-3.2 4M6.6 6.6A17 17 0 002 12s4 7 10 7a9.7 9.7 0 005.4-1.6M9.9 9.9a3 3 0 004.2 4.2M3 3l18 18"/></svg>;
   const ICN_COPY = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>;
   // host:port — plus /database when the gesture started on a database row, since
   // that is the whole connection string a driver wants. No host, no copy: the
@@ -577,6 +596,13 @@ function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, r
         body: ungrouped.map(serverNode) })}
       </>)}
 
+      {hiddenN > 0 && (
+        <div className="qh-dbhide-line">
+          {hiddenN} hidden {hiddenN === 1 ? 'database' : 'databases'}{' · '}
+          <button type="button" onClick={() => setShowHidden(v => !v)}>{showHidden ? 'Hide again' : 'Show'}</button>
+        </div>
+      )}
+
       {menu && (
         <>
           <div className="qh-ctx-backdrop" onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null); }} />
@@ -620,6 +646,11 @@ function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, r
                 {canRefresh && <button onClick={() => { onRefreshSchema && onRefreshSchema(menu.conn.id, null); setMenu(null); }}>
                   {ICN_REFRESH}Refresh schema · all {(menu.conn.databases || []).length} databases
                 </button>}
+                {/* Every role: read QueryHub's copy of the catalog again.
+                    Nothing reaches the server. */}
+                {onReloadCatalog && <button onClick={() => { onReloadCatalog(menu.conn.id, null); setMenu(null); }}>
+                  {ICN_RELOAD}Reload catalog
+                </button>}
                 <div className="qh-ctx-sep" />
                 <button onClick={() => { toggleFav(menu.conn.id); setMenu(null); }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill={isFav(menu.conn.id) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9 6.8 19.2l1-5.8L3.5 9.2l5.9-.9z"/></svg>{isFav(menu.conn.id) ? 'Remove from favorites' : 'Add to favorites'}
@@ -656,6 +687,12 @@ function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, r
                 </button>}
                 {canRefresh && menu.db && <button onClick={() => { onRefreshSchema && onRefreshSchema(menu.c.id, menu.db.name); setMenu(null); }}>
                   {ICN_REFRESH}Refresh schema · this database
+                </button>}
+                {onReloadCatalog && menu.db && <button onClick={() => { onReloadCatalog(menu.c.id, menu.db.name); setMenu(null); }}>
+                  {ICN_RELOAD}Reload catalog{asOf(menu.c, menu.db)}
+                </button>}
+                {onToggleHiddenDb && menu.db && <button onClick={() => { onToggleHiddenDb(dbKey(menu.c, menu.db)); setMenu(null); }}>
+                  {ICN_EYE_OFF}{hiddenSet.has(dbKey(menu.c, menu.db)) ? 'Show this database again' : 'Hide this database'}
                 </button>}
                 {treeView === 'dbs' && menu.db && (() => {
                   const k = dbKey(menu.c, menu.db);
@@ -731,7 +768,164 @@ function QhConnSkeleton() {
   );
 }
 
-function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onInsertSaved, onDeleteSaved, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, pending, onOpenPending, onResubmit, histFocus, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
+// The Snippets panel (2026-11-11, Devart D3 and D4). The person's own editor
+// snippets, by folder, and the shared snippets of other people. A click on an
+// own row opens the form. Another person's row has Copy: the form opens with
+// that snippet as a new one of the person. Delete asks for a second click.
+// An admin also deletes a shared snippet of another person. In the editor,
+// the key + Tab inserts the snippet (qhSnippetsFor).
+const QH_SNIP_ENGINES = [['', 'All engines'], ['postgres', 'PostgreSQL'], ['mssql', 'SQL Server'], ['clickhouse', 'ClickHouse'], ['athena', 'Athena']];
+const QH_SNIP_SORTS = [['folder', 'Folder'], ['key', 'Key'], ['recent', 'Last changed']];
+const QH_SNIP_SORT_KEY = 'qh.snipsort.v1';
+
+// The groups of the panel: [{ title, items }]. Sort 'folder' gives one group
+// per folder of the person (folders A to Z, then "No folder"). The other sorts
+// give one group of the person's snippets. "Shared by others" comes last.
+function qhSnippetGroups(list, sort) {
+  const all = Array.isArray(list) ? list : [];
+  const byKey = (a, b) => String(a.key).localeCompare(String(b.key));
+  const byRecent = (a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')) || byKey(a, b);
+  const order = sort === 'recent' ? byRecent : byKey;
+  const mine = all.filter(x => x.mine).sort(order);
+  const others = all.filter(x => !x.mine).sort(order);
+  const groups = [];
+  if (sort === 'folder') {
+    const names = [...new Set(mine.map(x => x.folder).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    names.forEach(n => groups.push({ title: n, items: mine.filter(x => x.folder === n) }));
+    const loose = mine.filter(x => !x.folder);
+    if (loose.length) groups.push({ title: names.length ? 'No folder' : 'My snippets', items: loose });
+  } else if (mine.length) {
+    groups.push({ title: 'My snippets', items: mine });
+  }
+  if (others.length) groups.push({ title: 'Shared by others', items: others });
+  return groups;
+}
+
+function SnippetsPanel({ snippets, canDeleteShared, onSave, onDelete }) {
+  const list = Array.isArray(snippets) ? snippets : [];
+  const mine = list.filter(x => x.mine);
+  const [form, setForm] = React.useState(null);
+  const [err, setErr] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [armed, setArmed] = React.useState(null);
+  const [sort, setSortState] = React.useState(() => {
+    try { const v = localStorage.getItem(QH_SNIP_SORT_KEY); return QH_SNIP_SORTS.some(([k]) => k === v) ? v : 'folder'; } catch (e) { return 'folder'; }
+  });
+  const setSort = (v) => { setSortState(v); try { localStorage.setItem(QH_SNIP_SORT_KEY, v); } catch (e) {} };
+  // A second click within 4 s deletes. After that the button is plain again.
+  React.useEffect(() => {
+    if (armed == null) return undefined;
+    const t = setTimeout(() => setArmed(null), 4000);
+    return () => clearTimeout(t);
+  }, [armed]);
+  const folders = [...new Set(mine.map(x => x.folder).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const open = (sn, copy) => {
+    setErr(null); setArmed(null);
+    setForm(sn
+      ? { id: copy ? null : sn.id, key: sn.key || '', description: sn.description || '', body: sn.body || '',
+          engine: sn.engine || '', folder: copy ? '' : (sn.folder || ''), shared: copy ? false : !!sn.shared }
+      : { id: null, key: '', description: '', body: '', engine: '', folder: '', shared: false });
+  };
+  const put = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const save = () => {
+    const msg = qhSnippetFormError(form, mine);
+    if (msg) { setErr(msg); return; }
+    const body = { key: form.key.trim().toLowerCase(), description: form.description.trim() || null, body: form.body,
+      engine: form.engine || null, folder: form.folder.trim() || null, shared: !!form.shared };
+    setBusy(true);
+    Promise.resolve().then(() => onSave(form.id, body)).then(
+      () => { setBusy(false); setForm(null); setErr(null); },
+      (e) => { setBusy(false); setErr((e && e.message) || 'QueryHub did not save the snippet. Try again.'); });
+  };
+  const del = (sn) => {
+    if (armed !== sn.id) { setArmed(sn.id); return; }
+    setArmed(null);
+    Promise.resolve().then(() => onDelete(sn.id)).catch((e) => setErr((e && e.message) || 'QueryHub did not delete the snippet. Try again.'));
+  };
+
+  if (form) {
+    const key = form.key.trim().toLowerCase();
+    const builtin = QH_SNIPPETS.some(b => b.key === key);
+    return (
+      <div className="qh-snip-form" role="form" aria-label={form.id ? 'Edit snippet' : 'New snippet'}>
+        <div className="qh-snip-title">{form.id ? 'Edit snippet' : 'New snippet'}</div>
+        <label className="qh-snip-f"><span>Key</span>
+          <input value={form.key} onChange={(e) => put('key', e.target.value)} placeholder="topn" spellCheck={false} autoFocus /></label>
+        <label className="qh-snip-f"><span>Description</span>
+          <input value={form.description} onChange={(e) => put('description', e.target.value)} placeholder="Top rows by a column" /></label>
+        <label className="qh-snip-f"><span>Engine</span>
+          <select value={form.engine} onChange={(e) => put('engine', e.target.value)}>
+            {QH_SNIP_ENGINES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select></label>
+        <label className="qh-snip-f"><span>Folder</span>
+          <input value={form.folder} onChange={(e) => put('folder', e.target.value)} list="qh-snip-folders" placeholder="No folder" />
+          <datalist id="qh-snip-folders">{folders.map(f => <option key={f} value={f} />)}</datalist></label>
+        <label className="qh-snip-f qh-snip-sql"><span>SQL</span>
+          <textarea rows={8} value={form.body} onChange={(e) => put('body', e.target.value)} spellCheck={false}
+            placeholder={'SELECT * FROM $table$\nORDER BY $column$ DESC\nLIMIT 10'} /></label>
+        <div className="qh-snip-hint"><code>$CURSOR$</code> is where the caret goes. <code>$name$</code> is a field: Tab goes to the next one. <code>$DATE$</code> <code>$TIME$</code> <code>$DB$</code> <code>$SERVER$</code> <code>$USER$</code> get their values.</div>
+        <label className="qh-fmt-check qh-snip-share">
+          <input type="checkbox" checked={form.shared} onChange={(e) => put('shared', e.target.checked)} />
+          <span>Share with everyone. Every QueryHub user sees it and can copy it.</span>
+        </label>
+        {builtin && <div className="qh-snip-note">This key replaces the built-in snippet {key} for you.</div>}
+        {err && <div className="qh-snip-err" role="alert">{err}</div>}
+        <div className="qh-snip-foot">
+          <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => { setForm(null); setErr(null); }}>Cancel</button>
+          <button type="button" className="qh-btn qh-btn-primary qh-btn-sm" disabled={busy} onClick={save}>Save</button>
+        </div>
+      </div>
+    );
+  }
+
+  const groups = qhSnippetGroups(list, sort);
+  const engName = (e) => (QH_SNIP_ENGINES.find(([v]) => v === e) || [null, null])[1];
+  return (
+    <div className="qh-snips">
+      <div className="qh-snip-top">
+        <button type="button" className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => open(null)}>New snippet</button>
+        <label className="qh-snip-sort"><span>Sort</span>
+          <select value={sort} onChange={(e) => setSort(e.target.value)}>
+            {QH_SNIP_SORTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select></label>
+      </div>
+      {err && <div className="qh-snip-err" role="alert">{err}</div>}
+      {list.length === 0 && (
+        <div className="qh-side-empty">
+          <div className="qh-side-empty-title">No snippets of yours yet</div>
+          <div className="qh-side-empty-sub">Click New snippet. In the editor, type its key and press Tab.</div>
+        </div>
+      )}
+      {groups.map(g => (
+        <div key={g.title} className="qh-snip-group">
+          <div className="qh-snip-gtitle">{g.title}</div>
+          {g.items.map(sn => {
+            const canDel = sn.mine || !!canDeleteShared;
+            const meta = [engName(sn.engine) || '', sn.mine ? (sn.shared ? 'Shared' : '') : (sn.owner ? 'By ' + sn.owner : 'Shared')].filter(Boolean).join(' · ');
+            return (
+              <div key={sn.id} className={'qh-snip-row' + (sn.mine ? ' is-mine' : '')} data-snip-id={sn.id}
+                onClick={sn.mine ? () => open(sn) : undefined} title={sn.body}>
+                <kbd className="qh-kbd qh-snip-key">{sn.key}</kbd>
+                <div className="qh-snip-main">
+                  <div className="qh-snip-desc">{sn.description || qhSnippetPreview(sn.body)}</div>
+                  {meta && <div className="qh-snip-meta">{meta}</div>}
+                </div>
+                {!sn.mine && <button type="button" className="qh-snip-btn" onClick={(e) => { e.stopPropagation(); open(sn, true); }}
+                  title="Copy to my snippets" aria-label={'Copy ' + sn.key + ' to my snippets'}>Copy</button>}
+                {canDel && <button type="button" className={'qh-snip-btn qh-snip-del' + (armed === sn.id ? ' is-armed' : '')}
+                  onClick={(e) => { e.stopPropagation(); del(sn); }}
+                  title={armed === sn.id ? 'Click again to delete' : 'Delete'} aria-label={'Delete ' + sn.key}>
+                  {armed === sn.id ? 'Delete?' : ICN_TRASH}</button>}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, onReloadCatalog, hiddenDbs, onToggleHiddenDb, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onInsertSaved, onDeleteSaved, snippets, canDeleteShared, onSaveSnippet, onDeleteSnippet, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, pending, onOpenPending, onResubmit, histFocus, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
   const [open, setOpen] = React.useState(() => ({ 'prod-main': true, 'prod-replica': true }));
   // History (2026-10-24): which group the chips show, and the row that a bell
   // item points at. `histFocus` is { id, n }: the parent bumps `n` for each ask.
@@ -811,7 +1005,9 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
     if (!focusSearch) return;
     requestAnimationFrame(() => { const el = inRef.current; if (el) { el.focus(); el.select && el.select(); } });
   }, [focusSearch]);
-  const modes = [['conns', DBIcons.tree], ['saved', DBIcons.star], ['sessions', DBIcons.layers], ['scheduled', DBIcons.calendar], ['history', DBIcons.clock]];
+  // Snippets (2026-11-11) only when the app passes the handlers.
+  const modes = [['conns', DBIcons.tree], ['saved', DBIcons.star], ...(onSaveSnippet ? [['snippets', DBIcons.braces]] : []), ['sessions', DBIcons.layers], ['scheduled', DBIcons.calendar], ['history', DBIcons.clock]];
+  const modeLabel = { conns: 'Connections', saved: 'Saved', snippets: 'Snippets', sessions: 'Sessions', scheduled: 'Scheduled', history: 'History' };
 
   // flat searchable list of conn/db pairs
   const flat = [];
@@ -928,8 +1124,8 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
       {modeEntry}
       <div className="qh-side-switch">
         {modes.map(([m, Icon]) => (
-          <button key={m} className={'qh-side-tab' + (mode === m ? ' is-active' : '')} onClick={() => setMode(m)} aria-label={m === 'conns' ? 'Connections' : m === 'saved' ? 'Saved' : m === 'sessions' ? 'Sessions' : m === 'scheduled' ? 'Scheduled' : 'History'}>
-            <Icon /><span>{m === 'conns' ? 'Connections' : m === 'saved' ? 'Saved' : m === 'sessions' ? 'Sessions' : m === 'scheduled' ? 'Scheduled' : 'History'}</span>
+          <button key={m} className={'qh-side-tab' + (mode === m ? ' is-active' : '')} onClick={() => setMode(m)} aria-label={modeLabel[m]}>
+            <Icon /><span>{modeLabel[m]}</span>
           </button>
         ))}
       </div>
@@ -999,7 +1195,7 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
       )}
 
       <div className="qh-side-body">
-        {mode === 'conns' && (connsLoading && conns.length === 0 ? <QhConnSkeleton /> : <SchemaTree bindOnClick={bindOnClick} conns={conns} schemaCache={schemaCache} onLoadSchema={onLoadSchema} canRefresh={canRefresh} onRefreshSchema={onRefreshSchema} rolesCache={rolesCache} onLoadRoles={onLoadRoles} active={active} open={open} setOpen={setOpen} onPickDb={onPick} onOpenTable={onOpenTable} onNewQuery={onNewQuery} isSuper={isSuper} reveal={reveal} narrow={!width || width < 330} tagFilters={tagF} onToast={onToast} />)}
+        {mode === 'conns' && (connsLoading && conns.length === 0 ? <QhConnSkeleton /> : <SchemaTree bindOnClick={bindOnClick} conns={conns} schemaCache={schemaCache} onLoadSchema={onLoadSchema} canRefresh={canRefresh} onRefreshSchema={onRefreshSchema} onReloadCatalog={onReloadCatalog} hiddenDbs={hiddenDbs} onToggleHiddenDb={onToggleHiddenDb} rolesCache={rolesCache} onLoadRoles={onLoadRoles} active={active} open={open} setOpen={setOpen} onPickDb={onPick} onOpenTable={onOpenTable} onNewQuery={onNewQuery} isSuper={isSuper} reveal={reveal} narrow={!width || width < 330} tagFilters={tagF} onToast={onToast} />)}
 
         {mode === 'saved' && saved.length === 0 && (
           <div className="qh-side-empty">
@@ -1033,6 +1229,7 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
           );
         })}
 
+        {mode === 'snippets' && onSaveSnippet && <SnippetsPanel snippets={snippets} canDeleteShared={canDeleteShared} onSave={onSaveSnippet} onDelete={onDeleteSnippet} />}
         {mode === 'sessions' && (
           <div className="qh-side-top">
             <button className="qh-newq-btn" onClick={onSaveSession}>
@@ -1528,7 +1725,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
 }
 
 // ---------- Bottom results panel ----------
-function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement, ranOn, pending, onWithdraw, outcome, endNote, onResubmit, slackEnabled, timeline, sourceSql, pkOf }) {
+function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement, ranOn, pending, onWithdraw, outcome, endNote, onResubmit, slackEnabled, timeline, sourceSql, pkOf, problems, onProblem, lintOn }) {
   const [exp, setExp] = React.useState(false);
   // The Export menu is long. The panel sits at the bottom of the window, so the
   // menu measures the room below and above the button when it opens, and goes
@@ -1538,7 +1735,8 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
   // menu used to close it mid-reach. See qhUseDismiss.
   const closeExp = React.useCallback(() => setExp(false), []);
   const expRef = qhUseDismiss(exp, closeExp);
-  const tabs = [['results', 'Results'], ['plan', 'Plan'], ['messages', 'Messages'], ['audit', 'Audit log']];
+  const tabs = [['results', 'Results'], ['plan', 'Plan'], ['messages', 'Messages'], ['problems', 'Problems'], ['audit', 'Audit log']];
+  const probs = Array.isArray(problems) ? problems : [];
   const total = result && result.kind === 'table' ? result.total : null;
   // Which of several statements is on screen. A multi-statement run stores one
   // table per statement; `?statement=N` fetches them and the payload says where
@@ -1594,6 +1792,9 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
                 {pos && <span className="qh-res-count">{stN}/{stCount}</span>}
                 {pos && on && <svg className="qh-res-cv" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"/></svg>}
                 {id === 'messages' && messages.length > 0 && <span className="qh-res-count">{messages.length}</span>}
+                {id === 'problems' && probs.length > 0 && (
+                  <span className={'qh-res-count' + (probs.some(p => p.level === 'error') ? ' is-err' : probs.some(p => p.level === 'warn') ? ' is-warn' : '')}>{probs.length}</span>
+                )}
                 {id === 'plan' && plan && plan.hints && plan.hints.some(h => h.level === 'high') && <span className="qh-res-dot" />}
               </button>
             );
@@ -1726,6 +1927,7 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
         {tab === 'results' && !(!result && (pending || (status === 'rejected' && qhOutcomeInfo(outcome)))) && <ResultsView key={'st' + stN} result={result} status={status} onToast={onToast} colMeta={colMeta} unmasked={unmasked} engineId={qhEngineId(conn && conn.engine)} sourceSql={stSql} pkOf={pkOf} />}
         {tab === 'plan' && <PlanView plan={plan} />}
         {tab === 'messages' && <MessagesView messages={messages} timeline={timeline} />}
+        {tab === 'problems' && <ProblemsView problems={probs} onPick={onProblem} lintOn={lintOn} />}
         {tab === 'audit' && <RunAuditView audit={audit} />}
       </div>
     </div>
@@ -1918,6 +2120,62 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
   }, [cols, rows]);
   const widthOf = (c) => colW[c] || defW[c] || 160;
 
+  // Find in results (2026-11-11, Devart J1). `find` is the filter's matcher
+  // (qhResMatcher). `hits` lists every matching cell of the filtered rows, in
+  // row order, at most 10,000. Enter, Shift+Enter and the arrow buttons go to
+  // the next or the previous one: the page turns and the cell is selected.
+  const find = tools.find;
+  const hitsInfo = React.useMemo(() => {
+    if (!isTable || !find || !find.matcher || tools.loading) return { list: [], capped: false };
+    const all = result.slice(0, total);
+    const scan = find.column !== undefined ? [cols.indexOf(find.column)].filter(i => i >= 0) : cols.map((_, i) => i);
+    const list = [];
+    for (let r = 0; r < all.length && list.length < 10000; r++) {
+      for (const ci of scan) if (find.matcher.test(dispVal(all[r], cols[ci]))) list.push({ r, c: ci });
+    }
+    return { list, capped: list.length >= 10000 };
+  }, [isTable, find, result, total, tools.loading]);
+  const [hitIdx, setHitIdx] = React.useState(-1);
+  React.useEffect(() => { setHitIdx(-1); }, [hitsInfo]);
+  const [jump, setJump] = React.useState(null);
+  React.useEffect(() => {
+    if (!jump) return;
+    const host = scrollRef.current;
+    const cell = host && host.querySelector('[data-cell="' + jump.r + ':' + jump.c + '"]');
+    if (cell && cell.scrollIntoView) cell.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [jump, rows]);
+  const goHit = (dir) => {
+    const list = hitsInfo.list;
+    if (!list.length) return;
+    const i = hitIdx < 0 ? (dir > 0 ? 0 : list.length - 1) : (hitIdx + dir + list.length) % list.length;
+    const h = list[i];
+    const p = Math.floor(h.r / pageSize), rr = h.r - p * pageSize;
+    setHitIdx(i);
+    setPage(p);
+    setColSel(new Set());
+    setSel(new Set([rr + ':' + h.c]));
+    setAnchor({ r: rr, c: h.c });
+    setCursor({ r: rr, c: h.c });
+    setJump({ r: rr, c: h.c, n: Date.now() });
+  };
+  // A cell's text with each match in a <mark>. Only the filter's column when
+  // the filter names one.
+  const markCell = (text, c) => {
+    const m = find && find.matcher;
+    if (!m || !text || (find.column !== undefined && find.column !== c)) return text;
+    const rs = m.ranges(text);
+    if (!rs.length) return text;
+    const out = [];
+    let pos = 0;
+    rs.forEach(([a, b], i) => {
+      if (a > pos) out.push(text.slice(pos, a));
+      out.push(<mark key={i} className="qh-res-hit">{text.slice(a, b)}</mark>);
+      pos = b;
+    });
+    if (pos < text.length) out.push(text.slice(pos));
+    return out;
+  };
+
   // Peek: the grid ellipsises at the column width and disables text selection
   // (drag-select owns the mouse), so a long value could be neither read nor
   // partially copied. Double-click opens the full value in a selectable box.
@@ -1946,6 +2204,41 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
     if (!text) { onToast && onToast('Nothing selected to copy.'); return; }
     qhCopyText(text).then(ok => onToast && onToast(ok
       ? (withHeaders ? 'Copied with headers (TSV).' : 'Copied (TSV).')
+      : 'Could not copy — the browser blocked clipboard access.'));
+  };
+
+  // Copy as CSV, JSON, XML or HTML (Devart J3): the rows and columns that
+  // "Generate script as" reads (selectionScriptData).
+  // Each column's SQL type: the type the run recorded, else the catalog type.
+  const colTypeMap = () => {
+    const types = {};
+    cols.forEach((c) => {
+      const t = (result.colTypes && result.colTypes[c]) || (colMeta && colMeta[c] && colMeta[c].type);
+      if (t) types[c] = t;
+    });
+    return types;
+  };
+  const menuCopyAs = (kind, label) => {
+    setGmenu(null);
+    const d = selectionScriptData();
+    if (!d || !d.ci.length) { onToast && onToast('Nothing selected to copy.'); return; }
+    // The types make JSON numbers, booleans and nulls (qhResJsonKind).
+    const text = qhResCopyAs(kind, d.ci.map(i => cols[i]), d.src.map(r => d.ci.map(i => r[cols[i]])), colTypeMap());
+    const n = d.src.length;
+    qhCopyText(text).then(ok => onToast && onToast(ok
+      ? 'Copied ' + n.toLocaleString() + ' row' + (n === 1 ? '' : 's') + ' as ' + label + '.'
+      : 'Could not copy — the browser blocked clipboard access.'));
+  };
+  // Copy column names (Devart J4): the selected columns, the columns of the
+  // selected cells, or every column. With types: one `name type` per line.
+  const menuCopyNames = (withTypes) => {
+    setGmenu(null);
+    const ci = colSel.size ? [...colSel].sort((a, b) => a - b)
+      : sel.size ? [...new Set([...sel].map(k => Number(k.split(':')[1])))].sort((a, b) => a - b)
+      : cols.map((_, i) => i);
+    const text = qhResColumnNames(ci.map(i => cols[i]), colTypeMap(), withTypes);
+    qhCopyText(text).then(ok => onToast && onToast(ok
+      ? 'Copied ' + ci.length + ' column name' + (ci.length === 1 ? '' : 's') + (withTypes ? ' with types.' : '.')
       : 'Could not copy — the browser blocked clipboard access.'));
   };
 
@@ -2249,6 +2542,7 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
     if (n >= 2) sumInfo = { n, agg: qhResAggregate(vals) };
   }
   const resNum = (x) => Number(x).toLocaleString('en-US', { maximumFractionDigits: 6 });
+  const resShort = (t) => (String(t).length > 40 ? String(t).slice(0, 40) + '…' : String(t));
   const filterText = tools.filter ? String(tools.filter) : '';
   const peekPretty = peek ? qhPrettyJson(peek.value) : null;
   const peekShown = peekPretty && !peek.raw ? peekPretty : (peek ? peek.value : '');
@@ -2261,11 +2555,31 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
           placeholder="Filter rows, or column:value"
           value={filterText} disabled={!tools.enabled}
           title={tools.enabled ? undefined : tools.reason}
-          onChange={(e) => tools.setFilter(e.target.value)} />
+          onChange={(e) => tools.setFilter(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); goHit(e.shiftKey ? -1 : 1); } }} />
         {filterText && tools.enabled && (
           <button type="button" className="qh-res-filter-clear" aria-label="Clear filter" title="Clear filter"
             onClick={() => tools.setFilter('')}>×</button>
         )}
+        {tools.enabled && (
+          <span className="qh-res-opts" role="group" aria-label="Find options">
+            {[['caseSensitive', 'Aa', 'Match case'], ['word', 'ab', 'Whole word'], ['regex', '.*', 'Regular expression']].map(([k, label, name]) => (
+              <button key={k} type="button" className={'qh-res-opt' + (tools.opts[k] ? ' is-on' : '')}
+                aria-pressed={tools.opts[k] ? 'true' : 'false'} aria-label={name} title={name}
+                onClick={() => tools.toggleOpt(k)}>{label}</button>
+            ))}
+          </span>
+        )}
+        {hitsInfo.list.length > 0 && (
+          <span className="qh-res-hitnav">
+            <button type="button" className="qh-res-opt" aria-label="Previous match" title="Previous match (Shift+Enter)" onClick={() => goHit(-1)}>↑</button>
+            <button type="button" className="qh-res-opt" aria-label="Next match" title="Next match (Enter)" onClick={() => goHit(1)}>↓</button>
+            <span className="qh-res-tools-note qh-res-hitn">
+              {(hitIdx >= 0 ? (hitIdx + 1).toLocaleString() + ' of ' : '') + hitsInfo.list.length.toLocaleString() + (hitsInfo.capped ? '+' : '') + (hitsInfo.list.length === 1 ? ' match' : ' matches')}
+            </span>
+          </span>
+        )}
+        {find && find.error && <span className="qh-res-tools-note is-error">{find.error}</span>}
         {tools.loading && <span className="qh-res-tools-note">Loading all rows…</span>}
         {tools.error && <span className="qh-res-tools-note is-error">{String(tools.error)}</span>}
         {filterText && !tools.loading && !tools.error && (
@@ -2358,7 +2672,7 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
                           top: Math.min(b.bottom + 6, window.innerHeight - 260),
                           left: Math.min(b.left, window.innerWidth - 420) });
                       }}>
-                      {dispVal(r, c)}
+                      {markCell(dispVal(r, c), c)}
                     </td>
                   );
                 })}
@@ -2373,6 +2687,14 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
           <div className="qh-ctxmenu" style={{ left: gmenu.x, top: gmenu.y }}>
             <button onClick={() => menuCopy(false)}>Copy</button>
             <button onClick={() => menuCopy(true)}>Copy with headers</button>
+            <div className="qh-ctx-head" role="presentation">Copy as</div>
+            <div className="qh-ctx-row">
+              {QH_RES_COPY_KINDS.map(([k, label]) => (
+                <button key={k} className="qh-ctx-chip" onClick={() => menuCopyAs(k, label)}>{label}</button>
+              ))}
+            </div>
+            <button onClick={() => menuCopyNames(false)}>Copy column names</button>
+            <button onClick={() => menuCopyNames(true)}>Copy column names and types</button>
             {scriptKinds.length > 0 && (
               <>
                 <div className="qh-ctx-sep" />
@@ -2418,6 +2740,10 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
       {sumInfo && (
         <div className="qh-res-sum" role="status">
           <span>{sumInfo.n.toLocaleString()} cells</span>
+          {sumInfo.agg.count > 0 && <span>Distinct {sumInfo.agg.distinct.toLocaleString()}</span>}
+          {sumInfo.agg.numeric === 0 && sumInfo.agg.tmin != null && (
+            <span className="qh-res-sum-text">Min {resShort(sumInfo.agg.tmin)} · Max {resShort(sumInfo.agg.tmax)}</span>
+          )}
           {sumInfo.agg.numeric > 0 && (
             <span>Sum {resNum(sumInfo.agg.sum)} · Avg {resNum(sumInfo.agg.avg)} · Min {resNum(sumInfo.agg.min)} · Max {resNum(sumInfo.agg.max)}</span>
           )}
@@ -2495,6 +2821,41 @@ function MessagesView({ messages, timeline }) {
   </div>;
 }
 
+// The findings list of the open tab (2026-11-11, Devart H3): the pre-flight
+// blockers and the code analysis findings (qhProblems), one row each, with the
+// rule code and the line and column. A click on a row selects that text in
+// the editor. A blocker that names no place in the text has no line.
+const QH_PROBLEM_LEVEL = { error: 'Error', warn: 'Warning', info: 'Hint' };
+function ProblemsView({ problems, onPick, lintOn }) {
+  const off = lintOn === false
+    ? <div className="qh-probs-off">Code analysis is off. Turn it on with the Code analysis button in the tab bar.</div> : null;
+  if (!problems.length) return <div className="qh-empty"><div>No problems in this tab.</div>{off}</div>;
+  return (
+    <div className="qh-probs">
+      <table className="qh-probs-t">
+        <thead><tr><th>Level</th><th>Code</th><th>Description</th><th>Line</th><th>Col</th></tr></thead>
+        <tbody>
+          {problems.map((p, i) => {
+            const go = p.start != null && onPick ? () => onPick(p) : null;
+            return (
+              <tr key={i} className={'lv-' + p.level + (go ? ' is-go' : '')} onClick={go || undefined}
+                tabIndex={go ? 0 : undefined} onKeyDown={go ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } } : undefined}
+                title={go ? 'Select this text in the editor' : undefined}>
+                <td className="qh-probs-lv"><span className={'qh-probs-dot lv-' + p.level} aria-hidden="true" />{QH_PROBLEM_LEVEL[p.level] || p.level}</td>
+                <td className="qh-probs-code">{p.code}</td>
+                <td className="qh-probs-text"><b>{p.title}</b>{p.text ? ' — ' + p.text : ''}</td>
+                <td className="qh-probs-num">{p.line == null ? '' : p.line}</td>
+                <td className="qh-probs-num">{p.col == null ? '' : p.col}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {off}
+    </div>
+  );
+}
+
 // The per-run audit trail of ONE query (submitted → approved → ran), shown in
 // the results panel. Named for the run, not for "audit": the admin panel's
 // Audit trail screen also declares a top-level `AuditView`, and a Babel script's
@@ -2521,7 +2882,8 @@ const DBIcons = {
   caret: () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>,
   db: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>,
   play: () => <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"><path d="M8 5v14l11-7z"/></svg>,
+  braces: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M8 4H7a2 2 0 00-2 2v4l-2 2 2 2v4a2 2 0 002 2h1M16 4h1a2 2 0 012 2v4l2 2-2 2v4a2 2 0 01-2 2h-1"/></svg>,
   calendar: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>,
 };
 
-Object.assign(window, { Sidebar, MessagesView, StepsList, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });
+Object.assign(window, { Sidebar, SnippetsPanel, qhSnippetGroups, QH_SNIP_ENGINES, MessagesView, ProblemsView, QH_PROBLEM_LEVEL, StepsList, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });

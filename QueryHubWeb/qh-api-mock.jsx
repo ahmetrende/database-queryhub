@@ -115,6 +115,13 @@ const MOCK = {
       sql: "SELECT count(*) AS pending\nFROM user_kyc\nWHERE verified = false;\n\nSELECT id, email, created_at\nFROM user_kyc\nWHERE verified = false\nORDER BY created_at\nLIMIT 100;\n\nSELECT date_trunc('day', created_at) AS day, count(*) AS seen\nFROM user_kyc\nWHERE created_at > now() - interval '7 days'\nGROUP BY 1\nORDER BY 1;" },
   ],
   sessionsSrv: [],                // server-synced named workspaces
+  // Editor snippets (GET /snippets). One shared snippet of another person, so
+  // the read-only row and its Copy button are reachable in the prototype.
+  editorSnippets: [
+    { id: 'snp_seed1', key: 'lastday', description: 'Rows of the last day', engine: 'postgres', folder: null,
+      body: "SELECT * FROM $table$\nWHERE created_at > now() - interval '1 day'", shared: true, mine: false,
+      owner: 'Dana Kaur', updatedAt: '2026-11-11T09:00:00Z' },
+  ],
   scheduled: [],                  // real scheduled queries
   requests: {},                   // qid -> lifecycle record
   drafts: {},                     // reserved-but-unsubmitted ids (POST /queries/draft)
@@ -2090,7 +2097,15 @@ function schemaPayload(connId, dbId) {
   return {
     tables: (db.tables || []).map(tbl),
     views: (window.qhViewsFor ? window.qhViewsFor(db.id) : []).map(v => ({ name: v, schema, columns: window.qhColumnsFor(v), indexes: [], approxRows: window.qhApproxRows(v) })),
+    ...mockSchemaStamp(db),
   };
+}
+
+// MOCK: the seed never changes, so the signature is the table count and the
+// snapshot time is the top of the current hour, as the hourly sync stamps it.
+function mockSchemaStamp(db) {
+  const at = new Date(); at.setMinutes(0, 0, 0);
+  return { snapshotAt: at.toISOString(), sig: String((db && db.tables || []).length) };
 }
 
 // The approver has to see WHERE the statement will run, not only against which
@@ -2220,6 +2235,10 @@ const qhApi = {
     return { replicas: mockReplicasOf(connId).map(r => ({ id: r.id, name: r.name, ...mockReplicaHealth(r.id) })) };
   }, 420),
   schema: (conn, dbn) => mockDelay(() => schemaPayload(conn, dbn), 260),
+  schemaStamp: (conn, dbn) => mockDelay(() => {
+    const { db } = targetOf(conn, dbn);
+    return db ? mockSchemaStamp(db) : mockFail('Refused: the database is unknown, or you have no grant for it.', 404, 'not_found');
+  }, 80),
   // GET .../columns?table= — MOCK: answers from the same seed as schema(), by
   // bare or schema-qualified name; 404 for anything else, as the server does.
   tableColumns: (conn, dbn, table) => mockDelay(() => {
@@ -2299,6 +2318,28 @@ const qhApi = {
     return row;
   }),
   deleteSnippet: (id) => mockDelay(() => { MOCK.savedSrv = MOCK.savedSrv.filter(s => s.id !== id); return null; }),
+  editorSnippets: () => mockDelay(() => ({ snippets: MOCK.editorSnippets.slice(), canDeleteShared: false })),
+  createEditorSnippet: (b) => mockDelay(() => {
+    if (MOCK.editorSnippets.some(x => x.mine && x.key === b.key)) return mockFail('You have a snippet with the key ' + b.key + '. Use a different key.', 409, 'duplicate_key');
+    const row = { id: mockId('snp'), key: b.key, description: b.description || null, body: b.body, engine: b.engine || null,
+      folder: b.folder || null, shared: !!b.shared, mine: true, owner: null, updatedAt: new Date().toISOString() };
+    MOCK.editorSnippets = [...MOCK.editorSnippets, row];
+    return row;
+  }),
+  updateEditorSnippet: (id, b) => mockDelay(() => {
+    const old = MOCK.editorSnippets.find(x => x.id === id && x.mine);
+    if (!old) return mockFail('No such snippet of yours.', 404, 'not_found');
+    if (MOCK.editorSnippets.some(x => x.mine && x.id !== id && x.key === b.key)) return mockFail('You have a snippet with the key ' + b.key + '. Use a different key.', 409, 'duplicate_key');
+    const row = { ...old, key: b.key, description: b.description || null, body: b.body, engine: b.engine || null,
+      folder: b.folder || null, shared: !!b.shared, updatedAt: new Date().toISOString() };
+    MOCK.editorSnippets = MOCK.editorSnippets.map(x => (x.id === id ? row : x));
+    return row;
+  }),
+  deleteEditorSnippet: (id) => mockDelay(() => {
+    if (!MOCK.editorSnippets.some(x => x.id === id && x.mine)) return mockFail('No such snippet of yours.', 404, 'not_found');
+    MOCK.editorSnippets = MOCK.editorSnippets.filter(x => x.id !== id);
+    return null;
+  }),
   sessions: () => mockDelay(() => ({ sessions: MOCK.sessionsSrv.slice() })),
   saveSessionSrv: (b) => mockDelay(() => {
     const row = { id: mockId('ses'), name: b.name, dest: 'server', savedAt: Date.now(),

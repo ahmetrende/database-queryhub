@@ -123,21 +123,21 @@ test('filter: a null cell counts as an empty string', () => {
 
 test('aggregate: mixed numbers, text and empties', () => {
   assert.deepEqual(T.qhResAggregate(['1', '2.5', 'abc', '', null, ' 4 ']),
-    { count: 4, numeric: 3, sum: 7.5, avg: 2.5, min: 1, max: 4 });
+    { count: 4, numeric: 3, sum: 7.5, avg: 2.5, min: 1, max: 4, distinct: 4, tmin: null, tmax: null });
 });
 
 test('aggregate: all text gives null numbers', () => {
   assert.deepEqual(T.qhResAggregate(['a', 'b']),
-    { count: 2, numeric: 0, sum: null, avg: null, min: null, max: null });
+    { count: 2, numeric: 0, sum: null, avg: null, min: null, max: null, distinct: 2, tmin: 'a', tmax: 'b' });
   assert.deepEqual(T.qhResAggregate([]),
-    { count: 0, numeric: 0, sum: null, avg: null, min: null, max: null });
+    { count: 0, numeric: 0, sum: null, avg: null, min: null, max: null, distinct: 0, tmin: null, tmax: null });
 });
 
 test('aggregate: exponent, negative and decimal values', () => {
   assert.deepEqual(T.qhResAggregate(['1e3', '-5']),
-    { count: 2, numeric: 2, sum: 995, avg: 497.5, min: -5, max: 1000 });
+    { count: 2, numeric: 2, sum: 995, avg: 497.5, min: -5, max: 1000, distinct: 2, tmin: null, tmax: null });
   assert.deepEqual(T.qhResAggregate(['0.5', '1']),
-    { count: 2, numeric: 2, sum: 1.5, avg: 0.75, min: 0.5, max: 1 });
+    { count: 2, numeric: 2, sum: 1.5, avg: 0.75, min: 0.5, max: 1, distinct: 2, tmin: null, tmax: null });
 });
 
 // ---------------------------------------------------------------------------
@@ -442,7 +442,7 @@ test('sort: a cell with only spaces counts as empty and goes last', () => {
 
 test('aggregate: a cell with only spaces is not counted', () => {
   assert.deepEqual(T.qhResAggregate(['  ', '1']),
-    { count: 1, numeric: 1, sum: 1, avg: 1, min: 1, max: 1 });
+    { count: 1, numeric: 1, sum: 1, avg: 1, min: 1, max: 1, distinct: 1, tmin: null, tmax: null });
 });
 
 test('filter: the column name ignores case and outer spaces', () => {

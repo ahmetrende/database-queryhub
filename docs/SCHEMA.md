@@ -900,6 +900,24 @@ COALESCE(database_name,''))` dedupes re-stars into a `last_used_at` touch.
 `favorites.add()` keeps at most `MAX_PER_USER` (50) favorites per user. It
 drops the least-recently-used ones.
 
+### `editor_snippets`
+
+Editor snippets of a person (migration 205, Devart D3 and D4). In the web
+editor, the key + Tab puts the body at the caret, as the built-in snippets do.
+`snippets.py` holds the same limits as the checks.
+
+| Column | Notes |
+|--------|-------|
+| `id` | BIGSERIAL. |
+| `owner_id` | The principal id: a Slack id or `local:<username>`. |
+| `key` | 2 to 32 characters, `^[a-z][a-z0-9_]{1,31}$`. Unique per owner. |
+| `description` | Optional, at most 200 characters. |
+| `body` | The SQL, 1 to 20,000 characters. The editor markers (`$CURSOR$`, `$name$`, `$DATE$`) stay in it. |
+| `engine` | `postgres`, `mssql`, `clickhouse`, `athena`, or NULL for all engines. |
+| `folder` | Optional, at most 64 characters. |
+| `is_shared` | TRUE = every QueryHub user sees it. Only the owner changes it. The owner or an admin deletes it. |
+| `created_at`, `updated_at` | Lifecycle. |
+
 ### `submission_failures`
 
 Forensic log of modal submissions that the bot rejected at validation

@@ -139,6 +139,15 @@ test('the live lookup asks once per name and shares the answer', async () => {
   assert.equal(make(cache, 'exc-x', 'other').peek('ledgers_v2_p55'), undefined, 'per database');
 });
 
+test('the live lookup is offered on every engine, not only PostgreSQL', () => {
+  // The server reads sys.columns, system.columns and the Glue table too
+  // (routes_data._other_live_columns), so the editor asks on every engine.
+  const m = APP_SRC.match(/const columnLookup = ([\s\S]*?);\n/);
+  assert.ok(m, 'columnLookup is not where this test expects it in qh-app.jsx');
+  assert.match(m[1], /^\(tab\.conn && tab\.db\)\s*\? qhLiveColumnLookup\(liveCols\.current, tab\.conn, tab\.db\) : null$/);
+  assert.doesNotMatch(m[1], /postgres|engine/i, 'no engine gate on the lookup');
+});
+
 test('a miss is remembered for a minute, then asked again', async () => {
   let calls = 0;
   const make = lookupWith({ tableColumns: () => { calls++; return Promise.reject(new Error('404')); } });

@@ -60,7 +60,13 @@ test('engine ids map to a language; an unknown one is the generic language', () 
   for (const id of ['postgres', 'mssql', 'clickhouse', 'athena', 'mysql', undefined]) w.qhFormatSql('select 1', id);
   assert.deepEqual(seen.map((o) => o.language),
     ['postgresql', 'transactsql', 'clickhouse', 'trino', 'sql', 'sql']);
-  assert.deepEqual(seen[0], { language: 'postgresql', tabWidth: 2, keywordCase: 'preserve' });
+  // With no stored choice, every option has the library's own default, plus
+  // tabWidth 2 and keywordCase 'preserve'. The text is the same as before the
+  // Format options existed (run-to-caret-format-longrun.test.mjs compares it).
+  assert.deepEqual(seen[0], { language: 'postgresql', tabWidth: 2, useTabs: false, keywordCase: 'preserve',
+    functionCase: 'preserve', dataTypeCase: 'preserve', identifierCase: 'preserve', indentStyle: 'standard',
+    logicalOperatorNewline: 'before', expressionWidth: 50, linesBetweenQueries: 1, denseOperators: false,
+    newlineBeforeSemicolon: false });
   assert.equal(real().qhFormatSql('select a from t', 'mysql').split('\n')[0], 'select');
 });
 
@@ -276,8 +282,9 @@ test('the tab bar shows a Format button that calls onFormat, with the shortcut i
 });
 
 test('the tab bar has no Format button without a formatter, and none without onFormat', dom, () => {
-  assert.equal(mountTabs({ onFormat: () => {} }, null).button, null);
-  assert.equal(mountTabs({}, { format }).button, null);
+  // Booleans, not nodes: a failed assert prints its values (see the M4 notes).
+  assert.equal(mountTabs({ onFormat: () => {} }, null).button === null, true);
+  assert.equal(mountTabs({}, { format }).button === null, true);
 });
 
 test('the app wires the button to the editor and lists the shortcut', () => {

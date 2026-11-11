@@ -642,6 +642,30 @@ def snapshot_info(target_id: int, database: str):
         return row["ts"] if row else None
 
 
+# The stamp of one database's catalog: when the snapshot last ran, and a
+# signature of what it holds. `snapshot_at` moves every hour for every table
+# (the upsert writes it unconditionally), so it cannot tell a change. The
+# signature can: it is an order-free sum of one hash per (table, column), so a
+# new, dropped or renamed table or column, or a changed type, changes it. A
+# browser compares signatures and reloads only when they differ.
+_STAMP_SQL = (
+    "SELECT max(st.snapshot_at) AS ts, count(*) AS n, "
+    "       coalesce(sum(hashtextextended(concat_ws(chr(31), st.schema_name, "
+    "           st.table_name, st.relkind, c.column_name, c.data_type), 0)), 0) AS h "
+    "  FROM schema_tables st "
+    "  LEFT JOIN schema_columns c ON c.table_id = st.id "
+    " WHERE st.target_server_id = %s AND st.database_name = %s")
+
+
+def catalog_stamp(target_id: int, database: str) -> dict:
+    """{"snapshotAt": datetime or None, "sig": str} for a (target, database).
+    One aggregate query on the bot DB. It never reaches the target."""
+    row = db.fetch_one(_STAMP_SQL, (target_id, database)) or {}
+    if not row.get("n"):
+        return {"snapshotAt": None, "sig": "0"}
+    return {"snapshotAt": row["ts"], "sig": f"{row['n']}:{row['h']}"}
+
+
 #: Engines whose database list is a plain and complete answer, so a database
 #: that is missing from it is gone. Athena and ClickHouse are read in their own
 #: ways and are left alone.

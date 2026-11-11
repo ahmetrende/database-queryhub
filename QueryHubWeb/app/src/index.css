@@ -271,6 +271,11 @@
   .qh-grp-act:hover { background: var(--adaptive-medium); color: var(--fg-primary); }
   .qh-grp-empty { padding: 4px 10px 8px 30px; font-size: 11.5px; color: var(--fg-tertiary); font-style: italic; text-wrap: pretty; }
   .qh-grp-empty.is-dropzone { color: var(--fg-accent); font-style: normal; }
+  /* "2 hidden databases · Show": databases this browser hides from the tree. */
+  .qh-dbhide-line { padding: 8px 10px 10px 30px; font-size: 11.5px; color: var(--fg-tertiary); }
+  .qh-dbhide-line button { padding: 0; font: inherit; color: var(--fg-accent); background: none; border: 0; cursor: pointer; }
+  .qh-dbhide-line button:hover { text-decoration: underline; }
+  .qh-dbhide-line button:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); border-radius: 2px; }
   .qh-tr.is-conn-drag { cursor: grab; }
   .qh-ctx-label { padding: 6px 12px 2px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-tertiary); }
   .qh-ctxmenu { max-height: 78vh; overflow-y: auto; }
@@ -376,6 +381,33 @@
   .qh-origin.is-local { color: var(--fg-secondary); background: var(--adaptive-medium); }
   .qh-side-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 7px; padding: 40px 24px 24px; color: var(--fg-tertiary); }
   .qh-side-empty svg { color: var(--fg-tertiary); opacity: 0.45; margin-bottom: 3px; }
+  /* Snippets panel (2026-11-11, Devart D3 and D4). */
+  .qh-snip-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 2px 8px; }
+  .qh-snip-sort { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-tertiary); }
+  .qh-snip-sort select, .qh-snip-f select { height: 26px; padding: 0 6px; font: inherit; font-size: 12.5px; color: var(--fg-primary); background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-xs); }
+  .qh-snip-group { margin-bottom: 8px; }
+  .qh-snip-gtitle { padding: 6px 4px 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-tertiary); }
+  .qh-snip-row { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border: 1px solid transparent; border-radius: var(--r-sm); }
+  .qh-snip-row.is-mine { cursor: pointer; }
+  .qh-snip-row:hover { background: var(--bg-white); border-color: var(--stroke-medium); }
+  .qh-snip-key { flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
+  .qh-snip-main { flex: 1; min-width: 0; }
+  .qh-snip-desc { font-size: 12.5px; color: var(--fg-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qh-snip-meta { font-size: 11px; color: var(--fg-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qh-snip-btn { flex-shrink: 0; min-width: 24px; height: 24px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; border: 0; background: transparent; border-radius: var(--r-2xs); font: inherit; font-size: 12px; color: var(--fg-tertiary); cursor: pointer; }
+  .qh-snip-btn:hover { background: var(--brand-adaptive-light); color: var(--fg-accent); }
+  .qh-snip-del:hover, .qh-snip-del.is-armed { background: var(--danger-adaptive-light); color: var(--fg-danger); }
+  .qh-snip-form { display: flex; flex-direction: column; gap: 8px; padding: 4px 2px; }
+  .qh-snip-title { font-size: 13px; font-weight: 700; color: var(--fg-primary); }
+  .qh-snip-f { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--fg-secondary); }
+  .qh-snip-f input, .qh-snip-f textarea { width: 100%; box-sizing: border-box; padding: 5px 7px; font: inherit; font-size: 12.5px; color: var(--fg-primary); background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-xs); }
+  .qh-snip-f textarea { resize: vertical; font-family: var(--qh-mono); font-size: 12px; line-height: 1.45; }
+  .qh-snip-f input:focus-visible, .qh-snip-f textarea:focus-visible, .qh-snip-f select:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-snip-hint { font-size: 11.5px; line-height: 1.5; color: var(--fg-tertiary); }
+  .qh-snip-hint code { font-family: var(--qh-mono); font-size: 11px; }
+  .qh-snip-note { font-size: 12px; color: var(--fg-secondary); }
+  .qh-snip-err { padding: 6px 8px; font-size: 12px; color: var(--fg-danger); background: var(--danger-adaptive-light); border-radius: var(--r-xs); }
+  .qh-snip-foot { display: flex; justify-content: flex-end; gap: 8px; }
   .qh-side-empty-title { font-size: 13px; font-weight: 600; color: var(--fg-secondary); }
   .qh-side-empty-sub { font-size: 12px; line-height: 1.55; color: var(--fg-tertiary); text-wrap: pretty; }
   .qh-saved-meta { font-size: 11px; color: var(--fg-tertiary); margin-top: 4px; font-family: var(--qh-mono); display: flex; align-items: center; gap: 7px; }
@@ -441,6 +473,29 @@
   .qh-kb-sub { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--stroke-light); }
   .qh-kb-title { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--fg-tertiary); padding: 2px 4px 8px; }
   .qh-kb-row { display: flex; align-items: center; gap: 10px; padding: 5px 4px; font-size: 12.5px; color: var(--fg-secondary); }
+  /* 2026-11-11 · Format options (Devart E3): a narrow chevron beside Format and
+     a fixed popup under it. Tokens only, so dark mode follows the tokens. */
+  .qh-fmt-wrap { position: relative; display: flex; align-items: center; }
+  .qh-fmt-more { width: 18px; margin-left: -4px; }
+  .qh-fmt-more.is-open { background: var(--adaptive-medium); color: var(--fg-secondary); }
+  .qh-fmt-pop { z-index: 60; width: 340px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-md); box-shadow: var(--shadow-medium); padding: 10px;
+    max-height: calc(100vh - 96px); overflow-y: auto; }
+  .qh-fmt-row { display: grid; grid-template-columns: 136px minmax(0, 1fr); align-items: center; gap: 8px; padding: 3px 4px; font-size: 12.5px; color: var(--fg-secondary); }
+  /* A label never wraps. macOS Chrome draws "Between statements" 129px wide. */
+  .qh-fmt-row > span { white-space: nowrap; }
+  .qh-fmt-prof { padding-bottom: 8px; margin-bottom: 4px; border-bottom: 1px solid var(--stroke-light); }
+  .qh-fmt-row select { min-width: 0; height: 26px; padding: 0 6px; font: inherit; color: var(--fg-primary); background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-xs); }
+  .qh-fmt-row select:disabled { color: var(--fg-tertiary); background: var(--bg-light); }
+  .qh-fmt-row select:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-fmt-check { display: flex; align-items: center; gap: 8px; padding: 4px; font-size: 12.5px; color: var(--fg-secondary); cursor: pointer; }
+  .qh-fmt-note { padding: 4px; font-size: 12px; color: var(--fg-secondary); }
+  /* Table aliases: a second title under the preview, then the switch and the rules. */
+  .qh-fmt-sub { margin-top: 10px; }
+  .qh-fmt-rules { display: flex; flex-direction: column; gap: 4px; padding: 4px; font-size: 12.5px; color: var(--fg-secondary); }
+  .qh-fmt-rules textarea { width: 100%; box-sizing: border-box; resize: vertical; padding: 4px 6px; font-family: var(--qh-mono); font-size: 12px; color: var(--fg-primary); background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-xs); }
+  .qh-fmt-rules textarea:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-fmt-prev { margin: 8px 0 0; padding: 8px; max-height: 220px; overflow: auto; white-space: pre; font-family: var(--qh-mono); font-size: 11px; line-height: 1.45; color: var(--fg-primary); background: var(--bg-light); border-radius: var(--r-xs); }
+  .qh-fmt-foot { display: flex; justify-content: flex-end; gap: 8px; padding-top: 10px; }
   .qh-kbd { flex-shrink: 0; min-width: 82px; text-align: center; font-family: var(--qh-mono); font-size: 11px; font-weight: 600; color: var(--fg-primary); background: var(--bg-light); border: 1px solid var(--stroke-medium); border-bottom-width: 2px; border-radius: var(--r-xs); padding: 3px 7px; }
   .qh-tr-rows { font-family: var(--qh-mono); font-size: 10.5px; color: var(--fg-tertiary); opacity: 0.85;
     flex: 0 1000 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -691,6 +746,19 @@
   .qh-lint { background: none; color: transparent; text-decoration: underline wavy var(--stroke-warning);
     text-decoration-thickness: 1.5px; text-underline-offset: 3px; text-decoration-skip-ink: none; }
   .qh-lint.lv-info { text-decoration-style: dotted; text-decoration-color: var(--fg-tertiary); text-decoration-thickness: 2px; }
+  /* 2026-11-10: the caret layer (QhCaretMarks). It sits BEFORE .qh-pre in the
+     DOM, so the text draws on top of the tint. .qh-occ: another place of the
+     name under the caret, a grey fill (the brand tint at 10% was too faint
+     to see, and the selection uses the brand colour). .qh-pair: the bracket
+     or keyword pair at the caret, a box. */
+  .qh-marks { color: transparent; pointer-events: none; }
+  .qh-occ { background: var(--bg-strong); color: transparent; border-radius: 2px; }
+  .qh-pair { background: var(--bg-medium); color: transparent; border-radius: 2px;
+    box-shadow: inset 0 0 0 1px var(--stroke-strong); }
+  /* The fields of a snippet or a template (Devart C3 and D2): a frame, and a
+     fill on the field with the caret. */
+  .qh-stop { color: transparent; background: transparent; border-radius: 2px; box-shadow: inset 0 0 0 1px var(--stroke-strong); }
+  .qh-stop.is-cur { background: var(--bg-medium); box-shadow: inset 0 0 0 1px var(--brand-green); }
   .qh-issue-tip.is-lint { border-color: var(--stroke-warning); }
   .qh-issue-tip.is-lint.lv-info { border-color: var(--stroke-strong); }
   .qh-lint-n { position: absolute; top: 1px; right: 1px; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 999px;
@@ -717,19 +785,24 @@
   /* editor autocomplete */
   .qh-meas { position: absolute; visibility: hidden; white-space: pre; font-family: var(--qh-mono); font-size: var(--ed-fs); pointer-events: none; top: -9999px; }
   .qh-ac-ed { position: fixed; z-index: 95; min-width: 190px; max-width: 300px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); box-shadow: var(--shadow-medium); padding: 4px; max-height: 244px; overflow-y: auto; }
+  /* 2026-11-11: the corner grip of the typing list (Devart A4). It stays at
+     the bottom right while the list scrolls. */
+  .qh-ac-grip { position: sticky; bottom: 0; width: 9px; height: 9px; margin: -9px 0 0 auto; cursor: nwse-resize;
+    border-right: 2px solid var(--stroke-strong); border-bottom: 2px solid var(--stroke-strong); border-bottom-right-radius: 2px; }
+  .qh-ac-grip:hover { border-color: var(--fg-secondary); }
   .qh-ac-ed-opt { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--r-xs); cursor: pointer; font-family: var(--qh-mono); font-size: 12.5px; color: var(--fg-primary); }
   .qh-ac-ed-opt.is-hi { background: var(--brand-adaptive-light); }
   .qh-ac-ed-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .qh-ac-ed-type { flex-shrink: 0; font-family: var(--font-sans); font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding: 1px 6px; border-radius: var(--r-2xs); }
   .ac-t-keyword { color: var(--tk-kw); background: var(--brand-adaptive-light); }
-  .ac-t-table { color: #15688C; background: var(--sup-blue-light); }
+  .ac-t-table, .ac-t-cte { color: #15688C; background: var(--sup-blue-light); }
   .ac-t-column { color: var(--fg-secondary); background: var(--adaptive-bold); }
   .ac-t-database { color: var(--fg-accent); background: var(--brand-adaptive-light); }
   .ac-t-schema, .ac-t-index { color: var(--fg-secondary); background: var(--adaptive-bold); }
   /* A snippet (QH_SNIPPETS): the key, then what it inserts in a quieter tone. */
-  .ac-t-snippet { color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  .ac-t-snippet, .ac-t-template { color: var(--fg-accent); background: var(--brand-adaptive-light); }
   .qh-ac-ed-desc { margin-left: 8px; font-family: var(--font-sans); font-size: 11.5px; color: var(--fg-tertiary); }
-  [data-theme='dark'] .ac-t-table { color: #7FD2F5; background: rgba(102,204,255,0.12); }
+  [data-theme='dark'] .ac-t-table, [data-theme='dark'] .ac-t-cte { color: #7FD2F5; background: rgba(102,204,255,0.12); }
 
   /* ---------- results grip ---------- */
   .qh-res-grip { height: 7px; flex-shrink: 0; background: var(--bg-white); cursor: row-resize; display: flex;
@@ -912,6 +985,8 @@
     color: var(--fg-fix-white); border-radius: var(--r-full); box-shadow: var(--shadow-large); font-size: 13px; font-weight: 500;
     animation: qhtoast var(--d-mod-01) var(--ease-entrance); }
   .qh-toast svg { color: var(--brand-green); flex-shrink: 0; }
+  /* 2026-11-11 · A failed run: an alert icon in the danger colour of the dark toast. */
+  .qh-toast.is-err svg { color: var(--danger-solid-light); }
   @keyframes qhtoast { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
   /* ---------- schema tree ---------- */
@@ -2974,6 +3049,10 @@
   .qh-notif-switch input:checked + .qh-notif-switch-track .qh-notif-switch-knob { transform: translateX(14px); }
   .qh-notif-switch input:focus-visible + .qh-notif-switch-track { box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
   .qh-notif-switch-hint { font-size: 12px; line-height: 1.45; color: var(--fg-secondary); }
+  /* 2026-11-11 · Long-run notice (Devart I7): the time a run must take. */
+  .qh-notif-longrun { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; font-size: 13px; font-weight: 600; color: var(--fg-primary); }
+  .qh-notif-longrun select { height: 26px; padding: 0 6px; font: inherit; font-weight: 500; color: var(--fg-primary); background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-xs); }
+  .qh-notif-longrun select:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
   /* ---------- 2026-10-24 · Audit insight callout ----------
      An amber tint card (the warning tint the page already uses), tokens only, so
      the dark theme follows the tokens. Text is --fg-primary on the tint over the
@@ -2999,12 +3078,33 @@
   [data-theme='dark'] .qh-res-tools-note.is-error { color: var(--fg-primary); }
   .qh-res-sum { flex-shrink: 0; display: flex; align-items: center; gap: 14px; padding: 3px 12px; border-top: 1px solid var(--stroke-medium); background: var(--bg-light); font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-secondary); white-space: nowrap; overflow: hidden; }
   .qh-res-pretty[aria-pressed='true'] { color: var(--fg-accent); }
+  /* 2026-11-11: find in results (Devart J1). Three switches, the match
+     arrows, and a mark on each match in a cell. */
+  .qh-res-opts, .qh-res-hitnav { display: inline-flex; align-items: center; gap: 2px; }
+  .qh-res-opt { min-width: 24px; height: 22px; padding: 0 5px; border: 1px solid transparent; border-radius: var(--r-xs); background: transparent; color: var(--fg-secondary); font-family: var(--qh-mono); font-size: 11px; line-height: 1; cursor: pointer; }
+  .qh-res-opt:hover { background: var(--adaptive-medium); color: var(--fg-primary); }
+  .qh-res-opt.is-on { border-color: var(--stroke-accent); background: var(--brand-adaptive-light); color: var(--fg-accent); }
+  .qh-res-hitnav .qh-res-tools-note { margin-left: 4px; }
+  .qh-res-hit { background: var(--warning-adaptive-medium); color: inherit; border-radius: 2px; padding: 0; }
+  .qh-res-sum-text { overflow: hidden; text-overflow: ellipsis; }
+  /* The Copy as row of the grid menu (Devart J3). */
+  .qh-ctx-row { display: flex; gap: 4px; padding: 2px 6px 4px 18px; }
+  .qh-ctxmenu .qh-ctx-row button.qh-ctx-chip { width: auto; padding: 4px 8px; border: 1px solid var(--stroke-medium); font-size: 12px; }
   /* 2026-11-09: Ctrl+Space column list. */
   /* A row reads: name, PK mark, type, NULL flag. Type and flag are muted mono
      in --fg-secondary. The list is wider than the normal one and stays inside
      the viewport. Tokens only, so the dark theme follows. */
   .qh-ac-ed.is-cols { min-width: 260px; max-width: min(520px, calc(100vw - 16px)); }
-  .qh-ac-ed.is-cols .qh-ac-ed-opt { display: grid; grid-template-columns: minmax(0, 1fr) 24px minmax(0, 12em) 64px; gap: 8px; }
+  .qh-ac-ed.is-cols .qh-ac-ed-opt { display: grid; grid-template-columns: 16px minmax(0, 1fr) 24px minmax(0, 12em) 64px; gap: 8px; }
+  /* The check box of a column row (Devart A13): empty, or the place of the
+     column in the insert. */
+  .qh-ac-ed-chk { width: 14px; height: 14px; box-sizing: border-box; border: 1px solid var(--stroke-strong); border-radius: 3px;
+    display: inline-flex; align-items: center; justify-content: center; font-family: var(--font-sans); font-size: 9px;
+    font-weight: 700; line-height: 1; color: var(--bg-white); background: var(--bg-white); cursor: pointer; }
+  .qh-ac-ed-chk:hover { border-color: var(--brand-green); }
+  .qh-ac-ed-chk.is-on { border-color: var(--brand-green); background: var(--brand-green); }
+  .qh-ac-ed-foot { position: sticky; bottom: -4px; margin: 4px -4px -4px; padding: 5px 12px; border-top: 1px solid var(--stroke-medium);
+    background: var(--bg-white); font-family: var(--font-sans); font-size: 11px; color: var(--fg-tertiary); cursor: default; }
   .qh-ac-ed-pk { font-family: var(--font-sans); font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-align: center; color: var(--fg-accent); border-radius: var(--r-2xs); }
   .qh-ac-ed-pk:not(:empty) { background: var(--brand-adaptive-light); padding: 1px 0; }
   .qh-ac-ed-dtype, .qh-ac-ed-null { font-family: var(--qh-mono); font-size: 11px; color: var(--fg-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -3028,6 +3128,45 @@
   .qh-hover-card > div { overflow: hidden; text-overflow: ellipsis; }
   .qh-hover-card .qh-hover-head { font-weight: 600; }
   .qh-hover-card > div + div { color: var(--fg-secondary); }
+  /* 2026-11-11 Parameter info (Devart B2) */
+  /* The box above the caret line in a function call. The parameter at the
+     caret is bold and underlined. Only its arrows take clicks, and a press
+     keeps the focus in the editor. */
+  .qh-sig { position: fixed; z-index: 97; display: flex; align-items: baseline; gap: 8px;
+    max-width: min(640px, calc(100vw - 16px)); padding: 5px 10px; background: var(--bg-white);
+    color: var(--fg-secondary); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm);
+    box-shadow: var(--shadow-medium); font-family: var(--qh-mono); font-size: 12px; line-height: 1.45; }
+  .qh-sig-text { overflow-wrap: anywhere; }
+  .qh-sig-name { color: var(--fg-primary); font-weight: 600; }
+  .qh-sig-cur { color: var(--fg-primary); font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+  .qh-sig-ret { color: var(--fg-tertiary); }
+  .qh-sig-kind { margin-left: 8px; color: var(--fg-tertiary); font-size: 11px; }
+  .qh-sig-nav { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; color: var(--fg-tertiary); font-size: 11px; }
+  .qh-sig-nav button { border: 0; background: none; color: var(--fg-secondary); font: inherit; font-size: 13px;
+    line-height: 1; padding: 0 3px; border-radius: var(--r-sm); cursor: pointer; }
+  .qh-sig-nav button:hover { background: var(--bg-strong); color: var(--fg-primary); }
+  /* 2026-11-11 Problems tab (Devart H3) */
+  /* One row per finding: level, rule code, description, line and column. A
+     row with a place in the text selects it in the editor on click. */
+  .qh-res-count.is-err { background: var(--danger-adaptive-light); color: var(--fg-danger); }
+  .qh-res-count.is-warn { background: var(--warning-adaptive-light); color: var(--fg-warning); }
+  .qh-probs { padding: 6px 0; font-size: 12.5px; }
+  .qh-probs-t { width: 100%; border-collapse: collapse; }
+  .qh-probs-t th { text-align: left; font-weight: 600; font-size: 11px; color: var(--fg-tertiary); padding: 4px 10px;
+    border-bottom: 1px solid var(--stroke-light); }
+  .qh-probs-t td { padding: 5px 10px; border-bottom: 1px solid var(--stroke-light); vertical-align: top; }
+  .qh-probs-t tr.is-go { cursor: pointer; }
+  .qh-probs-t tr.is-go:hover td { background: var(--bg-light); }
+  .qh-probs-t tr.is-go:focus-visible { outline: 2px solid var(--fg-accent); outline-offset: -2px; }
+  .qh-probs-lv { white-space: nowrap; color: var(--fg-secondary); }
+  .qh-probs-dot { display: inline-block; width: 8px; height: 8px; border-radius: 999px; margin-right: 6px; background: var(--stroke-strong); }
+  .qh-probs-dot.lv-error { background: var(--fg-danger); }
+  .qh-probs-dot.lv-warn { background: var(--fg-warning); }
+  .qh-probs-code, .qh-probs-num { font-family: var(--qh-mono); white-space: nowrap; color: var(--fg-secondary); }
+  .qh-probs-num { text-align: right; }
+  .qh-probs-text { color: var(--fg-secondary); white-space: pre-line; }
+  .qh-probs-text b { color: var(--fg-primary); font-weight: 600; }
+  .qh-probs-off { padding: 8px 10px; color: var(--fg-tertiary); font-size: 12px; }
 
 /* ---- local additions (CODE-owned; override the design above) ---- */
 /* CODE-owned CSS layered ON TOP of the design CSS.

@@ -291,6 +291,27 @@ def saved_entry(row: dict, alias_of: "callable",
     }
 
 
+def snippet_entry(row: dict, viewer: str, names: dict) -> dict:
+    """One editor_snippets row → the /snippets shape.
+
+    `mine` tells the editor which snippets the viewer can change. A shared
+    snippet of another person carries the owner's name from `names`, or null.
+    The owner's principal id never leaves the server."""
+    mine = row["owner_id"] == viewer
+    return {
+        "id": str(row["id"]),
+        "key": row["key"],
+        "description": row.get("description"),
+        "body": row["body"],
+        "engine": row.get("engine"),
+        "folder": row.get("folder"),
+        "shared": bool(row.get("is_shared")),
+        "mine": mine,
+        "owner": None if mine else names.get(row["owner_id"]),
+        "updatedAt": iso(row.get("updated_at")),
+    }
+
+
 def session_entry(row: dict) -> dict:
     """One web_saved_sessions row → the /sessions shape (always dest=server;
     local sessions never reach the server)."""

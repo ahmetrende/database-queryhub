@@ -92,7 +92,8 @@ test('type, nullable and primary key are carried', () => {
 });
 
 test('a subquery or an unknown table gives no invented columns', () => {
-  assert.equal(at('select | from (select 1 as x) s'), null, 'a subquery in FROM is not read');
+  assert.deepEqual(picks(at('select | from (select 1 as x) s')), ['x'], 'a subquery gives its output names only');
+  assert.equal(at('select | from (select 1 + 2) s').count, 0, 'an expression without an alias has no name');
   const none = at('select | from nope');
   assert.equal(none.count, 0);
   assert.deepEqual(none.items, []);
@@ -132,7 +133,7 @@ test('positions that are not a column position give no column list', () => {
   assert.equal(at('select *| from orders'), null, 'the star belongs to the * expansion');
   assert.equal(at('select id as | from orders'), null, 'an alias goes after AS');
   assert.equal(at('update orders set total = |'), null, 'not a SELECT');
-  assert.equal(at('insert into orders (|'), null, 'not a SELECT');
+  assert.equal(at('insert into orders values (|'), null, 'a value goes after VALUES');
   assert.equal(at('select |'), null, 'no FROM yet');
 });
 

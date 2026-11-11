@@ -119,9 +119,15 @@ const qhApi = {
   connections: ()      => qhFetch('/connections'),
   schema:      (conn, dbn) => qhFetch('/connections/' + encodeURIComponent(conn) +
                                       '/databases/' + encodeURIComponent(dbn) + '/schema'),
-  // Columns of ONE relation, read live from the target (PostgreSQL only) —
-  // for the `SELECT *` expansion when the catalog does not list it. 404 when
-  // there is no such relation. {table, columns:[{name,type}]}.
+  // {snapshotAt, sig} of one database's catalog, the same values /schema
+  // gives. The page asks every five minutes and reloads /schema when `sig`
+  // changed. It reads QueryHub's copy and never asks the target.
+  schemaStamp: (conn, dbn) => qhFetch('/connections/' + encodeURIComponent(conn) +
+                                      '/databases/' + encodeURIComponent(dbn) + '/schema/stamp'),
+  // Columns of ONE relation, read live from the target (every engine) — for
+  // the `SELECT *` expansion when the catalog does not list it. 404 when
+  // there is no such relation or the name names another database.
+  // {table, columns:[{name,type}]}.
   tableColumns: (conn, dbn, table) => qhFetch('/connections/' + encodeURIComponent(conn) +
                                       '/databases/' + encodeURIComponent(dbn) +
                                       '/columns?table=' + encodeURIComponent(table)),
@@ -223,6 +229,14 @@ const qhApi = {
   },
   saveSnippet: (body)  => qhFetch('/saved', { method: 'POST', body: JSON.stringify(body) }),
   deleteSnippet:(id)   => qhFetch('/saved/' + id, { method: 'DELETE' }),
+  // Editor snippets (2026-11-11, Devart D3 and D4): the caller's own and every
+  // shared one. {snippets:[{id,key,description,body,engine,folder,shared,mine,
+  // owner,updatedAt}], canDeleteShared}. Body of a write: {key, description,
+  // body, engine, folder, shared}. Only the owner changes a snippet.
+  editorSnippets:      ()         => qhFetch('/snippets'),
+  createEditorSnippet: (body)     => qhFetch('/snippets', { method: 'POST', body: JSON.stringify(body) }),
+  updateEditorSnippet: (id, body) => qhFetch('/snippets/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify(body) }),
+  deleteEditorSnippet: (id)       => qhFetch('/snippets/' + encodeURIComponent(id), { method: 'DELETE' }),
   // What this person could ask for: enabled connections they cannot reach, with
   // only the databases they do not hold (the control plane, the maintenance
   // databases and disabled targets are filtered server-side). Drives the picker

@@ -59,10 +59,74 @@ function qhResCellText(v) {
   return v === null || v === undefined ? '' : String(v);
 }
 
+// Find in results (2026-11-11, Devart J1). The filter box has three switches:
+// match case, whole word and regular expression. qhResMatcher turns the text
+// and the switches into one matcher. `ranges(s)` gives the [start, end] pairs
+// of the matches in a cell (at most 200), for the marks. `test(s)` says if a
+// cell matches. A regular expression that does not compile gives { error }.
+// A whole word has no letter, digit or _ on either side, in any script.
+const QH_RES_MAX_HITS = 200;
+function qhResMatcher(text, opts) {
+  const o = opts || {};
+  const q = String(text === null || text === undefined ? '' : text);
+  if (!q) return null;
+  let re;
+  try {
+    const src = o.regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const body = o.word ? '(?<![\\p{L}\\p{N}_])(?:' + src + ')(?![\\p{L}\\p{N}_])' : src;
+    re = new RegExp(body, 'g' + (o.word ? 'u' : '') + (o.caseSensitive ? '' : 'i'));
+  } catch (err) {
+    return { error: 'Not a valid regular expression.' };
+  }
+  const ranges = (s) => {
+    const str = String(s);
+    const out = [];
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(str)) !== null) {
+      if (m[0] === '') { re.lastIndex += 1; continue; }   // an empty match marks nothing
+      out.push([m.index, m.index + m[0].length]);
+      if (out.length >= QH_RES_MAX_HITS) break;
+    }
+    return out;
+  };
+  return { test: (s) => ranges(s).length > 0, ranges };
+}
+
+// The filter text split into an optional column and the text to find. The
+// form `name:text` searches one column when `name` is a column of the result.
+// Returns { column, text }. `column` is undefined for every column.
+function qhResFilterSplit(query, cols) {
+  const q = String(query === null || query === undefined ? '' : query).trim();
+  const at = q.indexOf(':');
+  if (at >= 0) {
+    const name = q.slice(0, at).trim().toLowerCase();
+    const column = (cols || []).find((c) => String(c).toLowerCase() === name);
+    if (column !== undefined) return { column, text: q.slice(at + 1).trim() };
+  }
+  return { column: undefined, text: q };
+}
+
+// True when a switch of the filter box is on.
+function qhResOptsOn(opts) {
+  return !!(opts && (opts.caseSensitive || opts.word || opts.regex));
+}
+
 // Keeps rows that match the query. The form `name:text` searches one column.
-function qhResFilterRows(rows, cols, query) {
+// With a switch on (qhResOptsOn), the rows that qhResMatcher finds stay. A
+// regular expression that does not compile keeps every row: the box shows the
+// error.
+function qhResFilterRows(rows, cols, query, opts) {
   const q = String(query === null || query === undefined ? '' : query).trim();
   if (!q) return rows;
+  if (qhResOptsOn(opts)) {
+    const sp = qhResFilterSplit(q, cols);
+    if (!sp.text) return rows;
+    const m = qhResMatcher(sp.text, opts);
+    if (!m || m.error) return rows;
+    const scan = sp.column !== undefined ? [sp.column] : (cols || []);
+    return rows.filter((r) => scan.some((c) => m.test(qhResCellText(r[c]))));
+  }
   const at = q.indexOf(':');
   if (at >= 0) {
     const name = q.slice(0, at).trim().toLowerCase();
@@ -77,24 +141,165 @@ function qhResFilterRows(rows, cols, query) {
   return rows.filter((r) => (cols || []).some((c) => qhResCellText(r[c]).toLowerCase().includes(needle)));
 }
 
+// The sum bar of a selection. Empty cells do not count. `distinct` counts the
+// different values (Devart J2). With no number among the values, `tmin` and
+// `tmax` give the lowest and the highest text: dates (YYYY-MM-DD...) compare
+// as text, other text compares as qhResCompareCells does. They are null when
+// a number is there or nothing is.
 function qhResAggregate(values) {
   let count = 0;
   let numeric = 0;
   let sum = 0;
   let min = null;
   let max = null;
+  const seen = new Set();
+  const texts = [];
   for (const v of values || []) {
     if (qhResIsEmpty(v)) continue;
     count += 1;
-    if (!qhResIsNumeric(v)) continue;
+    seen.add(String(v).trim());
+    if (!qhResIsNumeric(v)) { texts.push(String(v)); continue; }
     const n = Number(String(v).trim());
     numeric += 1;
     sum += n;
     if (min === null || n < min) min = n;
     if (max === null || n > max) max = n;
   }
-  if (numeric === 0) return { count, numeric, sum: null, avg: null, min: null, max: null };
-  return { count, numeric, sum, avg: sum / numeric, min, max };
+  const distinct = seen.size;
+  if (numeric === 0) {
+    let tmin = null;
+    let tmax = null;
+    for (const t of texts) {
+      if (tmin === null || qhResCompareCells(t, tmin) < 0) tmin = t;
+      if (tmax === null || qhResCompareCells(t, tmax) > 0) tmax = t;
+    }
+    return { count, numeric, sum: null, avg: null, min: null, max: null, distinct, tmin, tmax };
+  }
+  return { count, numeric, sum, avg: sum / numeric, min, max, distinct, tmin: null, tmax: null };
+}
+
+// ---------------------------------------------------------------------------
+// Copy a selection as CSV, JSON, XML or HTML (2026-11-11, Devart J3), and copy
+// column names (Devart J4). `columns` are names. `rows` are arrays of raw cell
+// values in the order of `columns`. Masked columns hold the masked text the
+// server sent, as in every other copy.
+// ---------------------------------------------------------------------------
+const QH_RES_COPY_KINDS = [['csv', 'CSV'], ['json', 'JSON'], ['xml', 'XML'], ['html', 'HTML']];
+function qhResEscXml(s) {
+  // Characters that XML 1.0 does not allow are dropped.
+  return String(s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+// JSON values from typed columns (2026-11-11). Web results come from the
+// stored CSV file, so every cell is text and a NULL is ''. With the column's
+// SQL type (result.colTypes, else the catalog type) a number column gives a
+// JSON number (the text as it is, so a bigint keeps every digit), a boolean
+// column gives true or false, and an empty cell of a column that is not text
+// gives null (XML: null="true"). A text column keeps '' as "": there it can be
+// an empty string or NULL. A value that does not read as a number or a boolean
+// (a masked one) stays a string. The JSON download uses the same rule
+// (result_export.json_kind in the server).
+const QH_RES_JSON_NUM = /^(u?int(2|4|8|16|32|64|128|256)?|integer|smallint|bigint|tinyint|mediumint|serial|bigserial|smallserial|numeric|decimal|real|float(4|8|32|64)?|double( precision)?|oid)$/;
+const QH_RES_JSON_TEXT = /^(text|varchar|char|character( varying)?|nvarchar|nchar|ntext|bpchar|name|citext|string|fixedstring|str|sysname|xml|enum(8|16)?)$/;
+const QH_RES_JSON_NUMBER = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/;
+function qhResJsonKind(type) {
+  let t = String(type == null ? '' : type).trim().toLowerCase();
+  // LowCardinality(Nullable(String)): unwrap until nothing changes.
+  for (let again = true; again;) {
+    again = false;
+    for (const wrap of ['nullable(', 'lowcardinality(']) {
+      if (t.startsWith(wrap) && t.endsWith(')')) { t = t.slice(wrap.length, -1).trim(); again = true; }
+    }
+  }
+  if (!t) return 'text';
+  if (t.endsWith('[]') || t.startsWith('array(')) return 'other';
+  const base = t.split('(')[0].trim();
+  if (QH_RES_JSON_NUM.test(base)) return 'num';
+  if (base === 'bool' || base === 'boolean' || base === 'bit') return 'bool';
+  if (QH_RES_JSON_TEXT.test(base)) return 'text';
+  return 'other';
+}
+// The JSON text of one cell. A real number or boolean (the API sends some as
+// such) stays one, and null or undefined is null in every kind.
+function qhResJsonCell(v, kind) {
+  if (v === null || v === undefined) return 'null';
+  if (typeof v === 'number') return Number.isFinite(v) ? String(v) : JSON.stringify(String(v));
+  if (typeof v === 'boolean') return String(v);
+  const s = String(v);
+  if (kind === 'text') return JSON.stringify(s);
+  if (s === '') return 'null';
+  if (kind === 'num' && QH_RES_JSON_NUMBER.test(s)) return s;
+  if (kind === 'bool') {
+    const low = s.trim().toLowerCase();
+    if (low === 't' || low === 'true' || low === '1') return 'true';
+    if (low === 'f' || low === 'false' || low === '0') return 'false';
+  }
+  return JSON.stringify(s);
+}
+// `types` (optional) maps a column name to its SQL type (see qhResJsonKind).
+function qhResCopyAs(kind, columns, rows, types) {
+  const cols = (columns || []).map(String);
+  const data = rows || [];
+  const isNull = (v) => v === null || v === undefined;
+  const kinds = cols.map((c) => qhResJsonKind(types ? types[c] : null));
+  if (kind === 'csv') {
+    const field = (v) => {
+      if (isNull(v)) return '';
+      const s = String(v);
+      return /[",\r\n]|^\s|\s$/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    return [cols.map(field).join(',')].concat(data.map((r) => cols.map((_, i) => field(r[i])).join(','))).join('\n');
+  }
+  if (kind === 'json') {
+    // A name that repeats (two `id` columns of a join) gets _2, _3 ...
+    const used = new Map();
+    const keys = cols.map((c) => {
+      const n = (used.get(c) || 0) + 1;
+      used.set(c, n);
+      return n === 1 ? c : c + '_' + n;
+    });
+    // Written by hand, in JSON.stringify's two-space layout, so that a number
+    // keeps its own text.
+    if (!data.length) return '[]';
+    return '[\n' + data.map((r) => (keys.length
+      ? '  {\n' + keys.map((k, i) => '    ' + JSON.stringify(k) + ': ' + qhResJsonCell(r[i], kinds[i])).join(',\n') + '\n  }'
+      : '  {}')).join(',\n') + '\n]';
+  }
+  if (kind === 'xml') {
+    const out = ['<?xml version="1.0" encoding="UTF-8"?>', '<rows>'];
+    data.forEach((r) => {
+      out.push('  <row>');
+      cols.forEach((c, i) => {
+        const v = r[i];
+        out.push(isNull(v) || (v === '' && kinds[i] !== 'text')
+          ? '    <field name="' + qhResEscXml(c) + '" null="true"/>'
+          : '    <field name="' + qhResEscXml(c) + '">' + qhResEscXml(v) + '</field>');
+      });
+      out.push('  </row>');
+    });
+    out.push('</rows>');
+    return out.join('\n');
+  }
+  if (kind === 'html') {
+    const esc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const out = ['<table>', '  <thead>', '    <tr>' + cols.map((c) => '<th>' + esc(c) + '</th>').join('') + '</tr>', '  </thead>', '  <tbody>'];
+    data.forEach((r) => {
+      out.push('    <tr>' + cols.map((_, i) => '<td>' + (isNull(r[i]) ? '' : esc(r[i])) + '</td>').join('') + '</tr>');
+    });
+    out.push('  </tbody>', '</table>');
+    return out.join('\n');
+  }
+  return '';
+}
+
+// Column names for the clipboard. Names only: one line, comma-separated, for a
+// SELECT list. With types: one `name type` per line, comma-separated, for a
+// CREATE TABLE. A column with no known type gives its name only.
+function qhResColumnNames(names, types, withTypes) {
+  const ns = (names || []).map(String);
+  if (!withTypes) return ns.join(', ');
+  const t = types || {};
+  return ns.map((n) => (t[n] ? n + ' ' + t[n] : n)).join(',\n');
 }
 
 // Returns indented JSON text for an object or array, or null.
@@ -120,6 +325,9 @@ function qhUseResultView(result) {
   const cur = st.res === result ? st : { res: result, sort: null, filter: '' };
   const [failed, setFailed] = React.useState(null);
   const [, setTick] = React.useState(0);
+  // The three switches of the filter box (qhResMatcher). They stay when a new
+  // result arrives: they are how this person likes to search.
+  const [opts, setOptsState] = React.useState({ caseSensitive: false, word: false, regex: false });
   const cache = React.useRef({ res: null, rows: null });
 
   const sort = cur.sort;
@@ -157,8 +365,23 @@ function qhUseResultView(result) {
 
   const derived = React.useMemo(() => {
     if (!allRows) return null;
-    return qhResSortRows(qhResFilterRows(allRows, result.cols, filter), sort);
-  }, [allRows, result, filter, sort]);
+    return qhResSortRows(qhResFilterRows(allRows, result.cols, filter, opts), sort);
+  }, [allRows, result, filter, sort, opts]);
+
+  // The marks and the match list of the grid read this matcher. With every
+  // switch off it finds the same text as the filter, in any case.
+  const find = React.useMemo(() => {
+    if (!isTable || !filter.trim()) return null;
+    const sp = qhResFilterSplit(filter, result.cols);
+    if (!sp.text) return null;
+    const m = qhResMatcher(sp.text, opts);
+    if (!m) return null;
+    if (m.error) return { error: m.error, column: sp.column, matcher: null };
+    return { error: null, column: sp.column, matcher: m };
+  }, [isTable, filter, result, opts]);
+  const toggleOpt = React.useCallback((key) => {
+    setOptsState((o) => ({ ...o, [key]: !o[key] }));
+  }, []);
 
   const view = React.useMemo(() => {
     if (!derived) return result;
@@ -197,6 +420,7 @@ function qhUseResultView(result) {
     return {
       view: result, enabled: false, reason: null, sort: null, setSort, toggleSort,
       filter: '', setFilter, loading: false, error: null, shown: 0, total: 0,
+      opts, toggleOpt, find: null,
     };
   }
   return {
@@ -212,10 +436,14 @@ function qhUseResultView(result) {
     error,
     shown: derived ? derived.length : baseTotal,
     total: baseTotal,
+    opts,
+    toggleOpt,
+    find: enabled ? find : null,
   };
 }
 
-Object.assign(window, {
+Object.assign(window, { qhResJsonKind, qhResJsonCell,
   QH_RES_MAX_ROWS, qhResCompareCells, qhResSortRows, qhResFilterRows,
   qhResAggregate, qhPrettyJson, qhUseResultView,
+  qhResMatcher, qhResFilterSplit, qhResOptsOn, QH_RES_COPY_KINDS, qhResCopyAs, qhResColumnNames,
 });

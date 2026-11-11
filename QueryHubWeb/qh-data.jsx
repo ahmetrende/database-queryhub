@@ -1600,6 +1600,53 @@ function qhRaiseBrowserNotifs(items, ctx) {
   return shown;
 }
 
+// Long-run notice (2026-11-11, Devart I7). A run that took at least the chosen
+// number of seconds on the database shows a notice when it ends. The time is
+// `runMs` of the status (execution start to end), so the wait for a DBA does
+// not count. The choice stays in this browser. 0 is off. 10 s is the default.
+const QH_LONGRUN_KEY = 'qh.longrun.v1';
+const QH_LONGRUN_CHOICES = [[0, 'Off'], [5, '5 s'], [10, '10 s'], [30, '30 s'], [60, '1 min'], [300, '5 min']];
+const QH_LONGRUN_DEFAULT = 10;
+function qhLongRunLoad() {
+  try {
+    const raw = localStorage.getItem(QH_LONGRUN_KEY);
+    if (raw == null) return QH_LONGRUN_DEFAULT;
+    const n = Number(raw);
+    return QH_LONGRUN_CHOICES.some(([v]) => v === n) ? n : QH_LONGRUN_DEFAULT;
+  } catch (e) { return QH_LONGRUN_DEFAULT; }
+}
+function qhLongRunStore(sec) {
+  try { localStorage.setItem(QH_LONGRUN_KEY, String(sec)); } catch (e) {}
+}
+// The notice for one ended run, or null. `run` = { status, runMs, rowCount,
+// name, awaitingDba }. Only 'done' and 'failed' get one: a refusal is a DBA
+// decision, and the bell already tells it. A request that a DBA must run by
+// hand (`awaitingDba`) has not ended. Returns { title, text }.
+function qhLongRunNotice(run, sec) {
+  const r = run || {};
+  const limit = Number(sec) || 0;
+  if (limit <= 0 || r.awaitingDba || typeof r.runMs !== 'number' || !isFinite(r.runMs) || r.runMs < limit * 1000) return null;
+  const name = '“' + (r.name || 'Query') + '”';
+  const dur = qhDurationLabel(r.runMs);
+  if (r.status === 'failed') return { title: 'Query failed', text: name + ' failed after ' + dur + '.' };
+  if (r.status !== 'done') return null;
+  const n = r.rowCount;
+  const rows = typeof n === 'number' && isFinite(n) && n >= 0 ? ' ' + n.toLocaleString('en-US') + (n === 1 ? ' row.' : ' rows.') : '';
+  return { title: 'Query finished', text: name + ' finished in ' + dur + '.' + rows };
+}
+// Raise the browser notification of a long run. Only when the page is hidden,
+// the bell switch is on and the browser gave permission. It never asks for
+// permission. Returns the Notification, or null.
+function qhRaiseRunNotif(note, ctx) {
+  const c = ctx || {};
+  if (!note || !c.hidden || !c.on || qhBrowserNotifPermission(c.Ctor) !== 'granted') return null;
+  try {
+    const n = new c.Ctor(note.title, { body: note.text, tag: c.tag || undefined });
+    if (n) n.onclick = () => { try { window.focus(); } catch (e) {} if (c.onClick) c.onClick(); try { n.close(); } catch (e) {} };
+    return n || null;
+  } catch (e) { return null; }
+}
+
 // What a person's connections do to a statement: which databases run at once and
 // which go to a DBA first (2026-10-24). The rule is the one the submit uses:
 // read-only on a database that auto-approves runs at once. Read/write, schema
@@ -1727,5 +1774,6 @@ Object.assign(window, {
   qhDurationLabel, qhCsvCell, QH_HIST_CSV_COLS, qhHistoryCsv, qhHistoryCsvName,
   qhPendingRequests, qhResubmitOver, qhNotifSubject, qhEndNote,
   qhBrowserNotifStored, qhBrowserNotifStore, qhRaisedLoad, qhRaisedSave, qhBrowserNotifPermission, qhBrowserNotifEnable, qhRaiseBrowserNotifs,
+  QH_LONGRUN_KEY, QH_LONGRUN_CHOICES, QH_LONGRUN_DEFAULT, qhLongRunLoad, qhLongRunStore, qhLongRunNotice, qhRaiseRunNotif,
   qhAccessSummary, qhGrantEnd, qhTimelineRows, qhTimelineTotal, qhSpanText, qhStepClock, QH_STEP_WORDS, QH_STEP_OUTCOMES, QH_STEP_TONES,
 });
