@@ -211,6 +211,9 @@ jobs:
       - name: Integration tests as the split runtime
         env:
           QH_RUN_INTEGRATION: "1"
+          # The object-DDL tests change their own two schemas on a server of
+          # their own, not the metadata DB, so the split roles do not apply.
+          QH_DDL_PG_DSN: postgresql://postgres:postgres@localhost:5432/queryhub_test
           BOT_DB_HOST: localhost
           BOT_DB_PORT: "5432"
           BOT_DB_NAME: queryhub_test
