@@ -3668,6 +3668,18 @@ def _effective_access_legacy(slack_id: str) -> tuple[list, list, dict | None]:
 _TIER_RANK_UI = {"RO": 1, "RW": 2, "DDL": 3}
 
 
+def _target_flags() -> dict[int, dict]:
+    """Per target id: `deleted` and `super_admin_only`. One read.
+
+    `targets.list_all` does not carry these two columns, and the
+    effective-access list needs both: a deleted target is not a connection
+    anybody can query, and a super-admin-only target needs its own note.
+    """
+    return {r["id"]: r for r in db.fetch_all(
+        "SELECT id, (deleted_at IS NOT NULL) AS deleted, super_admin_only "
+        "  FROM target_servers")}
+
+
 def _effective_access_v2(slack_id: str) -> tuple[list, list, dict | None]:
     """What this person can reach under the new model, per DATABASE.
 
@@ -3686,8 +3698,18 @@ def _effective_access_v2(slack_id: str) -> tuple[list, list, dict | None]:
     """
     all_targets = targets.list_all()
     alias_by_id = {t.id: t.alias for t in all_targets}
-    by_target = teams.effective_grants_for_user(slack_id, [t.id for t in all_targets])
-    have = [t for t in all_targets if by_target.get(t.id) is not None]
+    # Only the connections a person can submit to (2026-11-12). An admin
+    # resolves to every target, so a deleted target and a read replica were
+    # listed too: 172 rows and "Can query 172 connections" for an admin who
+    # could reach 62. A replica is reached through its primary, and the
+    # submit path refuses one by name.
+    flags = _target_flags()
+    listed = [t for t in all_targets
+              if not (flags.get(t.id) or {}).get("deleted")
+              and getattr(t, "replica_of", None) is None]
+    by_target = teams.effective_grants_for_user(slack_id, [t.id for t in listed])
+    have = [t for t in listed if by_target.get(t.id) is not None]
+    creds = targets.configured_tiers([t.id for t in have])
 
     from . import routes_data
     catalog = routes_data._catalog_databases_map(
@@ -3722,7 +3744,16 @@ def _effective_access_v2(slack_id: str) -> tuple[list, list, dict | None]:
         entry = {"connectionId": t.alias, "enabled": t.enabled,
                  "databases": (sorted(g["allowed_databases"])
                                if g.get("allowed_databases") else None),
-                 "allDatabases": g.get("allowed_databases") is None}
+                 "allDatabases": g.get("allowed_databases") is None,
+                 # Why a row reads differently from its neighbours: the
+                 # engine refuses every write, or only a grant that names
+                 # this target counts here.
+                 "readOnlyEngine": bool(engines.spec(getattr(t, "engine", None)).read_only),
+                 "superAdminOnly": bool((flags.get(t.id) or {}).get("super_admin_only")),
+                 # The tiers QueryHub holds a login for. A tier above them
+                 # is refused at submit (`targets.configured_tiers`).
+                 "credentialTiers": sorted(creds.get(t.id, {"ro", "rw", "ddl"}),
+                                           key=lambda x: _TIER_RANK_UI[x.upper()])}
         per = []
         for d in dbs_of.get(t.id, []):
             res, row = decided.get((t.id, d), (None, None))
@@ -3802,9 +3833,17 @@ def _effective_access_v2(slack_id: str) -> tuple[list, list, dict | None]:
         tm_names = {x["id"]: x["name"] for x in db.fetch_all(
             "SELECT id, COALESCE(display_name, name) AS name FROM team WHERE id = ANY(%s)",
             (tm_ids,))} if tm_ids else {}
+        is_admin_role = any(r["role"] == "admin" for r in appr)
+        super_admin = access_model.is_super_admin(slack_id)
         admin_out = {
             "enabled": True,
-            "superAdmin": access_model.is_super_admin(slack_id),
+            "superAdmin": super_admin,
+            "role": "admin" if is_admin_role else "approver",
+            # Which of their OWN requests they may approve: a super-admin
+            # all of them, another admin the read-only ones
+            # (`admins.own_write_needs_another`), an approver none.
+            "selfApproves": ("all" if super_admin
+                             else "ro" if is_admin_role else "none"),
             "maxTier": top_tier,
             # Names, not ids: the panel prints this list.
             "scopeTeams": [tm_names.get(i, str(i)) for i in tm_ids],
@@ -4650,6 +4689,15 @@ def admin_decide_window_request(request_id: int, body: WindowDecisionIn,
             notifications.dm_requester(client, req["requester_slack_id"], text)
         except Exception:
             log.exception("window decision DM failed for request %s", request_id)
+        try:
+            from ..slack_app import ro_window
+            ro_window.update_admin_cards(
+                client, request_id,
+                ro_window.decision_line(request_id, out["status"], uid,
+                                        req, out["alias"]))
+        except Exception:
+            log.exception("window decision card update failed for request %s",
+                          request_id)
     return {"id": request_id, "status": out["status"], "grantId": out.get("grant_id")}
 
 

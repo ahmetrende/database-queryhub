@@ -136,9 +136,13 @@ def no_super_admin_only_targets(monkeypatch, request):
     if request.node.get_closest_marker("integration"):
         yield
         return
-    from queryhub import access
+    from queryhub import access, targets
     monkeypatch.setattr(access, "target_is_super_admin_only", lambda tid: False)
     monkeypatch.setattr(access, "super_admin_only_ids", lambda ids: set())
+    # Every tier has a login, unless a test says otherwise
+    # (tests/test_tier_credentials.py). Same reason: the read is SQL.
+    monkeypatch.setattr(targets, "configured_tiers",
+                        lambda ids: {int(t): {"ro", "rw", "ddl"} for t in ids})
     yield
 
 

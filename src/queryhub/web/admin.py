@@ -131,6 +131,10 @@ def require_admin(claims: dict, need: str = "review", *, request: dict | None = 
     # so a super-admin costs no extra read.
     if need == "dba" and not (admins.is_super_admin(uid) or admins.is_dba(uid)):
         raise deps._error(403, "forbidden", "Refused: you need DBA access.")
+    if request is not None and admins.own_write_needs_another(uid, request):
+        raise deps._error(403, "forbidden",
+                          "Refused: this is your own write. "
+                          "Another admin must approve it.")
     if request is not None and not admins.can_approve(uid, request):
         raise deps._error(403, "forbidden",
                           "Refused: this query is outside your approval scope.")

@@ -636,6 +636,91 @@ def live_columns(host, port, database, user, password, schema: str | None,
         conn.close()
 
 
+# The CREATE script of one object (2026-11-12, Devart B5). A view, a procedure,
+# a function and a trigger keep their own text (OBJECT_DEFINITION). A table
+# has none, so this reader builds it from sys.columns and the primary key.
+_OBJECT_SQL = """
+SELECT o.type, OBJECT_DEFINITION(o.object_id), SCHEMA_NAME(o.schema_id), o.name
+  FROM sys.objects o
+ WHERE o.object_id = OBJECT_ID(?)
+"""
+_OBJECT_COLUMNS_SQL = """
+SELECT c.name, TYPE_NAME(c.user_type_id), c.max_length, c.precision, c.scale,
+       c.is_nullable, c.is_identity, dc.definition
+  FROM sys.columns c
+  LEFT JOIN sys.default_constraints dc ON dc.object_id = c.default_object_id
+ WHERE c.object_id = OBJECT_ID(?)
+ ORDER BY c.column_id
+"""
+_OBJECT_PK_SQL = """
+SELECT k.name, col.name
+  FROM sys.key_constraints k
+  JOIN sys.index_columns ic ON ic.object_id = k.parent_object_id AND ic.index_id = k.unique_index_id
+  JOIN sys.columns col ON col.object_id = ic.object_id AND col.column_id = ic.column_id
+ WHERE k.parent_object_id = OBJECT_ID(?) AND k.type = 'PK'
+ ORDER BY ic.key_ordinal
+"""
+_OBJECT_KINDS = {"U": "table", "V": "view", "P": "procedure", "FN": "function",
+                 "IF": "function", "TF": "function", "TR": "trigger"}
+
+
+def _mssql_type(name: str, max_length: int, precision: int, scale: int) -> str:
+    """The type of a column as T-SQL writes it: nvarchar(50), decimal(12, 2)."""
+    n = (name or "").lower()
+    if n in ("varchar", "char", "varbinary", "binary", "nvarchar", "nchar"):
+        if max_length == -1:
+            return f"{name}(max)"
+        return f"{name}({max_length // 2 if n in ('nvarchar', 'nchar') else max_length})"
+    if n in ("decimal", "numeric"):
+        return f"{name}({precision}, {scale})"
+    if n in ("datetime2", "time", "datetimeoffset"):
+        return f"{name}({scale})"
+    return name
+
+
+def object_ddl(host, port, database, user, password, schema: str | None,
+               name: str, *, timeout_sec: int = 5) -> tuple[str, str, bool] | None:
+    """(kind, script, built) for `schema.name` (or `name`) in `database`, or
+    None when there is no such object. `built` is True when the script comes
+    from the catalog and not from the object's own text."""
+    ref = ".".join(_bracket(p) for p in ([schema] if schema else []) + [name])
+    conn = connect(host, port, database, user, password,
+                   timeout_sec=timeout_sec, read_only=False)
+    try:
+        cur = conn.cursor()
+        cur.execute(_OBJECT_SQL, ref)
+        row = cur.fetchone()
+        if not row:
+            return None
+        otype, text, sch, obj = (row[0] or "").strip(), row[1], row[2], row[3]
+        kind = _OBJECT_KINDS.get(otype)
+        if kind is None:
+            return None
+        if kind != "table":
+            return (kind, (text or "").strip(), False) if text else None
+        cur.execute(_OBJECT_COLUMNS_SQL, ref)
+        cols = cur.fetchall()
+        cur.execute(_OBJECT_PK_SQL, ref)
+        pk = cur.fetchall()
+    finally:
+        conn.close()
+    lines = []
+    for c in cols:
+        line = f"    {_bracket(c[0])} {_mssql_type(c[1], c[2], c[3], c[4])}"
+        if c[6]:
+            line += " IDENTITY"
+        line += " NULL" if c[5] else " NOT NULL"
+        if c[7]:
+            line += f" DEFAULT {c[7]}"
+        lines.append(line)
+    if pk:
+        lines.append(f"    CONSTRAINT {_bracket(pk[0][0])} PRIMARY KEY ("
+                     + ", ".join(_bracket(r[1]) for r in pk) + ")")
+    script = (f"CREATE TABLE {_bracket(sch)}.{_bracket(obj)} (\n"
+              + ",\n".join(lines) + "\n);")
+    return ("table", script, True)
+
+
 def catalog_snapshot(host, port, database, user, password, *,
                      timeout_sec: int = 120) -> tuple[list[dict], list[dict]]:
     """Read one database's table + column catalog, returning (tables, columns)

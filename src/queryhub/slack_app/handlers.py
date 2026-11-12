@@ -1893,6 +1893,12 @@ def _guard_admin(
                 ":no_entry: You are not an authorized admin for the SQL bot.",
             )
             return False
+    elif admins.own_write_needs_another(user_id, req):
+        ack()
+        notifications.dm_requester(
+            client, user_id,
+            ":no_entry: This is your own write. Another admin must approve it.")
+        return False
     elif not admins.can_approve(user_id, req):
         ack()
         notifications.dm_requester(
@@ -3175,11 +3181,27 @@ def _ro_window_update_admin_msg(client: WebClient, body: dict, text: str) -> Non
         log.exception("ro_window: admin message update failed")
 
 
+def _ro_window_close_cards(client: WebClient, body: dict, rid: int, text: str) -> None:
+    """Close every admin's copy of the card, and the clicked one too.
+    A card sent before migration 206 has no stored row, so the clicked card
+    needs its own update."""
+    try:
+        ro_window.update_admin_cards(client, rid, text)
+    except Exception:
+        log.exception("ro_window: could not close the cards of request %s", rid)
+    _ro_window_update_admin_msg(client, body, text)
+
+
 def _ro_window_already_decided(client: WebClient, body: dict, req: dict | None) -> None:
+    """Close the clicked card only. A card that still has buttons here was
+    sent before migration 206, or its update failed. The other copies already
+    show who decided, and this line must not replace that line."""
     status = req["status"] if req else "no longer available"
+    who = (f" by <@{req['decided_by_slack_id']}>"
+           if req and req.get("decided_by_slack_id") else "")
     _ro_window_update_admin_msg(
         client, body,
-        f":information_source: This window request is already *{status}*.")
+        f":information_source: This window request is already *{status}*{who}.")
 
 
 def _ro_window_rule_refused(client: WebClient, actor_id: str, rid: int,
@@ -3315,10 +3337,9 @@ def handle_ro_window_approve(ack: Ack, body: dict, client: WebClient) -> None:
         return
     req, alias = out["request"], out["alias"]
     win = ro_window.window_label(req["window_minutes"])
-    _ro_window_update_admin_msg(
-        client, body,
-        f":white_check_mark: *Window #{rid} approved* by <@{actor['id']}> — "
-        f"{req['max_tier'].upper()} on `{alias}` for {win}.")
+    _ro_window_close_cards(
+        client, body, rid,
+        ro_window.decision_line(rid, "approved", actor["id"], req, alias))
     notifications.dm_requester(
         client, req["requester_slack_id"],
         f":zap: Your *{req['max_tier'].upper()}* auto-approve window on `{alias}` is "
@@ -3345,8 +3366,8 @@ def handle_ro_window_reject(ack: Ack, body: dict, client: WebClient) -> None:
         else:
             _ro_window_already_decided(client, body, auto_approve_requests.get(rid))
         return
-    _ro_window_update_admin_msg(
-        client, body, f":no_entry: *Window #{rid} rejected* by <@{actor['id']}>.")
+    _ro_window_close_cards(
+        client, body, rid, ro_window.decision_line(rid, "rejected", actor["id"]))
     notifications.dm_requester(
         client, out["request"]["requester_slack_id"],
         f":no_entry: An admin rejected your auto-approve window request (#{rid}).")

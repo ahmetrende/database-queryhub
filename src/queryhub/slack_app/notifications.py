@@ -283,7 +283,7 @@ def request_context_with_query_md(request: dict, max_chars: int = 2500) -> str:
 
 def _request_blocks(
     request: dict, target: targets.TargetServer,
-    *, with_actions: bool = True,
+    *, with_actions: bool = True, own_write: bool = False,
 ) -> list[dict]:
     """Block-kit body for the admin DM. The SQL itself is NOT inlined here —
     it goes in a thread reply as a file snippet (see `notify_admins`) so long
@@ -488,6 +488,18 @@ def _request_blocks(
                 ],
             }
         )
+    elif own_write:
+        # The admin's own RW or DDL request. Only a super-admin approves
+        # their own write (`admins.own_write_needs_another`), so the scope
+        # wording below would give the wrong reason.
+        blocks.append({
+            "type": "context",
+            "elements": [{
+                "type": "mrkdwn",
+                "text": (":eyes: _View only — this is your own write. "
+                         "Another admin must approve it._"),
+            }],
+        })
     else:
         # View-only mode: admin gets the DM (audit / transparency) but
         # cannot act on this request because their scope (tier / target
@@ -1518,7 +1530,10 @@ def notify_admins(
         # admins still receive the DM (audit / transparency) but in
         # view-only form.
         in_scope = admins.can_approve(admin_id, request)
-        blocks = _request_blocks(request, target, with_actions=in_scope)
+        blocks = _request_blocks(
+            request, target, with_actions=in_scope,
+            own_write=(not in_scope
+                       and admins.own_write_needs_another(admin_id, request)))
         try:
             opened = client.conversations_open(users=admin_id)
             channel_id = opened["channel"]["id"]

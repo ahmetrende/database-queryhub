@@ -83,6 +83,9 @@ def route(monkeypatch):
     st = {"row": dict(ROW), "done": dict(ROW, status="withdrawn")}
     monkeypatch.setattr(aar, "get", lambda rid: st["row"])
     monkeypatch.setattr(aar, "withdraw", lambda rid, uid, name=None: st["done"])
+    # The route closes the admin cards when Slack is on (migration 206). These
+    # tests are about the answer, so Slack is off here.
+    monkeypatch.setattr(rr, "_bot_client", lambda: None)
     return st
 
 

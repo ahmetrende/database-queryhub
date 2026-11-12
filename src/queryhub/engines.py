@@ -378,6 +378,10 @@ CLICKHOUSE = EngineSpec(
     # there gets UNEXPECTED_PACKET_FROM_SERVER, and HTTP cannot cancel a
     # readonly query when the client goes away.
     default_port=9440,
+    # The engine refuses every write, so a screen shows RO here, as it does on
+    # an archive. A fleet-wide grant resolves to DDL on every target, and the
+    # effective-access list said DDL on seven ClickHouse servers (2026-11-12).
+    tier_ceiling="ro",
 )
 
 

@@ -3929,6 +3929,203 @@ function qhApplyEdits(text, edits, caret) {
 }
 
 // ---------------------------------------------------------------------------
+// Alias rename and name qualification (2026-11-12, Devart F1 and F4)
+//
+// Shift+F6 renames the table alias at the caret: its definition after FROM or
+// JOIN and every `alias.` of the statement (qhRenameAlias). F2 stays the tab
+// rename. Shift+Alt+Q puts the alias or the table name before each bare
+// column, and the schema before each bare table (qhQualifyNames). Both work
+// on the catalog the editor has, and both leave a name alone when they are
+// not sure about it.
+// ---------------------------------------------------------------------------
+
+// The tokens of the statement around token k, and their bracket depths.
+function qhStmtSlice(toks, k) {
+  let a = k, b = k;
+  while (a > 0 && toks[a - 1].v !== ';') a--;
+  while (b < toks.length && toks[b].v !== ';') b++;
+  const S = toks.slice(a, b);
+  const depth = [];
+  let d = 0;
+  for (const t of S) { if (t.v === ')') d--; depth.push(d); if (t.v === '(') d++; }
+  return { S, depth };
+}
+
+// The alias at the caret, as { name, places, taken }, or { error } when the
+// statement defines that name twice, or null when the caret is on no alias.
+// `places` are the definition and every `name.` of the statement. `taken` are
+// the other aliases and the table names of the statement, in lower case.
+function qhAliasAt(sql, caret) {
+  const text = String(sql || '');
+  const toks = qhSqlTokens(text);
+  const isName = (t) => !!t && (t.k === 'qid' || t.k === 'word');
+  let k = toks.findIndex(t => isName(t) && t.s <= caret && caret < t.e);
+  if (k < 0) k = toks.findIndex(t => isName(t) && t.e === caret);
+  if (k < 0) return null;
+  const { S, depth } = qhStmtSlice(toks, k);
+  const want = qhFromUnquote(toks[k]).toLowerCase();
+  const defs = [], taken = new Set();
+  S.forEach((t, i) => {
+    if (t.k !== 'word' || t.u !== 'FROM') return;
+    (qhReadFromList(S, depth, i, depth[i], true, true) || []).forEach(r => {
+      if (r.parts && r.parts.length) taken.add(qhFromUnquote(r.parts[r.parts.length - 1]).toLowerCase());
+      if (!r.alias) return;
+      const n = qhFromUnquote(r.alias).toLowerCase();
+      if (n === want) { if (!defs.includes(r.alias)) defs.push(r.alias); } else taken.add(n);
+    });
+  });
+  const uses = S.filter((t, i) => isName(t) && qhFromUnquote(t).toLowerCase() === want &&
+    S[i + 1] && S[i + 1].v === '.' && !(S[i - 1] && S[i - 1].v === '.'));
+  const here = toks[k];
+  if (!defs.includes(here) && !uses.includes(here)) return null;
+  if (!defs.length) return null;
+  if (defs.length > 1) return { error: 'The alias ' + defs[0].v + ' is defined twice in this statement. Rename it by hand.' };
+  taken.delete(want);
+  const places = [defs[0], ...uses].sort((x, y) => x.s - y.s).map(t => ({ s: t.s, e: t.e }));
+  return { name: defs[0].v, places, taken, def: { s: defs[0].s, e: defs[0].e } };
+}
+
+// The edits that rename the alias at the caret to `newName`, as
+// { edits, count }, or { error }. The new name is a plain name that is no
+// keyword and no other name of the statement.
+function qhRenameAlias(sql, caret, newName, engineId) {
+  const at = qhAliasAt(sql, caret);
+  if (!at) return { error: 'Put the caret on a table alias.' };
+  if (at.error) return at;
+  const nn = String(newName == null ? '' : newName).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(nn)) return { error: 'Use letters, digits and _ for the alias, with a letter or _ first.' };
+  const kw = new Set(qhKeywordsFor(engineId).map(w => String(w).toUpperCase()));
+  if (kw.has(nn.toUpperCase()) || QH_NOT_NAME.has(nn.toUpperCase())) return { error: 'The name ' + nn + ' is an SQL keyword. Use a different name.' };
+  if (at.taken.has(nn.toLowerCase())) return { error: 'The name ' + nn + ' is in this statement already. Use a different name.' };
+  const edits = at.places.map(p => ({ start: p.s, end: p.e, text: nn }));
+  return { edits, count: edits.length, from: at.name };
+}
+
+// Go to definition (2026-11-12, Devart G1). The alias at the caret goes to
+// its definition after FROM or JOIN. A CTE name goes to its name after WITH.
+// Any other name is an object for the tree: { kind: 'object', name }. Returns
+// { kind: 'text', start, end }, { kind: 'none', message } or null.
+function qhDefinitionAt(sql, caret, engineId) {
+  const al = qhAliasAt(sql, caret);
+  if (al && al.error) return { kind: 'none', message: al.error };
+  if (al) return { kind: 'text', start: al.def.s, end: al.def.e };
+  const text = String(sql || '');
+  const toks = qhSqlTokens(text);
+  const k = toks.findIndex(t => (t.k === 'word' || t.k === 'qid') && t.s <= caret && caret <= t.e);
+  if (k >= 0 && !(toks[k - 1] && toks[k - 1].v === '.')) {
+    const { S, depth } = qhStmtSlice(toks, k);
+    const cte = qhCteDefs(S, depth).get(qhFromUnquote(toks[k]).toLowerCase());
+    if (cte) return { kind: 'text', start: cte.name.s, end: cte.name.e };
+  }
+  const name = qhObjectNameAt(text, caret, engineId);
+  return name ? { kind: 'object', name } : null;
+}
+
+// The dotted name at the caret as typed (`sales.orders`, `"My T"`), for the
+// CREATE script (Devart B5). Null on a keyword, a string or no name.
+function qhObjectNameAt(sql, caret, engineId) {
+  const text = String(sql || '');
+  const toks = qhSqlTokens(text);
+  const kw = new Set(qhKeywordsFor(engineId).map(w => String(w).toUpperCase()));
+  const isName = (t) => !!t && (t.k === 'qid' || (t.k === 'word' && !kw.has(t.u) && !QH_NOT_NAME.has(t.u)));
+  let k = toks.findIndex(t => t.s <= caret && caret < t.e);
+  if (k < 0 || !isName(toks[k])) k = toks.findIndex(t => t.e === caret);
+  if (k < 0 || !isName(toks[k])) return null;
+  let a = k, b = k;
+  while (a >= 2 && toks[a - 1].v === '.' && isName(toks[a - 2])) a -= 2;
+  while (b + 2 < toks.length && toks[b + 1].v === '.' && isName(toks[b + 2])) b += 2;
+  return text.slice(toks[a].s, toks[b].e);
+}
+
+// Qualify the names of every SELECT of the text, or of the statements that
+// touch the range [a, b] (Devart F4). For each query block whose FROM list
+// reads exactly:
+//   * a bare table that the catalog knows in one schema gets that schema.
+//   * a bare column gets the alias, or the table name, of the one relation
+//     that has it. A column of two relations stays and goes to `twice`.
+// A block with a relation of unknown columns (a subquery, a CTE, a table the
+// catalog does not have) qualifies no column: a bare name could be from it.
+// It skips these names: a function, a name after AS or `::`, a variable,
+// a typed literal, an output alias, a name after another name (an implicit
+// alias), and a name already qualified. Returns { edits, tables, columns,
+// twice }.
+function qhQualifyNames(sql, schema, engineId, range) {
+  const text = String(sql || '');
+  const sch = schema || {};
+  const toks = qhSqlTokens(text);
+  const edits = [], twice = [];
+  let tables = 0, columns = 0;
+  const kw = new Set(qhKeywordsFor(engineId).map(w => String(w).toUpperCase()));
+  const quote = (n) => (typeof qhQuoteIdentFor === 'function' ? qhQuoteIdentFor(n, engineId) : qhQuoteIdent(n));
+  const isName = (t) => !!t && (t.k === 'qid' || (t.k === 'word' && !kw.has(t.u) && !QH_NOT_NAME.has(t.u)));
+  const inRange = (t) => !range || (t.s >= range[0] && t.e <= range[1]);
+  let k = 0;
+  while (k < toks.length) {
+    const { S, depth } = qhStmtSlice(toks, k);
+    k += S.length + 1;
+    if (!S.length) continue;
+    const ctes = qhCteDefs(S, depth);
+    // Each SELECT starts a block that runs to where its bracket closes. A later
+    // SELECT (a subquery, the next part of a UNION) takes its own tokens: the
+    // owner of each token is the last SELECT whose span holds it.
+    const starts = [];
+    S.forEach((t, i) => { if (t.k === 'word' && t.u === 'SELECT') starts.push(i); });
+    const ends = starts.map(i => {
+      let j = i + 1;
+      while (j < S.length && depth[j] >= depth[i]) j++;
+      return j;
+    });
+    const owner = S.map(() => -1);
+    starts.forEach((i, n) => { for (let j = i; j < ends[n]; j++) owner[j] = n; });
+    starts.forEach((i, n) => {
+      const D = depth[i];
+      const refs = qhReadFromList(S, depth, i + 1, D, false);
+      if (!refs || !refs.length) return;
+      const skip = new Set();
+      refs.forEach(r => { r.parts.forEach(t => skip.add(t)); if (r.alias) skip.add(r.alias); });
+      // (a) the schema before a bare table.
+      refs.forEach(r => {
+        if (r.parts.length !== 1) return;
+        const t = r.parts[0], nm = qhFromUnquote(t);
+        if (ctes.has(nm.toLowerCase()) || !inRange(t)) return;
+        const q = qhLookupCi(sch.qualify, nm, t.k === 'qid');
+        if (typeof q !== 'string' || q.indexOf('.') < 0) return;
+        edits.push({ start: t.s, end: t.s, text: quote(q.slice(0, q.indexOf('.'))) + '.' });
+        tables++;
+      });
+      // (b) the relation before a bare column.
+      const cols = refs.map(r => (r.parts.length && !ctes.has(qhFromUnquote(r.parts[r.parts.length - 1]).toLowerCase())
+        ? qhRefLookup(r, sch, sch.tableColsQ, sch.tableCols) : undefined));
+      if (cols.some(c => !Array.isArray(c))) return;
+      const lower = cols.map(c => new Set(c.map(x => String(x).toLowerCase())));
+      const label = (r) => (r.alias || r.parts[r.parts.length - 1]).v;
+      const outNames = new Set();
+      for (let j = i + 1; j < ends[n]; j++) {
+        if (owner[j] !== n) continue;
+        const t = S[j];
+        if (!isName(t) || skip.has(t)) continue;
+        const prev = S[j - 1], next = S[j + 1];
+        const nm = qhFromUnquote(t).toLowerCase();
+        if (prev && (prev.u === 'AS' || isName(prev) || prev.v === ')' || prev.k === 'num' || prev.k === 'str')) {
+          if (depth[j] === D) outNames.add(nm);
+          continue;
+        }
+        // `x.`, `.x`, `x(`, `::x`, `@x`, `:x`, `$x`, and a typed literal `DATE '...'`.
+        if ((prev && ['.', ':', '@', '$'].includes(prev.v)) || (next && (next.v === '.' || next.v === '(' || next.k === 'str'))) continue;
+        if (nm === 'true' || nm === 'false' || outNames.has(nm) || !inRange(t)) continue;
+        const hit = [];
+        lower.forEach((set, x) => { if (set.has(nm)) hit.push(x); });
+        if (hit.length === 1) {
+          edits.push({ start: t.s, end: t.s, text: label(refs[hit[0]]) + '.' });
+          columns++;
+        } else if (hit.length > 1 && !twice.includes(t.v)) twice.push(t.v);
+      }
+    });
+  }
+  return { edits, tables, columns, twice };
+}
+
+// ---------------------------------------------------------------------------
 // GROUP BY from the select list (2026-11-11, Devart A14)
 //
 // After `GROUP BY ` the typing list offers the select list's expressions that
@@ -4103,7 +4300,7 @@ function QhCaretMarks({ taRef, value, show }) {
 const QH_AC_TYPE_LABEL ={ keyword: 'kw', table: 'table', cte: 'cte', column: 'col', database: 'db', system: 'system', function: 'fn', expand: 'all cols', join: 'join',
   procedure: 'proc', schema: 'schema', index: 'index', snippet: 'snip', groupby: 'group', template: 'tpl' };
 
-function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, onSelectionChange, schema, engineId, focusSignal, formatSignal, insertSignal, revealRange, docId, issues, revealSignal, lints }) {
+function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, onSelectionChange, schema, engineId, focusSignal, formatSignal, insertSignal, revealRange, docId, issues, revealSignal, lints, onNotice, onScriptCreate, onRevealObject }) {
   const taRef = React.useRef(null);
   const issueRef = React.useRef(null);
   const lintRef = React.useRef(null);         // the code-analysis layer (qhLint)
@@ -4178,6 +4375,16 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
   // stays in that call (`sigArm` keeps the call's `open`). Escape closes it.
   const [sig, setSig] = React.useState(null);
   const sigRef = React.useRef(null);
+  // The alias rename box (Shift+F6): { name, count, caret, value, error,
+  // top, left }, or { error, top, left } with no name when the caret is on no
+  // alias. See qhRenameAlias.
+  const [ren, setRen] = React.useState(null);
+  // A box with only a message closes by itself after 3 s.
+  React.useEffect(() => {
+    if (!ren || ren.name) return undefined;
+    const t = setTimeout(() => setRen(null), 3000);
+    return () => clearTimeout(t);
+  }, [ren]);
   const sigArm = React.useRef(null);
   // The size that the corner grip of the list sets (qhAcSizeLoad). A drag
   // writes the box directly. The size is stored when the drag ends.
@@ -4815,6 +5022,61 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
   // if there is one, else the whole text. A relation the catalog does not list
   // is asked about first. Nothing changes when the text changed while the
   // answer was on its way. One undo step.
+  // Cmd/Ctrl+B or Cmd/Ctrl+click: go to the definition of the name at the
+  // caret (qhDefinitionAt). F12 belongs to the browser.
+  const goToDefinition = (ta) => {
+    const d = qhDefinitionAt(ta.value, ta.selectionStart, engineId);
+    if (!d) { if (onNotice) onNotice('Put the caret on an alias, a CTE or an object name.'); return; }
+    if (d.kind === 'none') { if (onNotice) onNotice(d.message); return; }
+    if (d.kind === 'text') { setAc(null); ta.focus(); ta.setSelectionRange(d.start, d.end); reveal(ta, d.start); return; }
+    if (onRevealObject) onRevealObject(d.name);
+  };
+  // Shift+F6: open the rename box for the alias at the caret.
+  const renameOpen = () => {
+    const ta = taRef.current;
+    if (!ta) return;
+    const c = ta.selectionStart;
+    const p = posAt(ta, c);
+    const at = qhAliasAt(ta.value, c);
+    if (!at || at.error) { setRen({ error: at ? at.error : 'Put the caret on a table alias.', top: p.top, left: p.left }); return; }
+    setRen({ name: at.name, count: at.places.length, caret: c, value: at.name, error: null, top: p.top, left: p.left });
+  };
+  const renameClose = () => {
+    setRen(null);
+    const ta = taRef.current;
+    if (ta) ta.focus();
+  };
+  // Enter in the rename box: one edit for every place, one undo step.
+  const renameApply = () => {
+    const ta = taRef.current;
+    if (!ta || !ren || !ren.name) return;
+    const r = qhRenameAlias(ta.value, ren.caret, ren.value, engineId);
+    if (r.error) { setRen(x => ({ ...x, error: r.error })); return; }
+    const a = ta.selectionStart, b = ta.selectionEnd;
+    const out = qhApplyEdits(ta.value, r.edits, ren.caret);
+    const sel = [out.caret, out.caret];
+    restoreSel.current = { text: out.text, sel };
+    setRen(null);
+    commit(out.text, 'rename', [a, b], sel);
+    ta.focus();
+  };
+  // Shift+Alt+Q: qualify the names of the selection, or of the whole text.
+  const qualifyNow = () => {
+    const ta = taRef.current;
+    if (!ta) return;
+    const v0 = ta.value, a = ta.selectionStart, b = ta.selectionEnd;
+    const range = a !== b ? [a, b] : null;
+    const r = qhQualifyNames(v0, sch, engineId, range);
+    const left = r.twice.length ? ' ' + (r.twice.length === 1 ? r.twice[0] + ' is' : r.twice.join(', ') + ' are') + ' in two tables: left as typed.' : '';
+    if (!r.edits.length) { if (onNotice) onNotice('No name to qualify.' + left); return; }
+    const out = qhApplyEdits(v0, r.edits, b);
+    const sel = range ? [a, out.caret] : [out.caret, out.caret];
+    restoreSel.current = { text: out.text, sel };
+    commit(out.text, 'qualify', [a, b], sel);
+    const what = [r.tables ? r.tables + (r.tables === 1 ? ' table' : ' tables') : '', r.columns ? r.columns + (r.columns === 1 ? ' column' : ' columns') : ''].filter(Boolean).join(' and ');
+    if (onNotice) onNotice('Qualified ' + what + '.' + left);
+  };
+
   const expandAllNow = async () => {
     const ta = taRef.current;
     if (!ta) return;
@@ -4884,6 +5146,32 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     if (e.shiftKey && e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyF') {
       e.preventDefault(); setAc(null);
       formatNow();
+      return;
+    }
+    // Rename the alias at the caret: Shift+F6. F2 renames the tab.
+    if (e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && e.key === 'F6') {
+      e.preventDefault(); setAc(null);
+      renameOpen();
+      return;
+    }
+    // Go to definition: Cmd/Ctrl+B.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.code === 'KeyB') {
+      e.preventDefault();
+      goToDefinition(e.target);
+      return;
+    }
+    // The CREATE script of the object at the caret, in a new tab: Shift+Alt+D.
+    if (e.shiftKey && e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyD') {
+      e.preventDefault(); setAc(null);
+      const nm = qhObjectNameAt(e.target.value, e.target.selectionStart, engineId);
+      if (!nm) { if (onNotice) onNotice('Put the caret on a table, view, function or procedure name.'); }
+      else if (onScriptCreate) onScriptCreate(nm);
+      return;
+    }
+    // Qualify the table and column names: Shift+Alt+Q (e.code, for the Mac).
+    if (e.shiftKey && e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyQ') {
+      e.preventDefault(); setAc(null);
+      qualifyNow();
       return;
     }
     // Expand every select-list * of the text, or of the selection: Shift+Alt+E.
@@ -5308,6 +5596,8 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
                 && !(sig.list.length > 1 && (e.key === 'ArrowUp' || e.key === 'ArrowDown'))) updateSig(e.target, false);
           }}
           onClick={(e) => {
+            // Cmd/Ctrl+click: go to definition of the name under the pointer.
+            if ((e.metaKey || e.ctrlKey) && e.target.selectionStart === e.target.selectionEnd) { goToDefinition(e.target); return; }
             const cs = sesRef.current, c = e.target.selectionStart;
             if (cs && !cs.list.some(([a, b]) => c >= a && c <= b)) setSes(null);
             refreshAC(e.target); updateSig(e.target, false);
@@ -5371,6 +5661,26 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
             {/* The corner grip: drag it to size the list. It keeps the focus
                 in the editor, as a row does. */}
             <div className="qh-ac-grip" aria-hidden="true" title="Drag to resize the list" onMouseDown={startAcResize} />
+          </div>, document.body)}
+        {ren && ReactDOM.createPortal(
+          // The alias rename box. Enter renames, Escape or a click outside closes.
+          <div className="qh-rename" role="dialog" aria-label="Rename alias" style={{ top: ren.top + 4, left: ren.left }}>
+            {ren.name ? (
+              <>
+                <label className="qh-rename-label">
+                  <span>{'Rename alias ' + ren.name + ' · ' + ren.count + (ren.count === 1 ? ' place' : ' places')}</span>
+                  <input autoFocus value={ren.value} spellCheck={false} aria-label="New alias"
+                    onFocus={(e) => e.target.select()}
+                    onChange={(e) => { const v = e.target.value; setRen(x => ({ ...x, value: v, error: null })); }}
+                    onBlur={() => setRen(null)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { e.preventDefault(); renameApply(); }
+                      else if (e.key === 'Escape') { e.preventDefault(); renameClose(); }
+                    }} />
+                </label>
+                {ren.error && <div className="qh-rename-err" role="alert">{ren.error}</div>}
+              </>
+            ) : <div className="qh-rename-err" role="alert">{ren.error}</div>}
           </div>, document.body)}
         {sig && sig.list[sig.idx] && ReactDOM.createPortal(
           // Parameter info. A mouse press keeps the focus in the editor.
@@ -5595,7 +5905,7 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
   const [editId, setEditId] = React.useState(null);
   const [draft, setDraft] = React.useState('');
   const cancelledRef = React.useRef(false);
-  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current statement'], ['⇧ + F8', 'Run from the top to the current statement'], ['⇧ + ⌥ / Alt + S', 'Select current statement'], ['⌥ / Alt + PgUp / PgDn', 'Previous / next statement'], ['⇧ + F12 · ⌘/Ctrl + ⇧ + \\', 'Go to the matching bracket, CASE/END or BEGIN/END'], ['⌥ / Alt + ↑ / ↓', 'Move line up / down'], ['⇧ + ⌥ / Alt + ;', 'Add missing semicolons'], ['⇧ + ⌥ / Alt + E', 'Expand every * of the text or selection'], ['Ctrl + Space after GROUP BY', 'The non-aggregated SELECT columns'], ['PgUp / PgDn in the list', 'Move 8 rows; drag the corner to resize'], ['Select, then ( \' " [', 'Wrap the selection'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Ctrl + Space', 'Suggestions; in a SELECT, all columns'], ['Ctrl + Space in the column list', 'Check a column; Enter inserts the checked ones'], ['Tab after INSERT INTO t, UPDATE t, EXEC p, CALL p', 'Statement template'], ['Tab / ⇧ + Tab in a template or snippet', 'Next / previous field'], ['Ctrl + ⇧ + Space', 'Parameter info of the function at the caret'], ['ssf + Tab', 'Snippet: type a key, pick it (list below)'], ['Tab', 'Indent'], ['⌥ / Alt + Z', 'Toggle word wrap'], ['⇧ + ⌥ / Alt + F', 'Format SQL'], ['⌥ / Alt + ← →', 'Previous / next result'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
+  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current statement'], ['⇧ + F8', 'Run from the top to the current statement'], ['⇧ + ⌥ / Alt + S', 'Select current statement'], ['⌥ / Alt + PgUp / PgDn', 'Previous / next statement'], ['⇧ + F12 · ⌘/Ctrl + ⇧ + \\', 'Go to the matching bracket, CASE/END or BEGIN/END'], ['⌥ / Alt + ↑ / ↓', 'Move line up / down'], ['⇧ + ⌥ / Alt + ;', 'Add missing semicolons'], ['⇧ + ⌥ / Alt + E', 'Expand every * of the text or selection'], ['⇧ + F6', 'Rename the alias at the caret'], ['⌘ / Ctrl + B · ⌘ / Ctrl + click', 'Go to the definition: alias, CTE, or the object in the tree'], ['⇧ + ⌥ / Alt + D', 'CREATE script of the object at the caret'], ['⇧ + ⌥ / Alt + Q', 'Qualify table and column names'], ['Ctrl + Space after GROUP BY', 'The non-aggregated SELECT columns'], ['PgUp / PgDn in the list', 'Move 8 rows; drag the corner to resize'], ['Select, then ( \' " [', 'Wrap the selection'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Ctrl + Space', 'Suggestions; in a SELECT, all columns'], ['Ctrl + Space in the column list', 'Check a column; Enter inserts the checked ones'], ['Tab after INSERT INTO t, UPDATE t, EXEC p, CALL p', 'Statement template'], ['Tab / ⇧ + Tab in a template or snippet', 'Next / previous field'], ['Ctrl + ⇧ + Space', 'Parameter info of the function at the caret'], ['ssf + Tab', 'Snippet: type a key, pick it (list below)'], ['Tab', 'Indent'], ['⌥ / Alt + Z', 'Toggle word wrap'], ['⇧ + ⌥ / Alt + F', 'Format SQL'], ['⌥ / Alt + ← →', 'Previous / next result'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
   const beginRename = (t) => { if (t.kind) return; setMenu(null); setEditId(t.id); setDraft(t.name); };
   const openMenu = (e, id) => { e.preventDefault(); e.stopPropagation(); setKb(false); setMenu({ x: Math.min(e.clientX, window.innerWidth - 200), y: e.clientY, id }); };
   React.useEffect(() => {
@@ -5757,7 +6067,7 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
 // The undo history's pieces and the * expansion reader are exported for the
 // same reason; qhUndoForget is also what sign-out calls.
 Object.assign(window, { SqlEditor, EditorTabs, FormatOptions, QH_FMT_ROWS, QH_FMT_SAMPLE, QH_EDITOR_HINT, qhLint, qhListAddsNothing, QH_LINT_RULES, qhHighlight, qhBuildSuggest, qhSuggestContext, QH_REDACTED_LIT, qhRedactedAt,
-  QH_SNIPPETS, QH_SNIPPET_CURSOR, QH_DRAG_BLOCK, qhSnippetsFor, qhSnippetText, qhInsertBlock, QH_KEYWORDS, qhSnippetPreview, qhSnippetFormError, QH_SNIP_KEY_RE,
+  QH_SNIPPETS, QH_SNIPPET_CURSOR, QH_DRAG_BLOCK, qhSnippetsFor, qhSnippetText, qhInsertBlock, QH_KEYWORDS, qhSnippetPreview, qhSnippetFormError, QH_SNIP_KEY_RE, qhAliasAt, qhRenameAlias, qhQualifyNames, qhObjectNameAt, qhDefinitionAt,
   qhTextDiff, qhEditKind, qhUndoDoc, qhUndoRecord, qhUndoSeal, qhUndoStep, qhUndoForget,
   qhSqlTokens, qhStarExpansion, qhBlockerRanges, qhFromIsName, qhFromUnquote, qhReadFromList, qhRefLookup,
   qhClTokOpen, qhColumnList, qhStopsAfterEdit, qhStatementTemplate, qhTemplateItem, qhTplParams, qhCteDefs, qhCteNamesAt, qhSelectOutCols, qhRelCols, qhInsertColsSlot, qhColItem, qhOutName, qhAcStep, qhStatementAt, qhAliasColumns, qhTabIsProd,

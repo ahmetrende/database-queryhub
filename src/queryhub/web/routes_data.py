@@ -999,6 +999,99 @@ def _other_live_columns(t, conn: str, dbname: str, name: str) -> list[tuple[str,
                           "The server did not answer the column lookup.")
 
 
+# ---- object DDL (Devart B5, 2026-11-12) -------------------------------------
+#
+# The CREATE script of one table, view, function or procedure, read live with
+# the read login of the target, for a person who holds a grant on the
+# database. Each read writes an audit row (`object_ddl_read`). A name that
+# points at another database gets the same 404 as a missing object.
+
+_DDL_NAME_MAX = 300
+
+
+@router.get("/connections/{conn}/databases/{dbname}/ddl")
+def object_ddl(conn: str, dbname: str, name: str = "",
+               claims: dict = Depends(deps.current_user)):
+    deps.require_whitelisted(claims)
+    raw = (name or "").strip()
+    if not raw or len(raw) > _DDL_NAME_MAX:
+        raise deps._error(422, "invalid", "Enter an object name.")
+    t, _grant = _granted_db(claims["sub"], conn, dbname)
+    if t is None:
+        raise deps._error(404, "not_found",
+                          "Refused: the database is unknown, or you have no grant for it.")
+    got = _read_object_ddl(t, conn, dbname, raw)
+    if got is None:
+        raise deps._error(404, "not_found", "No such object.")
+    kind, script, built = got
+    from .. import audit
+    audit.log(None, claims["sub"], claims.get("name"), "object_ddl_read",
+              {"target_id": t.id, "database": dbname, "object": raw, "kind": kind})
+    return {"name": raw, "kind": kind, "ddl": script, "built": built}
+
+
+def _read_object_ddl(t, conn: str, dbname: str, raw: str):
+    """(kind, script, built) of `raw` in `dbname`, or None. Every engine."""
+    engine = (getattr(t, "engine", None) or "postgres").strip().lower()
+    try:
+        if engine == "postgres":
+            from .. import pg_ddl
+            parts = pg_ddl.name_parts(raw)
+            if not parts or len(parts) > 2:
+                return None
+            user, password, why = _ro_login(t)
+            if why:
+                raise _no_read_login()
+            with psycopg.connect(
+                host=t.host, port=t.port, dbname=dbname,
+                user=user, password=password, connect_timeout=3,
+                **cfg.target_ssl_kwargs(t.host), application_name="dba-slack-bot:web-ddl",
+                options="-c statement_timeout=5000",
+            ) as cn, cn.cursor() as cur:
+                cur.execute("SET TRANSACTION READ ONLY")
+                return pg_ddl.object_ddl(cur, parts[0] if len(parts) == 2 else None, parts[-1])
+        parts = _name_parts(raw)
+        if not parts:
+            return None
+        if engine == "athena":
+            from .. import athena_exec
+            acfg = athena_exec.config_of(t)
+            low = [p.lower() for p in parts]
+            if (len(low) > 3
+                    or (len(low) == 3 and low[0] != acfg["catalog"].lower())
+                    or (len(low) >= 2 and low[-2] != dbname.lower())):
+                return None
+            return athena_exec.object_ddl(acfg, dbname, low[-1])
+        if engine == "mssql":
+            if len(parts) > 3 or (len(parts) == 3
+                                  and parts[0].casefold() != dbname.casefold()):
+                return None
+        elif engine == "clickhouse":
+            if len(parts) > 2 or (len(parts) == 2 and parts[0] != dbname):
+                return None
+        else:
+            raise deps._error(422, "unsupported",
+                              "QueryHub cannot read object scripts on this engine.")
+        user, password, why = _ro_login(t)
+        if why:
+            raise _no_read_login()
+        if engine == "mssql":
+            from .. import mssql_exec
+            return mssql_exec.object_ddl(t.host, t.port, dbname, user, password,
+                                         parts[-2] if len(parts) >= 2 else None, parts[-1])
+        from .. import clickhouse_exec
+        return clickhouse_exec.object_ddl(t.host, t.port, dbname, user, password, parts[-1])
+    except HTTPException:
+        raise
+    except Exception as e:                          # noqa: BLE001
+        # The driver's own text can name a host or a login, so the caller
+        # gets a fixed sentence and the log keeps the type.
+        log.info("ddl: read of %r in %s/%s (%s) failed: %s",
+                 raw, conn, dbname, engine, type(e).__name__)
+        raise deps._error(503, "server_error",
+                          "The server did not answer the script request.")
+
+
 # ---- server roles (SUPER-ONLY, live) ----------------------------------------
 #
 # Exposes a target's DB role names + attributes — sensitive, so it is

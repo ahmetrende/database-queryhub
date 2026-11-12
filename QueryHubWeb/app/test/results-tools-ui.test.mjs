@@ -322,3 +322,51 @@ test('Copy in the JSON view copies what the view shows', opts, async () => {
   assert.equal(toggle().getAttribute('aria-pressed'), 'true');
   assert.ok(ui.doc.querySelector('.qh-peek textarea').value.includes('\n'));
 });
+
+// ---------- the data viewer (M11, J6) ----------
+
+async function qhViewPeek(doc) {
+  const ui = qhResMount(qhResTable(null, [{ name: 'n', amount: 1, doc }]));
+  ui.fire(ui.cell(0, 2), 'contextmenu', { clientX: 10, clientY: 10 });
+  ui.click(ui.all('button').find(b => b.textContent.indexOf('Show full value') === 0));
+  const modes = () => ui.all('.qh-peek-mode').map(b => b.textContent);
+  const pick = (label) => ui.click(ui.all('.qh-peek-mode').find(b => b.textContent === label));
+  return { ui, modes, pick };
+}
+
+test('XML opens as text and indents in the XML view', opts, async () => {
+  const { ui, modes, pick } = await qhViewPeek('<a><b x="1">v</b><c/></a>');
+  assert.deepEqual(modes(), ['Text', 'XML', 'HTML', 'Hex']);
+  assert.equal(ui.doc.querySelector('.qh-peek textarea').value, '<a><b x="1">v</b><c/></a>');
+  pick('XML');
+  assert.equal(ui.doc.querySelector('.qh-peek textarea').value, '<a>\n  <b x="1">v</b>\n  <c/>\n</a>');
+});
+
+test('the HTML view renders in a frame that can run nothing and load nothing', opts, async () => {
+  const { ui, pick } = await qhViewPeek('<p onclick="x()">hi<script>alert(1)</script></p>');
+  pick('HTML');
+  const frame = ui.doc.querySelector('.qh-peek iframe');
+  assert.ok(frame, 'a frame');
+  assert.equal(frame.getAttribute('sandbox'), '', 'sandbox with no permission');
+  assert.match(frame.getAttribute('srcdoc'), /default-src 'none'/);
+  assert.equal(ui.doc.querySelector('.qh-peek textarea'), null);
+});
+
+test('the Hex view dumps the bytes, and Copy copies the dump', opts, async () => {
+  const { ui, pick } = await qhViewPeek('plain');
+  const copied = [];
+  ui.win.qhCopyText = (t) => { copied.push(t); return Promise.resolve(true); };
+  pick('Hex');
+  assert.match(ui.doc.querySelector('.qh-peek textarea').value, /^00000000  70 6c 61 69 6e +\|plain\|$/);
+  ui.click(ui.all('.qh-peek-head button').find(b => b.textContent.trim() === 'Copy'));
+  assert.match(copied[0], /^00000000  70 6c/);
+});
+
+test('an image cell opens in the Image view, from data only', opts, async () => {
+  const { ui, modes } = await qhViewPeek('\\x89504e470d0a1a0a0000000d49484452');
+  assert.deepEqual(modes(), ['Text', 'Hex', 'Image']);
+  const img = ui.doc.querySelector('.qh-peek-img img');
+  assert.ok(img, 'an image');
+  assert.match(img.getAttribute('src'), /^data:image\/png;base64,/);
+  assert.equal(ui.doc.querySelector('.qh-peek-mode[aria-pressed="true"]').textContent, 'Image');
+});

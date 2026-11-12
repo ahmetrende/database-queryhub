@@ -161,7 +161,7 @@ function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, ri
   );
 }
 
-function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, open, setOpen, onPickDb, onOpenTable, onNewQuery, isSuper, canRefresh, onRefreshSchema, onReloadCatalog, hiddenDbs, onToggleHiddenDb, reveal, narrow, tagFilters, onToast }) {
+function SchemaTree({ onScriptCreate, bindOnClick, conns: allConns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, open, setOpen, onPickDb, onOpenTable, onNewQuery, isSuper, canRefresh, onRefreshSchema, onReloadCatalog, hiddenDbs, onToggleHiddenDb, reveal, narrow, tagFilters, onToast }) {
   // A `provider:aws` token in the search box narrows the TREE, not just the
   // dropdown: the list you then browse is the answer to what you typed.
   const conns = React.useMemo(() => (
@@ -619,6 +619,10 @@ function SchemaTree({ bindOnClick, conns: allConns, schemaCache, onLoadSchema, r
                 <button onClick={() => { newQ(menu.c, menu.db); setMenu(null); }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>New query here
                 </button>
+                {/* The CREATE script, read live by the server (2026-11-12, Devart B5). */}
+                {onScriptCreate && <button onClick={() => { onScriptCreate(menu.c, menu.db, qhQualify(menu.c, menu.db, menu.table)); setMenu(null); }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 3H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V9z"/><path d="M14 3v6h6M9 14l-2 2 2 2M15 14l2 2-2 2"/></svg>Script as CREATE
+                </button>}
                 <button onClick={() => { qhCopyText(qhQualify(menu.c, menu.db, menu.table)); setMenu(null); }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>Copy name
                 </button>
@@ -925,7 +929,13 @@ function SnippetsPanel({ snippets, canDeleteShared, onSave, onDelete }) {
   );
 }
 
-function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, onReloadCatalog, hiddenDbs, onToggleHiddenDb, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onInsertSaved, onDeleteSaved, snippets, canDeleteShared, onSaveSnippet, onDeleteSnippet, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, pending, onOpenPending, onResubmit, histFocus, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
+// The tree id of a table or view row. A search pick and go to definition
+// both reveal a row by this id.
+function qhTreeTableId(connId, dbId, branch, schema, table) {
+  return connId + '/' + dbId + branch + '/' + schema + '.' + table;
+}
+
+function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, onReloadCatalog, hiddenDbs, onToggleHiddenDb, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onInsertSaved, onDeleteSaved, snippets, canDeleteShared, onSaveSnippet, onDeleteSnippet, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, pending, onOpenPending, onResubmit, histFocus, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
   const [open, setOpen] = React.useState(() => ({ 'prod-main': true, 'prod-replica': true }));
   // History (2026-10-24): which group the chips show, and the row that a bell
   // item points at. `histFocus` is { id, n }: the parent bumps `n` for each ask.
@@ -1038,7 +1048,7 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
         const hit = (branch, r) => {
           const tsch = r.s || (sch && sch.tables[r.n] && sch.tables[r.n].schema) || qhSchemaFor(c, db);
           out.push({ kind: 'table', c, db, table: r.n, view: branch === '/v', branch, tsch,
-            tid: c.id + '/' + db.id + branch + '/' + tsch + '.' + r.n });
+            tid: qhTreeTableId(c.id, db.id, branch, tsch, r.n) });
         };
         rel.tables.forEach(r => { if (r.n.toLowerCase().includes(term)) hit('/t', r); });
         rel.views.forEach(r => { if (r.n.toLowerCase().includes(term)) hit('/v', r); });
@@ -1101,6 +1111,15 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
     setOpen(o => ({ ...o, ...exp }));
     setReveal({ id, n: Date.now() });
   };
+  // Go to definition from the editor (2026-11-12, Devart G1): open the
+  // branches of the table or view and show its row, as a search pick does.
+  React.useEffect(() => {
+    const r = revealTable;
+    if (!r) return;
+    const sid = r.connId, did = sid + '/' + r.dbId, branch = r.view ? '/v' : '/t';
+    setOpen(o => ({ ...o, [sid]: true, [did]: true, [did + branch]: true }));
+    setReveal({ id: qhTreeTableId(sid, r.dbId, branch, r.schema, r.table), n: r.n });
+  }, [revealTable && revealTable.n]);
   const onSearchKey = (e) => {
     if (e.key === 'Tab' && items.length && items[Math.min(hi, items.length - 1)].kind === 'token') {
       e.preventDefault(); choose(items[Math.min(hi, items.length - 1)]); return;
@@ -1195,7 +1214,7 @@ function Sidebar({ bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, 
       )}
 
       <div className="qh-side-body">
-        {mode === 'conns' && (connsLoading && conns.length === 0 ? <QhConnSkeleton /> : <SchemaTree bindOnClick={bindOnClick} conns={conns} schemaCache={schemaCache} onLoadSchema={onLoadSchema} canRefresh={canRefresh} onRefreshSchema={onRefreshSchema} onReloadCatalog={onReloadCatalog} hiddenDbs={hiddenDbs} onToggleHiddenDb={onToggleHiddenDb} rolesCache={rolesCache} onLoadRoles={onLoadRoles} active={active} open={open} setOpen={setOpen} onPickDb={onPick} onOpenTable={onOpenTable} onNewQuery={onNewQuery} isSuper={isSuper} reveal={reveal} narrow={!width || width < 330} tagFilters={tagF} onToast={onToast} />)}
+        {mode === 'conns' && (connsLoading && conns.length === 0 ? <QhConnSkeleton /> : <SchemaTree onScriptCreate={onScriptCreate} bindOnClick={bindOnClick} conns={conns} schemaCache={schemaCache} onLoadSchema={onLoadSchema} canRefresh={canRefresh} onRefreshSchema={onRefreshSchema} onReloadCatalog={onReloadCatalog} hiddenDbs={hiddenDbs} onToggleHiddenDb={onToggleHiddenDb} rolesCache={rolesCache} onLoadRoles={onLoadRoles} active={active} open={open} setOpen={setOpen} onPickDb={onPick} onOpenTable={onOpenTable} onNewQuery={onNewQuery} isSuper={isSuper} reveal={reveal} narrow={!width || width < 330} tagFilters={tagF} onToast={onToast} />)}
 
         {mode === 'saved' && saved.length === 0 && (
           <div className="qh-side-empty">
@@ -2545,7 +2564,16 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
   const resShort = (t) => (String(t).length > 40 ? String(t).slice(0, 40) + '…' : String(t));
   const filterText = tools.filter ? String(tools.filter) : '';
   const peekPretty = peek ? qhPrettyJson(peek.value) : null;
-  const peekShown = peekPretty && !peek.raw ? peekPretty : (peek ? peek.value : '');
+  // The data viewer (M11): one value as Text, JSON, XML, HTML, Hex or Image.
+  // Only the views that the value supports get a button.
+  const peekModes = peek ? qhViewModes(peek.value) : null;
+  const peekMode = peek ? (peek.mode && peekModes.modes.indexOf(peek.mode) >= 0 ? peek.mode : peekModes.initial) : null;
+  const peekImage = peekMode === 'image' ? qhImageDataUrl(peek.value) : null;
+  const peekShown = !peek ? ''
+    : peekMode === 'json' ? (peekPretty && !peek.raw ? peekPretty : peek.value)
+    : peekMode === 'xml' ? (qhPrettyXml(peek.value) || peek.value)
+    : peekMode === 'hex' ? qhHexDump(qhCellBytes(peek.value))
+    : peek.value;
 
   return (
     <div className="qh-resultsview" tabIndex={0} ref={viewRef} role="grid"
@@ -2724,7 +2752,7 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
               <b>{peek.col}</b>
               <span>{peek.value.length.toLocaleString()} chars</span>
               <span className="qh-flex1" />
-              {peekPretty && (
+              {peekMode === 'json' && peekPretty && (
                 <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-res-pretty" aria-pressed={!peek.raw}
                   title={peek.raw ? 'Show formatted JSON' : 'Show the original text'}
                   onClick={() => setPeek(p => ({ ...p, raw: !p.raw }))}>{peek.raw ? 'Raw' : 'Pretty'}</button>
@@ -2733,7 +2761,19 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
                 onClick={() => qhCopyText(peekShown).then(ok => onToast && onToast(ok ? 'Cell copied.' : 'Could not copy — the browser blocked clipboard access.'))}>Copy</button>
               <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setPeek(null)}>Close</button>
             </div>
-            <textarea readOnly value={peekShown} autoFocus onFocus={(e) => e.target.select()} />
+            <div className="qh-peek-modes" role="group" aria-label="View as">
+              {peekModes.modes.map(m => (
+                <button key={m} type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-peek-mode" aria-pressed={peekMode === m}
+                  onClick={() => setPeek(p => ({ ...p, mode: m }))}>{QH_VIEW_LABELS[m]}</button>
+              ))}
+            </div>
+            {peekMode === 'html'
+              // No permission in `sandbox` and a no-network policy in the
+              // document (qhHtmlSrcdoc): the markup renders, nothing runs.
+              ? <iframe className="qh-peek-frame" title={'HTML view of ' + peek.col} sandbox="" srcDoc={qhHtmlSrcdoc(peek.value)} />
+              : peekMode === 'image' && peekImage
+                ? <div className="qh-peek-img"><img src={peekImage} alt={'Image in ' + peek.col} /></div>
+                : <textarea readOnly value={peekShown} autoFocus onFocus={(e) => e.target.select()} />}
           </div>
         </>
       )}
@@ -2886,4 +2926,4 @@ const DBIcons = {
   calendar: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>,
 };
 
-Object.assign(window, { Sidebar, SnippetsPanel, qhSnippetGroups, QH_SNIP_ENGINES, MessagesView, ProblemsView, QH_PROBLEM_LEVEL, StepsList, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });
+Object.assign(window, { Sidebar, qhTreeTableId, SnippetsPanel, qhSnippetGroups, QH_SNIP_ENGINES, MessagesView, ProblemsView, QH_PROBLEM_LEVEL, StepsList, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });

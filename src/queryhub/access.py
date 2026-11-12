@@ -680,10 +680,9 @@ def can_approve(principal_id: str, request: dict) -> bool:
     if not rows:
         return False
 
-    # Nobody reviews their own request — except an admin, who is fleet-wide and
-    # could grant themselves the access anyway, so refusing them would remove a
-    # workflow (an operator approving their own test submission) while
-    # preventing nothing.
+    # Nobody reviews their own request — except an admin. A super-admin is
+    # fleet-wide and uncapped, and refusing them would remove a workflow (an
+    # operator approving their own test submission) while preventing nothing.
     #
     # For a SCOPED approver it prevents a great deal. A team lead who may
     # approve their own team up to RW is exactly the person who could otherwise
@@ -691,9 +690,12 @@ def can_approve(principal_id: str, request: dict) -> bool:
     # gone. The old model had no scoped approvers, so this rule is new because
     # the thing it guards is new.
     #
-    # The admin exemption does not cover a write from the MCP door.
-    # `admins.can_approve` refuses that case before it calls this function
-    # (`admins.own_mcp_write`).
+    # The admin exemption is narrower than this line reads. `admins.can_approve`
+    # refuses two cases before it calls this function: a write from the MCP
+    # door (`admins.own_mcp_write`), and a write by an admin who is not a
+    # super-admin (`admins.own_write_needs_another`, 2026-11-12). So here an
+    # admin approves their own request only when it is read-only, or when the
+    # admin is a super-admin.
     if request.get("requester_slack_id") == principal_id and \
             not any(r["role"] == "admin" for r in rows):
         return False

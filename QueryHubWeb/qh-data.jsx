@@ -930,6 +930,25 @@ function qhSchemaOf(conn, db, name) {
 // names `/schema` called views, which is why the prototype keeps working
 // unchanged. Views STAY in the relation list: a view is queryable and
 // autocomplete wants it; `k` only decides which branch it is drawn under.
+// The tree node of a table or view name typed in the editor (2026-11-12,
+// Devart G1): { schema, table, view }, or null when the database has no
+// such relation or has two. `name` is `t`, `s.t`, or `db.s.t` of this db.
+function qhTreeObject(c, db, sch, name) {
+  if (!c || !db) return null;
+  let parts = String(name || '').split('.').map(p => p.trim().replace(/^["`[]|["`\]]$/g, ''));
+  if (parts.length === 3 && parts[0].toLowerCase() === String(db.name || db.id || '').toLowerCase()) parts = parts.slice(1);
+  if (!parts.length || parts.length > 2 || parts.some(p => !p)) return null;
+  const want = parts[parts.length - 1].toLowerCase(), wantS = parts.length === 2 ? parts[0].toLowerCase() : null;
+  const refs = db.tableRefs || (db.tables || []).map(n => ({ s: qhSchemaFor(c, db), n }));
+  const rel = qhSplitRelations(refs, sch ? sch.views : []);
+  const schemaOf = (r) => r.s || (sch && sch.tables && sch.tables[r.n] && sch.tables[r.n].schema) || qhSchemaFor(c, db);
+  const hits = [];
+  [[rel.tables, false], [rel.views, true]].forEach(([list, view]) => list.forEach(r => {
+    if (r.n.toLowerCase() === want && (!wantS || String(schemaOf(r)).toLowerCase() === wantS)) hits.push({ schema: schemaOf(r), table: r.n, view });
+  }));
+  return hits.length === 1 ? hits[0] : null;
+}
+
 function qhSplitRelations(refs, viewNames) {
   const vn = viewNames && viewNames.length ? new Set(viewNames) : null;
   const tables = [], views = [], seen = new Set();
@@ -1753,7 +1772,7 @@ function qhTimelineTotal(rows) {
   return span ? span + ' from ' + first.label + ' to ' + last.label : '';
 }
 
-Object.assign(window, {
+Object.assign(window, { qhTreeObject,
   qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhSelectionLines, qhPrimaryLabel, qhJudgedText, qhShiftRanges, qhConfirmReasons, qhSplitReasons,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,

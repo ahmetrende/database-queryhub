@@ -2319,6 +2319,9 @@ const qhApi = {
   }),
   deleteSnippet: (id) => mockDelay(() => { MOCK.savedSrv = MOCK.savedSrv.filter(s => s.id !== id); return null; }),
   editorSnippets: () => mockDelay(() => ({ snippets: MOCK.editorSnippets.slice(), canDeleteShared: false })),
+  objectDdl: (conn, dbn, name) => mockDelay(() => (String(name || '').trim()
+    ? { name, kind: 'table', built: true, ddl: 'CREATE TABLE ' + name + ' (\n    id bigint NOT NULL,\n    CONSTRAINT pk PRIMARY KEY (id)\n);' }
+    : mockFail('Enter an object name.', 422, 'invalid'))),
   createEditorSnippet: (b) => mockDelay(() => {
     if (MOCK.editorSnippets.some(x => x.mine && x.key === b.key)) return mockFail('You have a snippet with the key ' + b.key + '. Use a different key.', 409, 'duplicate_key');
     const row = { id: mockId('snp'), key: b.key, description: b.description || null, body: b.body, engine: b.engine || null,

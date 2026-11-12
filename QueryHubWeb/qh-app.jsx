@@ -1643,6 +1643,38 @@ function App() {
   const onDragMove = (e) => { if (drag.current) setResH(Math.max(80, Math.min(drag.current.maxH, drag.current.h - (e.clientY - drag.current.y)))); };
   const onDragEnd = () => { drag.current = null; document.body.style.cursor = ''; window.removeEventListener('mousemove', onDragMove); window.removeEventListener('mouseup', onDragEnd); };
 
+  // The CREATE script of one object in a new tab (2026-11-12, Devart B5).
+  // `c` and `db` are the rows of the connection and the database. The server
+  // reads it live and writes an audit row. The first line says where the
+  // script comes from.
+  const scriptCreate = (c, db, name) => {
+    if (!c || !db || !name) return;
+    qhApi.objectDdl(c.id, db.id, name).then(r => {
+      const head = r.built
+        ? '-- CREATE script of ' + r.kind + ' ' + r.name + ', built from the catalog. It has no grants, comments or storage options.\n'
+        : '-- Definition of ' + r.kind + ' ' + r.name + ', as the server stores it.\n';
+      const f = freshTab({ name: r.name + ' \u00b7 DDL', autoName: false, sql: head + r.ddl + '\n', conn: c.id, db: db.id });
+      setTabs(ts => [...ts, f]); setActiveId(f.id); focusEditor();
+    }).catch(e => pushToast((e && e.message) || 'QueryHub could not read the script. Try again.', 'err'));
+  };
+  // The same for the name at the editor's caret, on the tab's own database.
+  // Go to definition of an object name (Devart G1): show its row in the
+  // tree of the tab's database. A name the tree does not have gets a toast.
+  const [treeReveal, setTreeReveal] = useState(null);
+  const revealObjectHere = (name) => {
+    const c = conns.find(x => x.id === tab.conn);
+    const db = c && (c.databases || []).find(d => d.id === tab.db);
+    const hit = db ? qhTreeObject(c, db, schemaCache[tab.conn + '/' + tab.db], name) : null;
+    if (!hit) { pushToast('The tree has no table or view named ' + name + '.', 'err'); return; }
+    setSideMode('conns');
+    setTreeReveal({ connId: c.id, dbId: db.id, ...hit, n: Date.now() });
+  };
+  const scriptCreateHere = (name) => {
+    const c = conns.find(x => x.id === tab.conn);
+    const db = c && (c.databases || []).find(d => d.id === tab.db);
+    if (!db) { pushToast('Pick a database for this tab first.', 'err'); return; }
+    scriptCreate(c, db, name);
+  };
   const openTable = (c, db, table, opts) => {
     const o = opts || {};
     const nm = o.mode === 'count' ? table + ' · count' : table;
@@ -1762,7 +1794,7 @@ function App() {
       scheduled={scheduled} onOpenScheduled={openScheduled} onCancelScheduled={cancelScheduled}
       history={history} onLoadHistory={loadHistory} pending={pendingReqs} onOpenPending={openPending} onResubmit={resubmitFrom} histFocus={histFocus}
       width={sideWidth} onResizerDown={onResizerDown} onResizerFit={fitSidebar}
-      onRequestEndpoint={() => setReqOpen(true)} onRequestAuto={() => setAutoReqOpen(true)} onOpenTable={openTable} onNewQuery={newQueryOn} onNewTab={newTab}
+      onRequestEndpoint={() => setReqOpen(true)} onRequestAuto={() => setAutoReqOpen(true)} onOpenTable={openTable} onScriptCreate={scriptCreate} revealTable={treeReveal} onNewQuery={newQueryOn} onNewTab={newTab}
       onOpenSqlFile={openSqlFile} onDownloadSql={() => requestDownloadSql(activeId)} canDownloadSql={activeHasSql} isSuper={isSuper} />
   );
 
@@ -1884,7 +1916,7 @@ function App() {
                 onRequest={() => setReqOpen(true)} onDismiss={() => patch(activeId, { expired: null })} />
 
               <div className="qh-ed-host">
-                <SqlEditor value={tab.sql} onChange={onCode} docId={tab.id} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} onSelectionChange={setSel} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} formatSignal={fmtSig} insertSignal={insSig} issues={blockerRanges} revealSignal={issueSig} lints={lintRanges} />
+                <SqlEditor value={tab.sql} onChange={onCode} docId={tab.id} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} onSelectionChange={setSel} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} formatSignal={fmtSig} insertSignal={insSig} issues={blockerRanges} revealSignal={issueSig} lints={lintRanges} onNotice={pushToast} onScriptCreate={scriptCreateHere} onRevealObject={revealObjectHere} />
               </div>
 
               <div className="qh-res-grip" onMouseDown={onDragStart}><span /></div>

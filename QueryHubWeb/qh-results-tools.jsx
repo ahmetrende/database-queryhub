@@ -314,6 +314,135 @@ function qhPrettyJson(text) {
   }
 }
 
+// ---------- Data viewer (M11, J6) ----------
+// The full-value window shows one cell as Text, JSON, XML, HTML, Hex or Image.
+// The value is the text the grid holds: a masked column arrives masked from
+// the server, and every view shows that masked text. Nothing here asks the
+// server for more.
+
+const QH_VIEW_HEX_MAX = 65536;          // bytes in a hex dump; the rest is cut
+
+// The bytes behind a cell. A PostgreSQL bytea arrives as `\x89504e47...`, a
+// SQL Server varbinary as `0x89504E47...`. Anything else is its UTF-8 text.
+function qhCellBytes(value) {
+  const t = String(value == null ? '' : value).trim();
+  const m = /^(?:\\x|0x)([0-9a-fA-F]*)$/.exec(t);
+  if (m && m[1].length % 2 === 0) {
+    const h = m[1], out = new Uint8Array(h.length / 2);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(h.substr(i * 2, 2), 16);
+    return out;
+  }
+  return new TextEncoder().encode(String(value == null ? '' : value));
+}
+
+// `00000000  48 65 6c 6c 6f ...  |Hello...|`, 16 bytes a line.
+function qhHexDump(bytes, max = QH_VIEW_HEX_MAX) {
+  const n = Math.min(bytes.length, max), lines = [];
+  for (let off = 0; off < n; off += 16) {
+    const row = bytes.subarray(off, Math.min(off + 16, n));
+    const hex = Array.from(row, b => b.toString(16).padStart(2, '0')).join(' ');
+    const asc = Array.from(row, b => (b >= 32 && b < 127 ? String.fromCharCode(b) : '.')).join('');
+    lines.push(off.toString(16).padStart(8, '0') + '  ' + hex.padEnd(47, ' ') + '  |' + asc + '|');
+  }
+  if (bytes.length > n) lines.push('... ' + (bytes.length - n).toLocaleString('en-GB') + ' more bytes not shown');
+  return lines.join('\n');
+}
+
+function qhBase64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+// The image type from the first bytes. SVG is left out on purpose: it is
+// markup that can carry script, and the other types cannot.
+function qhImageType(b) {
+  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'png';
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpeg';
+  if (b.length >= 6 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) return 'gif';
+  if (b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46
+      && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'webp';
+  if (b.length >= 2 && b[0] === 0x42 && b[1] === 0x4d) return 'bmp';
+  return null;
+}
+
+// A `data:` URL for an image cell, or null. Accepts a data URL already, hex
+// (bytea or varbinary) and plain base64. Never a remote URL: the viewer must
+// not make a request that the query did not.
+function qhImageDataUrl(value) {
+  const t = String(value == null ? '' : value).trim();
+  if (!t) return null;
+  const d = /^data:image\/(png|jpeg|gif|webp|bmp);base64,([A-Za-z0-9+/=\s]+)$/.exec(t);
+  if (d) return 'data:image/' + d[1] + ';base64,' + d[2].replace(/\s+/g, '');
+  let bytes = null;
+  if (/^(?:\\x|0x)[0-9a-fA-F]+$/.test(t)) bytes = qhCellBytes(t);
+  else if (t.length >= 16 && /^[A-Za-z0-9+/\s]+={0,2}$/.test(t)) {
+    try {
+      const bin = atob(t.replace(/\s+/g, ''));
+      bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    } catch (e) { bytes = null; }
+  }
+  const type = bytes && qhImageType(bytes);
+  return type ? 'data:image/' + type + ';base64,' + qhBase64(bytes) : null;
+}
+
+// Indented XML, or null when the text does not parse as XML.
+function qhPrettyXml(text) {
+  const t = String(text == null ? '' : text).trim();
+  if (!t.startsWith('<') || typeof DOMParser === 'undefined') return null;
+  let doc;
+  try { doc = new DOMParser().parseFromString(t, 'application/xml'); } catch (e) { return null; }
+  if (!doc || !doc.documentElement || doc.getElementsByTagName('parsererror').length) return null;
+  const esc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const out = [];
+  const walk = (node, depth) => {
+    const pad = '  '.repeat(depth);
+    if (node.nodeType === 3) { const v = node.nodeValue.trim(); if (v) out.push(pad + esc(v)); return; }
+    if (node.nodeType === 4) { out.push(pad + '<![CDATA[' + node.nodeValue + ']]>'); return; }
+    if (node.nodeType === 8) { out.push(pad + '<!--' + node.nodeValue + '-->'); return; }
+    if (node.nodeType === 7) { out.push(pad + '<?' + node.target + ' ' + node.data + '?>'); return; }
+    if (node.nodeType !== 1) return;
+    const attrs = Array.from(node.attributes, a => ' ' + a.name + '="' + esc(a.value).replace(/"/g, '&quot;') + '"').join('');
+    const kids = Array.from(node.childNodes).filter(k => !(k.nodeType === 3 && !k.nodeValue.trim()));
+    if (!kids.length) { out.push(pad + '<' + node.nodeName + attrs + '/>'); return; }
+    if (kids.length === 1 && kids[0].nodeType === 3) {
+      out.push(pad + '<' + node.nodeName + attrs + '>' + esc(kids[0].nodeValue.trim()) + '</' + node.nodeName + '>');
+      return;
+    }
+    out.push(pad + '<' + node.nodeName + attrs + '>');
+    kids.forEach(k => walk(k, depth + 1));
+    out.push(pad + '</' + node.nodeName + '>');
+  };
+  Array.from(doc.childNodes).forEach(n => walk(n, 0));
+  return out.join('\n');
+}
+
+// The document an HTML view renders. The frame has the `sandbox` attribute
+// with no permission (no script, no form, no same-origin), and this policy
+// blocks every network load, so a cell cannot call out or run code.
+function qhHtmlSrcdoc(text) {
+  return '<!doctype html><meta charset="utf-8">'
+    + '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:">'
+    + String(text == null ? '' : text);
+}
+
+// The views one value offers, in button order, and the one it opens in.
+function qhViewModes(value) {
+  const t = String(value == null ? '' : value).trim();
+  const modes = ['text'];
+  if (qhPrettyJson(t) != null) modes.push('json');
+  if (t.startsWith('<') && qhPrettyXml(t) != null) modes.push('xml');
+  if (t.startsWith('<') && t.indexOf('>') > 0) modes.push('html');
+  modes.push('hex');
+  const image = qhImageDataUrl(t) != null;
+  if (image) modes.push('image');
+  const initial = image ? 'image' : modes.indexOf('json') >= 0 ? 'json' : 'text';
+  return { modes, initial };
+}
+
+const QH_VIEW_LABELS = { text: 'Text', json: 'JSON', xml: 'XML', html: 'HTML', hex: 'Hex', image: 'Image' };
+
 function qhUseResultView(result) {
   const isTable = !!result && result.kind === 'table';
   const rowsIn = isTable && Array.isArray(result.rows) ? result.rows : [];
@@ -445,5 +574,6 @@ function qhUseResultView(result) {
 Object.assign(window, { qhResJsonKind, qhResJsonCell,
   QH_RES_MAX_ROWS, qhResCompareCells, qhResSortRows, qhResFilterRows,
   qhResAggregate, qhPrettyJson, qhUseResultView,
+  QH_VIEW_HEX_MAX, qhCellBytes, qhHexDump, qhImageDataUrl, qhPrettyXml, qhHtmlSrcdoc, qhViewModes, QH_VIEW_LABELS,
   qhResMatcher, qhResFilterSplit, qhResOptsOn, QH_RES_COPY_KINDS, qhResCopyAs, qhResColumnNames,
 });

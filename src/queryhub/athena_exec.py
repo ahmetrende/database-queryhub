@@ -202,6 +202,55 @@ def live_columns(cfg: dict, database: str, table: str) -> list[tuple[str, str]]:
     return [(c["column_name"], c["data_type"]) for c in columns]
 
 
+def _view_sql(t: dict) -> str | None:
+    """The SQL of a Glue view. Athena stores it as
+    `/* Presto View: <base64 JSON> */`, with the SQL in `originalSql`."""
+    import base64
+    import json as _json
+    text = t.get("ViewOriginalText") or ""
+    if "Presto View:" not in text:
+        return None
+    blob = text.split("Presto View:", 1)[1].rsplit("*/", 1)[0].strip()
+    try:
+        return _json.loads(base64.b64decode(blob)).get("originalSql")
+    except Exception:                               # noqa: BLE001
+        return None
+
+
+def object_ddl(cfg: dict, database: str, table: str) -> tuple[str, str, bool] | None:
+    """(kind, script, built) of one Glue table or view (Devart B5), or None
+    when there is no such table. A table's script is built from Glue: the
+    columns, the partition keys, the SerDe, the formats and the location."""
+    try:
+        t = _glue(cfg).get_table(DatabaseName=database, Name=table)["Table"]
+    except Exception as e:                          # noqa: BLE001
+        if _error_code(e) == "EntityNotFoundException":
+            return None
+        raise
+    q = lambda n: "`" + str(n).replace("`", "``") + "`"     # noqa: E731
+    name = f"{q(database)}.{q(t['Name'])}"
+    if t.get("TableType") == "VIRTUAL_VIEW":
+        sql = _view_sql(t)
+        if not sql:
+            return None
+        return ("view", f"CREATE OR REPLACE VIEW {name} AS\n{sql.strip()}", True)
+    sd = t.get("StorageDescriptor") or {}
+    cols = ",\n".join(f"  {q(c['Name'])} {c.get('Type', '')}" for c in sd.get("Columns") or [])
+    out = [f"CREATE EXTERNAL TABLE {name} (\n{cols}\n)"]
+    keys = t.get("PartitionKeys") or []
+    if keys:
+        out.append("PARTITIONED BY (\n" + ",\n".join(
+            f"  {q(k['Name'])} {k.get('Type', '')}" for k in keys) + "\n)")
+    serde = (sd.get("SerdeInfo") or {}).get("SerializationLibrary")
+    if serde:
+        out.append(f"ROW FORMAT SERDE '{serde}'")
+    if sd.get("InputFormat") and sd.get("OutputFormat"):
+        out.append(f"STORED AS INPUTFORMAT '{sd['InputFormat']}'\n  OUTPUTFORMAT '{sd['OutputFormat']}'")
+    if sd.get("Location"):
+        out.append(f"LOCATION '{sd['Location']}'")
+    return ("table", "\n".join(out) + ";", True)
+
+
 def _count_partitions(glue, database: str, table: str) -> int | None:
     """How many partitions the table has, or None if we could not tell.
 

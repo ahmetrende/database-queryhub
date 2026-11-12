@@ -70,6 +70,15 @@ function EffDbs({ all, dbs }) {
 const effLiveG = (g) => !g.expiresAt || new Date(g.expiresAt).getTime() > Date.now();
 const effDbsOf = (g) => (!g.databases || !g.databases.length || g.databases.indexOf('*') >= 0) ? null : g.databases;   // null = every database
 const effMeets = (a, b) => !a || !b || a.some(d => b.indexOf(d) >= 0);
+// Why a row reads differently from its neighbours. On a super-admin-only
+// connection, admin and fleet-wide rights stop: only a grant that names it
+// counts (migration 141). Said once, on that row.
+function effRowNotes(st, eff, t) {
+  const out = effOverruled(st, eff, t);
+  if (t.superAdminOnly && !(eff.admin && eff.admin.superAdmin))
+    out.unshift(<>Super-admin only connection: admin and fleet-wide rights stop here. Only a grant that names this connection counts.</>);
+  return out;
+}
 function effOverruled(st, eff, t) {
   const teams = (eff.teams || []).map(x => x.name);
   const rowDbs = t.allDatabases ? null : (t.databases || null);
@@ -104,6 +113,17 @@ function EffBlockedRow({ b }) {
   );
 }
 
+// The tiers of this row that QueryHub holds no login for (`credentialTiers`,
+// 2026-11-12): "no RW/DDL login". Null when the row's tier has one, or when
+// the server did not say.
+const EFF_RANK = { RO: 1, RW: 2, DDL: 3 };
+function effNoLogin(t) {
+  if (!Array.isArray(t.credentialTiers)) return null;
+  const have = t.credentialTiers.map(x => String(x).toUpperCase());
+  const miss = ['RW', 'DDL'].filter(x => EFF_RANK[x] <= (EFF_RANK[t.tier] || 0) && have.indexOf(x) < 0);
+  return miss.length ? 'no ' + miss.join('/') + ' login' : null;
+}
+
 // `mixedTiers` (team rows): `tier` is the highest, so one badge would overstate
 // the rest — the databases are listed one per line, each with its own tier and
 // end, instead. `enabled: false` is the CONNECTION being off, which no grant
@@ -117,6 +137,8 @@ function EffAccessRow({ t, notes }) {
         <span className="qh-eff-dbs">{split ? <span className="qh-eff-mixed">Tier differs by database</span> : <EffDbs all={t.allDatabases} dbs={t.databases} />}</span>
         {!split && <TierBadge tier={t.tier} sm />}
         {t.enabled === false && <span className="qh-eff-off" title="Nobody reaches a disabled connection, whatever they are granted, until it is enabled again.">connection disabled</span>}
+        {t.readOnlyEngine && <span className="qh-eff-src" title="This engine refuses every write, for everyone. So the row shows RO, whatever the grant says.">read-only engine</span>}
+        {t.enabled !== false && !t.readOnlyEngine && effNoLogin(t) && <span className="qh-eff-off" title="QueryHub holds no login for these tiers on this connection. Submit refuses such a query before anybody reviews it.">{effNoLogin(t)}</span>}
         <EffSource t={t} />
         {t.source === 'admin_or_bypass' ? <span className="qh-eff-ends is-open">While admin</span> : !split && <EffEnds iso={t.expiresAt} />}
       </div>
@@ -189,9 +211,22 @@ function EffNone({ team }) {
 function effApproverSentence(ap) {
   if (ap.superAdmin) return <>Super-admin — approves <b>anything, anywhere</b>, and their own queries are auto-approved.</>;
   const teams = ap.scopeTeamsAll ? <b>everyone</b> : (ap.scopeTeams && ap.scopeTeams.length ? <b>{ap.scopeTeams.join(', ')}</b> : null);
-  const targets = ap.scopeTargetsAll ? <b>every connection</b> : (ap.scopeTargets && ap.scopeTargets.length ? <b>{ap.scopeTargets.join(', ')}</b> : null);
+  // A super-admin returned above. Anyone else approves nothing on a
+  // super-admin-only connection (`admins.flagged_target_needs_super_admin`).
+  const targets = ap.scopeTargetsAll ? <b>every connection except the super-admin-only ones</b> : (ap.scopeTargets && ap.scopeTargets.length ? <b>{ap.scopeTargets.join(', ')}</b> : null);
   if (!teams || !targets) return <>Holds an approver scope that <b>approves nothing</b> — {!teams ? 'no team' : 'no connection'} is in it.</>;
   return <>Approves requests from {teams} on {targets}, up to <b>{ap.maxTier || 'any tier'}</b>.</>;
+}
+
+// Their OWN requests, which the scope sentence above does not cover. An admin
+// below super-admin submits up to DDL on every connection, but only a
+// super-admin approves their own write (`admins.own_write_needs_another`,
+// 2026-11-12). Without this line the rows said DDL and this card said "up to
+// RW", with nothing in between.
+function effSelfSentence(ap) {
+  if (ap.selfApproves === 'ro') return <>Their own RO requests they may approve themselves. Their own RW and DDL requests go to another admin.</>;
+  if (ap.selfApproves === 'none') return <>They never approve their own requests.</>;
+  return null;
 }
 
 // ---------- A person ----------
@@ -213,10 +248,15 @@ function EffPerson({ st, subject, onOpenTeam }) {
   const cap = eff && eff.rowLimitOverride && eff.rowLimitOverride.maxRows;
   const bypassAll = ap && ap.superAdmin && access.length > 0 && access.every(t => t.source === 'admin_or_bypass');
   const order = { user: 0, team: 1, admin_or_bypass: 2 };
-  const rows = access.slice().sort((a, b) => (a.connectionId < b.connectionId ? -1 : a.connectionId > b.connectionId ? 1 : 0) || (order[a.source] - order[b.source]));
+  // Usable connections first: a disabled one sorted in among them buried the
+  // rows that answer the question (2026-11-12: 69 of 131 rows were disabled).
+  const off = (t) => (t.enabled === false ? 1 : 0);
+  const rows = access.slice().sort((a, b) => (off(a) - off(b)) || (a.connectionId < b.connectionId ? -1 : a.connectionId > b.connectionId ? 1 : 0) || (order[a.source] - order[b.source]));
   // A connection held at two tiers arrives as two rows (CODE 2026-09-23 §4),
-  // so the count is of CONNECTIONS, not rows.
-  const nConn = new Set(access.map(t => t.connectionId)).size;
+  // so the count is of CONNECTIONS, not rows. A disabled connection is not
+  // one they can query, so it has its own count.
+  const nConn = new Set(access.filter(t => t.enabled !== false).map(t => t.connectionId)).size;
+  const nOff = new Set(access.filter(t => t.enabled === false).map(t => t.connectionId)).size;
   const blocked = (eff && eff.blocked) || [];
   const soon = rows.concat(autos).filter(t => t.expiresAt && (new Date(t.expiresAt) - Date.now()) / 86400000 <= 14 && new Date(t.expiresAt) > Date.now()).length;
 
@@ -246,9 +286,10 @@ function EffPerson({ st, subject, onOpenTeam }) {
           {/* One line a reader can stop at. Counts only — the names are below. */}
           <div className="qh-eff-sum">
             {bypassAll ? 'Reaches every connection as an admin' : nConn ? 'Can query ' + nConn + ' connection' + (nConn === 1 ? '' : 's') : 'Can query nothing'}
+            {!bypassAll && nOff > 0 && <> · {nOff} disabled</>}
             {autos.length > 0 && <> · <b className="qh-eff-sum-warn">{autos.length} auto-approved</b></>}
             {soon > 0 && <> · <b className="qh-eff-sum-soon">{soon} end{soon === 1 ? 's' : ''} within 14 days</b></>}
-            {ap && <> · approver</>}
+            {ap && <> · {ap.superAdmin ? 'super-admin' : ap.role === 'admin' ? 'admin' : 'approver'}</>}
           </div>
 
           <EffSection title="Can query" sub="Their own grant on a server wins over every team grant on that server. When it ends, it still wins, as no access. An admin needs neither.">
@@ -258,7 +299,7 @@ function EffPerson({ st, subject, onOpenTeam }) {
               ? <div className="qh-eff-row"><div className="qh-eff-row-main"><span className="qh-eff-conn">Every connection</span><span className="qh-eff-dbs"><EffDbs all /></span><TierBadge tier="DDL" sm /><span className="qh-eff-src is-admin">Admin bypass</span><span className="qh-eff-ends is-open">While admin</span></div>
                   <div className="qh-eff-notes"><div className="qh-eff-note">No grant is consulted for a super-admin, so none is listed. Their own grants, if any, change nothing.</div></div></div>
               : <div className="qh-eff-list">
-                  {rows.map(t => <EffAccessRow key={t.key || t.connectionId + ':' + t.source + ':' + t.tier} t={t} notes={effOverruled(st, eff, t)} />)}
+                  {rows.map(t => <EffAccessRow key={t.key || t.connectionId + ':' + t.source + ':' + t.tier} t={t} notes={effRowNotes(st, eff, t)} />)}
                   {blocked.map(b => <EffBlockedRow key={b.connectionId + ':' + (b.databases || ['*']).join(',')} b={b} />)}
                 </div>}
           </EffSection>
@@ -273,6 +314,7 @@ function EffPerson({ st, subject, onOpenTeam }) {
             {ap ? (
               <div className="qh-eff-appr">
                 <div className="qh-eff-appr-say"><EffIcon.shield />{effApproverSentence(ap)}</div>
+                {effSelfSentence(ap) && <div className="qh-eff-note">{effSelfSentence(ap)}</div>}
                 <div className="qh-eff-appr-facts">
                   <span className={'qh-eff-fact' + (ap.canGrant ? ' is-on' : '')}>{ap.canGrant ? 'Can grant access to others' : 'Cannot grant access'}</span>
                   {cap != null && <span className="qh-eff-fact">Result cap {cap.toLocaleString('en-GB')} rows</span>}

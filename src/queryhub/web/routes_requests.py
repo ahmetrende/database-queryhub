@@ -417,6 +417,16 @@ def withdraw_window_request(request_id: int,
         # Lost the race: an admin decided it between the read and the UPDATE.
         raise deps._error(409, "already_decided",
                           "This request is not pending any more.")
+    client = _bot_client()
+    if client is not None:      # vanilla profile: no Slack, no cards to close
+        try:
+            from ..slack_app import ro_window
+            ro_window.update_admin_cards(
+                client, done["id"],
+                ro_window.decision_line(done["id"], "withdrawn", uid))
+        except Exception:
+            log.exception("could not close the cards of withdrawn window "
+                          "request %s", done.get("id"))
     return {"id": done["id"], "status": "withdrawn"}
 
 

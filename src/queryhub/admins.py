@@ -316,16 +316,60 @@ def own_mcp_write(principal_id: str, request: dict) -> bool:
     return origins.normalize(origin) == origins.MCP
 
 
+def own_write_needs_another(principal_id: str, request: dict) -> bool:
+    """Whether this request is this person's own RW or DDL write, and this
+    person is not a super-admin.
+
+    Only a super-admin approves their own write. An admin with a tier ceiling,
+    or with an end date, sends their own write to another admin, so a second
+    person reads it (operator decision, 2026-11-12). Their own read-only
+    requests stay self-approvable. A super-admin has no ceiling and no end
+    date, and nobody above them can review their work, so the exemption stays
+    for them only.
+    """
+    if not principal_id or request.get("requester_slack_id") != principal_id:
+        return False
+    if request_tier(request) == "ro":
+        return False
+    return not is_super_admin(principal_id)
+
+
+def flagged_target_needs_super_admin(principal_id: str, request: dict) -> bool:
+    """Whether this request is on a super-admin-only target (migration 141)
+    and this person is not a super-admin.
+
+    The flag already stops an admin's own access there: only a grant that
+    names the target counts. It did not stop an admin from APPROVING somebody
+    else's request on it, so a query on the control plane could run with no
+    super-admin reading it. Only a super-admin approves there now (operator
+    decision, 2026-11-12). A waiver that names the target still skips the
+    wait, because no approver is asked then.
+
+    The flag is read first. A target without it costs no role read.
+    """
+    tid = request.get("target_server_id")
+    if tid is None or not access.target_is_super_admin_only(int(tid)):
+        return False
+    return not is_super_admin(principal_id)
+
+
 def can_approve(admin_slack_id: str, request: dict) -> bool:
     """True iff the admin has at least one candidate row (permanent or
     temp) that admits this request. Out-of-scope candidates don't
     veto — only the absence of any in-scope candidate does.
 
-    One exception comes first, in both models: nobody approves their own
-    write from the MCP door (`own_mcp_write`)."""
+    Three exceptions come first, in both models: nobody approves their own
+    write from the MCP door (`own_mcp_write`), only a super-admin approves
+    their own write from any other door (`own_write_needs_another`), and only
+    a super-admin approves on a super-admin-only target
+    (`flagged_target_needs_super_admin`)."""
     if not request:
         return False
     if own_mcp_write(admin_slack_id, request):
+        return False
+    if own_write_needs_another(admin_slack_id, request):
+        return False
+    if flagged_target_needs_super_admin(admin_slack_id, request):
         return False
     if _v2():
         return access.can_approve(admin_slack_id, request)

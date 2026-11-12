@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from . import db, secrets_providers
+from . import db, engines, secrets_providers
 from psycopg.types.json import Json
 
 from .crypto import decrypt, encrypt
@@ -567,6 +567,40 @@ def _admin_row(row: dict) -> dict:
             for mode, (ucol, pcol) in _TIER_COLUMNS.items()
         },
     }
+
+
+def configured_tiers(target_ids) -> dict[int, set[str]]:
+    """Per target id, the tiers whose credentials QueryHub holds.
+
+    The executor connects with the credential of the request's tier
+    (`get_credentials`), and a tier without one fails at EXECUTION, after a
+    person approved it. Three live targets had no RW or DDL login while
+    screens showed DDL on them (2026-11-12). Submit asks this first, so such
+    a request is refused before anybody reviews it.
+
+    Only the `local` provider can be answered from the row. Another provider
+    resolves at execution time, and an engine without stored credentials
+    (an assumed role) needs none: both count every tier as configured, so
+    this check refuses nothing it cannot see.
+    """
+    ids = list(dict.fromkeys(int(t) for t in target_ids))
+    if not ids:
+        return {}
+    every = {"ro", "rw", "ddl"}
+    out: dict[int, set[str]] = {}
+    for r in db.fetch_all(
+            "SELECT id, COALESCE(secrets_provider, 'local') AS provider, "
+            "       COALESCE(engine, 'postgres') AS engine, "
+            "       (username IS NOT NULL AND password_encrypted IS NOT NULL) AS ro, "
+            "       (username_rw IS NOT NULL AND password_rw_encrypted IS NOT NULL) AS rw, "
+            "       (username_ddl IS NOT NULL AND password_ddl_encrypted IS NOT NULL) AS ddl "
+            "  FROM target_servers WHERE id = ANY(%s)", (ids,)):
+        if (str(r["provider"]).strip().lower() != "local"
+                or not engines.spec(r["engine"]).requires_credentials):
+            out[r["id"]] = set(every)
+        else:
+            out[r["id"]] = {t for t in ("ro", "rw", "ddl") if r[t]}
+    return out
 
 
 def list_admin_rows() -> list[dict]:

@@ -12,6 +12,9 @@ cycle with `modal.py` (which imports it).
 from __future__ import annotations
 
 import json
+import logging
+
+log = logging.getLogger(__name__)
 
 # The window lengths and their labels are in `window_options`. That module has
 # no Slack import, so the web routes and the IdP outbox can use them without
@@ -260,6 +263,44 @@ def request_modal(
             },
         ],
     }
+
+
+def decision_line(rid: int, status: str, actor_id: str | None,
+                  req: dict | None = None, alias: str | None = None) -> str:
+    """The status line that replaces the buttons of an admin card.
+
+    Slack and the web routes both call this, so the wording cannot drift.
+    `status` is approved, rejected or withdrawn. `req` and `alias` give the
+    detail of an approval."""
+    if status == "approved" and req is None:
+        return f":white_check_mark: *Window #{rid} approved* by <@{actor_id}>."
+    if status == "approved" and req is not None:
+        win = window_label(req["window_minutes"])
+        return (f":white_check_mark: *Window #{rid} approved* by <@{actor_id}> — "
+                f"{req['max_tier'].upper()} on `{alias}` for {win}.")
+    if status == "withdrawn":
+        return (f":leftwards_arrow_with_hook: *Window #{rid} withdrawn* "
+                "by the requester.")
+    return f":no_entry: *Window #{rid} rejected* by <@{actor_id}>."
+
+
+def update_admin_cards(client, request_id: int, text: str) -> None:
+    """Replace every stored admin copy of the card with one status line.
+
+    Best effort per card: a failed update is logged and the next card still
+    gets its update."""
+    from .. import auto_approve_requests
+    from . import notifications
+
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
+    for r in auto_approve_requests.list_admin_dms(request_id):
+        try:
+            notifications._update(client, channel=r["channel_id"],
+                                  ts=r["message_ts"], text=text, blocks=blocks)
+        except Exception:
+            log.exception("ro_window: could not update the card of request %s "
+                          "(channel=%s ts=%s)", request_id,
+                          r["channel_id"], r["message_ts"])
 
 
 def admin_dm_blocks(req: dict, target_alias: str) -> list[dict]:

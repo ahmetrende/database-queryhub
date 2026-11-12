@@ -140,6 +140,12 @@ const qhApi = {
   // submit(); status() and each history() row answer with ranOn, from which
   // the UI builds the "ran on" sentence (the server sends none for a forced run).
   connectionReplicas: (conn) => qhFetch('/connections/' + encodeURIComponent(conn) + '/replicas'),
+  // The CREATE script of one object, read live (2026-11-12, Devart B5):
+  // {name, kind, ddl, built}. `built` is true when the server built it from
+  // the catalog (a table). The server writes an audit row for each read.
+  objectDdl: (conn, dbn, name) => qhFetch('/connections/' + encodeURIComponent(conn) +
+                                      '/databases/' + encodeURIComponent(dbn) +
+                                      '/ddl?name=' + encodeURIComponent(name)),
   saved:       ()      => qhFetch('/saved'),
   // `f` is an optional search: { q, since, until }. `since` and `until` are
   // 'YYYY-MM-DD' days on this browser's clock: `tz` sends the offset east of

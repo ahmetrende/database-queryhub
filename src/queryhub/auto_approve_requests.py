@@ -353,12 +353,44 @@ def _dm_admins(client, row: dict, alias: str, admins_told: list[dict]) -> int:
     for a in admins_told:
         try:
             opened = client.conversations_open(users=a["slack_user_id"])
-            notifications._post(client, channel=opened["channel"]["id"],
-                                text=fallback, blocks=blocks)
+            channel = opened["channel"]["id"]
+            posted = notifications._post(client, channel=channel,
+                                         text=fallback, blocks=blocks)
             reached += 1
         except Exception:
             log.exception("ro_window: admin DM failed for %s", a["slack_user_id"])
+            continue
+        # Keep the card address, so a later decision can close every copy.
+        # A failure here must not stop the loop or change `reached`.
+        try:
+            if posted and posted.get("ts"):
+                record_admin_dm(row["id"], a["slack_user_id"], channel, posted["ts"])
+        except Exception:
+            log.exception("ro_window: could not record the card for %s",
+                          a["slack_user_id"])
     return reached
+
+
+def record_admin_dm(request_id: int, admin_slack_id: str,
+                    channel_id: str, message_ts: str) -> None:
+    """Store where one admin's copy of the card lives."""
+    db.execute(
+        "INSERT INTO auto_approve_request_notifications "
+        "(request_id, admin_slack_id, channel_id, message_ts) "
+        "VALUES (%s, %s, %s, %s) "
+        "ON CONFLICT (request_id, admin_slack_id) DO UPDATE "
+        "SET channel_id = EXCLUDED.channel_id, message_ts = EXCLUDED.message_ts",
+        (request_id, admin_slack_id, channel_id, message_ts),
+    )
+
+
+def list_admin_dms(request_id: int) -> list[dict]:
+    """The stored card addresses of one request."""
+    return db.fetch_all(
+        "SELECT admin_slack_id, channel_id, message_ts "
+        "FROM auto_approve_request_notifications WHERE request_id = %s",
+        (request_id,),
+    )
 
 
 def list_for(principal_id: str, limit: int = 50) -> list[dict]:

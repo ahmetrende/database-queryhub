@@ -142,10 +142,20 @@ def test_the_safety_pass_refuses_it_before_any_tier_even_unrestricted(sql):
 # what a screen shows
 # ---------------------------------------------------------------------------
 
-def test_only_athena_has_a_ceiling():
-    assert engines.spec("athena").tier_ceiling == "ro"
-    for engine in ("postgres", "mssql", "clickhouse", None):
+def test_only_the_read_only_engines_have_a_ceiling():
+    """Athena (the archive rule) and ClickHouse (read-only since #138) refuse
+    every write, so they show RO. The engines that run writes show the tier."""
+    for engine in ("athena", "clickhouse"):
+        assert engines.spec(engine).tier_ceiling == "ro"
+    for engine in ("postgres", "mssql", None):
         assert engines.spec(engine).tier_ceiling is None
+
+
+def test_every_read_only_engine_has_a_ceiling():
+    """A new read-only engine without a ceiling would show DDL again."""
+    for name in ("postgres", "mssql", "clickhouse", "athena"):
+        spec = engines.spec(name)
+        assert (spec.tier_ceiling == "ro") == bool(spec.read_only), name
 
 
 @pytest.mark.parametrize("tier,shown", [("ddl", "ro"), ("rw", "ro"), ("ro", "ro"),
@@ -154,7 +164,7 @@ def test_an_archive_tier_is_shown_as_ro(tier, shown):
     assert engines.shown_tier("athena", tier) == shown
 
 
-@pytest.mark.parametrize("engine", ["postgres", "mssql", "clickhouse", None])
+@pytest.mark.parametrize("engine", ["postgres", "mssql", None])
 def test_other_engines_show_the_tier_as_it_is(engine):
     for tier in ("ro", "rw", "ddl", "DDL"):
         assert engines.shown_tier(engine, tier) == tier
@@ -210,7 +220,7 @@ def test_the_connection_list_shows_ro_on_an_archive(connections):
     turns auto-approve on is no more writable."""
     assert connections["tiers"](BYPASS) == {
         "example-postgres": "DDL", "example-athena": "RO", "example-athena-on": "RO",
-        "example-clickhouse": "DDL"}
+        "example-clickhouse": "RO"}
 
 
 def test_a_super_admin_sees_what_they_hold(connections):

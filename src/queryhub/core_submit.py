@@ -404,6 +404,17 @@ def validate_submission(
                    f"one, contact the DBA team.")
         return Rejection("query", msg, reason="tier_exceeds")
 
+    # The grant allows the tier, but QueryHub must also hold a login for it on
+    # this target. Without one the executor fails AFTER somebody approved the
+    # request (`targets.configured_tiers`). Same words as that failure.
+    if required_mode not in targets.configured_tiers([target.id]).get(target.id, {required_mode}):
+        return Rejection(
+            "query",
+            f"Target `{target.alias}` is not ready for {required_mode.upper()} "
+            f"queries. Its {required_mode.upper()} credentials are not "
+            f"configured in QueryHub. Contact the DBA team.",
+            reason="no_credential")
+
     # Mandatory justification for write/DDL queries (audit hygiene) — unless the
     # request is going to be auto-approved anyway.
     #

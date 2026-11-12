@@ -51,6 +51,9 @@ INFORMATIONAL = frozenset({
     # A super-admin query with masking off. The executor writes the row on
     # purpose BEFORE the query runs, so it exists even when the run fails.
     "result_unmasked",
+    # The CREATE script of one object went to a person with a grant on its
+    # database (GET .../ddl). An access record. Nothing changes.
+    "object_ddl_read",
 })
 
 UNREADABLE = "<not a string literal>"

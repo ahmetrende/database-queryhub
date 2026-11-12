@@ -3132,6 +3132,13 @@
   /* The box above the caret line in a function call. The parameter at the
      caret is bold and underlined. Only its arrows take clicks, and a press
      keeps the focus in the editor. */
+  /* Alias rename box (Shift+F6, 2026-11-12). */
+  .qh-rename { position: fixed; z-index: 97; min-width: 220px; max-width: 360px; padding: 8px 10px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); box-shadow: var(--shadow-medium); font-size: 12.5px; color: var(--fg-secondary); }
+  .qh-rename-label { display: flex; flex-direction: column; gap: 5px; }
+  .qh-rename-label input { width: 100%; box-sizing: border-box; padding: 4px 7px; font-family: var(--qh-mono); font-size: 12.5px; color: var(--fg-primary); background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-xs); }
+  .qh-rename-label input:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-rename-err { margin-top: 6px; color: var(--fg-danger); }
+  .qh-rename > .qh-rename-err:first-child { margin-top: 0; }
   .qh-sig { position: fixed; z-index: 97; display: flex; align-items: baseline; gap: 8px;
     max-width: min(640px, calc(100vw - 16px)); padding: 5px 10px; background: var(--bg-white);
     color: var(--fg-secondary); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm);
@@ -3266,6 +3273,31 @@
   font-size: 12px; color: var(--fg-secondary, #666);
 }
 .qh-peek-head .qh-flex1 { flex: 1; }
+/* The data viewer (M11): one button per view the value supports. */
+.qh-peek-modes { display: flex; flex-wrap: wrap; gap: 4px; }
+.qh-peek-mode[aria-pressed="true"] {
+  background: var(--accent-soft, rgba(0,0,0,.08));
+  color: var(--fg, inherit);
+  font-weight: 600;
+}
+.qh-peek-frame {
+  width: 100%;
+  min-width: 320px;
+  height: 40vh;
+  border: 1px solid var(--stroke-light, rgba(0,0,0,.12));
+  border-radius: 8px;
+  background: #fff;               /* the cell's own markup decides its colours */
+}
+.qh-peek-img {
+  max-height: 40vh;
+  min-width: 320px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--stroke-light, rgba(0,0,0,.12));
+  border-radius: 8px;
+  background: repeating-conic-gradient(rgba(0,0,0,.06) 0 25%, transparent 0 50%) 0 0 / 16px 16px;
+}
+.qh-peek-img img { display: block; max-width: 100%; height: auto; }
 .qh-peek textarea {
   width: 100%;
   min-width: 320px;

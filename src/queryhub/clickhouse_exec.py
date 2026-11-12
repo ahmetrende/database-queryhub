@@ -378,6 +378,26 @@ def live_columns(host, port, database, user, password, table: str, *,
         c.disconnect()
 
 
+def object_ddl(host, port, database, user, password, table: str, *,
+               timeout_sec: int = 10) -> tuple[str, str, bool] | None:
+    """(kind, script, built) of one table or view of `database` (Devart B5):
+    the server's own CREATE text from system.tables. None when there is no
+    such object. The caller fixes the database, as for live_columns."""
+    c = client(host, port, database, user, password, timeout_sec=timeout_sec,
+               client_name="queryhub-web-ddl")
+    try:
+        rows = c.execute(
+            "SELECT engine, create_table_query FROM system.tables "
+            "WHERE database = %(db)s AND name = %(t)s",
+            {"db": database, "t": table})
+    finally:
+        c.disconnect()
+    if not rows or not rows[0][1]:
+        return None
+    kind = {"v": "view", "m": "materialized view"}.get(_relkind(rows[0][0]), "table")
+    return (kind, rows[0][1].strip(), False)
+
+
 def _relkind(engine: str) -> str:
     """The catalog's relkind for a ClickHouse table engine."""
     if engine in ("View", "LiveView", "WindowView"):
