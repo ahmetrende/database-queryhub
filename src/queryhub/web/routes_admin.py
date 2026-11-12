@@ -275,6 +275,9 @@ def admin_decision(request_id: int, body: DecisionIn,
             reason=reason or None)
     except core_decide.KillSwitchOn as e:
         raise _kill_switch_refusal(e)
+    except core_decide.FleetItemRefused as e:
+        # One decision for the whole fleet run: no single-item decision.
+        raise deps._error(409, e.code, e.message)
     if outcome is None:
         raise deps._error(409, "conflict",
                           "This request already has a decision.")
@@ -293,7 +296,8 @@ class BatchIn(BaseModel):
 def admin_batch_approve(body: BatchIn,
                         claims: dict = Depends(deps.current_user)):
     """Approve several requests at once. Silently skips anything the caller
-    can't approve, doesn't exist, or was already decided — returns the count
+    can't approve, doesn't exist, was already decided, or is an item of a
+    fleet run — returns the count
     actually approved. While the kill switch is on it refuses the whole call
     with 409 `kill_switch_on` and approves nothing."""
     uid = admin.require_admin(claims, "approve")
@@ -317,6 +321,8 @@ def admin_batch_approve(body: BatchIn,
                                          by_name=claims.get("name"))
         except core_decide.KillSwitchOn:
             break   # the switch went on during the loop: stop, keep the count
+        except core_decide.FleetItemRefused:
+            continue   # a fleet run gets one decision for all its items
         if outcome is not None:
             core_decide.apply_effects(client, outcome)
             approved += 1

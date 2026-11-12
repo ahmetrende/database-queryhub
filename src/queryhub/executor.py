@@ -13,6 +13,7 @@ import io
 import logging
 import os
 import re
+import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -40,7 +41,8 @@ from .slack_app import notifications
 
 log = logging.getLogger(__name__)
 
-_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="sql-exec")
+_POOL_WORKERS = 4
+_pool = ThreadPoolExecutor(max_workers=_POOL_WORKERS, thread_name_prefix="sql-exec")
 # There is deliberately no global write lock. The old one wrapped the ENTIRE CSV
 # write ("guard CSV file writes if we ever share names"), so every
 # result-producing query serialized behind it: the pool advertised 4 workers but
@@ -223,6 +225,16 @@ def submit(request: dict, client: WebClient) -> None:
         log.info("draining — not starting request %s now; it stays 'approved' "
                  "and the next process start will run it", request.get("id"))
         return
+    # A fleet run goes through its own runners. A run that stops at its first
+    # failure runs one item at a time, in position order. A run that continues
+    # runs at most `fleet_max_parallel()` items at a time, so it never takes the
+    # whole pool. Every other request keeps the parallel pool path.
+    info = bundle_run_info(request)
+    if info and info.get("kind") == "fleet":
+        stop = info.get("on_failure") == "stop"
+        _start_fleet_runners(int(request["bundle_id"]), client, stop=stop,
+                             workers=1 if stop else fleet_max_parallel())
+        return
     # A ThreadPoolExecutor keeps an escaped exception inside the Future, and
     # nobody was reading the Future — so anything raised outside _run's own
     # handler vanished completely: no log line, and the row left in 'executing'
@@ -232,6 +244,150 @@ def submit(request: dict, client: WebClient) -> None:
     future = _pool.submit(_run, request, client)
     future.add_done_callback(
         lambda f, rid=request.get("id"): _log_escaped_exception(rid, f))
+
+
+def bundle_run_info(request: dict | None) -> dict | None:
+    """The bundle kind and failure rule of a request, or None for no bundle.
+
+    One query. Returns {"kind": "batch" | "fleet", "on_failure": ...}."""
+    bundle_id = (request or {}).get("bundle_id")
+    if not bundle_id:
+        return None
+    row = db.fetch_one(
+        "SELECT kind, on_failure FROM request_bundles WHERE id = %s",
+        (bundle_id,))
+    return dict(row) if row else None
+
+
+def fleet_max_parallel() -> int:
+    """How many items of one fleet run that continues may run at the same time.
+
+    At least 1. At most one less than the pool, so one fleet run never takes
+    every worker and other requests still start."""
+    return min(_POOL_WORKERS - 1, max(1, cfg.get_int("fleet_max_parallel", 2)))
+
+
+# Fleet runners alive in this process: how many run per bundle, and the item
+# ids they took, so that two runners never take the same item. Guarded by the
+# lock.
+_fleet_runners: dict[int, int] = {}
+_fleet_taken: dict[int, set[int]] = {}
+_fleet_chains_lock = threading.Lock()
+
+
+def _start_fleet_runners(bundle_id: int, client: WebClient, *, stop: bool,
+                         workers: int) -> None:
+    """Start runners for a fleet bundle until `workers` of them run. Each
+    runner takes the next approved item by itself, so a call while enough
+    runners run starts nothing."""
+    with _fleet_chains_lock:
+        alive = _fleet_runners.get(bundle_id, 0)
+        new = max(0, workers - alive)
+        if new == 0:
+            log.info("fleet run %s: %s runner(s) already running", bundle_id, alive)
+            return
+        _fleet_runners[bundle_id] = alive + new
+        _fleet_taken.setdefault(bundle_id, set())
+    label = f"fleet {bundle_id}"
+
+    def _log_exit(f) -> None:
+        _log_escaped_exception(label, f)
+    for i in range(new):
+        try:
+            future = _pool.submit(_run_fleet_chain, bundle_id, client, stop)
+        except Exception:
+            for _ in range(new - i):
+                _fleet_runner_exit(bundle_id)
+            raise
+        future.add_done_callback(_log_exit)
+
+
+def _fleet_runner_exit(bundle_id: int) -> None:
+    """Count one runner of the bundle out. The caller holds no lock."""
+    with _fleet_chains_lock:
+        _fleet_runner_exit_locked(bundle_id)
+
+
+def _fleet_runner_exit_locked(bundle_id: int) -> None:
+    left = _fleet_runners.get(bundle_id, 0) - 1
+    if left > 0:
+        _fleet_runners[bundle_id] = left
+    else:
+        _fleet_runners.pop(bundle_id, None)
+        _fleet_taken.pop(bundle_id, None)
+
+
+def _take_next_fleet_item(bundle_id: int) -> dict | None:
+    """The approved item with the lowest position that no runner took yet.
+    With no such item the runner counts itself out in the same lock, so a
+    submit that comes next sees the right count and starts a new runner."""
+    with _fleet_chains_lock:
+        taken = _fleet_taken.setdefault(bundle_id, set())
+        row = db.fetch_one(
+            "SELECT * FROM requests "
+            " WHERE bundle_id = %s AND status = 'approved' "
+            "   AND NOT (id = ANY(%s)) "
+            " ORDER BY position LIMIT 1", (bundle_id, sorted(taken)))
+        if row is None:
+            _fleet_runner_exit_locked(bundle_id)
+            return None
+        taken.add(row["id"])
+        return row
+
+
+def _run_fleet_chain(bundle_id: int, client: WebClient, stop: bool = True) -> None:
+    """Run approved items of a fleet bundle one after another, lowest position
+    first. With `stop`, the first failed item cancels every item that has not
+    started. Several runners of one bundle share the items."""
+    from . import lifecycle
+    try:
+        while True:
+            if lifecycle.is_draining():
+                break
+            row = _take_next_fleet_item(bundle_id)
+            if row is None:
+                return
+            _run(row, client)
+            after = db.fetch_one(
+                "SELECT status FROM requests WHERE id = %s", (row["id"],))
+            status = (after or {}).get("status")
+            if stop and status == "failed":
+                _cancel_rest_of_fleet(client, bundle_id, row)
+                break
+            if stop and status == "approved":
+                # The claim was not taken. A stop run must not skip an item.
+                log.warning("fleet run %s: item %s did not start; chain stops",
+                            bundle_id, row["id"])
+                break
+    except Exception:
+        log.exception("fleet run %s: chain runner failed", bundle_id)
+    _fleet_runner_exit(bundle_id)
+
+
+def _cancel_rest_of_fleet(client: WebClient, bundle_id: int,
+                          failed: dict) -> None:
+    """Cancel every approved or pending item of the bundle, in one transaction,
+    then refresh the admin cards and the bundle status."""
+    from . import bundles
+    alias_row = db.fetch_one(
+        "SELECT alias FROM target_servers WHERE id = %s",
+        (failed["target_server_id"],))
+    alias = (alias_row or {}).get("alias") or f"request {failed['id']}"
+    reason = (f"Not run: {alias} failed first. "
+              f"The fleet run stops at the first failure.")
+    with db.transaction() as cur:
+        cur.execute(
+            "UPDATE requests SET status = 'cancelled', decided_at = NOW(), "
+            " completed_at = NOW(), decision_reason = %s, error_message = %s "
+            " WHERE bundle_id = %s AND status IN ('approved', 'pending') "
+            "RETURNING id",
+            (reason, reason, bundle_id))
+        for r in cur.fetchall():
+            audit.log_in(cur, r["id"], None, None, "cancelled",
+                         {"by": "fleet_stop", "failed_request": failed["id"],
+                          "reason": reason})
+        bundles.recompute_status(cur, bundle_id)
+    notifications.update_bundle_admin_dms(client, bundle_id)
 
 
 def _log_escaped_exception(request_id, future) -> None:
@@ -667,6 +823,16 @@ def _run(request: dict, client: WebClient) -> None:
             _fail(
                 client, request,
                 "Not run: the requester's QueryHub access was withdrawn.")
+            return
+        # A fleet run is an admin-only tool. The requester must still be an
+        # admin when the item runs, not only when it was submitted.
+        run_info = bundle_run_info(request)
+        if (run_info and run_info.get("kind") == "fleet"
+                and not admins.is_admin(requester)):
+            _fail(
+                client, request,
+                "Not run: the requester is no longer an admin. "
+                "A fleet run needs an admin.")
             return
         current_mode = teams.effective_mode_for_database(
             requester, target.id, request["database_name"])

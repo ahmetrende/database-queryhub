@@ -196,6 +196,8 @@ restart.
 |---|---|---|
 | `batch_enabled` | `off` | Allow multi-query batch submissions (one approval round). |
 | `batch_max_items` | `5` | Max queries in a batch. |
+| `fleet_max_parallel` | `2` | Max items of one fleet run that run at the same time. The code keeps it between 1 and 3, so one of the 4 executor workers stays free. A run that stops at the first failure runs one item at a time. |
+| `fleet_max_targets` | `50` | Max (target, database) pairs in one fleet run. A fleet run sends one SQL text to many databases as one bundle with one approval. |
 | `max_schedule_days` | `7` | How far ahead a requester may schedule a query. |
 | `csv_import_enabled` | `off` | Allow CSV → table imports. |
 | `csv_size_mb` | `10` | Default result CSV size cap. |

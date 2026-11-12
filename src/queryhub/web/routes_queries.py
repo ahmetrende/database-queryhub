@@ -110,6 +110,29 @@ class BatchIn(BaseModel):
     # taken once. The reasons come back naming the item, so the operator still
     # sees which statement asked.
     confirmed: bool = False
+    # A fleet run: one SQL text for many (target, database) pairs, one
+    # approval, no auto-approve. Admin only. `onFailure` is 'continue' or
+    # 'stop'; left out, the tier decides (RO continues, RW/DDL stops).
+    fleet: bool = False
+    onFailure: str | None = None
+
+
+_FLEET_NAMED_MAX = 20
+
+
+def _fleet_pair(it: "BatchItemIn", alias: str | None = None) -> str:
+    return f"{alias or it.connectionId} / {it.databaseId or 'default'}"
+
+
+def _fleet_refusal(failures: list[str]):
+    shown = failures[:_FLEET_NAMED_MAX]
+    more = len(failures) - len(shown)
+    msg = "Refused: the fleet run has " + (
+        "one problem. " if len(failures) == 1 else f"{len(failures)} problems. ")
+    msg += "; ".join(shown)
+    if more > 0:
+        msg += f" and {more} more"
+    return deps._error(409, "fleet_refused", msg)
 
 
 def _employment_gate(uid: str, what: str) -> None:
@@ -553,13 +576,31 @@ def submit_batch(body: BatchIn, request: Request,
     uid = claims["sub"]
     name = claims.get("name") or uid
     client_ip, user_agent = _client_ctx(request)
+    fleet = body.fleet
+    if fleet:
+        # Admin only. An approver-only person and a requester are refused.
+        if not admins.is_admin(uid):
+            raise deps._error(403, "fleet_not_allowed",
+                              "Refused: only an admin can start a fleet run.")
+        if body.onFailure not in (None, "continue", "stop"):
+            raise deps._error(422, "validation",
+                              "onFailure must be continue or stop.")
+        if len({it.sql.strip() for it in body.items}) > 1:
+            raise deps._error(422, "validation",
+                              "A fleet run uses one SQL text for every item.")
+        pairs = [(it.connectionId, it.databaseId) for it in body.items]
+        if len(set(pairs)) != len(pairs):
+            raise deps._error(422, "validation",
+                              "A fleet run lists each connection and database once.")
     if not bundles.is_enabled():
         raise deps._error(409, "conflict",
                           "Refused: batch submission is disabled. "
                           "Submit each query on its own.")
-    if len(body.items) > bundles.max_items():
+    cap = bundles.fleet_max_targets() if fleet else bundles.max_items()
+    if len(body.items) > cap:
         raise deps._error(422, "validation",
-                          f"A batch can hold at most {bundles.max_items()} items.")
+                          f"A fleet run can hold at most {cap} items." if fleet
+                          else f"A batch can hold at most {bundles.max_items()} items.")
 
     sched_date = sched_time = None
     if body.schedule is not None:
@@ -571,10 +612,16 @@ def submit_batch(body: BatchIn, request: Request,
     # Validate every item up front (all-or-nothing) with the SAME pipeline as a
     # single submit; the 404-for-everything enumeration guard mirrors POST /queries.
     preps: list[core_submit.Prepared] = []
+    fleet_failures: list[str] = []
     for idx, it in enumerate(body.items, start=1):
         t = _target_by_alias(it.connectionId)
         grant = teams.effective_grant_for_user(uid, t.id) if t is not None else None
         if t is None or grant is None or (not t.enabled and not admins.is_admin(uid)):
+            if fleet:
+                # Name every missing pair, not only the first.
+                fleet_failures.append(
+                    f"{_fleet_pair(it)}: unknown connection or no grant")
+                continue
             raise deps._error(404, "not_found",
                               f"Unknown connection '{it.connectionId}' (item {idx}).")
         prep = core_submit.validate_submission(
@@ -585,6 +632,10 @@ def submit_batch(body: BatchIn, request: Request,
             confirmed=body.confirmed)
         if isinstance(prep, core_submit.Rejection):
             _record_refusal(claims, "web-batch", t.id, it.databaseId, it.sql, prep)
+            if fleet:
+                fleet_failures.append(
+                    f"{_fleet_pair(it, t.alias)}: " + prep.message.replace("*", ""))
+                continue
             status, code = _REJECTION_HTTP.get(prep.reason or prep.field, (422, "validation"))
             # Same envelope the single-query path returns, so the client's one
             # 409 decision (`qhConfirmReasons`) covers both. Each reason names
@@ -595,6 +646,8 @@ def submit_batch(body: BatchIn, request: Request,
                 reasons=[f"Item {idx}: " + r.replace("*", "")
                          for r in prep.reasons])
         preps.append(prep)
+    if fleet_failures:
+        raise _fleet_refusal(fleet_failures)
 
     # AUTH.md §5 — live employment check if any item is RW/DDL.
     if (any(p.required_mode in ("rw", "ddl") for p in preps)
@@ -603,17 +656,26 @@ def submit_batch(body: BatchIn, request: Request,
 
     sched_for = preps[0].sched_for
     # Phase-23 policy: a super-admin's own submissions auto-approve (all tiers).
-    super_auto = admins.is_super_admin(uid)
+    # A fleet run never auto-approves, RO included: one approval for the run.
+    super_auto = False if fleet else admins.is_super_admin(uid)
     # Per-item auto-approve — cover NOW and (if scheduled) at run time, asked
     # as create_request asks it (auto_approve.decision): on an Athena archive,
     # a read by an admin, the owning team's lead or a waiver holder.
     aa_grants: list[dict | None] = []
     for p in preps:
+        if fleet:
+            aa_grants.append(None)
+            continue
         g = auto_approve.decision(uid, p.required_mode, p.target, p.database)
         if g is not None and sched_for is not None and auto_approve.decision(
                 uid, p.required_mode, p.target, p.database, at_time=sched_for) is None:
             g = None
         aa_grants.append(g)
+
+    on_failure = None
+    if fleet:
+        on_failure = body.onFailure or (
+            "continue" if all(p.required_mode == "ro" for p in preps) else "stop")
 
     items = [bundles.BundleItem(
         target_server_id=p.target.id, target_alias=p.target.alias,
@@ -629,7 +691,8 @@ def submit_batch(body: BatchIn, request: Request,
         result = bundles.insert_bundle_with_items(
             cur, requester_slack_id=uid, requester_name=name,
             justification=body.justification, scheduled_for=sched_for,
-            items=items, origin=_origin_for(claims))
+            items=items, origin=_origin_for(claims),
+            kind="fleet" if fleet else "batch", on_failure=on_failure)
         for p, row, grant in zip(preps, result["item_rows"], aa_grants):
             auto = grant is not None or super_auto
             details = {
@@ -692,12 +755,16 @@ def submit_batch(body: BatchIn, request: Request,
         except Exception:
             log.exception("notify_admins_bundle failed for bundle %s", bundle_id)
 
-    return {
+    resp: dict[str, object] = {
         "bundleId": str(bundle_id),
         "items": [{"queryId": str(r["id"]),
                    "status": mapping.status_to_web(r["status"])}
                   for r in result["item_rows"]],
     }
+    if fleet:
+        resp["fleet"] = True
+        resp["onFailure"] = on_failure
+    return resp
 
 
 # ---- POST /explain (read-only plan preview) ---------------------------------

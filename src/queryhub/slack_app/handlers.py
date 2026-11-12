@@ -1958,9 +1958,44 @@ def _refuse_approve_kill_switch(client: WebClient, body: dict,
     notifications.dm_requester(client, user_id, e.message)
 
 
+def _refuse_fleet_item(ack: Ack, client: WebClient, body: dict,
+                       request_id: int) -> bool:
+    """True when the request is an item of a fleet run. A fleet run is decided
+    as a whole, so a per-item click (an old card or a forged action) is refused.
+    `core_decide.decide` refuses it too. This check only answers before a
+    modal opens. Call it after `_guard_admin`, which has not acked yet."""
+    if not core_decide.is_fleet_item(request_id):
+        return False
+    ack()
+    notifications.dm_requester(
+        client, body["user"]["id"], core_decide.FLEET_SINGLE_ITEM_MESSAGE)
+    return True
+
+
+def _refuse_partial_fleet(client: WebClient, user_id: str,
+                          bundle_id: int) -> bool:
+    """True when the bundle is a fleet run and one of its pending items is
+    outside the clicker's scope. A fleet run gets one decision for all its
+    items, so the bulk buttons decide all of them or none."""
+    row = db.fetch_one(
+        "SELECT kind FROM request_bundles WHERE id = %s", (bundle_id,))
+    if not (row and row.get("kind") == "fleet"):
+        return False
+    if all(admins.can_approve(user_id, r)
+           for r in _bundle_pending_items(bundle_id)):
+        return False
+    notifications.dm_requester(
+        client, user_id,
+        ":no_entry: Part of this fleet run is outside your approval scope. "
+        "An admin with the full scope must decide it.")
+    return True
+
+
 def handle_approve(ack: Ack, body: dict, client: WebClient) -> None:
     request_id = int(body["actions"][0]["value"])
     if not _guard_admin(ack, client, body, request_id=request_id):
+        return
+    if _refuse_fleet_item(ack, client, body, request_id):
         return
     ack()
     user = body["user"]
@@ -1980,6 +2015,8 @@ def handle_approve(ack: Ack, body: dict, client: WebClient) -> None:
 def handle_reject(ack: Ack, body: dict, client: WebClient) -> None:
     request_id = body["actions"][0]["value"]
     if not _guard_admin(ack, client, body, request_id=int(request_id)):
+        return
+    if _refuse_fleet_item(ack, client, body, int(request_id)):
         return
     ack()
     client.views_open(
@@ -2010,6 +2047,8 @@ def handle_reject(ack: Ack, body: dict, client: WebClient) -> None:
 def handle_request_changes(ack: Ack, body: dict, client: WebClient) -> None:
     request_id = body["actions"][0]["value"]
     if not _guard_admin(ack, client, body, request_id=int(request_id)):
+        return
+    if _refuse_fleet_item(ack, client, body, int(request_id)):
         return
     ack()
     client.views_open(
@@ -2047,8 +2086,12 @@ def handle_reject_submission(ack: Ack, body: dict, client: WebClient) -> None:
     ack()
     request_id, reason = _decision_modal_reason(body)
     user = body["user"]
-    outcome = core_decide.decide(request_id, "reject", by_id=user["id"],
-                                 by_name=user.get("name"), reason=reason)
+    try:
+        outcome = core_decide.decide(request_id, "reject", by_id=user["id"],
+                                     by_name=user.get("name"), reason=reason)
+    except core_decide.FleetItemRefused as e:
+        notifications.dm_requester(client, user["id"], e.message)
+        return
     if outcome is not None:
         core_decide.apply_effects(client, outcome)
 
@@ -2056,8 +2099,12 @@ def handle_changes_submission(ack: Ack, body: dict, client: WebClient) -> None:
     ack()
     request_id, reason = _decision_modal_reason(body)
     user = body["user"]
-    outcome = core_decide.decide(request_id, "changes", by_id=user["id"],
-                                 by_name=user.get("name"), reason=reason)
+    try:
+        outcome = core_decide.decide(request_id, "changes", by_id=user["id"],
+                                     by_name=user.get("name"), reason=reason)
+    except core_decide.FleetItemRefused as e:
+        notifications.dm_requester(client, user["id"], e.message)
+        return
     if outcome is not None:
         core_decide.apply_effects(client, outcome)
 
@@ -2680,6 +2727,8 @@ def handle_bundle_approve_all(ack: Ack, body: dict, client: WebClient) -> None:
     except core_decide.KillSwitchOn as e:
         _refuse_approve_kill_switch(client, body, e)
         return
+    if _refuse_partial_fleet(client, user["id"], bundle_id):
+        return
 
     items = _bundle_pending_items_in_scope(bundle_id, user["id"])
     if not items:
@@ -2743,6 +2792,8 @@ def handle_bundle_reject_all(ack: Ack, body: dict, client: WebClient) -> None:
     if not _guard_bundle(ack, client, body, int(bundle_id)):
         return
     ack()
+    if _refuse_partial_fleet(client, body["user"]["id"], int(bundle_id)):
+        return
     client.views_open(
         trigger_id=body["trigger_id"],
         view={
@@ -2774,6 +2825,9 @@ def handle_bundle_reject_submission(ack: Ack, body: dict, client: WebClient) -> 
     reason = (body["view"]["state"]["values"]["reason_block"]
                   ["reason_input"].get("value") or "").strip()
     user = body["user"]
+    # The scope can change while the modal is open: check the fleet rule again.
+    if _refuse_partial_fleet(client, user["id"], bundle_id):
+        return
     items = _bundle_pending_items_in_scope(bundle_id, user["id"])
     if not items:
         return

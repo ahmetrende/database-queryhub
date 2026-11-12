@@ -19,6 +19,9 @@ the exact same notification/dispatch code both surfaces run.
         on approve. Safe to call from either process.
     require_kill_switch_off()
         The ONE check for every action that approves and runs a request.
+    is_fleet_item(request_id)
+        True for an item of a fleet run. `decide` refuses such an item with
+        `FleetItemRefused`: a fleet run gets one decision for all its items.
 
 The kill switch stops approvals too (operator decision, 2026-10-24). While it
 is on, an approve is refused. Deny and request-changes stay open. `decide` and
@@ -53,6 +56,32 @@ class KillSwitchOn(Exception):
         self.message = message
 
 
+FLEET_SINGLE_ITEM_MESSAGE = "Approve or reject the whole fleet run."
+FLEET_SINGLE_ITEM_CODE = "fleet_single_item"
+
+
+class FleetItemRefused(Exception):
+    """A single-item decision on an item of a fleet run. Nothing was written.
+
+    A fleet run gets one decision for all its items (`decide_bundle`).
+    `code` is the web error code. `message` is the text for the person."""
+
+    code = FLEET_SINGLE_ITEM_CODE
+
+    def __init__(self, message: str = FLEET_SINGLE_ITEM_MESSAGE):
+        super().__init__(message)
+        self.message = message
+
+
+def is_fleet_item(request_id: int) -> bool:
+    """True when the request is an item of a fleet run."""
+    row = db.fetch_one(
+        "SELECT b.kind AS kind FROM requests r "
+        "JOIN request_bundles b ON b.id = r.bundle_id WHERE r.id = %s",
+        (request_id,))
+    return row is not None and row.get("kind") == "fleet"
+
+
 def require_kill_switch_off() -> None:
     """Raise `KillSwitchOn` while the kill switch is on. Else do nothing.
 
@@ -81,8 +110,12 @@ def decide(request_id: int, decision: str, *, by_id: str,
     """Atomically move a pending request to its decided state + write the
     audit row. Returns None if the request wasn't pending (already decided
     / raced). `reason` is required for reject/changes. An approve raises
-    `KillSwitchOn` while the kill switch is on."""
+    `KillSwitchOn` while the kill switch is on. An item of a fleet run raises
+    `FleetItemRefused`: every path that decides one request comes here, so
+    no path can approve part of a fleet run."""
     _check(decision, reason)
+    if is_fleet_item(request_id):
+        raise FleetItemRefused()
     if decision == "approve":
         require_kill_switch_off()
     with db.transaction() as cur:

@@ -46,6 +46,11 @@ def max_items() -> int:
     return max(1, cfg.get_int("batch_max_items", 5))
 
 
+def fleet_max_targets() -> int:
+    """Upper bound on (target, database) pairs in one fleet run."""
+    return max(1, cfg.get_int("fleet_max_targets", 50))
+
+
 # ---------------------------- write helpers -------------------------------
 
 
@@ -58,6 +63,8 @@ def insert_bundle_with_items(
     scheduled_for: datetime | None,
     items: list[BundleItem],
     origin: str = "slack",
+    kind: str = "batch",
+    on_failure: str | None = None,
 ) -> dict:
     """Insert the parent bundle row and every item in one transaction.
     Caller MUST be inside `db.transaction()` — we don't manage commit /
@@ -73,11 +80,13 @@ def insert_bundle_with_items(
     cur.execute(
         """
         INSERT INTO request_bundles
-            (requester_slack_id, requester_name, justification, scheduled_for)
-        VALUES (%s, %s, %s, %s)
+            (requester_slack_id, requester_name, justification, scheduled_for,
+             kind, on_failure)
+        VALUES (%s, %s, %s, %s, %s, %s)
         RETURNING id, created_at
         """,
-        (requester_slack_id, requester_name, justification, scheduled_for),
+        (requester_slack_id, requester_name, justification, scheduled_for,
+         kind, on_failure),
     )
     parent = cur.fetchone()
     if parent is None:
@@ -148,7 +157,7 @@ def _json(value: Any) -> str:
 def get_bundle(cur: Any, bundle_id: int) -> dict | None:
     cur.execute(
         "SELECT id, requester_slack_id, requester_name, justification, "
-        "       scheduled_for, status, created_at "
+        "       scheduled_for, status, created_at, kind, on_failure "
         "  FROM request_bundles WHERE id = %s",
         (bundle_id,),
     )

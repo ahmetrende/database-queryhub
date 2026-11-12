@@ -1077,6 +1077,39 @@ bulk buttons admit the same people, and act only on the items in the
 presser's scope. A batch with one item outside a captain's scope, such as a
 write or another pod's server, stays with the admins.
 
+### Fleet run
+
+A fleet run sends one SQL text to many (target, database) pairs as one
+bundle. It is a bundle with `request_bundles.kind = 'fleet'`. The web API
+starts it with `fleet: true` on `POST /queries/batch`. It needs
+`batch_enabled = 'on'`. These five rules apply:
+
+1. Only an admin can start it. An approver-only person gets 403.
+2. The submit freezes the list of pairs. The bundle stores the items, not a pattern.
+3. One approval covers the whole run. A fleet run never auto-approves, RO included.
+   `core_decide.decide` refuses a decision on a single item, so every path refuses it:
+   the web (409 `fleet_single_item`), the web batch approve (skips the item) and the
+   Slack item buttons. The Slack bulk buttons decide all items or none: when one
+   pending item is outside the clicker's scope, they decide nothing.
+4. A missing grant on any pair refuses the whole run. The 409 `fleet_refused`
+   names each pair, up to 20, then "and N more".
+5. On a failure, an RO run continues and a RW or DDL run stops. The submitter
+   can set `onFailure` to `continue` or `stop`. `request_bundles.on_failure` stores it.
+
+At run time, a `stop` run executes one item at a time, in position order. The
+first failed item cancels every item that has not started, with the reason
+"Not run: <alias> failed first". A `continue` run executes at most
+`fleet_max_parallel` items at the same time (default 2, at most 3). The executor
+has 4 workers, so a fleet run never blocks every other request. Each fleet item
+checks again that the requester is still an admin.
+
+```sql
+-- Cap the pairs in one fleet run (default 50).
+UPDATE bot_config SET value = '50' WHERE key = 'fleet_max_targets';
+-- Cap the items of one fleet run that run at the same time (default 2).
+UPDATE bot_config SET value = '2' WHERE key = 'fleet_max_parallel';
+```
+
 ### Feature flag
 
 ```sql

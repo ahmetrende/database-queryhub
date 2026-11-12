@@ -203,9 +203,11 @@ def build_metrics(window: str | None = None) -> dict:
         "p95ApprovalSec": _pct(appr, 0.95),
         "avgRating": round(sum(ratings) / len(ratings), 2) if ratings else None,
         "ratingCount": len(ratings),
-        "autoApproveRate": round(sum(1 for r in rows if r["decided_by_slack_id"] == "AUTO") / total, 3) if total else 0,
-        "successRate": round(sc.get("completed", 0) / total, 3) if total else 0,
-        "rejectRate": round((sc.get("rejected", 0) + sc.get("cancelled", 0)) / total, 3) if total else 0,
+        # A window with no request has no rate: None, which the page shows
+        # as "—". A 0 here read as "nothing was auto-approved".
+        "autoApproveRate": round(sum(1 for r in rows if r["decided_by_slack_id"] == "AUTO") / total, 3) if total else None,
+        "successRate": round(sc.get("completed", 0) / total, 3) if total else None,
+        "rejectRate": round((sc.get("rejected", 0) + sc.get("cancelled", 0)) / total, 3) if total else None,
     }
 
     # ---- cost savings ----

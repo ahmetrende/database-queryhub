@@ -1314,9 +1314,10 @@ FACTORIES.failureBreakdown = function (rows) {
   const rejected  = counts('rejected');
   const failed    = counts('failed');
   const cancelled = counts('cancelled');
+  // A week with no finished request has no rate. null draws a gap, not 0%.
   const successPct = labels.map((_, i) => {
     const total = completed[i] + rejected[i] + failed[i] + cancelled[i];
-    if (!total) return 0;
+    if (!total) return null;
     return Math.round(100 * completed[i] / total);
   });
   return stackSpec(labels, [
@@ -1488,7 +1489,7 @@ FACTORIES.scheduledUsage = function (rows) {
   const { labels, map } = gapFilledBuckets(rows, truncWeek, weeksBetween);
   const scheduledPct = labels.map(k => {
     const arr = map.get(k) || [];
-    if (!arr.length) return 0;
+    if (!arr.length) return null;   // no request that week: a gap, not 0%
     const sched = arr.filter(r => r.scheduled_for).length;
     return Math.round(1000 * sched / arr.length) / 10;
   });
@@ -1724,7 +1725,8 @@ FACTORIES.ratingWeekly = function (rows) {
   const counts = labels.map(k =>
     (map.get(k) || []).filter(r => r.rating != null).length);
   return lineSpec(labels, [
-    { label: 'avg rating', data: avg.map(v => v == null ? 0 : v),    color: C.completed },
+    // A week with no rating draws a gap, not a rating of 0.
+    { label: 'avg rating', data: avg, color: C.completed },
     { label: 'n ratings',  data: counts, color: C.neutral, secondAxis: true, dashed: true },
   ], { yTitle: 'avg (1-5)', y1Title: 'count', annotations: annotationsFor(labels) });
 };
@@ -1733,7 +1735,7 @@ FACTORIES.ratingResponse = function (rows) {
   const { labels, map } = gapFilledBuckets(rows, truncWeek, weeksBetween);
   const pct = labels.map(k => {
     const arr = (map.get(k) || []).filter(r => r.status === 'completed');
-    if (!arr.length) return 0;
+    if (!arr.length) return null;   // nothing completed that week: a gap, not 0%
     const responded = arr.filter(r => r.rating != null).length;
     return Math.round(1000 * responded / arr.length) / 10;
   });

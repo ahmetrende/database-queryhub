@@ -903,6 +903,7 @@ def notify_admins_bundle(client: WebClient, bundle_id: int) -> None:
     if not items:
         log.warning("notify_admins_bundle: bundle %s has 0 items", bundle_id)
         return
+    bundle = _with_bundle_kind(bundle)
 
     overrides = display_overrides()
     # Admins, plus any scoped approver who can approve every item: a pod
@@ -1218,11 +1219,114 @@ def _bundle_scope_item(bundle: dict, it: dict) -> dict:
     return item_for_scope
 
 
+_FLEET_SECTION_MAX = 2900   # Slack allows 3000 chars in a section text
+_FLEET_ITEM_GLYPH = {
+    "completed": "✓", "failed": "✗", "cancelled": "–",
+    "rejected": "–",
+}
+
+
+def _with_bundle_kind(bundle: dict) -> dict:
+    """Add `kind` and `on_failure` to a bundle row (one query)."""
+    row = db.fetch_one(
+        "SELECT kind, on_failure FROM request_bundles WHERE id = %s",
+        (bundle["id"],))
+    return {**bundle, **(dict(row) if row else {})}
+
+
+def _fleet_text_chunks(lines: list[str]) -> list[str]:
+    """Join lines into texts of at most _FLEET_SECTION_MAX characters."""
+    chunks: list[str] = []
+    cur = ""
+    for line in lines:
+        line = line[:_FLEET_SECTION_MAX]
+        if cur and len(cur) + 1 + len(line) > _FLEET_SECTION_MAX:
+            chunks.append(cur)
+            cur = line
+        else:
+            cur = f"{cur}\n{line}" if cur else line
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _build_fleet_dm_blocks(bundle: dict, items: list[dict],
+                           admin_id: str) -> list[dict]:
+    """Compact admin card for a fleet run: the SQL once, the target list as
+    text, and only the bulk buttons. No per-item buttons."""
+    first = items[0]
+    query_text = (first.get("query") or "").strip()
+    tier_label = query_safety.required_mode(query_text).upper()
+    status = bundle.get("status", "pending")
+    blocks: list[dict] = [
+        {"type": "header",
+         "text": {"type": "plain_text",
+                  "text": (f"Fleet run #{bundle['id']} · {len(items)} "
+                           f"servers · {tier_label}")[:150]}},
+        {"type": "section",
+         "text": {"type": "mrkdwn",
+                  "text": f"From <@{bundle['requester_slack_id']}>  ·  status: "
+                          f"`{_bundle_status_label(status)}`"}},
+    ]
+    if 0 < len(query_text) <= _BUNDLE_INLINE_QUERY_MAX:
+        shown = query_text
+    elif query_text:
+        shown = (query_text[:_BUNDLE_INLINE_QUERY_MAX]
+                 + f"\n... (truncated: request #{first['id']} holds the full query)")
+    else:
+        shown = ""
+    if shown:
+        blocks.append({"type": "section",
+                       "text": {"type": "mrkdwn",
+                                "text": f"```\n{esc_code(shown)}\n```"}})
+    if bundle.get("justification"):
+        blocks.append({"type": "section",
+                       "text": {"type": "mrkdwn",
+                                "text": f"*Justification*\n{esc(bundle['justification'])}"}})
+    rule = ("Stops at the first failure" if bundle.get("on_failure") == "stop"
+            else "Continues after a failure")
+    blocks.append({"type": "context",
+                   "elements": [{"type": "mrkdwn", "text": f"_{rule}_"}]})
+
+    decided = any(it["status"] != "pending" for it in items)
+    lines = []
+    for it in items:
+        name = f"{esc(it['target_alias'])} / {esc(it['database_name'])}"
+        if decided:
+            glyph = _FLEET_ITEM_GLYPH.get(it["status"], "…")
+            lines.append(f"{glyph} {name}")
+        else:
+            lines.append(name)
+    for chunk in _fleet_text_chunks(lines):
+        blocks.append({"type": "section",
+                       "text": {"type": "mrkdwn", "text": chunk}})
+
+    any_pending = False
+    any_pending_in_scope = False
+    for it in items:
+        if it["status"] == "pending":
+            any_pending = True
+            if admins.can_approve(admin_id, _bundle_scope_item(bundle, it)):
+                any_pending_in_scope = True
+                break
+    blocks += _bundle_bulk_action_blocks(bundle["id"], any_pending,
+                                         any_pending_in_scope)
+    if len(blocks) > 50:
+        blocks = blocks[:49] + [{
+            "type": "context",
+            "elements": [{"type": "mrkdwn",
+                          "text": ":warning: _This message does not show all servers._"}],
+        }]
+    return blocks
+
+
 def _build_bundle_dm_blocks(bundle: dict, items: list[dict],
                             admin_id: str) -> list[dict]:
     """Render the bundle DM as seen by one admin. Per-item buttons are
     gated by admins.can_approve(); the bulk-button block at the bottom
     is also scope-aware."""
+    if bundle.get("kind") == "fleet" and items:
+        return _build_fleet_dm_blocks(bundle, items, admin_id)
     requester_md = f"<@{bundle['requester_slack_id']}>"
     sched_md = ""
     if bundle.get("scheduled_for"):
@@ -1288,6 +1392,7 @@ def update_bundle_admin_dms(client: WebClient, bundle_id: int) -> None:
         if bundle is None:
             return
         items = bundles_mod.list_items(cur, bundle_id)
+    bundle = _with_bundle_kind(bundle)
     rows = db.fetch_all(
         "SELECT admin_slack_id, channel_id, message_ts "
         "FROM request_notifications WHERE bundle_id = %s",
