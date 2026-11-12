@@ -157,6 +157,10 @@ jobs:
       - name: Integration tests
         env:
           QH_RUN_INTEGRATION: "1"
+          # The object-DDL tests (Script as CREATE) need a server they may
+          # change. They create and drop their own two schemas, so the
+          # throwaway database of this job is that server.
+          QH_DDL_PG_DSN: postgresql://postgres:postgres@localhost:5432/queryhub_test
           BOT_DB_HOST: localhost
           BOT_DB_PORT: "5432"
           BOT_DB_NAME: queryhub_test
