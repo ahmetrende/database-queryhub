@@ -3380,6 +3380,24 @@ const qhApi = {
   // already has; `known: false` WITH a name — not here yet, but the directory
   // says who it is; and `known: false` with no name, which is the mistype, caught
   // before the grant exists rather than after someone cannot sign in.
+  // GET /admin/people/directory?q=… (2026-11-13): QueryHub people first, then
+  // the mock Slack directory. A Slack id or a local id answers like resolve.
+  adminPeopleDirectory: (q) => mockDelay(() => {
+    const me = mockUser();
+    if (!me || me.role === 'developer') return mockFail('Admin only.', 403, 'forbidden');
+    const text = String(q || '').trim();
+    if (text.length < 2) return mockFail('Type at least two characters.', 400, 'bad_request');
+    const fold = (x) => String(x || '').replace(/\u0131/g, 'i').replace(/\u0130/g, 'i').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    const isEmail = text.indexOf('@') >= 0;
+    const hit = (name, email) => isEmail ? fold(email) === fold(text)
+      : fold(text).split(/\s+/).filter(Boolean).every(w => (fold(name) + ' ' + fold(email)).indexOf(w) >= 0);
+    const out = [];
+    ADMIN.people.forEach(p => { const em = p.email || mockEmail(p.handle);
+      if (hit(p.name, em) || (!isEmail && hit(p.handle, ''))) out.push({ principal: p.handle, known: true, name: p.name, email: em, enabled: true, admin: ADMIN.scopes.some(s => s.admin === p.handle) }); });
+    Object.keys(MOCK_SLACK_DIR).forEach(id => { const d = MOCK_SLACK_DIR[id];
+      if (!out.some(x => x.principal === id) && (hit(d.name, d.email) || id === text)) out.push({ principal: id, known: false, name: d.name, email: d.email || null, enabled: false, admin: false }); });
+    return { people: out.slice(0, 20), directory: 'ok', more: out.length > 20 };
+  }, 160),
   adminResolvePerson: (principal) => mockDelay(() => {
     const me = mockUser();
     if (!me || me.role === 'developer') return mockFail('Admin only.', 403, 'forbidden');

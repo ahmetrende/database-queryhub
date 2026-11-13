@@ -12,6 +12,9 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import threading
+import time
+import unicodedata
 from datetime import datetime, timezone
 import re
 
@@ -3209,6 +3212,12 @@ def admin_resolve_person(principal: str | None = None,
     if not _valid_principal(pid):
         raise deps._error(400, "bad_request",
                           "principal must be a Slack user id or local:<username>.")
+    return _resolve_principal(pid)
+
+
+def _resolve_principal(pid: str) -> dict:
+    """{principal, known, name, email, enabled, admin} for one principal id:
+    the QueryHub row when there is one, else the Slack profile."""
     row = db.fetch_one(
         "SELECT r.slack_user_id, r.name, r.email, r.enabled, "
         "       (a.slack_user_id IS NOT NULL) AS is_admin "
@@ -3226,6 +3235,159 @@ def admin_resolve_person(principal: str | None = None,
     prof = _slack_profile(pid) if pid.startswith("U") else {}
     return {"principal": pid, "known": False, "name": prof.get("name"),
             "email": prof.get("email"), "enabled": False, "admin": False}
+
+
+# ---- find a person by Slack id, email or name (2026-11-13) -----------------
+#
+# A new person used to need a Slack id: `resolve` takes an id only. Slack can
+# find a person by email (users.lookupByEmail) but not by name, so a name is
+# matched against users.list, read once and kept for ten minutes.
+
+_DIRECTORY_TTL_SEC = 600
+_DIRECTORY_MAX_PAGES = 100          # 20,000 people at 200 a page
+_DIRECTORY_LIMIT = 20
+_directory_cache: dict = {"at": 0.0, "people": []}
+# Slack's built-in system user, which users.list returns as a person. Built
+# from parts: the public export refuses the word as a whole, because it is
+# also the name of this package.
+_SLACK_SYSTEM_USER = "USLACK" + "BOT"
+_directory_lock = threading.Lock()
+
+
+def _fold(text: str | None) -> str:
+    """Lower case with no accents, so "jose" finds "Jos\u00e9". The dotless
+    and the dotted capital i of Turkish names fold to a plain i first."""
+    text = (text or "").replace("\u0131", "i").replace("\u0130", "i")
+    text = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in text if not unicodedata.combining(c)).casefold()
+
+
+def _name_matches(query: str, name: str | None, email: str | None) -> bool:
+    """Every word of the query is in the name or in the email."""
+    hay = _fold((name or "") + " " + (email or ""))
+    return all(w in hay for w in _fold(query).split())
+
+
+def _directory_client():
+    from slack_sdk import WebClient
+    from slack_sdk.http_retry.builtin_handlers import RateLimitErrorRetryHandler
+    client = WebClient(token=cfg.ENV.slack_bot_token, timeout=10)
+    client.retry_handlers.append(RateLimitErrorRetryHandler(max_retry_count=2))
+    return client
+
+
+def _slack_person(u: dict) -> dict:
+    prof = u.get("profile") or {}
+    return {"principal": u.get("id"),
+            "name": u.get("real_name") or prof.get("real_name") or prof.get("display_name"),
+            "email": prof.get("email")}
+
+
+def _slack_directory() -> list[dict]:
+    """Every active person in the Slack workspace, {principal, name, email}.
+    Bots, apps and deactivated accounts are left out. Raises when Slack
+    cannot be read."""
+    with _directory_lock:
+        if (_directory_cache["people"]
+                and time.monotonic() - _directory_cache["at"] < _DIRECTORY_TTL_SEC):
+            return _directory_cache["people"]
+    client = _directory_client()
+    out: list[dict] = []
+    cursor = None
+    for _ in range(_DIRECTORY_MAX_PAGES):
+        page = client.users_list(limit=200, **({"cursor": cursor} if cursor else {}))
+        for u in page.get("members") or []:
+            if (u.get("deleted") or u.get("is_bot") or u.get("is_app_user")
+                    or u.get("id") == _SLACK_SYSTEM_USER):
+                continue
+            out.append(_slack_person(u))
+        cursor = ((page.get("response_metadata") or {}).get("next_cursor") or "").strip()
+        if not cursor:
+            break
+    with _directory_lock:
+        _directory_cache.update(at=time.monotonic(), people=out)
+    return out
+
+
+def _slack_by_email(email: str) -> dict | None:
+    """The Slack person with this email, or None when there is none."""
+    from slack_sdk.errors import SlackApiError
+    try:
+        u = _directory_client().users_lookupByEmail(email=email)["user"]
+    except SlackApiError as e:
+        if (e.response or {}).get("error") == "users_not_found":
+            return None
+        raise
+    if u.get("deleted") or u.get("is_bot"):
+        return None
+    return _slack_person(u)
+
+
+@router.get("/people/directory")
+def admin_people_directory(q: str | None = None,
+                           claims: dict = Depends(deps.current_user)):
+    """Find people by Slack id, email or name, for the person picker.
+
+    People who are in QueryHub come first, then people from the Slack
+    directory. Each item has the `resolve` shape, so the picker words a new
+    person the same way. Nothing is written: granting access adds the person.
+    `directory` is `ok`, `unavailable` (Slack could not be read, so only
+    QueryHub people are listed) or `off` (no Slack)."""
+    admin.require_admin(claims, "access")
+    text = (q or "").strip()
+    if len(text) < 2:
+        raise deps._error(400, "bad_request", "Type at least two characters.")
+    if _valid_principal(text):
+        one = _resolve_principal(text)
+        return {"people": [one] if (one["known"] or one["name"]) else [],
+                "directory": "ok", "more": False}
+    rows = db.fetch_all(
+        "SELECT r.slack_user_id AS principal, r.name, r.email, r.enabled, "
+        "       (a.slack_user_id IS NOT NULL) AS is_admin "
+        "  FROM requesters r LEFT JOIN admins a ON a.slack_user_id = r.slack_user_id "
+        "UNION ALL "
+        "SELECT a.slack_user_id, a.name, NULL, a.enabled, TRUE FROM admins a "
+        " WHERE NOT EXISTS (SELECT 1 FROM requesters r WHERE r.slack_user_id = a.slack_user_id)")
+    here = {r["principal"]: r for r in rows}
+    is_email = "@" in text
+
+    def hit(name, email):
+        if is_email:
+            return bool(email) and email.strip().lower() == text.lower()
+        return _name_matches(text, name, email)
+
+    out = [{"principal": r["principal"], "known": True, "name": r["name"],
+            "email": r["email"], "enabled": bool(r["enabled"]),
+            "admin": bool(r["is_admin"])}
+           for r in rows if hit(r["name"], r["email"])]
+    status = "ok"
+    if not cfg.ENV.slack_enabled:
+        status = "off"
+    else:
+        try:
+            if is_email:
+                match = _slack_by_email(text)
+                found = [match] if match else []
+            else:
+                found = [p for p in _slack_directory()
+                         if _name_matches(text, p["name"], p["email"])]
+        except Exception:
+            log.warning("people directory: Slack could not be read", exc_info=True)
+            found, status = [], "unavailable"
+        seen = {p["principal"] for p in out}
+        for p in found:
+            if not p.get("principal") or p["principal"] in seen:
+                continue
+            seen.add(p["principal"])
+            r = here.get(p["principal"])
+            out.append({"principal": p["principal"], "known": r is not None,
+                        "name": (r or {}).get("name") or p["name"],
+                        "email": (r or {}).get("email") or p["email"],
+                        "enabled": bool(r and r["enabled"]),
+                        "admin": bool(r and r["is_admin"])})
+    out.sort(key=lambda p: (not p["known"], _fold(p["name"])))
+    return {"people": out[:_DIRECTORY_LIMIT], "directory": status,
+            "more": len(out) > _DIRECTORY_LIMIT}
 
 
 @router.post("/people/{slack_id}/copy-access", status_code=201)

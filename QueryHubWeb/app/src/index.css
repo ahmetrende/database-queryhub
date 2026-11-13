@@ -1763,6 +1763,9 @@
   .qh-pcombo-opt.is-id .qh-pcombo-h { flex: 0 1 auto; }
   .qh-pcombo-idic { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; border-radius: 999px; color: var(--fg-accent); background: var(--brand-adaptive-light); }
   .qh-pcombo-none { padding: 10px 8px; font-size: 12px; color: var(--fg-tertiary); text-wrap: pretty; }
+  /* 2026-11-13 · directory lookup in the person picker: a hit names whether the person is already in QueryHub, and a failed lookup is red. */
+  .qh-pcombo-here { font-weight: 400; color: var(--fg-tertiary); }
+  .qh-pcombo-none.is-bad { color: var(--danger-solid-medium); }
   /* What the resolve answered, in three weights: a known person needs no line,
      a directory hit is information, a miss is a warning worth the danger colour
      — it is the one state where saving writes a grant nobody can use. */

@@ -270,20 +270,38 @@ function accGroup(rows, keyFn) {
 // `GET /admin/people/resolve` is what makes a mistyped id catchable BEFORE the
 // grant exists: `known: false` with a name filled in means "not in QueryHub yet,
 // but the directory says this is who it is"; a null name means nobody has that id.
-function PersonPick({ people, value, onChange, resolve, autoFocus }) {
+function PersonPick({ people, value, onChange, resolve, search, autoFocus }) {
   const [q, setQ] = useAcc(null);      // null = not editing; the box shows `value`
   const [hi, setHi] = useAcc(0);
   const [res, setRes] = useAcc(null);
+  // A directory lookup (2026-11-13): { q, pending } then { q, people, status, more } or { q, error }.
+  const [found, setFound] = useAcc(null);
   const open = q !== null;
   const wrapRef = qhUseDismiss(open, () => setQ(null));
   const known = (people || []).find(p => p.handle === value || p.id === value) || null;
   const term = (q || '').trim().toLowerCase();
   const list = (people || []).filter(p => !term || (p.name + ' ' + p.handle).toLowerCase().includes(term)).slice(0, 8);
   const raw = (q || '').trim();
+  // GET /admin/people/directory finds a person by Slack id, email or name, in
+  // QueryHub and in the Slack directory. Without it, the typed text can only be
+  // used as an id, as before.
+  const doSearch = search || (typeof qhApi !== 'undefined' && qhApi && qhApi.adminPeopleDirectory) || null;
+  const looksId = qhPrincipalIdLike(raw);
+  const notListed = !!raw && !(people || []).some(p => p.handle === raw);
   // The typed text is offered as an id only when it is not already someone in
   // the list — "use Elena Silva" as a principal id is not a thing anyone wants.
-  const asId = raw && !(people || []).some(p => p.handle === raw) && /^[A-Za-z0-9._@-]{3,}$/.test(raw) ? raw : null;
-  const n = list.length + (asId ? 1 : 0);
+  const asId = notListed && (looksId || (!doSearch && /^[A-Za-z0-9._@-]{3,}$/.test(raw))) ? raw : null;
+  const done = found && found.q === raw && !found.pending;
+  const asFind = notListed && !looksId && doSearch && raw.length >= 2 && !done ? raw : null;
+  const hits = done && found.people
+    ? found.people.filter(h => h && h.principal && !list.some(p => p.handle === h.principal || p.id === h.principal)) : [];
+  const opts = [
+    ...list.map(p => ({ kind: 'person', p })),
+    ...(asId ? [{ kind: 'id' }] : []),
+    ...(asFind ? [{ kind: 'find' }] : []),
+    ...hits.map(h => ({ kind: 'hit', h })),
+  ];
+  const n = opts.length;
   const pickPerson = (h) => { onChange(h); setRes(null); setQ(null); };
   const useId = (id) => {
     onChange(id); setQ(null); setRes({ principal: id, pending: true });
@@ -293,7 +311,22 @@ function PersonPick({ people, value, onChange, resolve, autoFocus }) {
       // failed lookup is a note, not a block.
       .catch(() => setRes({ principal: id, failed: true }));
   };
-  const commit = () => { if (hi < list.length) { if (list[hi]) pickPerson(list[hi].handle); } else if (asId) useId(asId); };
+  const runFind = (text) => {
+    setFound({ q: text, pending: true });
+    Promise.resolve().then(() => doSearch(text))
+      .then(r => setFound({ q: text, people: (r && r.people) || [], status: (r && r.directory) || 'ok', more: !!(r && r.more) }),
+        e => setFound({ q: text, error: (e && e.message) || 'The directory could not be read.' }));
+  };
+  // A directory hit carries the `resolve` shape, so the note below words it.
+  const pickHit = (h) => { onChange(h.principal); setRes({ ...h }); setQ(null); setFound(null); };
+  const act = (o) => {
+    if (!o) return;
+    if (o.kind === 'person') pickPerson(o.p.handle);
+    else if (o.kind === 'id') useId(raw);
+    else if (o.kind === 'find') runFind(raw);
+    else if (o.kind === 'hit') pickHit(o.h);
+  };
+  const commit = () => act(opts[hi]);
   const note = () => {
     if (!value || known || !res || res.principal !== value) return null;
     if (res.pending) return <span className="qh-pcombo-note">Checking <b>{value}</b>…</span>;
@@ -302,9 +335,11 @@ function PersonPick({ people, value, onChange, resolve, autoFocus }) {
     if (res.name) return <span className="qh-pcombo-note is-new">Not in QueryHub yet — the directory says this is <b>{res.name}</b>{res.email ? ' · ' + res.email : ''}. Saving access adds them.</span>;
     return <span className="qh-pcombo-note is-bad">Nobody in the directory has the id <b>{value}</b>. Check it before saving — the grant would be written against a principal that cannot sign in.</span>;
   };
+  const optCls = (i) => 'qh-pcombo-opt' + (i === hi ? ' is-hi' : '');
   return (
     <div className={'qh-pcombo' + (open ? ' is-open' : '')} ref={wrapRef}>
-      <input className="qh-input qh-pcombo-in" autoFocus={autoFocus} placeholder="Search people, or paste a principal id…"
+      <input className="qh-input qh-pcombo-in" autoFocus={autoFocus}
+        placeholder={doSearch ? 'Search people: a Slack id, an email or a name…' : 'Search people, or paste a principal id…'}
         value={open ? q : (known ? qhPersonName(known.name) + ' · ' + known.handle : (value || ''))}
         onFocus={() => { setQ(''); setHi(0); }}
         onChange={e => { setQ(e.target.value); setHi(0); }}
@@ -316,28 +351,57 @@ function PersonPick({ people, value, onChange, resolve, autoFocus }) {
         }} />
       {open && (
         <div className="qh-pcombo-pop">
-          {list.map((p, i) => (
-            <button key={p.handle} className={'qh-pcombo-opt' + (i === hi ? ' is-hi' : '')} onMouseEnter={() => setHi(i)}
-              onMouseDown={e => { e.preventDefault(); pickPerson(p.handle); }}>
-              <span className="qh-peravatar sm">{p.initials}</span>
-              <span className="qh-pcombo-name">{qhPersonName(p.name)}</span>
-              <span className="qh-pcombo-h">{p.handle}</span>
+          {opts.map((o, i) => o.kind === 'person' ? (
+            <button key={'p' + o.p.handle} className={optCls(i)} onMouseEnter={() => setHi(i)}
+              onMouseDown={e => { e.preventDefault(); act(o); }}>
+              <span className="qh-peravatar sm">{o.p.initials}</span>
+              <span className="qh-pcombo-name">{qhPersonName(o.p.name)}</span>
+              <span className="qh-pcombo-h">{o.p.handle}</span>
             </button>
-          ))}
-          {asId && (
-            <button className={'qh-pcombo-opt is-id' + (hi === list.length ? ' is-hi' : '')} onMouseEnter={() => setHi(list.length)}
-              onMouseDown={e => { e.preventDefault(); useId(asId); }}>
+          ) : o.kind === 'id' ? (
+            <button key="id" className={optCls(i) + ' is-id'} onMouseEnter={() => setHi(i)}
+              onMouseDown={e => { e.preventDefault(); act(o); }}>
               <span className="qh-pcombo-idic"><AIcon.plus /></span>
               <span className="qh-pcombo-name">Use “{asId}”</span>
               <span className="qh-pcombo-h">principal id — granting adds them</span>
             </button>
-          )}
-          {!n && <div className="qh-pcombo-none">Nobody matches. A Slack id (U…) or a handle can be typed here.</div>}
+          ) : o.kind === 'find' ? (
+            <button key="find" className={optCls(i) + ' is-id qh-pcombo-find'} onMouseEnter={() => setHi(i)}
+              onMouseDown={e => { e.preventDefault(); act(o); }}>
+              <span className="qh-pcombo-idic"><AIcon.search /></span>
+              <span className="qh-pcombo-name">Find “{asFind}”</span>
+              <span className="qh-pcombo-h">by name or email, in QueryHub and Slack</span>
+            </button>
+          ) : (
+            <button key={'h' + o.h.principal} className={optCls(i) + ' qh-pcombo-hit'} onMouseEnter={() => setHi(i)}
+              onMouseDown={e => { e.preventDefault(); act(o); }}>
+              <span className="qh-peravatar sm">{qhInitialsOf(o.h.name || o.h.principal)}</span>
+              <span className="qh-pcombo-name">{o.h.name ? qhPersonName(o.h.name) : o.h.principal}{o.h.known ? <span className="qh-pcombo-here"> · in QueryHub</span> : null}</span>
+              <span className="qh-pcombo-h">{[o.h.email, o.h.principal].filter(Boolean).join(' · ')}</span>
+            </button>
+          ))}
+          {found && found.q === raw && found.pending && <div className="qh-pcombo-none" role="status">Looking up “{raw}”…</div>}
+          {found && found.q === raw && found.error && <div className="qh-pcombo-none is-bad" role="alert">{found.error}</div>}
+          {done && !found.error && !hits.length && !list.length && <div className="qh-pcombo-none">Nobody in QueryHub or the Slack directory matches “{raw}”.</div>}
+          {done && found.status === 'unavailable' && <div className="qh-pcombo-none">Slack could not be read, so only QueryHub people are listed.</div>}
+          {done && found.more && <div className="qh-pcombo-none">More people match. Type more of the name.</div>}
+          {!n && !(found && found.q === raw) && <div className="qh-pcombo-none">{doSearch ? 'Nobody matches. Type a Slack id (U…), an email or a name.' : 'Nobody matches. A Slack id (U…) or a handle can be typed here.'}</div>}
         </div>
       )}
       {note()}
     </div>
   );
+}
+
+// A Slack user id or a local account id: used as typed, never looked up by name.
+function qhPrincipalIdLike(text) {
+  const t = String(text || '').trim();
+  return /^[UW][A-Z0-9]{8,}$/.test(t) || /^local:[A-Za-z0-9._-]{1,64}$/.test(t);
+}
+// Two letters for an avatar from a name or an id.
+function qhInitialsOf(name) {
+  const parts = String(name || '').trim().split(/[\s._@-]+/).filter(Boolean);
+  return ((parts[0] || '?')[0] + (parts[1] ? parts[1][0] : '')).toUpperCase();
 }
 
 // ---------- Subject-centric access editor: one subject → many connections ----------
