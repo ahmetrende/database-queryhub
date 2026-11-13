@@ -167,6 +167,8 @@ const qhApi = {
   // Batch: submit several queries as one bundle (one Slack approval round).
   submitBatch: (body)  => qhFetch('/queries/batch', { method: 'POST', body: JSON.stringify(body) }),
   status:      (id)    => qhFetch('/queries/' + id),
+  // One batch or fleet run: the state of each item, for the fleet run page.
+  bundle:      (id)    => qhFetch('/bundles/' + encodeURIComponent(id)),
   // The v3 results grid is paged: it reads result.total + result.cols +
   // result.piiCols and pulls each page via result.slice(offset, count).
   // Server rows are already PII-masked, so the grid never re-masks. Until

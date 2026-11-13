@@ -1286,6 +1286,74 @@ def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
     }
 
 
+@router.get("/bundles/{bundle_id}")
+def bundle_status(bundle_id: int, claims: dict = Depends(deps.current_user)):
+    """One bundle and the state of each item, for the fleet run page.
+
+    Only the person who submitted the bundle can read it, as with GET
+    /queries/{id}. Any other id gives 404, so a response never shows that a
+    bundle exists. The page polls this one URL, not one URL per item: three
+    reads cover the bundle, its items and their audit actions."""
+    deps.require_whitelisted(claims)
+    uid = claims["sub"]
+    b = db.fetch_one(
+        "SELECT id, kind, on_failure, justification, created_at, scheduled_for "
+        "FROM request_bundles WHERE id = %s AND requester_slack_id = %s",
+        (bundle_id, uid))
+    if b is None:
+        raise deps._error(404, "not_found", "No such bundle.")
+    rows = db.fetch_all(
+        "SELECT id, position, target_server_id, database_name, query, status, "
+        "       row_count, executed_at, completed_at, error_message, decision_reason "
+        "FROM requests WHERE bundle_id = %s AND requester_slack_id = %s "
+        "ORDER BY position, id", (bundle_id, uid))
+    ids = [r["id"] for r in rows]
+    acts: dict[int, set[str]] = {}
+    if ids:
+        for a in db.fetch_all(
+                "SELECT request_id, action FROM audit_log "
+                "WHERE request_id = ANY(%s) AND action = ANY(%s)",
+                (ids, list(mapping.OUTCOME_ACTIONS))):
+            acts.setdefault(a["request_id"], set()).add(a["action"])
+    aliases: dict[int, str | None] = {}
+    items = []
+    for r in rows:
+        tid = r.get("target_server_id")
+        if tid is not None and tid not in aliases:
+            aliases[tid] = _alias_of(tid)
+        outcome = mapping.request_outcome(r.get("status"), acts.get(r["id"], ()))
+        state = mapping.bundle_item_state(r.get("status"))
+        items.append({
+            "queryId": str(r["id"]),
+            "position": r.get("position"),
+            "connectionId": aliases.get(tid) if tid is not None else None,
+            "databaseId": r.get("database_name"),
+            "state": state,
+            "status": mapping.status_to_web(r.get("status") or ""),
+            "awaitingDba": mapping.awaiting_dba(r.get("status")),
+            "outcome": outcome,
+            "rowCount": r.get("row_count") if state == "ok" else None,
+            "runMs": mapping.run_ms(r),
+            "detail": mapping.bundle_item_detail(r, outcome),
+        })
+    texts = {r.get("query") for r in rows}
+    states = [mapping.bundle_item_state(r.get("status")) for r in rows]
+    return {
+        "bundleId": str(b["id"]),
+        "kind": b.get("kind") or "batch",
+        "onFailure": b.get("on_failure"),
+        "submittedAt": mapping.iso(b.get("created_at")),
+        "scheduledFor": mapping.iso(b.get("scheduled_for")),
+        "justification": b.get("justification"),
+        # A fleet run has one SQL text. A batch has one text per item.
+        "sql": rows[0].get("query") if rows and len(texts) == 1 else None,
+        "counts": mapping.bundle_counts(states),
+        # No item waits or runs, so the page stops polling.
+        "done": all(st in ("ok", "failed", "not_run") for st in states),
+        "items": items,
+    }
+
+
 @router.post("/queries/{request_id}/seen")
 def query_seen(request_id: int, claims: dict = Depends(deps.current_user)):
     """The requester has read this request after it ended.

@@ -401,7 +401,7 @@ def test_history_rows_say_where_the_request_came_from(web, monkeypatch):
         "3": "mcp", "2": "web", "1": "slack"}
     # The query reads the column. A mapper alone would pass on a stub row.
     sql = " ".join(next(q for q, _ in seen["sql"] if q.startswith("SELECT id, query")).split())
-    assert ", origin, requester_seen_at FROM requests" in sql
+    assert ", origin, requester_seen_at, bundle_id FROM requests" in sql
 
 
 def test_history_reads_the_audit_rows_once_and_only_for_runs(web, monkeypatch):

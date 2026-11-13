@@ -1917,6 +1917,18 @@ function statusOfBase(rec) {
     push(closed.completed ? 'ok' : 'err', closed.completed ? 'Run by hand by ' + closed.by + '.' : 'A DBA could not run it: ' + closed.reason);
     return { status: closed.completed ? 'done' : 'failed', awaitingDba: false, runMs: null, messages: msg, audit };
   }
+  // MOCK (M12c, 2026-11-13): a fleet run of two or more items fails its second
+  // item, and a run that stops at the first failure skips the items after it.
+  // The fleet run page then has a failure and a skip to show. Invented error.
+  if (rec.mockSkip && el >= approvedAt + RUN_MS) {
+    push('err', rec.mockSkip);
+    return { status: 'rejected', runMs: null, messages: msg, audit, outcome: 'skipped' };
+  }
+  if (rec.mockFail && el >= approvedAt + RUN_MS) {
+    push('info', 'Running on ' + rec.conn + '/' + rec.db + '…');
+    push('err', rec.mockFail);
+    return { status: 'failed', runMs: null, messages: msg, audit };
+  }
   if (el < approvedAt + RUN_MS) {
     push('info', 'Running on ' + rec.conn + '/' + rec.db + '…');
     return { status: 'running', runMs: null, messages: msg, audit };
@@ -2443,12 +2455,68 @@ const qhApi = {
     if (needs && !String(body.justification || '').trim()) {
       return mockFail('Write a justification for this bundle.', 400, 'justification_required');
     }
+    // Fleet run: one SQL text, each (connection, database) pair once.
+    if (body.fleet) {
+      const texts = new Set(bItems.map(it => String(it.sql || '').trim()));
+      if (texts.size > 1) return mockFail('A fleet run sends one SQL text to every item.', 422, 'validation');
+      const pairSeen = new Set();
+      for (const it of bItems) {
+        const k = it.connectionId + '/' + it.databaseId;
+        if (pairSeen.has(k)) return mockFail('A fleet run lists each connection and database once.', 422, 'validation');
+        pairSeen.add(k);
+      }
+    }
     const bundleId = mockId('bnd');
-    return { bundleId, items: (body.items || []).map(it => {
+    const allRO = bItems.length > 0 && bItems.every(it => window.qhClassify(it.sql || '').tier === 'RO');
+    const onFailure = body.fleet ? (body.onFailure || (allRO ? 'continue' : 'stop')) : null;
+    const recs = [];
+    // `queryId`, as the server sends it (routes_queries.submit_batch).
+    const out = { bundleId, items: (body.items || []).map((it, i) => {
       const rec = newRequest(it, bundleId);
-      return { id: rec.id, status: statusOf(rec).status };
+      rec.pos = i + 1;
+      // A fleet run never auto-approves, RO included (the server rule).
+      if (body.fleet) rec.auto = false;
+      recs.push(rec);
+      return { id: rec.id, queryId: rec.id, status: statusOf(rec).status };
     }) };
+    MOCK.bundles = MOCK.bundles || {};
+    MOCK.bundles[bundleId] = { kind: body.fleet ? 'fleet' : 'batch', onFailure,
+      justification: (body.justification && String(body.justification).trim()) || null,
+      submittedAt: new Date().toISOString() };
+    if (body.fleet) {
+      if (recs.length >= 2) {
+        recs[1].mockFail = 'permission denied for table ledgers';
+        if (onFailure === 'stop') recs.slice(2).forEach(r => { r.mockSkip = 'Not run: ' + recs[1].conn + ' failed first. The fleet run stops at the first failure.'; });
+      }
+      out.fleet = true;
+      out.onFailure = onFailure;
+    }
+    return out;
   }, 340),
+  // One batch or fleet run, as GET /bundles/{id} sends it (M12c).
+  bundle: (id) => mockDelay(() => {
+    const b = (MOCK.bundles || {})[String(id)];
+    const recs = Object.values(MOCK.requests).filter(r => r.bundleId === String(id))
+      .sort((x, y) => (x.pos || 0) - (y.pos || 0));
+    if (!b && !recs.length) return mockFail('No such bundle.', 404, 'not_found');
+    const stateOf = { done: 'ok', failed: 'failed', running: 'running', pending: 'waiting', approved: 'waiting', scheduled: 'waiting', rejected: 'not_run' };
+    const items = recs.map((rec, i) => {
+      const st = statusOf(rec);
+      const state = stateOf[st.status] || 'waiting';
+      const errLine = (st.messages || []).filter(m => m && m.kind === 'err').pop();
+      return { queryId: rec.id, position: rec.pos || i + 1, connectionId: rec.conn, databaseId: rec.db,
+        state, status: st.status, awaitingDba: !!st.awaitingDba, outcome: st.outcome || null,
+        rowCount: state === 'ok' ? (st.rowCount != null ? st.rowCount : 1) : null, runMs: st.runMs || null,
+        detail: (state === 'failed' || state === 'not_run') ? (errLine ? errLine.text : 'Not run.') : null };
+    });
+    const counts = { ok: 0, failed: 0, not_run: 0, running: 0, waiting: 0 };
+    items.forEach(it => { counts[it.state] += 1; });
+    const texts = new Set(recs.map(r => r.sql));
+    return { bundleId: String(id), kind: (b && b.kind) || 'batch', onFailure: (b && b.onFailure) || null,
+      submittedAt: (b && b.submittedAt) || null, scheduledFor: null, justification: (b && b.justification) || null,
+      sql: recs.length && texts.size === 1 ? recs[0].sql : null, counts,
+      done: counts.running === 0 && counts.waiting === 0, items };
+  }, 120),
   status: (id) => mockDelay(() => {
     mockSeedLifecycle();
     const rec = MOCK.requests[id];

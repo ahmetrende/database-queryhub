@@ -935,7 +935,7 @@ function qhTreeTableId(connId, dbId, branch, schema, table) {
   return connId + '/' + dbId + branch + '/' + schema + '.' + table;
 }
 
-function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, onReloadCatalog, hiddenDbs, onToggleHiddenDb, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onInsertSaved, onDeleteSaved, snippets, canDeleteShared, onSaveSnippet, onDeleteSnippet, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, pending, onOpenPending, onResubmit, histFocus, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
+function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, onReloadCatalog, hiddenDbs, onToggleHiddenDb, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onInsertSaved, onDeleteSaved, snippets, canDeleteShared, onSaveSnippet, onDeleteSnippet, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, pending, onOpenPending, onResubmit, histFocus, onOpenBundle, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
   const [open, setOpen] = React.useState(() => ({ 'prod-main': true, 'prod-replica': true }));
   // History (2026-10-24): which group the chips show, and the row that a bell
   // item points at. `histFocus` is { id, n }: the parent bumps `n` for each ask.
@@ -1358,6 +1358,11 @@ function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSea
             </button>
             {h.outcome === 'changes_requested' && onResubmit && (
               <button className="qh-btn qh-btn-ghost qh-btn-sm qh-hist-resub" onClick={() => onResubmit(h)} title="Open a new tab with this SQL and this target">Edit and resubmit</button>
+            )}
+            {/* A request of a batch or fleet run opens the whole bundle: the state
+                of every item on one page (M12c, 2026-11-13). */}
+            {h.bundleId && onOpenBundle && (
+              <button className="qh-btn qh-btn-ghost qh-btn-sm qh-hist-resub qh-hist-bundle" onClick={() => onOpenBundle(h.bundleId)} title="Show the state of each item of this bundle">Open bundle B#{h.bundleId}</button>
             )}
           </div>
           );
@@ -1981,6 +1986,7 @@ const QH_ENDED_TEXT = {
   withdrawn: 'You withdrew this request before it ran. Nothing ran.',
   expired: 'Nobody decided in time, so the request closed. Nothing ran. Submit it again if you still need it.',
   changes_requested: 'A DBA asked for changes. Nothing ran. Edit the SQL and submit it again.',
+  skipped: 'An earlier item of this fleet run failed, and the run stops at the first failure. Nothing ran here.',
 };
 // `note` is the DBA's own line from Messages ("Rejected by <name>: <note>"), for the
 // two outcomes where a DBA wrote one. Nothing is invented here: no line, no note.

@@ -113,8 +113,12 @@ EXPIRY_ACTION = "request_expired"
 #: replaces a pending request). An admin can cancel a scheduled run too, and
 #: that also reads as `withdrawn`: a person stopped the request before it ran.
 WITHDRAWAL_ACTIONS = frozenset({"withdrawn", "cancelled"})
+#: The audit action of an item that a fleet run did not run, because an earlier
+#: item failed and the run stops at the first failure
+#: (executor.FLEET_SKIPPED_ACTION). Nobody withdrew it.
+FLEET_SKIPPED_ACTION = "fleet_skipped"
 #: The audit actions that `request_outcome` reads. A page asks for these only.
-OUTCOME_ACTIONS = (EXPIRY_ACTION, *sorted(WITHDRAWAL_ACTIONS))
+OUTCOME_ACTIONS = (EXPIRY_ACTION, FLEET_SKIPPED_ACTION, *sorted(WITHDRAWAL_ACTIONS))
 #: The statuses whose outcome comes from the audit log. Every other status
 #: gives its outcome alone.
 OUTCOME_NEEDS_AUDIT = frozenset({"cancelled"})
@@ -126,7 +130,10 @@ _OUTCOME_OF_STATUS = {"rejected": "denied",
 def request_outcome(status: str | None,
                     actions: Iterable[str | None] | None) -> str | None:
     """How a request closed without running: `withdrawn`, `expired`, `denied`,
-    `changes_requested`, or None.
+    `changes_requested`, `skipped`, or None.
+
+    `skipped` is an item of a fleet run that stops at the first failure: an
+    earlier item failed, so this one never ran.
 
     None for every other status, and for a request that is still open.
     `actions` holds the audit actions of the request. Only a `cancelled`
@@ -140,11 +147,77 @@ def request_outcome(status: str | None,
     if status not in OUTCOME_NEEDS_AUDIT:
         return None
     acts = set(actions or ())
+    if FLEET_SKIPPED_ACTION in acts:
+        return "skipped"
     if EXPIRY_ACTION in acts:
         return "expired"
     if acts & WITHDRAWAL_ACTIONS:
         return "withdrawn"
     return None
+
+
+# ---- one item of a bundle, for the fleet run page -------------------------
+#
+# GET /bundles/{id} gives each item one of five states. The page counts them
+# ("38 ok, 3 failed, 2 not run") and names every failure.
+
+_BUNDLE_ITEM_STATE = {
+    "pending": "waiting", "approved": "waiting", "scheduled": "waiting",
+    "executing": "running",
+    "completed": "ok",
+    "failed": "failed",
+    # The bot could not run it. Nothing was applied, and a DBA must run it.
+    "awaiting_dba_manual": "failed",
+}
+
+#: The order of the counts on the page.
+BUNDLE_ITEM_STATES = ("ok", "failed", "not_run", "running", "waiting")
+
+
+def bundle_item_state(status: str | None) -> str:
+    """ok | failed | not_run | running | waiting. Every end without a run
+    (denied, withdrawn, expired, skipped) is `not_run`."""
+    return _BUNDLE_ITEM_STATE.get(status or "", "not_run")
+
+
+_NOT_RUN_LABEL = {
+    "denied": "Denied", "withdrawn": "Withdrawn", "expired": "Expired",
+    "changes_requested": "Changes requested", "skipped": "Skipped",
+}
+
+
+def bundle_item_detail(row: dict, outcome: str | None) -> str | None:
+    """One line that says why an item failed or did not run. None for an item
+    that ran or still waits. The text is the request's own error or reason,
+    the same text that GET /queries/{id} shows in Messages."""
+    status = row.get("status")
+    if status == "failed":
+        return row.get("error_message") or "Execution failed."
+    if status == "awaiting_dba_manual":
+        why = (row.get("error_message") or "").split("—", 1)[-1].strip().rstrip(".")
+        return ("QueryHub could not run this" + (f": {why}" if why else "")
+                + ". A DBA must run it manually.")
+    if bundle_item_state(status) != "not_run":
+        return None
+    reason = (row.get("error_message") or row.get("decision_reason") or "").strip()
+    label = _NOT_RUN_LABEL.get(outcome or "")
+    if outcome == "skipped":
+        return reason or "Skipped: an earlier item failed."
+    if outcome in ("denied", "changes_requested"):
+        # The DBA's own note, when there is one.
+        return f"{label}: {reason}" if reason else label
+    if label:
+        # A withdrawal and an expiry have no note to add.
+        return label
+    return reason or "Not run."
+
+
+def bundle_counts(states: Iterable[str]) -> dict[str, int]:
+    """How many items are in each state. Every state has a key."""
+    out = {s: 0 for s in BUNDLE_ITEM_STATES}
+    for s in states:
+        out[s] = out.get(s, 0) + 1
+    return out
 
 
 def env_of(alias: str) -> str:
@@ -259,6 +332,8 @@ def history_entry(row: dict, alias_of: "callable",
            if actions_of else {}),
         # How long the run took, in whole ms. Null until both ends are known.
         "durationMs": run_duration_ms(row.get("executed_at"), row.get("completed_at")),
+        # The batch or fleet run that holds the request (GET /bundles/{id}).
+        "bundleId": str(row["bundle_id"]) if row.get("bundle_id") else None,
     }
 
 
@@ -603,6 +678,7 @@ AUDIT_KIND = {
     "completed_manually": "approve",
     "rejected": "reject", "cancelled": "reject", "escalated_to_dba": "reject",
     "withdrawn": "reject", "cancelled_running": "reject",
+    "fleet_skipped": "reject",
     "changes_requested": "changes",
     "user_grant_added": "grant", "team_grant_added": "grant",
     "team_grant_removed": "grant", "access_revoked": "grant",
@@ -640,6 +716,7 @@ _EVENT_LABEL = {
     "team_grant_expiry_changed": "Team grant end changed",
     "auto_approve_disabled": "Auto-approve switched off",
     "auto_approve_enabled": "Auto-approve switched on",
+    "fleet_skipped": "Not run: an earlier fleet item failed",
 }
 
 

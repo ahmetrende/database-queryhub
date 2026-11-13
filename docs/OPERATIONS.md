@@ -1103,6 +1103,20 @@ first failed item cancels every item that has not started, with the reason
 has 4 workers, so a fleet run never blocks every other request. Each fleet item
 checks again that the requester is still an admin.
 
+A skipped item has the audit action `fleet_skipped` and the outcome `skipped`.
+It does not read as a withdrawal.
+
+#### Results per target
+
+After the submit, the web opens a "Fleet run B#N" tab. It reads
+`GET /bundles/{id}` every 3 seconds until no item waits or runs.
+
+- Each item has one state: `ok`, `failed`, `not_run`, `running` or `waiting`.
+  `not_run` covers a denial, a withdrawal, an expiry and a skip.
+- The tab shows the count per state and names each failed item with its error.
+- "Open" on a row opens that item's request in a query tab, with its result.
+- Only the submitter can read the bundle. Any other id gives 404.
+
 ```sql
 -- Cap the pairs in one fleet run (default 50).
 UPDATE bot_config SET value = '50' WHERE key = 'fleet_max_targets';

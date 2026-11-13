@@ -1415,6 +1415,8 @@ const QH_OUTCOMES = {
   withdrawn:         { label: 'Withdrawn',         cls: 'st-withdrawn', title: 'Withdrawn before it ran.' },
   expired:           { label: 'Expired',           cls: 'st-expired',   title: 'Nobody decided in time, so the request closed.' },
   changes_requested: { label: 'Changes requested', cls: 'st-changes',   title: 'A DBA asked for changes. Edit the SQL and submit it again.' },
+  // A fleet run that stops at the first failure skips the items after it (M12c).
+  skipped:           { label: 'Skipped',           cls: 'st-withdrawn', title: 'Not run: an earlier item of the fleet run failed.' },
 };
 function qhOutcomeInfo(outcome) { return QH_OUTCOMES[outcome] || null; }
 
@@ -1449,6 +1451,8 @@ function qhHistoryRow(h) {
     state: h.connectionState || null,
     outcome: h.outcome || null, createdAt: h.createdAt || null,
     durationMs: typeof h.durationMs === 'number' ? h.durationMs : null,
+    // The batch or fleet run of the request, so History can open all its items.
+    bundleId: h.bundleId ? String(h.bundleId) : null,
   };
 }
 
@@ -1772,7 +1776,129 @@ function qhTimelineTotal(rows) {
   return span ? span + ' from ' + first.label + ' to ' + last.label : '';
 }
 
+// Fleet run: one SQL text sent to many (connection, database) pairs as ONE
+// bundle with ONE approval (admin only). The pair list is chosen here and is
+// frozen at submit time: the server receives the explicit pairs, never a
+// pattern, so what the admin saw is exactly what runs.
+
+// Comma-separated list of globs, OR-ed. `*` = any run, `?` = one character,
+// everything else is literal. Case-insensitive. A blank pattern matches all.
+function qhFleetGlob(pattern, text) {
+  const parts = String(pattern == null ? '' : pattern).split(',').map(p => p.trim()).filter(Boolean);
+  if (!parts.length) return true;
+  const t = String(text == null ? '' : text);
+  return parts.some(p => {
+    const src = p.split('').map(ch => (
+      ch === '*' ? '.*' : ch === '?' ? '.' : ch.replace(/[.+^${}()|[\]\\\-\/]/g, '\\$&')
+    )).join('');
+    return new RegExp('^' + src + '$', 'is').test(t);
+  });
+}
+
+// Every usable (connection, database) pair of the caller, sorted by alias then
+// database. `meta` is keyed by connection id: { tags, owners }. May be missing.
+function qhFleetPairs(connections, meta) {
+  const out = [];
+  (connections || []).forEach(conn => {
+    if (!conn || conn.disabled || !Array.isArray(conn.databases)) return;
+    const m = (meta && meta[conn.id]) || {};
+    conn.databases.forEach(db => {
+      if (!db || !db.tier) return;
+      out.push({
+        key: conn.id + '/' + db.id,
+        connectionId: conn.id,
+        databaseId: db.id,
+        alias: conn.name || conn.id,
+        engine: conn.engine || '',
+        env: conn.env || '',
+        tier: db.tier,
+        tags: m.tags || {},
+        owners: (m.owners || []).map(o => (o && (o.displayName || o.name)) || '').filter(Boolean),
+      });
+    });
+  });
+  const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  return out.sort((a, b) => cmp(String(a.alias).toLowerCase(), String(b.alias).toLowerCase())
+    || cmp(String(a.databaseId).toLowerCase(), String(b.databaseId).toLowerCase()));
+}
+
+// Keep the pairs that pass every set field of f = { glob, engine, env, tag, owner }.
+function qhFleetFilter(pairs, f) {
+  const o = f || {};
+  const lc = (s) => String(s == null ? '' : s).toLowerCase();
+  const tagWant = String(o.tag || '').trim();
+  const ownerWant = lc(String(o.owner || '').trim());
+  return (pairs || []).filter(p => {
+    if (String(o.glob || '').trim()
+        && !(qhFleetGlob(o.glob, p.alias) || qhFleetGlob(o.glob, p.alias + '/' + p.databaseId))) return false;
+    if (o.engine && p.engine !== o.engine) return false;
+    if (o.env && p.env !== o.env) return false;
+    if (tagWant) {
+      const tags = p.tags || {};
+      const eq = tagWant.indexOf('=');
+      if (eq > 0) {
+        const k = tagWant.slice(0, eq).trim(), v = lc(tagWant.slice(eq + 1).trim());
+        if (lc(tags[k]) !== v || tags[k] == null) return false;
+      } else if (!Object.keys(tags).some(k => lc(tags[k]) === lc(tagWant))) return false;
+    }
+    if (ownerWant && !(p.owners || []).some(n => lc(n) === ownerWant)) return false;
+    return true;
+  });
+}
+
+function qhFleetTierRank(tier) {
+  const i = ['RO', 'RW', 'DDL'].indexOf(String(tier == null ? '' : tier).toUpperCase());
+  return i;
+}
+function qhFleetCovers(pair, needTier) {
+  const have = qhFleetTierRank(pair && pair.tier), need = qhFleetTierRank(needTier);
+  return have >= 0 && need >= 0 && have >= need;
+}
+// A read-only fleet run keeps going past a failed item. Anything that writes stops.
+function qhFleetDefaultOnFailure(tier) {
+  return qhFleetTierRank(tier) === 0 ? 'continue' : 'stop';
+}
+
+// ---------- Fleet run results (M12c, 2026-11-13) ----------
+// GET /bundles/{id} gives each item one state. The page counts the states and
+// names every failure. `not_run` covers a denial, a withdrawal, an expiry and
+// an item that a stop-at-first-failure run skipped.
+const QH_FLEET_STATES = ['ok', 'failed', 'not_run', 'running', 'waiting'];
+const QH_FLEET_STATE_INFO = {
+  ok:      { label: 'OK',      word: 'ok',      cls: 'is-ok' },
+  failed:  { label: 'Failed',  word: 'failed',  cls: 'is-bad' },
+  not_run: { label: 'Not run', word: 'not run', cls: 'is-skip' },
+  running: { label: 'Running', word: 'running', cls: 'is-run' },
+  waiting: { label: 'Waiting', word: 'waiting', cls: 'is-wait' },
+};
+// An unknown state from a newer server reads as waiting, so the page polls on.
+function qhFleetStateOf(item) {
+  const s = item && item.state;
+  return QH_FLEET_STATE_INFO[s] ? s : 'waiting';
+}
+function qhFleetStateInfo(state) { return QH_FLEET_STATE_INFO[state] || QH_FLEET_STATE_INFO.waiting; }
+
+// { counts, total, done, line }. `line` names the states that have items, in a
+// fixed order: '38 ok · 3 failed · 2 not run'. `done` is true when no item
+// waits or runs, so the page stops polling. A bundle with no items is done.
+function qhFleetSummary(items) {
+  const list = Array.isArray(items) ? items : [];
+  const counts = {};
+  QH_FLEET_STATES.forEach(k => { counts[k] = 0; });
+  list.forEach(i => { counts[qhFleetStateOf(i)] += 1; });
+  const line = QH_FLEET_STATES.filter(k => counts[k] > 0)
+    .map(k => counts[k] + ' ' + QH_FLEET_STATE_INFO[k].word).join(' · ');
+  return { counts, total: list.length, done: counts.running === 0 && counts.waiting === 0, line };
+}
+
+// The page title. A batch and a fleet run both have a bundle id.
+function qhBundleTitle(kind, id) {
+  return (kind === 'fleet' ? 'Fleet run' : kind === 'batch' ? 'Batch' : 'Bundle') + ' B#' + id;
+}
+
 Object.assign(window, { qhTreeObject,
+  qhFleetGlob, qhFleetPairs, qhFleetFilter, qhFleetTierRank, qhFleetCovers, qhFleetDefaultOnFailure,
+  QH_FLEET_STATES, QH_FLEET_STATE_INFO, qhFleetStateOf, qhFleetStateInfo, qhFleetSummary, qhBundleTitle,
   qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhSelectionLines, qhPrimaryLabel, qhJudgedText, qhShiftRanges, qhConfirmReasons, qhSplitReasons,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,

@@ -32,6 +32,14 @@ function whatsNewTab() {
   return { id: 'whatsnew', kind: 'whatsnew', name: "What's new", sql: '', conn: 'prod-replica', db: 'users_ro',
     dirty: false, result: null, status: null, runMs: null, messages: [], audit: [], touchedAt: Date.now() };
 }
+// One tab per batch or fleet run (M12c, 2026-11-13). It has no editor: it shows
+// the state of each item (FleetRunPage). The id holds the bundle id, so a second
+// open of the same bundle selects the tab that is already open.
+function bundleTab(bundleId, name) {
+  const id = String(bundleId);
+  return { id: 'bundle-' + id, kind: 'bundle', bundleId: id, name: name || qhBundleTitle(null, id), sql: '', conn: null, db: null,
+    dirty: false, result: null, status: null, runMs: null, messages: [], audit: [], touchedAt: Date.now() };
+}
 
 // ----- Workspace persistence (resume where you left off) -----
 // Open tabs are saved locally; the backend mirrors this per-user and a
@@ -46,7 +54,7 @@ function qhLoadWorkspace() {
     const fresh = w.tabs.filter(t => !t.touchedAt || (now - t.touchedAt) < QH_WS_TTL);
     if (!fresh.length) return null;
     let maxN = 0;
-    const tabs = fresh.map(t => { const n = parseInt(String(t.id).replace(/\D/g, '')) || 0; if (n > maxN) maxN = n; return { id: t.id, kind: t.kind, name: t.name, sql: t.sql, conn: t.conn, db: t.db, reqId: t.reqId, qid: t.qid, touchedAt: t.touchedAt || now, dirty: false, result: null, status: null, runMs: null, messages: [], audit: [],
+    const tabs = fresh.map(t => { const n = parseInt(String(t.id).replace(/\D/g, '')) || 0; if (n > maxN) maxN = n; return { id: t.id, kind: t.kind, bundleId: t.bundleId || undefined, name: t.name, sql: t.sql, conn: t.conn, db: t.db, reqId: t.reqId, qid: t.qid, touchedAt: t.touchedAt || now, dirty: false, result: null, status: null, runMs: null, messages: [], audit: [],
       // 2026-11-09: a tab saved without the flag gets it from qhNameTabs (legacy rule).
       autoName: (t.autoName === true || t.autoName === false) ? t.autoName : undefined,
       unpicked: t.unpicked === true ? true : undefined }; });
@@ -283,6 +291,7 @@ function App() {
   // only door; the ask still goes to a DBA — granting stays an admin action.
   const [autoReqOpen, setAutoReqOpen] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
+  const [fleetOpen, setFleetOpen] = useState(false);
   const [closePrompt, setClosePrompt] = useState(null);
   const [saveDest, setSaveDest] = useState('server');
   const [savedList, setSavedList] = useState(qhLoadSaved);
@@ -461,7 +470,7 @@ function App() {
   }, []);
   useEffect(() => {
     try {
-      const slim = { activeId, savedAt: Date.now(), tabs: tabs.map(t => ({ id: t.id, kind: t.kind, name: t.name, sql: t.sql, conn: t.conn, db: t.db, // reqId is persisted so a reload does not change the number a tab has
+      const slim = { activeId, savedAt: Date.now(), tabs: tabs.map(t => ({ id: t.id, kind: t.kind, bundleId: t.bundleId || undefined, name: t.name, sql: t.sql, conn: t.conn, db: t.db, // reqId is persisted so a reload does not change the number a tab has
         // been showing. Without it every reload would reserve a new id.
         reqId: t.reqId, qid: t.qid, touchedAt: t.touchedAt || Date.now(),
         // 2026-11-09: an auto-named tab and a tab with no target yet stay so after a reload.
@@ -886,6 +895,7 @@ function App() {
   const bindOnClick = qhTabBindsOnClick(tab);
   const isWelcome = tab.kind === 'welcome';
   const isWhatsNew = tab.kind === 'whatsnew';
+  const isBundle = tab.kind === 'bundle';
 
   // ----- editor change -----
   const onCode = (sql) => patch(activeId, { sql, dirty: true, touchedAt: Date.now() });
@@ -972,6 +982,37 @@ function App() {
     if (t.hideSidebar) setTweak('hideSidebar', false);
     setSideMode('history');
     setHistFocus({ id: String(id), n: Date.now() });
+  };
+
+  // A batch or fleet run opens as its own tab (M12c). A second open selects it.
+  const openBundle = (bundleId, name) => {
+    if (!bundleId) return;
+    setView('dev');
+    const f = bundleTab(bundleId, name);
+    setTabs(ts => ts.some(x => x.id === f.id) ? ts : [...ts, f]);
+    setActiveId(f.id);
+  };
+  // "Open" on a row of the bundle page: the item's request in a query tab, with
+  // its result. The status read gives the SQL and a target the person can still
+  // use. A tab that already holds the request is selected instead.
+  const openBundleItem = (it) => {
+    if (!it || !it.queryId) return;
+    const qid = String(it.queryId);
+    const own = tabs.find(x => !x.kind && x.qid && String(x.qid) === qid);
+    if (own) { setActiveId(own.id); return; }
+    Promise.resolve().then(() => qhApi.status(qid)).then(s => {
+      const f = freshTab({ name: (it.connectionId || 'Request') + ' / ' + (it.databaseId || qid), autoName: false,
+        sql: (s && s.sql) || '', conn: (s && s.connectionId) || null, db: (s && s.databaseId) || null,
+        qid, reqId: qid, status: (s && s.status) || it.status || null, submittedAt: (s && s.submittedAt) || null,
+        ranSql: (s && s.sql) || null, ranDb: (s && s.databaseId) || null, ranConn: (s && s.connectionId) || null });
+      setTabs(ts => [...ts, f]); setActiveId(f.id); setResTab('results');
+      track(f.id, qid);
+    }, e => pushToast((e && e.message) || 'Could not open this request.'));
+  };
+  const nameBundleTab = (bundleId, kind) => {
+    const id = 'bundle-' + String(bundleId);
+    const name = qhBundleTitle(kind, String(bundleId));
+    setTabs(ts => ts.some(x => x.id === id && x.name !== name) ? ts.map(x => (x.id === id ? { ...x, name } : x)) : ts);
   };
 
   // Reserve the request id for a tab the moment it exists, then patch it in.
@@ -1533,6 +1574,30 @@ function App() {
     });
   };
 
+  // Fleet run: one SQL text on many (connection, database) pairs, one bundle.
+  // Returns a promise: null on success, the server message on a refusal, so the
+  // modal can show it and stay open. No tab per item: the fleet run tab shows
+  // the state of every item, and "Open" there opens one item's result (M12c).
+  const submitFleet = ({ pairs, onFailure, why: fleetWhy }) => {
+    if (killed) { pushToast('The kill switch is on. No query can run.'); return Promise.resolve('The kill switch is on. No query can run.'); }
+    if (redactedIn(tab.sql).length) {
+      const m = 'This tab still has a hidden password. Type it in again before you submit.';
+      pushToast(m); return Promise.resolve(m);
+    }
+    const items = pairs.map(p => ({ connectionId: p.connectionId, databaseId: p.databaseId, sql: tab.sql }));
+    const tabId = activeId;
+    return qhApi.submitBatch({ items, justification: (fleetWhy || '').trim() || null, fleet: true, onFailure }).then(r => {
+      setFleetOpen(false);
+      const text = 'Fleet run B#' + r.bundleId + ' submitted: ' + items.length + ' databases. One approval covers all of them. The fleet run tab shows each result.';
+      patch(tabId, { messages: [...((tabs.find(t => t.id === tabId) || {}).messages || []), { kind: 'info', text, time: nowTime() }] });
+      refreshHistory();
+      if (fleetWhy) setReasons(rs => qhSaveReason(rs, fleetWhy));
+      openBundle(r.bundleId, qhBundleTitle('fleet', String(r.bundleId)));
+      pushToast('Fleet run B#' + r.bundleId + ' submitted for ' + items.length + ' databases.');
+      return null;
+    }, e => (e && e.message) || 'The fleet run failed.');
+  };
+
   const refreshScheduled = () => qhApi.scheduled().then(r => setScheduled((r.scheduled || []).map(s => ({
     ...s, when: s.when ? new Date(s.when).toLocaleString() : '' })))).catch(() => {});
   const schedule = (when) => {
@@ -1793,6 +1858,7 @@ function App() {
       sessions={sessions} onSaveSession={() => setSessionModal(true)} onRestoreSession={restoreSession} onDeleteSession={deleteSession}
       scheduled={scheduled} onOpenScheduled={openScheduled} onCancelScheduled={cancelScheduled}
       history={history} onLoadHistory={loadHistory} pending={pendingReqs} onOpenPending={openPending} onResubmit={resubmitFrom} histFocus={histFocus}
+      onOpenBundle={(id) => openBundle(id)}
       width={sideWidth} onResizerDown={onResizerDown} onResizerFit={fitSidebar}
       onRequestEndpoint={() => setReqOpen(true)} onRequestAuto={() => setAutoReqOpen(true)} onOpenTable={openTable} onScriptCreate={scriptCreate} revealTable={treeReveal} onNewQuery={newQueryOn} onNewTab={newTab}
       onOpenSqlFile={openSqlFile} onDownloadSql={() => requestDownloadSql(activeId)} canDownloadSql={activeHasSql} isSuper={isSuper} />
@@ -1887,6 +1953,9 @@ function App() {
               onBrowse={browseConnections} onWhatsNew={openWhatsNew} unseenNews={unseenNews} />
           ) : isWhatsNew ? (
             <WhatsNew />
+          ) : isBundle ? (
+            <FleetRunPage key={tab.bundleId} bundleId={tab.bundleId} onOpenItem={openBundleItem}
+              onKind={(k) => nameBundleTab(tab.bundleId, k)} />
           ) : (
             <>
               <ActionBar
@@ -1897,6 +1966,7 @@ function App() {
                 riskHints={riskHints} riskTop={riskTop} onCancelRun={cancelRun}
                 redacted={redactedIn(tab.sql).length} onRevealRedacted={revealRedacted}
                 tabCount={queryTabsForBar.length} onOpenBatch={() => setBatchOpen(true)}
+                isAdminUser={isAdminUser} onOpenFleet={() => setFleetOpen(true)}
                 schedOpen={schedOpen} setSchedOpen={setSchedOpen} onSchedule={schedule}
                 why={why} onWhy={setWhy} whyNeedSched={needWhySched} whyErr={whyErr}
                 isSuper={isSuper} unmasked={!!tab.unmasked} onUnmask={(v) => patch(activeId, { unmasked: v })}
@@ -1950,6 +2020,9 @@ function App() {
         onConfirm={confirmRunGo} onCancel={confirmRunCancel} />}
       {batchOpen && (
         <BatchModal tabs={tabs} activeId={activeId} onClose={() => setBatchOpen(false)} onSubmit={submitBatch} recent={reasons} />
+      )}
+      {fleetOpen && (
+        <FleetModal tab={tab} connections={conns} onClose={() => setFleetOpen(false)} onSubmit={submitFleet} recent={reasons} />
       )}
       {closePrompt && (
         <CloseConfirmModal victims={closePrompt.victims} dest={saveDest} setDest={setSaveDest}
@@ -2487,7 +2560,7 @@ function RunOnToggle({ conn, runOn, tier, onRunOn, tight }) {
 }
 
 // ---------- Action bar (target context + security + actions) ----------
-function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn, selLines }) {
+function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, isAdminUser, onOpenFleet, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn, selLines }) {
   const runOnConflict = !!(runOnConn && runOn && runOn.mode === 'replica' && hasSql && !classify.empty && classify.tier !== 'RO');
   const tierLabel = qhTierProse(classify.tier);
   const highRisks = (riskHints || []).filter(h => h.level !== 'low');
@@ -2665,6 +2738,12 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
           <button className="qh-btn qh-btn-ghost" onClick={onOpenBatch} disabled={busy || killed} title="Submit several queries in one approval round">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M17.5 14v7M14 17.5h7"/></svg>
             <span className="qh-ab-blabel">Batch</span>
+          </button>
+        )}
+        {isAdminUser && (
+          <button className="qh-btn qh-btn-ghost" onClick={onOpenFleet} disabled={!hasSql || busy || killed} title={hasSql ? 'Run this SQL text on many databases with one approval' : 'Write SQL in this tab first'}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+            <span className="qh-ab-blabel">Fleet run</span>
           </button>
         )}
         <button ref={schedBtnRef} className="qh-btn qh-btn-ghost" onClick={toggleSched} disabled={!hasSql || busy} title="Schedule this query to run later">
@@ -3026,6 +3105,273 @@ function BatchModal({ tabs, activeId, onClose, onSubmit, recent }) {
   );
 }
 
+// ---------- Fleet run modal ----------
+// One SQL text on many (connection, database) pairs, one bundle, one approval.
+// The selection is a Set of pair keys. Filters change only what is shown, never
+// what is selected. A pair whose granted tier does not cover the SQL tier can
+// never be selected. onSubmit({ pairs, onFailure, why }) returns a promise that
+// resolves to null on success or to the server message on a refusal.
+function FleetModal({ tab, connections, onClose, onSubmit, recent }) {
+  const [meta, setMeta] = useState({});
+  const [verdict, setVerdict] = useState(null);
+  const [sel, setSel] = useState(() => new Set());
+  const [f, setF] = useState({ glob: '', engine: '', env: '', tag: '', owner: '' });
+  const [choice, setChoice] = useState(null);
+  const [why, setWhy] = useState('');
+  const [whyErr, setWhyErr] = useState(false);
+  const [typed, setTyped] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    Promise.resolve().then(() => qhApi.adminConnections())
+      .then(r => {
+        if (!live) return;
+        const m = {};
+        ((r && r.connections) || []).forEach(c => { m[c.id] = { tags: c.tags, owners: c.owners }; });
+        setMeta(m);
+      }, () => {});
+    Promise.resolve().then(() => qhApi.classify({ connectionId: tab.conn, databaseId: tab.db, sql: tab.sql }))
+      .then(r => { if (live) setVerdict(r || null); }, () => {});
+    return () => { live = false; };
+  }, []);
+  const tier = (verdict && verdict.tier) || 'RW';
+  const pairs = qhFleetPairs(connections, meta);
+  const uniq = (xs) => [...new Set(xs.filter(Boolean))].sort();
+  const engines = uniq(pairs.map(p => p.engine));
+  const envs = uniq(pairs.map(p => p.env));
+  const owners = uniq([].concat(...pairs.map(p => p.owners || [])));
+  const shown = qhFleetFilter(pairs, f);
+  // Only pairs that cover the tier count. This also prunes a pair that stops
+  // covering once the real tier arrives.
+  const chosen = pairs.filter(p => sel.has(p.key) && qhFleetCovers(p, tier));
+  const n = chosen.length;
+  const onFailure = choice || qhFleetDefaultOnFailure(tier);
+  const needConfirm = tier === 'RW' || tier === 'DDL';
+  const confirmed = !needConfirm || typed.trim() === String(n);
+  const needWhy = qhNeedsWhyWhenReviewed(verdict);
+  const chips = (recent || []).filter(r => r !== why).slice(0, 2);
+  const setFilter = (k, v) => setF(o => ({ ...o, [k]: v }));
+  const toggle = (p) => {
+    if (!qhFleetCovers(p, tier)) return;
+    setSel(s => { const t = new Set(s); if (t.has(p.key)) t.delete(p.key); else t.add(p.key); return t; });
+  };
+  const selectShown = () => setSel(s => { const t = new Set(s); shown.forEach(p => { if (qhFleetCovers(p, tier)) t.add(p.key); }); return t; });
+  const clearAll = () => setSel(new Set());
+  const go = () => {
+    if (busy || !n || !confirmed) return;
+    if (needWhy && !why.trim()) { setWhyErr(true); return; }
+    setBusy(true); setErr('');
+    Promise.resolve(onSubmit({ pairs: chosen.slice(), onFailure, why: why.trim() }))
+      .then(m => { if (m) { setErr(m); setBusy(false); } }, e => { setErr((e && e.message) || 'The fleet run failed.'); setBusy(false); });
+  };
+  const opts = (xs) => xs.map(x => <option key={x} value={x}>{x}</option>);
+  return (
+    <QhModal onClose={onClose} panelClass="qh-fleetm-panel">
+      <div className="qh-modal-head">
+        <div>
+          <div className="qh-modal-title">Fleet run</div>
+          <div className="qh-modal-sub">One SQL text on many databases. One approval covers all of them.</div>
+        </div>
+        <button className="qh-icon-btn" onClick={onClose} aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </div>
+      <div className="qh-modal-body">
+        <pre className="qh-fleetm-sql">{tab.sql}</pre>
+        <div className="qh-fleetm-filters">
+          <input className="qh-input" value={f.glob} placeholder="Server name (glob, for example exc-*)" aria-label="Server name filter" onChange={(e) => setFilter('glob', e.target.value)} />
+          <select className="qh-input" value={f.engine} aria-label="Engine" onChange={(e) => setFilter('engine', e.target.value)}><option value="">Engine</option>{opts(engines)}</select>
+          <select className="qh-input" value={f.env} aria-label="Environment" onChange={(e) => setFilter('env', e.target.value)}><option value="">Environment</option>{opts(envs)}</select>
+          <input className="qh-input" value={f.tag} placeholder="Tag (key=value)" aria-label="Tag filter" onChange={(e) => setFilter('tag', e.target.value)} />
+          <select className="qh-input" value={f.owner} aria-label="Owner team" onChange={(e) => setFilter('owner', e.target.value)}><option value="">Owner team</option>{opts(owners)}</select>
+        </div>
+        <div className="qh-fleetm-bar">
+          <button type="button" className="qh-btn qh-btn-ghost" onClick={selectShown}>Select all shown</button>
+          <button type="button" className="qh-btn qh-btn-ghost" onClick={clearAll}>Clear all</button>
+          <span className="qh-fleetm-count">{n} of {pairs.length} selected</span>
+        </div>
+        <div className="qh-batch-list qh-fleetm-list">
+          {shown.map(p => {
+            const ok = qhFleetCovers(p, tier);
+            const on = ok && sel.has(p.key);
+            return (
+              <label key={p.key} className={'qh-batch-item qh-fleetm-row' + (on ? ' is-on' : '') + (ok ? '' : ' is-off')} title={ok ? undefined : 'Your access here is ' + p.tier}>
+                <input type="checkbox" checked={on} disabled={!ok} onChange={() => toggle(p)} />
+                <span className="qh-qcheck-box"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>
+                <span className="qh-batch-name">{p.alias} / {p.databaseId}</span>
+                <span className="qh-batch-target">{p.engine}</span>
+                <span className="qh-batch-target">{p.env}</span>
+                {p.tier ? <TierBadge tier={p.tier} sm /> : null}
+                {!ok && <span className="qh-fleetm-why">Your access here is {p.tier}</span>}
+              </label>
+            );
+          })}
+          {!shown.length && <div className="qh-batch-note">No database matches these filters.</div>}
+        </div>
+        <div className="qh-fleetm-radios" role="radiogroup" aria-label="On failure">
+          <label className="qh-fleetm-radio"><input type="radio" name="qh-fleetm-of" checked={onFailure === 'stop'} onChange={() => setChoice('stop')} /> Stop at the first failure</label>
+          <label className="qh-fleetm-radio"><input type="radio" name="qh-fleetm-of" checked={onFailure === 'continue'} onChange={() => setChoice('continue')} /> Continue after a failure</label>
+        </div>
+        <div className={'qh-field' + (whyErr ? ' is-err' : '')}>
+          <div className="qh-field-lbl">Reason{needWhy ? '' : ' (optional)'}</div>
+          <textarea className="qh-input qh-fleetm-why-in" rows={2} value={why} placeholder="One line for the whole fleet run. The DBA reads it once."
+            onChange={(e) => { if (whyErr) setWhyErr(false); setWhy(e.target.value); }} />
+          {whyErr && <div className="qh-field-err">Required. A person must approve this fleet run.</div>}
+          {!whyErr && !why && chips.length > 0 && (
+            <div className="qh-why-chips">
+              {chips.map(r => <button key={r} type="button" className="qh-why-chip" title={'Reuse: ' + r} onClick={() => setWhy(r)}>{r}</button>)}
+            </div>
+          )}
+        </div>
+        {needConfirm && (
+          <div className="qh-field">
+            <div className="qh-field-lbl">Type {n} to confirm</div>
+            <input className="qh-input qh-fleetm-confirm" value={typed} inputMode="numeric" aria-label={'Type ' + n + ' to confirm'} onChange={(e) => setTyped(e.target.value)} />
+          </div>
+        )}
+        {err && <div className="qh-field-err qh-fleetm-err" role="alert">{err}</div>}
+      </div>
+      <div className="qh-modal-foot">
+        <button className="qh-btn qh-btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="qh-btn qh-btn-primary is-approval qh-fleetm-go" disabled={!n || !confirmed || busy} onClick={go}>
+          Submit fleet run ({n})
+        </button>
+      </div>
+    </QhModal>
+  );
+}
+
+// ---------- Batch and fleet run page (M12c, 2026-11-13) ----------
+// One tab per bundle. It reads GET /bundles/{id} every 3 seconds until no item
+// waits or runs. The counts come first, then every failure by name, then all
+// items. "Open" opens one item's request in a query tab, with its result.
+// A count chip filters the table to its state. The table never hides a failure:
+// the failures list above it always shows all of them.
+const QH_BUNDLE_POLL_MS = 3000;
+function FleetRunPage({ bundleId, onOpenItem, onKind }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [show, setShow] = useState('all');
+  const [tick, setTick] = useState(0);
+  const kindRef = React.useRef(onKind);
+  kindRef.current = onKind;
+  useEffect(() => {
+    let live = true, timer = null;
+    const load = () => Promise.resolve().then(() => qhApi.bundle(bundleId)).then(r => {
+      if (!live) return;
+      setData(r || null); setErr('');
+      if (r && r.kind && kindRef.current) kindRef.current(r.kind);
+      if (!qhFleetSummary(r && r.items).done) timer = setTimeout(load, QH_BUNDLE_POLL_MS);
+    }, e => { if (live) setErr((e && e.message) || 'Could not read this bundle.'); });
+    load();
+    return () => { live = false; if (timer) clearTimeout(timer); };
+  }, [bundleId, tick]);
+  const items = (data && Array.isArray(data.items)) ? data.items : [];
+  const sum = qhFleetSummary(items);
+  const c = sum.counts;
+  const finished = c.ok + c.failed + c.not_run;
+  const failed = items.filter(i => qhFleetStateOf(i) === 'failed');
+  const waitApproval = items.filter(i => qhFleetStateOf(i) === 'waiting' && i.status === 'pending').length;
+  const shown = show === 'all' ? items : items.filter(i => qhFleetStateOf(i) === show);
+  const kind = data && data.kind;
+  const title = qhBundleTitle(kind, bundleId);
+  const noun = kind === 'fleet' ? 'database' : 'item';
+  const status = !data ? ''
+    : !items.length ? 'This bundle has no items.'
+    : !sum.done && finished === 0 && c.running === 0 && waitApproval === sum.total ? 'Waiting for approval. One approval covers all ' + sum.total + ' ' + noun + (sum.total === 1 ? '' : 's') + '.'
+    : !sum.done ? finished + ' of ' + sum.total + ' finished. This page updates every 3 seconds.'
+    : c.ok === sum.total ? 'Finished: all ' + sum.total + ' ' + noun + (sum.total === 1 ? '' : 's') + ' ok.'
+    : 'Finished: ' + sum.line + '.';
+  const meta = [];
+  if (data) {
+    meta.push(sum.total + ' ' + noun + (sum.total === 1 ? '' : 's'));
+    if (kind === 'fleet' && data.onFailure) meta.push(data.onFailure === 'stop' ? 'Stops at the first failure' : 'Continues after a failure');
+    if (data.submittedAt) meta.push('Submitted ' + qhAgo(data.submittedAt));
+  }
+  return (
+    <div className="qh-bpage" role="region" aria-label={title}>
+      <div className="qh-bpage-head">
+        <div className="qh-bpage-headt">
+          <h1 className="qh-bpage-title">{title}</h1>
+          {meta.length > 0 && <div className="qh-bpage-meta">{meta.join(' · ')}</div>}
+          {data && data.justification && <div className="qh-bpage-meta">Reason: {data.justification}</div>}
+        </div>
+        <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setTick(n => n + 1)} title="Read the state of each item again">Refresh</button>
+      </div>
+      {err && (
+        <div className="qh-bpage-err" role="alert">
+          <span>{err}</span>
+          <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setTick(n => n + 1)}>Try again</button>
+        </div>
+      )}
+      {!data && !err && <div className="qh-bpage-status">Reading the items of {title}…</div>}
+      {data && (
+        <>
+          {data.sql && <pre className="qh-bpage-sql">{data.sql}</pre>}
+          <div className={'qh-bpage-status' + (sum.done && c.failed ? ' is-bad' : '')} role="status">{status}</div>
+          {items.length > 0 && (
+            <div className="qh-bpage-chips" role="group" aria-label="Show items by state">
+              <button type="button" className={'qh-bpage-chip' + (show === 'all' ? ' is-on' : '')} aria-pressed={show === 'all'} onClick={() => setShow('all')}>All {sum.total}</button>
+              {QH_FLEET_STATES.filter(k => c[k] > 0).map(k => {
+                const info = qhFleetStateInfo(k);
+                return (
+                  <button key={k} type="button" className={'qh-bpage-chip ' + info.cls + (show === k ? ' is-on' : '')} aria-pressed={show === k}
+                    onClick={() => setShow(show === k ? 'all' : k)}>{info.label} {c[k]}</button>
+                );
+              })}
+            </div>
+          )}
+          {failed.length > 0 && (
+            <div className="qh-bpage-fails">
+              <div className="qh-bpage-h">Failed ({failed.length})</div>
+              {failed.map(i => (
+                <div key={i.queryId} className="qh-bpage-fail">
+                  <span className="qh-bpage-who qh-mono">{i.connectionId || '-'} / {i.databaseId || '-'}</span>
+                  <span className="qh-bpage-why">{i.detail || 'Execution failed.'}</span>
+                  <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => onOpenItem(i)} title={'Open request #' + i.queryId + ' in a query tab'}>Open</button>
+                </div>
+              ))}
+            </div>
+          )}
+          {items.length > 0 && (
+            <div className="qh-bpage-wrap">
+              <table className="qh-bpage-table">
+                <thead>
+                  <tr>
+                    <th className="is-num">#</th>
+                    <th>Connection / database</th>
+                    <th>State</th>
+                    <th className="is-num">Rows</th>
+                    <th className="is-num">Time</th>
+                    <th>Detail</th>
+                    <th><span className="qh-sr-only">Open</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shown.map(i => {
+                    const st = qhFleetStateOf(i);
+                    const info = qhFleetStateInfo(st);
+                    return (
+                      <tr key={i.queryId} className={'is-' + st}>
+                        <td className="is-num">{i.position || ''}</td>
+                        <td className="qh-bpage-who qh-mono">{i.connectionId || '-'} / {i.databaseId || '-'}</td>
+                        <td><span className={'qh-bpage-st ' + info.cls}>{info.label}</span></td>
+                        <td className="is-num">{st === 'ok' && i.rowCount != null ? Number(i.rowCount).toLocaleString() : ''}</td>
+                        <td className="is-num">{qhDurationLabel(i.runMs)}</td>
+                        <td className="qh-bpage-detail">{i.detail || ''}</td>
+                        <td className="qh-bpage-act"><button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => onOpenItem(i)} title={'Open request #' + i.queryId + ' in a query tab'}>Open</button></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // A single render error used to blank the entire page: React unmounts the tree
 // on an uncaught error, so a bad row in one panel took the whole app with it and
 // the user saw white. The boundary keeps the failure legible and recoverable —
@@ -3070,7 +3416,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-Object.assign(window, { App, ErrorBoundary });
+Object.assign(window, { App, ErrorBoundary, FleetRunPage });
 ReactDOM.createRoot(document.getElementById('root')).render(
   <ErrorBoundary><App /></ErrorBoundary>
 );

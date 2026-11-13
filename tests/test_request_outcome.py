@@ -99,7 +99,13 @@ def test_the_markers_are_the_actions_that_the_writers_write():
     script = (ROOT / "scripts" / "expire_stale_pending.py").read_text(encoding="utf-8")
     assert '"request_expired"' in script
     assert mapping.EXPIRY_ACTION == "request_expired"
-    assert set(mapping.OUTCOME_ACTIONS) == {"request_expired", "withdrawn", "cancelled"}
+    # A fleet run that stops at the first failure skips the rest with its own
+    # action, so a skip never reads as a withdrawal.
+    from queryhub import executor
+    assert "FLEET_SKIPPED_ACTION" in inspect.getsource(executor._cancel_rest_of_fleet)
+    assert executor.FLEET_SKIPPED_ACTION == mapping.FLEET_SKIPPED_ACTION == "fleet_skipped"
+    assert set(mapping.OUTCOME_ACTIONS) == {"request_expired", "withdrawn", "cancelled",
+                                            "fleet_skipped"}
 
 
 # ---- the expiry time -----------------------------------------------------------
@@ -288,7 +294,7 @@ def test_every_history_row_carries_its_outcome(web, monkeypatch):
     sql, params = outcome_reads[0]
     assert "request_id = ANY(%s) AND action = ANY(%s)" in sql
     assert params[0] == [6, 5, 1]                 # the cancelled rows only
-    assert set(params[1]) == {"request_expired", "withdrawn", "cancelled"}
+    assert set(params[1]) == {"request_expired", "withdrawn", "cancelled", "fleet_skipped"}
 
 
 def test_a_page_without_a_cancelled_row_asks_nothing_for_the_outcome(web, monkeypatch):

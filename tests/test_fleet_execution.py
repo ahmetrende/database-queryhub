@@ -363,3 +363,13 @@ def test_reject_all_refuses_a_fleet_run_partly_out_of_scope(monkeypatch):
 def test_partial_scope_rule_is_for_fleet_runs_only(monkeypatch):
     _bulk_env(monkeypatch, "batch", in_scope={11})
     assert handlers._refuse_partial_fleet(None, "U0EXAMPLE02", 5) is False
+
+
+def test_stop_fleet_audits_the_rest_as_skipped(fleet, monkeypatch):
+    # `cancelled` reads as a withdrawal by the requester. Nobody withdrew these.
+    logged = []
+    monkeypatch.setattr(ex.audit, "log_in",
+                        lambda cur, rid, *a, **k: logged.append((rid, a[2])))
+    for i in range(4):
+        ex.submit(_row(fleet, i), client=None)
+    assert logged == [(13, "fleet_skipped"), (14, "fleet_skipped")]

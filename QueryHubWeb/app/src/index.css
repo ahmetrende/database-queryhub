@@ -2617,6 +2617,77 @@
   .qh-batch-name { font-size: 13px; font-weight: 600; color: var(--fg-primary); flex: 1; }
   .qh-batch-target { font-family: var(--qh-mono); font-size: 11.5px; color: var(--fg-tertiary); }
 
+  /* fleet run modal. 2026-11-13: own `qh-fleetm-` names. The modal shared
+     `.qh-fleet-row`, `.qh-fleet-count` and `.qh-fleet-confirm` with the admin
+     "Every server" grants block: rows wrapped like grant rows, and the grants'
+     revoke confirm got the modal's 120px width. The panel is wider, so the
+     five filters show their names. */
+  .qh-fleetm-panel { width: 720px; }
+  .qh-fleetm-sql { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); font-family: var(--qh-mono); font-size: 12px; line-height: 1.5; color: var(--fg-primary); background: var(--adaptive-medium); max-height: calc(6 * 1.5em + 20px); overflow: auto; white-space: pre; }
+  .qh-fleetm-filters { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-bottom: 8px; }
+  .qh-fleetm-filters > :first-child { grid-column: span 2; }
+  @media (max-width: 760px) {
+    .qh-fleetm-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .qh-fleetm-filters > :first-child { grid-column: 1 / -1; }
+  }
+  .qh-fleetm-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .qh-fleetm-count { margin-left: auto; font-size: 12px; color: var(--fg-secondary); }
+  .qh-fleetm-list { margin-bottom: 12px; }
+  .qh-fleetm-row .qh-batch-name { overflow-wrap: anywhere; }
+  .qh-fleetm-row .qh-batch-target { white-space: nowrap; }
+  .qh-fleetm-row.is-off { cursor: not-allowed; opacity: 0.6; }
+  .qh-fleetm-why { font-size: 11.5px; color: var(--fg-warning); }
+  .qh-fleetm-radios { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; }
+  .qh-fleetm-radio { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg-primary); cursor: pointer; }
+  .qh-fleetm-why-in { width: 100%; resize: vertical; }
+  .qh-fleetm-confirm { max-width: 120px; }
+  .qh-fleetm-err { margin-top: 8px; }
+
+  /* 2026-11-13 · Batch and fleet run page (M12c): one tab per bundle. Own
+     `qh-bpage-` names: `.qh-bundle-chip` is the admin queue's bundle chip. Counts,
+     then every failure by name, then all items. State chips reuse the status
+     chip colours and their measured ratios (see the status chip comment):
+     OK = Done, Failed = Denied, Running = Running, Waiting = Pending. Not run
+     is --fg-secondary on --adaptive-light, the neutral chip pair. */
+  .qh-bpage { flex: 1; min-height: 0; overflow-y: auto; background: var(--bg-regular); padding: 24px 28px 48px; }
+  .qh-bpage-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; max-width: 1100px; }
+  .qh-bpage-headt { min-width: 0; }
+  .qh-bpage-title { margin: 0; font-size: 20px; font-weight: 600; color: var(--fg-primary); }
+  .qh-bpage-meta { margin-top: 4px; font-size: 12.5px; color: var(--fg-secondary); overflow-wrap: anywhere; }
+  .qh-bpage-sql { max-width: 1100px; margin: 16px 0 0; padding: 10px 12px; border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); font-family: var(--qh-mono); font-size: 12px; line-height: 1.5; color: var(--fg-primary); background: var(--adaptive-medium); max-height: calc(6 * 1.5em + 20px); overflow: auto; white-space: pre; }
+  .qh-bpage-status { margin-top: 16px; font-size: 14px; font-weight: 600; color: var(--fg-primary); }
+  .qh-bpage-status.is-bad { color: var(--danger-solid-medium); }
+  .qh-bpage-err { display: flex; align-items: center; gap: 12px; margin-top: 16px; font-size: 13px; color: var(--danger-solid-medium); }
+  .qh-bpage-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .qh-bpage-chip { padding: 4px 12px; border: 1px solid var(--stroke-medium); border-radius: 999px; background: var(--bg-white); font: inherit; font-size: 12.5px; font-weight: 600; color: var(--fg-primary); cursor: pointer; }
+  .qh-bpage-chip:hover { background: var(--adaptive-light); }
+  .qh-bpage-chip:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-bpage-chip.is-on { border-color: var(--fg-primary); }
+  .qh-bpage-fails { max-width: 1100px; margin-top: 16px; border: 1px solid var(--stroke-medium); border-radius: var(--r-lg); background: var(--bg-white); }
+  .qh-bpage-h { padding: 10px 16px; font-size: 13px; font-weight: 600; color: var(--danger-solid-medium); }
+  .qh-bpage-fail { display: flex; align-items: baseline; gap: 12px; padding: 8px 16px; border-top: 1px solid var(--stroke-light); font-size: 12.5px; }
+  .qh-bpage-fail .qh-bpage-who { flex: 0 1 260px; }
+  .qh-bpage-why { flex: 1; min-width: 0; color: var(--fg-secondary); overflow-wrap: anywhere; }
+  .qh-bpage-who { color: var(--fg-primary); overflow-wrap: anywhere; }
+  .qh-bpage-wrap { max-width: 1100px; margin-top: 16px; overflow-x: auto; border: 1px solid var(--stroke-medium); border-radius: var(--r-lg); background: var(--bg-white); }
+  .qh-bpage-table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 12.5px; }
+  .qh-bpage-table th { padding: 8px 12px; text-align: left; font-size: 11.5px; font-weight: 600; color: var(--fg-secondary); border-bottom: 1px solid var(--stroke-medium); white-space: nowrap; }
+  .qh-bpage-table td { padding: 8px 12px; border-top: 1px solid var(--stroke-light); vertical-align: top; color: var(--fg-primary); }
+  .qh-bpage-table tbody tr:first-child td { border-top: 0; }
+  .qh-bpage-table .is-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .qh-bpage-detail { color: var(--fg-secondary); overflow-wrap: anywhere; min-width: 200px; }
+  .qh-bpage-act { text-align: right; white-space: nowrap; }
+  .qh-bpage-st, .qh-bpage-chip.is-ok, .qh-bpage-chip.is-bad, .qh-bpage-chip.is-skip, .qh-bpage-chip.is-run, .qh-bpage-chip.is-wait { border-color: transparent; }
+  .qh-bpage-chip.is-on.is-ok, .qh-bpage-chip.is-on.is-bad, .qh-bpage-chip.is-on.is-skip, .qh-bpage-chip.is-on.is-run, .qh-bpage-chip.is-on.is-wait { border-color: currentColor; }
+  .qh-bpage-st { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+  .qh-bpage-st.is-ok, .qh-bpage-chip.is-ok { color: var(--brand-solid-strong); background: var(--brand-adaptive-light); }
+  .qh-bpage-st.is-bad, .qh-bpage-chip.is-bad { color: var(--danger-solid-medium); background: var(--danger-adaptive-light); }
+  .qh-bpage-st.is-skip, .qh-bpage-chip.is-skip { color: var(--fg-secondary); background: var(--adaptive-light); }
+  .qh-bpage-st.is-run, .qh-bpage-chip.is-run { color: #15688C; background: var(--sup-blue-light); }
+  .qh-bpage-st.is-wait, .qh-bpage-chip.is-wait { color: var(--warning-solid-strong); background: var(--warning-adaptive-light); }
+  [data-theme='dark'] .qh-bpage-st.is-run, [data-theme='dark'] .qh-bpage-chip.is-run { color: #7FD2F5; background: rgba(102,204,255,0.12); }
+  .qh-hist-bundle { display: block; }
+
   /* kill switch */
   .qh-killbanner { display: flex; align-items: center; gap: 9px; padding: 10px 18px; background: var(--danger-solid-light); color: #fff; font-size: 13px; font-weight: 500; flex-shrink: 0; }
   .qh-killbanner b { font-weight: 700; }

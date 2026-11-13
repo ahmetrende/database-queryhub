@@ -364,10 +364,19 @@ def _run_fleet_chain(bundle_id: int, client: WebClient, stop: bool = True) -> No
     _fleet_runner_exit(bundle_id)
 
 
+#: The audit action of an item that a stop-at-first-failure fleet run did not
+#: run. mapping.request_outcome reads it as the outcome `skipped`.
+FLEET_SKIPPED_ACTION = "fleet_skipped"
+
+
 def _cancel_rest_of_fleet(client: WebClient, bundle_id: int,
                           failed: dict) -> None:
     """Cancel every approved or pending item of the bundle, in one transaction,
-    then refresh the admin cards and the bundle status."""
+    then refresh the admin cards and the bundle status.
+
+    The audit action is `fleet_skipped`, not `cancelled`: `cancelled` reads as
+    a withdrawal by the requester (mapping.request_outcome), and nobody
+    withdrew these items."""
     from . import bundles
     alias_row = db.fetch_one(
         "SELECT alias FROM target_servers WHERE id = %s",
@@ -383,7 +392,7 @@ def _cancel_rest_of_fleet(client: WebClient, bundle_id: int,
             "RETURNING id",
             (reason, reason, bundle_id))
         for r in cur.fetchall():
-            audit.log_in(cur, r["id"], None, None, "cancelled",
+            audit.log_in(cur, r["id"], None, None, FLEET_SKIPPED_ACTION,
                          {"by": "fleet_stop", "failed_request": failed["id"],
                           "reason": reason})
         bundles.recompute_status(cur, bundle_id)
