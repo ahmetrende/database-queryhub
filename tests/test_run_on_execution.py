@@ -622,3 +622,57 @@ def test_the_result_grid_marks_masked_columns_by_the_requests_target(monkeypatch
            "requester_slack_id": "U0EXAMPLE001"}
     assert routes_queries._masked_pii_cols(row, ["id", "email"]) == ["email"]
     assert seen == [7, 7]
+
+
+# ---- a Stop reads as a Stop, not as a statement timeout (2026-11-13) --------
+# pg_cancel_backend raises QueryCanceled in this thread before
+# `cancellation.cancel` polls again. It used to read as a statement timeout,
+# with no `cancelled_running` row: 13 of 13 Postgres stops on the live fleet.
+
+STOPPER = {"by_id": "U0EXAMPLE001", "by_name": "Jordan Ray"}
+
+
+def _capture_fail(monkeypatch, box):
+    calls = []
+    monkeypatch.setattr(executor, "_fail",
+                        lambda client, request, msg, **k: calls.append((msg, k)))
+    return calls
+
+
+def test_a_stop_during_the_statement_reads_as_a_stop(run_env, monkeypatch):
+    run_env["run_on"] = "replica:99"
+    run_env["replica_error"] = psycopg.errors.QueryCanceled(
+        "canceling statement due to user request")
+    monkeypatch.setattr(executor, "_cancel_requested", lambda rid: True)
+    monkeypatch.setattr(executor.db, "fetch_one",
+                        lambda sql, params=None: dict(STOPPER) if "cancel_requested_by" in sql else None)
+    calls = _capture_fail(monkeypatch, run_env)
+    _run(run_env)
+    (msg, k), = calls
+    assert msg == "Cancelled by Jordan Ray while it was running."
+    assert k["stopped"] == ("cancelled_running", "U0EXAMPLE001", "Jordan Ray")
+    assert "timeout" not in msg
+
+
+def test_a_timeout_with_no_stop_still_reads_as_a_timeout(run_env, monkeypatch):
+    run_env["run_on"] = "replica:99"
+    run_env["replica_error"] = psycopg.errors.QueryCanceled(
+        "canceling statement due to statement timeout")
+    calls = _capture_fail(monkeypatch, run_env)
+    _run(run_env)
+    (msg, k), = calls
+    assert "timeout" in msg and not k.get("stopped")
+
+
+def test_a_terminated_connection_after_a_stop_reads_as_a_stop(run_env, monkeypatch):
+    run_env["run_on"] = "replica:99"
+    run_env["replica_error"] = psycopg.errors.AdminShutdown(
+        "terminating connection due to administrator command")
+    monkeypatch.setattr(executor, "_cancel_requested", lambda rid: True)
+    monkeypatch.setattr(executor.db, "fetch_one",
+                        lambda sql, params=None: dict(STOPPER) if "cancel_requested_by" in sql else None)
+    calls = _capture_fail(monkeypatch, run_env)
+    _run(run_env)
+    (msg, k), = calls
+    assert msg == "Cancelled by Jordan Ray while it was running."
+    assert k["stopped"][0] == "cancelled_running"

@@ -313,15 +313,35 @@ def _fail_request(request_id: int, note: str, actor: str | None,
     return changed
 
 
+#: Who the runaway watchdog is in the audit log and in `cancel_requested_by`.
+RUNAWAY_ACTOR = ("SYSTEM", "runaway watchdog")
+
+
+def stop_reason(by_id: str | None, by_name: str | None) -> tuple[str, str]:
+    """The audit action and the note of a request that was stopped while it ran.
+
+    One wording for both writers. The executor thread usually sees the stop
+    first (pg_cancel_backend raises QueryCanceled, pg_terminate_backend breaks
+    the connection), so it writes the row. `cancel` and `sweep_runaways` write
+    it when they get there first."""
+    if (by_id, by_name) == RUNAWAY_ACTOR:
+        limit = cfg.get_int("execution_runaway_sec", 420)
+        return ("execution_runaway_stopped",
+                f"Stopped after running longer than {limit}s "
+                f"(execution_runaway_sec). The server-side statement timeout "
+                f"does not fire while the database is blocked writing results, "
+                f"so the backend was signalled directly.")
+    return ("cancelled_running",
+            f"Cancelled by {by_name or by_id or 'a user'} while it was running.")
+
+
 def cancel(request_id: int, by_id: str | None, by_name: str | None) -> str:
     """User-requested cancel: record the ask, stop the backend, fail the row."""
     request_cancel(request_id, by_id, by_name)
     outcome = stop_backend(request_id)
     if outcome in (CancelOutcome.CANCELLED, CancelOutcome.TERMINATED):
-        _fail_request(
-            request_id,
-            f"Cancelled by {by_name or by_id or 'a user'} while it was running.",
-            by_id, by_name, "cancelled_running")
+        action, note = stop_reason(by_id, by_name)
+        _fail_request(request_id, note, by_id, by_name, action)
     return outcome
 
 
@@ -440,13 +460,13 @@ def sweep_runaways() -> int:
         (limit,))
     n = 0
     for r in stuck:
+        # The ask is recorded first, so the executor thread, which sees the
+        # stop first, words it as the watchdog and not as a statement timeout.
+        request_cancel(r["id"], *RUNAWAY_ACTOR)
         outcome = stop_backend(r["id"])
-        note = (f"Stopped after running longer than {limit}s "
-                f"(execution_runaway_sec). The server-side statement timeout "
-                f"does not fire while the database is blocked writing results, "
-                f"so the backend was signalled directly ({outcome}).")
-        if _fail_request(r["id"], note, "SYSTEM", "runaway watchdog",
-                         "execution_runaway_stopped"):
+        action, note = stop_reason(*RUNAWAY_ACTOR)
+        if _fail_request(r["id"], f"{note[:-1]} ({outcome}).", *RUNAWAY_ACTOR,
+                         action):
             n += 1
             log.warning("runaway watchdog stopped request %s (%s)",
                         r["id"], outcome)

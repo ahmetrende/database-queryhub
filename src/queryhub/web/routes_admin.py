@@ -6383,7 +6383,7 @@ def _mask_join_stats(tid: int, database: str, table: str) -> dict | None:
     `survivesJoin` is the one setting on this screen a person cannot answer from
     the schema. It asks whether re-masking on a join makes the exemption useless
     in practice, and the only honest answer is how the table is actually used --
-    the same count that decided the five nova exemptions by hand. The parser is
+    the same count that decided five exemptions by hand. The parser is
     the authority and the ILIKE is a prefilter, exactly as the evidence lookup
     does it, so a table named inside a string literal is not a query against it.
 

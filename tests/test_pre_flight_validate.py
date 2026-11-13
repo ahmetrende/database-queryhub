@@ -239,8 +239,8 @@ def test_a_value_that_is_not_in_the_statement_is_hidden_in_the_refusal(
 
 def test_a_database_that_does_not_exist_is_refused(target_db):
     target_db["connect_error"] = psycopg.OperationalError(
-        'connection failed: FATAL:  database "nova" does not exist')
-    ok, err, _ = pf.validate_statements(1, "nova", "ro", _stmts("SELECT 1; SELECT 2"))
+        'connection failed: FATAL:  database "atlas" does not exist')
+    ok, err, _ = pf.validate_statements(1, "atlas", "ro", _stmts("SELECT 1; SELECT 2"))
     assert ok is False and "does not exist" in err
 
 

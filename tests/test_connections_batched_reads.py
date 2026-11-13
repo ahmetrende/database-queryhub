@@ -34,7 +34,7 @@ ROWS = [
     {"t": 1, "d": "ledger"},
     {"t": 1, "d": "postgres"},        # hidden
     {"t": 1, "d": "audit"},
-    {"t": 2, "d": "nova"},
+    {"t": 2, "d": "atlas"},
     {"t": 3, "d": "postgres"},        # hidden — target 3 ends up absent
 ]
 
@@ -44,7 +44,7 @@ def test_the_map_hides_the_same_databases_the_single_read_hides(monkeypatch):
     database added to it is covered here without editing this test."""
     monkeypatch.setattr(routes_data.db, "fetch_all", lambda *a, **k: list(ROWS))
     got = routes_data._catalog_databases_map([1, 2, 3])
-    assert got == {1: ["ledger", "audit"], 2: ["nova"]}
+    assert got == {1: ["ledger", "audit"], 2: ["atlas"]}
     assert 3 not in got, "a target whose only database is hidden must not appear"
     assert "postgres" in routes_data._HIDDEN_DATABASES, (
         "this test's fixture assumes `postgres` is the hidden one")
@@ -76,15 +76,15 @@ def _tbl(t, d, schema, name, kind="table"):
 def test_the_cross_product_of_two_any_lists_is_discarded(monkeypatch):
     """`WHERE target = ANY(...) AND database = ANY(...)` matches pairs nobody
     asked for — target 2's `ledger` when target 1 has a `ledger` and target 2 a
-    `nova`. Handing those to the caller shows one server another server's
+    `atlas`. Handing those to the caller shows one server another server's
     tables."""
     rows = [_tbl(1, "ledger", "public", "a"),
             _tbl(2, "ledger", "public", "SHOULD_NOT_APPEAR"),
-            _tbl(2, "nova", "public", "b")]
+            _tbl(2, "atlas", "public", "b")]
     monkeypatch.setattr(routes_data.db, "fetch_all", lambda *a, **k: rows)
-    got = routes_data._catalog_table_refs_map([(1, "ledger"), (2, "nova")])
+    got = routes_data._catalog_table_refs_map([(1, "ledger"), (2, "atlas")])
     assert got == {(1, "ledger"): [{"s": "public", "n": "a", "k": "table"}],
-                   (2, "nova"): [{"s": "public", "n": "b", "k": "table"}]}
+                   (2, "atlas"): [{"s": "public", "n": "b", "k": "table"}]}
 
 
 def test_the_cap_is_per_database_not_per_result(monkeypatch):
@@ -180,11 +180,11 @@ def _grant(**kw):
 
 
 @pytest.mark.parametrize("scope,target,database,expect", [
-    ({}, 5, "nova", True),                                    # broad grant
-    ({"target_server_id": 5}, 5, "nova", True),
-    ({"target_server_id": 5}, 6, "nova", False),
-    ({"target_server_id": 5, "database_name": "nova"}, 5, "nova", True),
-    ({"target_server_id": 5, "database_name": "nova"}, 5, "other", False),
+    ({}, 5, "atlas", True),                                    # broad grant
+    ({"target_server_id": 5}, 5, "atlas", True),
+    ({"target_server_id": 5}, 6, "atlas", False),
+    ({"target_server_id": 5, "database_name": "atlas"}, 5, "atlas", True),
+    ({"target_server_id": 5, "database_name": "atlas"}, 5, "other", False),
 ])
 def test_passing_the_rows_in_gives_the_same_answer_as_reading_them(
         monkeypatch, scope, target, database, expect):
@@ -204,7 +204,7 @@ def test_passing_rows_in_does_not_read_the_database(monkeypatch):
         raise AssertionError("rows were supplied; nothing should be read")
     monkeypatch.setattr(auto_approve, "active_grants", boom)
     assert auto_approve.effective_grant(
-        "U1", "ro", 5, "nova", rows=[_grant()]) is not None
+        "U1", "ro", 5, "atlas", rows=[_grant()]) is not None
 
 
 def test_an_empty_row_list_is_not_mistaken_for_no_rows_supplied(monkeypatch):
@@ -213,4 +213,4 @@ def test_an_empty_row_list_is_not_mistaken_for_no_rows_supplied(monkeypatch):
     def boom(*a, **k):
         raise AssertionError("[] means no grants, not 'go and look'")
     monkeypatch.setattr(auto_approve, "active_grants", boom)
-    assert auto_approve.effective_grant("U1", "ro", 5, "nova", rows=[]) is None
+    assert auto_approve.effective_grant("U1", "ro", 5, "atlas", rows=[]) is None

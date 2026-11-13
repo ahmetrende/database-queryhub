@@ -238,7 +238,7 @@ def explain(
         # a transport problem, not transient, and it will never succeed no
         # matter how long anybody waits. Request 7596 rode this open door —
         # a database from a DIFFERENT server reached submit, this branch
-        # swallowed `database "nova" does not exist` as if it were a
+        # swallowed `database "atlas" does not exist` as if it were a
         # timeout, an approver spent 45 minutes on it, and it failed at
         # execution with the same message. Only that one code is surfaced:
         # an auth failure is OUR bad credential and still fails open,

@@ -242,9 +242,9 @@ def test_an_unrestricted_grant_lists_the_catalog(submit):
     nothing new about the server."""
     submit["grant"] = _grant("rw", allowed=None)
     submit["scope_ok"] = False
-    rej = submit["go"]("nova")
+    rej = submit["go"]("atlas")
     assert isinstance(rej, cs.Rejection) and rej.field == "database"
-    assert rej.message == ("You have no access to database `nova` on `example-pg`. "
+    assert rej.message == ("You have no access to database `atlas` on `example-pg`. "
                            "You can use: `dbA`, `dbB`.")
 
 

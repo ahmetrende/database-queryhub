@@ -23,7 +23,7 @@ def test_none_stays_none():
 
 @pytest.mark.parametrize("typed,stored", [
     ("shipping_service", "shipping_service"),
-    ("  nova  ", "nova"),
+    ("  atlas  ", "atlas"),
 ])
 def test_a_real_name_is_kept_and_trimmed(typed, stored):
     assert aa.normalise_scope(typed) == stored

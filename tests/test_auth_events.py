@@ -27,13 +27,13 @@ def test_user_grant_insert_dm():
     notes = auth_events.build_notifications(
         ev("user_target_grants", "INSERT", new={
             "slack_user_id": "U0TESTUSER1", "target_server_id": 52,
-            "mode": "rw", "allowed_databases": ["nova"],
+            "mode": "rw", "allowed_databases": ["atlas"],
             "granted_by": "U0GRANTER11", "revoked_at": None}),
         alias_of=alias_of, team_info=team_info)
     assert len(notes) == 1
     uid, text = notes[0]
     assert uid == "U0TESTUSER1"
-    assert "*RW*" in text and "`alpha-prod`" in text and "`nova`" in text
+    assert "*RW*" in text and "`alpha-prod`" in text and "`atlas`" in text
     assert "<@U0GRANTER11>" in text
 
 
@@ -96,14 +96,14 @@ def test_auto_approve_insert_permanent():
     notes = auth_events.build_notifications(
         ev("auto_approve_grants", "INSERT", new={
             "max_tier": "ro", "target_server_id": 52,
-            "database_name": "nova", "expires_at": None,
+            "database_name": "atlas", "expires_at": None,
             "granted_by": "U0GRANTER11"}),
         alias_of=alias_of, team_info=team_info)
     assert len(notes) == 1
     text = notes[0][1]
     assert "Auto-approve active" in text
     assert "*permanent*" in text
-    assert "`alpha-prod`" in text and "`nova`" in text
+    assert "`alpha-prod`" in text and "`atlas`" in text
 
 
 def test_auto_approve_insert_window():
@@ -119,7 +119,7 @@ def test_auto_approve_insert_window():
 def test_auto_approve_delete_dm():
     notes = auth_events.build_notifications(
         ev("auto_approve_grants", "DELETE", old={
-            "max_tier": "ro", "target_server_id": 52, "database_name": "nova"}),
+            "max_tier": "ro", "target_server_id": 52, "database_name": "atlas"}),
         alias_of=alias_of, team_info=team_info)
     assert "removed" in notes[0][1]
 

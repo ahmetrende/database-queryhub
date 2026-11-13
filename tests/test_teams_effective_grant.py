@@ -88,11 +88,11 @@ def test_restricted_principal_does_not_get_the_bypass(db):
 def test_user_grant_wins_over_a_more_permissive_team_grant(db):
     """A per-user row is how an admin NARROWS someone. If the team grant could
     win, the override would be cosmetic and the narrowing silently undone."""
-    db["user"] = {"mode": "ro", "allowed_databases": ["nova"]}
+    db["user"] = {"mode": "ro", "allowed_databases": ["atlas"]}
     db["team"] = [{"mode": "ddl", "allowed_databases": None}]
     out = teams.effective_grant_for_user("U0DEV", 7)
     assert out["mode"] == "ro"
-    assert out["allowed_databases"] == {"nova"}
+    assert out["allowed_databases"] == {"atlas"}
     assert out["source"] == "user"
 
 
@@ -115,7 +115,7 @@ def test_only_active_user_grants_count(db):
     """The query filters revoked_at IS NULL, so a revoked row must look like no
     row and fall through to the team grants."""
     db["user"] = None
-    db["team"] = [{"mode": "ro", "allowed_databases": ["nova"]}]
+    db["team"] = [{"mode": "ro", "allowed_databases": ["atlas"]}]
     out = teams.effective_grant_for_user("U0DEV", 7)
     assert out["source"] == "team"
     assert "revoked_at IS NULL" in db["queries"][0]
@@ -180,15 +180,15 @@ def test_the_mode_ordering_is_ro_then_rw_then_ddl(db):
 
 
 def test_can_use_database_respects_the_resolved_scope(db):
-    db["user"] = {"mode": "ro", "allowed_databases": ["nova"]}
-    assert teams.can_use_database("U0DEV", 7, "nova") is True
+    db["user"] = {"mode": "ro", "allowed_databases": ["atlas"]}
+    assert teams.can_use_database("U0DEV", 7, "atlas") is True
     assert teams.can_use_database("U0DEV", 7, "other") is False
 
 
 def test_can_use_database_is_false_without_any_grant(db):
     db["user"] = None
     db["team"] = []
-    assert teams.can_use_database("U0DEV", 7, "nova") is False
+    assert teams.can_use_database("U0DEV", 7, "atlas") is False
 
 
 def test_unrestricted_scope_allows_any_database_name(db):
@@ -305,7 +305,7 @@ def test_an_expired_user_override_does_not_fall_back_to_a_wider_team_grant(db):
     the team aggregate, Friday would arrive and hand them the team's `ddl`
     back: an expiry that INCREASES access. Expiry only ever removes.
     """
-    db["user"] = {"mode": "ro", "allowed_databases": ["nova"], "expired": True}
+    db["user"] = {"mode": "ro", "allowed_databases": ["atlas"], "expired": True}
     db["team"] = [{"mode": "ddl", "allowed_databases": None}]
     assert teams.effective_grant_for_user("U0DEV", 7) is None
 

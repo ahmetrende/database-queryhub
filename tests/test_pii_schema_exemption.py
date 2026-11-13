@@ -336,7 +336,7 @@ def test_both_schemas_at_once_still_fires_and_that_is_documented():
 # result columns: 3,545 requests, 911 resolver invocations, 0 answers changed.
 # No live row carried a schema on this rung, so nothing was standing on it.
 
-TENANTS_ROW = {"database_name": "nova", "schema_name": "organizer",
+TENANTS_ROW = {"database_name": "atlas", "schema_name": "organizer",
                "table_name": "organizer_tenants", "column_name": None,
                "apply_in_joins": False, "keep_value_scan": False,
                "super_admin_only": False}
@@ -344,7 +344,7 @@ TENANTS_ROW = {"database_name": "nova", "schema_name": "organizer",
 
 def _skips_all(row, sql, monkeypatch):
     monkeypatch.setattr(pii, "_load_exemptions", _load([row]))
-    skip_all, _cols = pii.exemption_decision(1, "nova", sql, ["name"])
+    skip_all, _cols = pii.exemption_decision(1, "atlas", sql, ["name"])
     return skip_all
 
 

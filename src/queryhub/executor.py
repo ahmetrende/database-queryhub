@@ -1242,7 +1242,20 @@ def _run(request: dict, client: WebClient) -> None:
                            if route is not None and forced is None else None))
 
     except psycopg.errors.QueryCanceled as e:
-        # `statement_timeout` fired (or pg_cancel_backend / lock_timeout).
+        # A Stop (pg_cancel_backend) raises this too, and this thread sees it
+        # before `cancellation.cancel` does. Without this check every Stop on
+        # Postgres read as a statement timeout and had no `cancelled_running`
+        # row (13 of 13 on the live fleet, 2026-07 to 2026-11).
+        stopper = _cancel_stopper(request_id)
+        if stopper is not None:
+            for p in csv_paths_to_cleanup:
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            _fail_stopped(client, request, stopper)
+            return
+        # `statement_timeout` fired (or lock_timeout).
         # Surface the configured timeout in the DM so the user
         # immediately knows the bar that was hit, instead of a generic
         # "canceling statement" message.
@@ -1335,6 +1348,12 @@ def _run(request: dict, client: WebClient) -> None:
                 p.unlink(missing_ok=True)
             except OSError:
                 pass
+        # pg_terminate_backend after a Stop breaks the connection. That is the
+        # stop, not a database error.
+        stopper = _cancel_stopper(request_id) if isinstance(e, psycopg.Error) else None
+        if stopper is not None:
+            _fail_stopped(client, request, stopper)
+            return
         if isinstance(e, psycopg.Error):
             user_msg = errors.scrub(e, query=request.get("query"))
         else:
@@ -2785,7 +2804,42 @@ def _alert_admins_size_cap(client: WebClient, request: dict, max_mb: int) -> Non
         log.exception("size-cap admin alert failed for request %s", request["id"])
 
 
-def _fail(client: WebClient, request: dict, message: str) -> None:
+def _cancel_stopper(request_id: int) -> dict | None:
+    """Who asked to stop this request: {"by_id", "by_name"}, or None when
+    nobody did. A failed read gives None, so the error keeps its old wording.
+    `_cancel_requested` decides whether there was an ask, as it does for the
+    engines that poll for a Stop."""
+    try:
+        if not _cancel_requested(request_id):
+            return None
+        row = db.fetch_one(
+            "SELECT r.cancel_requested_by AS by_id, "
+            "       (SELECT a.actor_name FROM audit_log a "
+            "         WHERE a.request_id = r.id AND a.action = 'cancel_requested' "
+            "         ORDER BY a.id DESC LIMIT 1) AS by_name "
+            "  FROM requests r WHERE r.id = %s",
+            (request_id,))
+    except Exception:
+        log.warning("Request %s: could not read the cancel request", request_id,
+                    exc_info=True)
+        return None
+    return {"by_id": (row or {}).get("by_id"), "by_name": (row or {}).get("by_name")}
+
+
+def _fail_stopped(client: WebClient, request: dict, stopper: dict) -> None:
+    """Fail a request that a person or the runaway watchdog stopped, with the
+    stop's own note and audit action (cancellation.stop_reason)."""
+    action, note = cancellation.stop_reason(stopper.get("by_id"), stopper.get("by_name"))
+    _fail(client, request, note, stopped=(action, stopper.get("by_id"), stopper.get("by_name")))
+
+
+def _fail(client: WebClient, request: dict, message: str, *,
+          stopped: tuple[str, str | None, str | None] | None = None) -> None:
+    """Mark the request failed, write its audit row and tell people.
+
+    `stopped` is (action, actor id, actor name) for a request that was stopped
+    while it ran. `cancellation` writes the same action when it marks the row
+    first, so the row is written only when it is not there yet."""
     with db.transaction() as cur:
         cur.execute(
             "UPDATE requests SET status = 'failed', completed_at = NOW(), "
@@ -2805,8 +2859,17 @@ def _fail(client: WebClient, request: dict, message: str) -> None:
             log.warning("Request %s: _fail suppressed — already terminal.",
                         request["id"])
             return
-        audit.log_in(cur, request["id"], None, None, "failed",
-                     {"error": message})
+        if stopped is None:
+            audit.log_in(cur, request["id"], None, None, "failed",
+                         {"error": message})
+        else:
+            action, actor, actor_name = stopped
+            cur.execute(
+                "SELECT 1 FROM audit_log WHERE request_id = %s AND action = %s "
+                "LIMIT 1", (request["id"], action))
+            if cur.fetchone() is None:
+                audit.log_in(cur, request["id"], actor, actor_name, action,
+                             {"note": message})
 
     if request.get("bundle_id"):
         notifications.update_bundle_admin_dms(client, request["bundle_id"])

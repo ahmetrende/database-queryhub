@@ -164,4 +164,4 @@ def test_the_two_hand_kept_lists_still_decide_their_own_cases():
         assert is_distinctive(name), name
     for name in mod._INTERNAL_DATABASES:
         assert not is_distinctive(name), name
-    assert not is_distinctive("nova")  # under six characters
+    assert not is_distinctive("atlas")  # under six characters

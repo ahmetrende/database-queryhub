@@ -79,5 +79,5 @@ def test_a_write_does_not_count_toward_a_read_burst(monkeypatch):
 
 
 def test_the_busiest_target_wins_the_scope(monkeypatch):
-    _rows(monkeypatch, [_req(tid=15), _req(tid=15), _req(tid=52, db="nova")])
+    _rows(monkeypatch, [_req(tid=15), _req(tid=15), _req(tid=52, db="atlas")])
     assert modal._recent_ro_burst("U1")["target_server_id"] == 15

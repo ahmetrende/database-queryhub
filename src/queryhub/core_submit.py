@@ -362,10 +362,10 @@ def validate_submission(
     #
     # Nothing checked this before, and the modal can hand the submit a
     # database belonging to a DIFFERENT server -- pick a target, pick its
-    # database, switch target, submit. Request 7596 did exactly that: `nova`
+    # database, switch target, submit. Request 7596 did exactly that: `atlas`
     # (which lives on one server) submitted against another, where pre-flight
     # failed open on the connect error, an approver spent 45 minutes on it,
-    # and it died at execution with `database "nova" does not exist`. The
+    # and it died at execution with `database "atlas" does not exist`. The
     # catalog knew at submit time; nobody asked it.
     #
     # `validate_scope` is the check auto-approve grants already use, and it

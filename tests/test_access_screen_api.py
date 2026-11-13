@@ -233,7 +233,7 @@ def test_a_dry_run_writes_nothing_and_names_both_sides(monkeypatch):
 
 
 def test_auto_approve_is_copied_only_when_asked(monkeypatch):
-    auto = [{"target_server_id": 5, "database_name": "nova",
+    auto = [{"target_server_id": 5, "database_name": "atlas",
              "max_tier": "ro", "expires_at": None}]
     cur = _Cur(src_auto=auto)
     _wire(monkeypatch, cur)
@@ -252,7 +252,7 @@ def test_auto_approve_is_copied_only_when_asked(monkeypatch):
     # A count for the toast, the names beside it — the same pair as
     # written / writtenTargets, because the panel reads one of each.
     assert out2["autoApproveCopied"] == 1
-    assert out2["autoApproveCopiedTargets"] == ["svc-5/nova"]
+    assert out2["autoApproveCopiedTargets"] == ["svc-5/atlas"]
 
 
 def test_the_control_plane_is_never_copied_or_revoked(monkeypatch):
