@@ -319,7 +319,7 @@ function PersonPick({ people, value, onChange, resolve, search, autoFocus }) {
   const runFind = (text) => {
     setFound({ q: text, pending: true });
     Promise.resolve().then(() => doSearch(text))
-      .then(r => setFound({ q: text, people: (r && r.people) || [], status: (r && r.directory) || 'ok', more: !!(r && r.more) }),
+      .then(r => setFound({ q: text, people: (r && r.people) || [], status: (r && r.directory) || 'ok', more: !!(r && r.more), hiddenOutside: Number((r && r.hiddenOutside) || 0) }),
         e => setFound({ q: text, error: (e && e.message) || 'The directory could not be read.' }));
   };
   // A directory hit carries the `resolve` shape, so the note below words it.
@@ -381,7 +381,7 @@ function PersonPick({ people, value, onChange, resolve, search, autoFocus }) {
             <button key={'h' + o.h.principal} className={optCls(i) + ' qh-pcombo-hit'} onMouseEnter={() => setHi(i)}
               onMouseDown={e => { e.preventDefault(); act(o); }}>
               <span className="qh-peravatar sm">{qhInitialsOf(o.h.name || o.h.principal)}</span>
-              <span className="qh-pcombo-name">{o.h.name ? qhPersonName(o.h.name) : o.h.principal}{o.h.known ? <span className="qh-pcombo-here"> · in QueryHub</span> : null}</span>
+              <span className="qh-pcombo-name">{o.h.name ? qhPersonName(o.h.name) : o.h.principal}{o.h.title ? <span className="qh-pcombo-title">{' · ' + o.h.title}</span> : null}{o.h.known ? <span className="qh-pcombo-here"> · in QueryHub</span> : null}{o.h.outsideDomain ? <span className="qh-addp-outside">{'Outside ' + qhMailDomain(o.h.email)}</span> : null}</span>
               <span className="qh-pcombo-h">{[o.h.email, o.h.principal].filter(Boolean).join(' · ')}</span>
             </button>
           ))}
@@ -390,6 +390,7 @@ function PersonPick({ people, value, onChange, resolve, search, autoFocus }) {
           {done && !found.error && !hits.length && !list.length && <div className="qh-pcombo-none">Nobody in QueryHub or the Slack directory matches “{raw}”.</div>}
           {done && found.status === 'unavailable' && <div className="qh-pcombo-none">Slack could not be read, so only QueryHub people are listed.</div>}
           {done && found.more && <div className="qh-pcombo-none">More people match. Type more of the name.</div>}
+          {done && found.hiddenOutside > 0 && <div className="qh-pcombo-none qh-addp-hidden">{found.hiddenOutside + (found.hiddenOutside === 1 ? ' person outside the company domain is hidden.' : ' people outside the company domain are hidden.')}</div>}
           {!n && !(found && found.q === raw) && <div className="qh-pcombo-none">{doSearch ? 'Nobody matches. Type a Slack id (U…), an email or a name.' : 'Nobody matches. A Slack id (U…) or a handle can be typed here.'}</div>}
         </div>
       )}
@@ -403,6 +404,12 @@ function PersonPick({ people, value, onChange, resolve, search, autoFocus }) {
 function qhFoldText(text) {
   return String(text == null ? '' : text).replace(/\u0131/g, 'i').replace(/\u0130/g, 'i')
     .normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+// The domain of an email address, for "Outside <domain>".
+function qhMailDomain(email) {
+  const at = String(email || '').lastIndexOf('@');
+  return at >= 0 ? String(email).slice(at + 1) : 'the company domain';
 }
 
 // A Slack user id or a local account id: used as typed, never looked up by name.
@@ -962,7 +969,7 @@ function ExtendForm({ g, st, people, onDone }) {
 // connection stays outside these grants; the server decides that, so the
 // block says it once and does not compute it. A mirrored row (`syncedFrom`)
 // has no Remove: its source writes it again.
-function FleetGrantsBlock({ st, canWrite }) {
+function FleetGrantsBlock({ st, canWrite, onRows }) {
   const people = st.people || [], teams = st.teams || [];
   const [rows, setRows] = useAcc(null);
   const [loadErr, setLoadErr] = useAcc(null);
@@ -980,7 +987,7 @@ function FleetGrantsBlock({ st, canWrite }) {
   const [formErr, setFormErr] = useAcc(null);
   const [saving, setSaving] = useAcc(false);
   const load = () => qhApi.adminFleetGrants()
-    .then(r => { setRows(r.grants || []); setLoadErr(null); })
+    .then(r => { setRows(r.grants || []); setLoadErr(null); if (onRows) onRows(r.grants || []); })
     .catch(e => setLoadErr((e && e.message) || 'QueryHub could not read the grants on every server.'));
   React.useEffect(() => { load(); }, []);
   const set = (p) => { setF(x => ({ ...x, ...p })); setFormErr(null); };
@@ -1100,13 +1107,340 @@ function FleetGrantsBlock({ st, canWrite }) {
   );
 }
 
+// ---------- Grants, layout A: person first (2026-11-13) ----------
+// The operator could not read the old screen. It had an "Every server" block on
+// top, a view switch and a card grid that counted direct grants only. Layout A
+// shows one row per person (or per team). A row says how far the subject
+// reaches, where the reach comes from, what is risky and when it ends. A click
+// opens the per-server lines in place.
+//
+// The reach is computed here, from the lists that the screen already holds. It
+// follows the precedence of the Effective access screen (qh-admin-effective.jsx):
+// a live own grant on a server wins over the team grants there, an ended own
+// grant leaves no access there, and team grants merge to the highest tier. A
+// fleet-wide grant reaches every server that is not super-admin only, so the
+// higher of it and the named grant counts. The Effective access screen stays
+// the exact answer, because the server resolves it.
+const GRA_RANK = { RO: 1, RW: 2, DDL: 3 };
+const GRA_WEEK_MS = 7 * 86400000;
+function graTier(t) { const u = String(t || 'RO').toUpperCase(); return GRA_RANK[u] ? u : 'RO'; }
+function graMax(a, b) { return !a ? b : !b ? a : (GRA_RANK[b] > GRA_RANK[a] ? b : a); }
+function graEnded(iso, now) { return !!iso && new Date(iso).getTime() <= now; }
+function graIsProd(conn) { return !!conn && qhEnvChipWord(conn.env) === 'PROD'; }
+// A fleet-wide team grant names the team by its key, and its display name is
+// `subjectName`. The team list and the per-server grants use the display name.
+function graFleetTeam(g) { return g.subjectName || g.subject; }
+function graDays(ms) {
+  const d = Math.ceil(ms / 86400000);
+  return d <= 0 ? 'today' : d === 1 ? 'tomorrow' : 'in ' + d + ' days';
+}
+function graPlural(n, one, many) { return n + ' ' + (n === 1 ? one : (many || one + 's')); }
+
+// The lines of one subject: its own per-server grants, the grants of its
+// teams (a person only) and the fleet-wide grants that reach it.
+function graLinesOf(st, fleet, s) {
+  const out = [];
+  (st.grants || []).forEach(g => {
+    if (s.kind === 'user' && g.subjectType === 'user' && g.subject === s.id) out.push({ g, source: 'direct' });
+    else if (g.subjectType === 'team' && s.kind === 'team' && g.subject === s.id) out.push({ g, source: 'direct' });
+    else if (g.subjectType === 'team' && s.kind === 'user' && s.teams.indexOf(g.subject) >= 0) out.push({ g, source: 'team', team: g.subject });
+  });
+  (fleet || []).forEach(g => {
+    const team = g.subjectType === 'team' ? graFleetTeam(g) : null;
+    const hit = s.kind === 'user'
+      ? (team ? s.teams.indexOf(team) >= 0 : g.subject === s.id)
+      : (team === s.id);
+    if (hit) out.push({ g, source: 'fleet', team: s.kind === 'user' ? team : null });
+  });
+  return out;
+}
+
+// Everything one row shows, from the lists alone.
+function graSummary(st, fleet, s, now) {
+  const conns = st.connections || [];
+  const connOf = (id) => conns.find(c => c.id === id) || null;
+  const lines = graLinesOf(st, fleet, s).map(l => ({ ...l, tier: graTier(l.g.tier), ended: graEnded(l.g.expiresAt, now) }));
+  const live = lines.filter(l => !l.ended);
+  // Per server: the own grant decides, an ended own grant blocks, teams merge.
+  const per = new Map();
+  lines.forEach(l => {
+    if (l.source === 'fleet') return;
+    const k = l.g.connectionId;
+    if (!per.has(k)) per.set(k, { own: null, ownEnded: false, team: null });
+    const p = per.get(k);
+    if (l.source === 'direct') { if (l.ended) p.ownEnded = true; else p.own = graMax(p.own, l.tier); }
+    else if (!l.ended) p.team = graMax(p.team, l.tier);
+  });
+  const eff = new Map();
+  per.forEach((p, k) => { const t = p.own || (p.ownEnded ? null : p.team); if (t) eff.set(k, t); });
+  const fleetLive = live.filter(l => l.source === 'fleet');
+  const fleetTier = fleetLive.reduce((a, l) => graMax(a, l.tier), null);
+  if (fleetTier) conns.forEach(c => { if (!c.deleted && !c.superAdminOnly && !c.replicaOf) eff.set(c.id, graMax(eff.get(c.id) || null, fleetTier)); });
+  // A team line on a server where the own grant decides is not used.
+  lines.forEach(l => { if (l.source === 'team') { const p = per.get(l.g.connectionId); l.overruled = !!(p && (p.own || p.ownEnded)); } });
+
+  const tiers = { RO: 0, RW: 0, DDL: 0 };
+  let prodTier = null, prod = false, write = false;
+  eff.forEach((t, k) => {
+    tiers[t] += 1;
+    if (t !== 'RO') write = true;
+    if (graIsProd(connOf(k))) { prod = true; if (t !== 'RO') prodTier = graMax(prodTier, t); }
+  });
+
+  // Auto-approve rules that reach this subject, live and switched on.
+  const autos = (st.autoGrants || []).filter(a => a.enabled !== false && !graEnded(a.expiresAt, now) && (
+    a.subjectType === 'team'
+      ? (s.kind === 'team' ? a.user === s.id : s.teams.indexOf(a.user) >= 0)
+      : (s.kind === 'user' && a.user === s.id)));
+  const fleetAuto = fleetLive.some(l => l.g.autoApprove && l.g.enabled !== false);
+  lines.forEach(l => {
+    l.auto = l.source === 'fleet' ? !!(l.g.autoApprove && l.g.enabled !== false)
+      : !l.ended && (fleetAuto || autos.some(a => !a.connectionId || a.connectionId === l.g.connectionId));
+    l.prod = l.source !== 'fleet' && graIsProd(connOf(l.g.connectionId));
+  });
+
+  // Where the reach comes from, in one muted line.
+  const teamsUsed = [];
+  live.forEach(l => { if (l.source === 'team' && !l.overruled && teamsUsed.indexOf(l.team) < 0) teamsUsed.push(l.team); });
+  const directN = live.filter(l => l.source === 'direct').length;
+  const parts = [];
+  if (fleetLive.length) parts.push('every server');
+  if (teamsUsed.length) parts.push('via ' + teamsUsed.slice(0, 2).map(t => 'team ' + t).join(', ') + (teamsUsed.length > 2 ? ' and ' + (teamsUsed.length - 2) + ' more' : ''));
+  const from = !live.length ? 'No live access'
+    : !parts.length ? (s.kind === 'team' ? 'granted to the team' : 'direct only')
+    : parts.join(', ') + (directN ? ' + ' + directN + ' direct' : '');
+
+  // Flags: exceptions only, each one a text chip.
+  // "No end date" reads the subject's own RW and DDL grants only. A team grant
+  // is standing on purpose: membership is what ends it. On 2026-11-13 none of
+  // the 42 live team RW grants had an end, so the flag would mark every member.
+  const flags = [];
+  if (prodTier) flags.push({ kind: 'danger', text: prodTier + ' on PROD', say: 'Can write to a production server with ' + prodTier + '.' });
+  if (s.kind === 'user' && live.some(l => l.source === 'direct' && l.tier !== 'RO' && !l.g.expiresAt))
+    flags.push({ kind: 'warn', text: 'No end date', say: 'A direct RW or DDL grant has no end date.' });
+  if (autos.length || fleetAuto) flags.push({ kind: 'warn', text: 'auto-approve', say: 'Some of their queries run without a DBA.' });
+  if (s.enabled === false) flags.push({ kind: 'off', text: 'Account off', say: 'This account is disabled. Its grants are still standing.' });
+
+  // The nearest end among the live grants.
+  const ends = live.map(l => l.g.expiresAt).filter(Boolean).map(x => new Date(x).getTime()).filter(x => !isNaN(x));
+  const nearest = ends.length ? Math.min(...ends) : null;
+  return {
+    lines, live, eff, tiers, from, flags, prod, write, nearest,
+    soon: nearest !== null && nearest - now <= GRA_WEEK_MS,
+    auto: autos.length > 0 || fleetAuto,
+    expiredIds: lines.filter(l => l.ended).map(l => l.g.id),
+  };
+}
+
+// The subjects of a tab. People: the directory plus any grant subject that is
+// not in it. Teams: the team list plus any team that a grant names.
+function graSubjects(st, fleet, tab) {
+  const teams = st.teams || [];
+  if (tab === 'teams') {
+    const out = teams.map(t => ({ kind: 'team', id: t.name, name: t.name, members: (t.members || []).length, teams: [] }));
+    const seen = new Set(out.map(x => x.id));
+    (st.grants || []).concat(fleet || []).forEach(g => {
+      if (g.subjectType !== 'team') return;
+      const id = g.connectionId ? g.subject : graFleetTeam(g);
+      if (!seen.has(id)) { seen.add(id); out.push({ kind: 'team', id, name: id, members: null, teams: [] }); }
+    });
+    return out;
+  }
+  const people = st.people || [];
+  const teamsOf = (h) => teams.filter(t => (t.members || []).indexOf(h) >= 0).map(t => t.name);
+  const out = people.map(p => ({ kind: 'user', id: p.handle, name: qhPersonName(p.name || p.handle), handle: p.handle, enabled: p.enabled, person: p, teams: teamsOf(p.handle) }));
+  const seen = new Set(out.map(x => x.id));
+  (st.grants || []).concat(fleet || []).forEach(g => {
+    if (g.subjectType !== 'user' || !g.subject || seen.has(g.subject)) return;
+    seen.add(g.subject);
+    out.push({ kind: 'user', id: g.subject, name: grantName(g, people), handle: g.subject, enabled: undefined, person: null, teams: teamsOf(g.subject) });
+  });
+  return out;
+}
+
+const GRA_CHIPS = [
+  ['active', 'Active'], ['soon', 'Ends in 7 days'], ['write', 'Only write access'], ['prod', 'Only production'], ['auto', 'Auto-approve'],
+];
+const GRA_COUNTED = { active: true, soon: true, auto: true };
+const GRA_DEFAULT = { active: true, soon: false, write: false, prod: false, auto: false };
+
+// One subject's per-server lines, opened from its row.
+function GraDetail({ st, actor, s, sum, showExpired, canWrite, onEdit, onPage }) {
+  const [ask, setAsk] = useAcc(null);
+  const lines = sum.lines.filter(l => showExpired || !l.ended).slice().sort((a, b) =>
+    (a.source === 'fleet') !== (b.source === 'fleet') ? (a.source === 'fleet' ? -1 : 1)
+      : String(a.g.connectionId || '').localeCompare(String(b.g.connectionId || '')));
+  const srcSay = (l) => l.source === 'fleet' ? (l.team ? 'every server, team ' + l.team : 'every server')
+    : l.source === 'team' ? 'team ' + l.team : (s.kind === 'team' ? 'team grant' : 'direct');
+  return (
+    <div className="qh-gra-detail">
+      <div className="qh-gra-lines" role="list" aria-label={'Access of ' + s.name}>
+        {lines.map(l => (
+          <React.Fragment key={l.source + ':' + l.g.id}>
+            <div role="listitem" className={'qh-gra-line' + (l.ended ? ' is-ended' : '')}>
+              <span className="qh-gra-srv">{l.source === 'fleet' ? 'Every server' : l.g.connectionId}</span>
+              {l.prod && <span className="qh-envtag-sm env-production">PROD</span>}
+              <span className="qh-gra-dbs">{l.source === 'fleet' ? 'all' : (qhGrantDbNames(l.g) === 'all databases' ? 'all' : qhGrantDbNames(l.g))}</span>
+              <TierBadge tier={l.tier} sm />
+              <span className="qh-gra-src">{srcSay(l)}</span>
+              {l.overruled && <span className="qh-gra-note" title="Their own grant on this server wins over the team grant.">not used</span>}
+              <EndChip iso={l.g.expiresAt} none="No end date" />
+              {l.auto && <span className="qh-gra-flag is-warn" title="Queries here run without a DBA.">auto-approve</span>}
+              {canWrite && l.source === 'direct' && (
+                <button type="button" className="qh-revoke qh-gra-remove" aria-expanded={ask === l.g.id} onClick={() => setAsk(ask === l.g.id ? null : l.g.id)}>Remove</button>
+              )}
+            </div>
+            {ask === l.g.id && (
+              <InlineConfirm danger confirmLabel="Revoke access" cancelLabel="Keep access"
+                say={s.name + ' loses ' + l.tier + ' on ' + qhGrantTarget(l.g) + '.' + (s.kind === 'team' ? ' Every member loses it.' : '') + ' A query that is running finishes.'}
+                onCancel={() => setAsk(null)}
+                onConfirm={() => { setAsk(null); st.revokeGrant(l.g.id, actor); }} />
+            )}
+          </React.Fragment>
+        ))}
+        {lines.length === 0 && <div className="qh-gra-none">No live access.</div>}
+      </div>
+      {canWrite && (
+        <div className="qh-gra-acts">
+          <button type="button" className="qh-btn qh-btn-sm" onClick={onEdit}><AIcon.edit />Edit access</button>
+          {s.kind === 'user' && s.person && <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onPage}>Open their page</button>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The list itself: chips, search, People or Teams, one row per subject.
+function GraList({ st, actor, canWrite, fleet, fleetErr, onFleetRetry, onFleetRows, onPage }) {
+  const [tab, setTab] = useAcc('people');
+  const [on, setOn] = useAcc(GRA_DEFAULT);
+  const [q, setQ] = useAcc('');
+  const [showExpired, setShowExpired] = useAcc(false);
+  const [open, setOpen] = useAcc(null);
+  const [editing, setEditing] = useAcc(null);
+  const [manage, setManage] = useAcc(false);
+  const now = Date.now();
+  const rows = graSubjects(st, fleet, tab).map(s => ({ s, sum: graSummary(st, fleet, s, now) }))
+    .filter(r => r.sum.lines.length > 0);
+  const count = (k) => rows.filter(r => k === 'active' ? r.sum.live.length > 0 : r.sum[k]).length;
+  const t = q.trim().toLowerCase();
+  const shown = rows.filter(r => {
+    // "Show" on the expired footnote also lists a subject whose grants all ended.
+    if (on.active && !r.sum.live.length && !showExpired) return false;
+    if (on.soon && !r.sum.soon) return false;
+    if (on.write && !r.sum.write) return false;
+    if (on.prod && !r.sum.prod) return false;
+    if (on.auto && !r.sum.auto) return false;
+    if (!t) return true;
+    const hay = (r.s.name + ' ' + (r.s.handle || '') + ' ' + r.sum.lines.map(l => l.g.connectionId || '').join(' ')).toLowerCase();
+    return hay.indexOf(t) >= 0;
+  }).sort((a, b) => (b.sum.flags.length > 0) - (a.sum.flags.length > 0) || a.s.name.localeCompare(b.s.name));
+  const hidden = new Set();
+  rows.forEach(r => r.sum.expiredIds.forEach(id => hidden.add(id)));
+  const clear = () => { setOn({ active: false, soon: false, write: false, prod: false, auto: false }); setQ(''); };
+  const tiersSay = (tiers) => ['RO', 'RW', 'DDL'].filter(x => tiers[x]).map(x => x + ' ' + tiers[x]).join(' · ');
+  const loading = st.grantsState === 'loading';
+  return (
+    <div className="qh-gra">
+      <div className="qh-gra-filters" role="group" aria-label="Filters">
+        {GRA_CHIPS.map(([k, label]) => (
+          <button key={k} type="button" aria-pressed={!!on[k]} className={'qh-gra-chip' + (on[k] ? ' is-on' : '')}
+            onClick={() => setOn(o => ({ ...o, [k]: !o[k] }))}>
+            {label}{GRA_COUNTED[k] && <span className="qh-gra-chip-n">{count(k)}</span>}
+          </button>
+        ))}
+        <AccSearch q={q} setQ={setQ} placeholder="Find a person, handle or server" />
+      </div>
+      <div className="qh-gra-bar">
+        <div className="qh-seg qh-seg-sm" role="group" aria-label="Show">
+          {[['people', 'People'], ['teams', 'Teams']].map(([v, l]) => (
+            <button key={v} type="button" aria-pressed={tab === v} className={'qh-seg-opt' + (tab === v ? ' is-active' : '')}
+              onClick={() => { setTab(v); setOpen(null); setEditing(null); }}>{l}</button>
+          ))}
+        </div>
+        <span className="qh-gra-shown">{graPlural(shown.length, tab === 'teams' ? 'team' : 'person', tab === 'teams' ? 'teams' : 'people')}</span>
+      </div>
+
+      <div className="qh-gra-table">
+        <div className="qh-gra-head" aria-hidden="true">
+          <span>{tab === 'teams' ? 'Team' : 'Person'}</span><span>Reach</span><span>Flags</span><span>Ends</span>
+        </div>
+        {loading && (
+          <div className="qh-gra-skel" role="status">
+            <span className="qh-skel-sr">Loading grants</span>
+            {[64, 48, 72, 56].map((w, i) => <div key={i} className="qh-gra-skelrow"><span className="qh-skel-bar" style={{ width: w + '%' }} /></div>)}
+          </div>
+        )}
+        {!loading && st.grantsState === 'error' && (
+          <div className="qh-gra-empty">QueryHub could not read the grants. {st.reloadGrants && <button type="button" className="qh-linkbtn" onClick={() => st.reloadGrants()}>Try again</button>}</div>
+        )}
+        {!loading && st.grantsState !== 'error' && shown.map(({ s, sum }) => {
+          const key = s.kind + ':' + s.id;
+          const isOpen = open === key;
+          return (
+            <div key={key} className={'qh-gra-row' + (isOpen ? ' is-open' : '')}>
+              <button type="button" className="qh-gra-rowbtn" aria-expanded={isOpen} onClick={() => { setOpen(isOpen ? null : key); setEditing(null); }}>
+                <span className="qh-gra-who">
+                  <span className="qh-gra-name">{s.name}</span>
+                  <span className="qh-gra-sub">{s.kind === 'team'
+                    ? (s.members === null ? 'not in the team list' : graPlural(s.members, 'member'))
+                    : <span className="qh-mono">{s.handle}</span>}</span>
+                </span>
+                <span className="qh-gra-reach">
+                  <span className="qh-gra-reachtop">
+                    {sum.eff.size > 0 && <span className="qh-gra-n">{graPlural(sum.eff.size, 'server')}</span>}
+                    <span className="qh-gra-tiers">{tiersSay(sum.tiers) || 'No live access'}</span>
+                  </span>
+                  <span className="qh-gra-from">{sum.from}</span>
+                </span>
+                <span className="qh-gra-flags">
+                  {sum.flags.map(f => <span key={f.text} className={'qh-gra-flag is-' + f.kind} title={f.say}>{f.text}</span>)}
+                </span>
+                <span className="qh-gra-ends" title={sum.nearest !== null ? qhFmt(new Date(sum.nearest).toISOString()) : undefined}>
+                  {sum.nearest !== null ? graDays(sum.nearest - now) : sum.live.length ? 'No end' : '—'}
+                </span>
+              </button>
+              {isOpen && (editing === key
+                ? <div className="qh-subjcard is-editing qh-gra-edit">
+                    <SubjectAccessEditor st={st} actor={actor} subjectType0={s.kind} subject0={s.id} name0={s.name} lockSubject onDone={() => setEditing(null)} />
+                  </div>
+                : <GraDetail st={st} actor={actor} s={s} sum={sum} showExpired={showExpired} canWrite={canWrite}
+                    onEdit={() => setEditing(key)} onPage={() => onPage(s.handle)} />)}
+            </div>
+          );
+        })}
+        {!loading && st.grantsState !== 'error' && shown.length === 0 && (
+          <div className="qh-gra-empty">
+            {rows.length ? <>No one matches these filters. <button type="button" className="qh-linkbtn" onClick={clear}>Clear filters</button></> : 'No one has access yet.'}
+          </div>
+        )}
+      </div>
+
+      {!on.active || showExpired || hidden.size > 0 ? (
+        <div className="qh-gra-foot">
+          {showExpired
+            ? <>Expired grants are shown. <button type="button" className="qh-linkbtn" onClick={() => setShowExpired(false)}>Hide</button></>
+            : hidden.size > 0 ? <>{graPlural(hidden.size, 'expired grant')} hidden {'·'} <button type="button" className="qh-linkbtn" onClick={() => setShowExpired(true)}>Show</button></> : null}
+        </div>
+      ) : null}
+      <div className="qh-gra-foot qh-gra-fleetfoot">
+        {fleetErr
+          ? <>{fleetErr} <button type="button" className="qh-linkbtn" onClick={onFleetRetry}>Try again</button></>
+          : fleet === null ? 'Reading fleet-wide grants' : graPlural(fleet.length, 'fleet-wide grant')}
+        {' · '}
+        <button type="button" className="qh-linkbtn" aria-expanded={manage} onClick={() => setManage(m => !m)}>{manage ? 'Hide' : 'Manage'}</button>
+      </div>
+      {manage && <FleetGrantsBlock st={st} canWrite={canWrite} onRows={onFleetRows} />}
+    </div>
+  );
+}
+
 function GrantsView({ st, user }) {
   const actor = 'dba.' + user.name.split(' ')[0].toLowerCase();
-  // Person first, and it is the DEFAULT (CODE brief 2026-08-20 §6): the report
-  // was that granting is hard because picking a person shows nowhere they
-  // already stand. By-subject and by-grant stay for the bulk work they are good
-  // at — but the screen you land on is now the one that answers "who is this".
-  const [mode, setMode] = useAcc('person');
+  const canWrite = !!(user && user.role === 'super');
+  // Layout A is the DEFAULT (2026-11-13). By subject and By grant stay for the
+  // bulk work they are good at.
+  const [mode, setMode] = useAcc('list');
   const [q, setQ] = useAcc('');
   const [addingSubject, setAddingSubject] = useAcc(false);
   const [editKey, setEditKey] = useAcc(null);
@@ -1119,6 +1453,18 @@ function GrantsView({ st, user }) {
   const c0 = (st.connections || [])[0] || { id: '' };
   const blank = { subjectType: 'user', subject: '', connectionId: c0.id, databases: ['*'], tier: 'RO' };
 
+  // The fleet-wide grants. The list reads them for its rows, and the Manage
+  // block hands its own reads back, so an add or a remove there shows here.
+  const [fleet, setFleet] = useAcc(null);
+  const [fleetErr, setFleetErr] = useAcc(null);
+  const loadFleet = () => {
+    setFleetErr(null);
+    return qhApi.adminFleetGrants()
+      .then(r => setFleet(r.grants || []))
+      .catch(e => setFleetErr((e && e.message) || 'QueryHub could not read the fleet-wide grants.'));
+  };
+  React.useEffect(() => { loadFleet(); }, []);
+
   // By-subject: fold the flat grants into one card per subject.
   const subjects = (() => {
     const m = new Map();
@@ -1129,41 +1475,40 @@ function GrantsView({ st, user }) {
     return arr.sort((a, b) => a.subjectType !== b.subjectType ? (a.subjectType === 'team' ? -1 : 1) : (a.subject < b.subject ? -1 : 1));
   })();
 
-  // Person mode opens the Add person dialog (2026-11-13). `onAdded` opens that
-  // person's access page in the Person view, where single servers are added.
+  // "Add person" opens the Add person dialog (2026-11-13). `onAdded` opens
+  // that person's page, as soon as the people list holds them.
   const [addPersonOpen, setAddPersonOpen] = useAcc(false);
-  const [openPerson, setOpenPerson] = useAcc({ n: 0, handle: null });
+  const [bulk, setBulk] = useAcc(false);
+  const [pageHandle, setPageHandle] = useAcc(null);
+  const pagePerson = pageHandle ? ((st.people || []).find(p => p.handle === pageHandle) || null) : null;
   const newBtn = () => {
     if (mode === 'grant') { setAdding(a => !a); setEditId(null); }
-    else if (mode === 'person') setAddPersonOpen(true);
+    else if (mode === 'list') setAddPersonOpen(true);
     else { setAddingSubject(true); setEditKey(null); }
   };
 
   return (
     <div className="qh-apad">
       <div className="qh-aview-head">
-        <div><div className="qh-aview-title">Grants</div><div className="qh-aview-sub">Give a person or team standing access to one or many connections — each connection has a database scope and a single tier.</div></div>
-        {/* Person mode gets the button too, reading "Add person": the operator
-            asked why there was no such button, and the answer is that granting IS
-            the create — it opens the same editor with the subject combo unlocked. */}
-        <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={newBtn}><AIcon.plus />{mode === 'grant' ? 'New grant' : mode === 'person' ? 'Add person' : 'Grant access'}</button>
+        <div><div className="qh-aview-title">Grants</div><div className="qh-aview-sub">Who can reach which server, and how. Click a row to see each server.</div></div>
+        <button className="qh-btn qh-btn-primary qh-btn-sm" onClick={newBtn}><AIcon.plus />{mode === 'grant' ? 'New grant' : mode === 'list' ? 'Add person' : 'Grant access'}</button>
       </div>
-
-      <FleetGrantsBlock st={st} canWrite={!!(user && user.role === 'super')} />
 
       <div className="qh-conn-controls">
-        {/* Person mode carries its own search — it filters people, not grants. */}
-        {mode !== 'person' && <AccSearch q={q} setQ={setQ} placeholder={mode === 'subject' ? 'Filter by subject or target…' : 'Filter by subject, server, database…'} />}
-        <AccGroupBy label="View" group={mode} setGroup={setMode} options={[['person', 'Person'], ['subject', 'By subject'], ['grant', 'By grant']]} />
+        {mode !== 'list' && <AccSearch q={q} setQ={setQ} placeholder={mode === 'subject' ? 'Filter by subject or target…' : 'Filter by subject, server, database…'} />}
+        <AccGroupBy label="View" group={mode} setGroup={(v) => { setMode(v); setPageHandle(null); }} options={[['list', 'Overview'], ['subject', 'By subject'], ['grant', 'By grant']]} />
         {mode === 'grant' && <AccGroupBy group={group} setGroup={setGroup} options={[['none', 'None'], ['subject', 'Subject'], ['server', 'Server'], ['database', 'Database']]} />}
+        {mode === 'list' && !pagePerson && !bulk && canWrite && <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-gra-bulkbtn" onClick={() => setBulk(true)}>Grant to several people</button>}
       </div>
 
-      {mode === 'person' ? (
+      {mode === 'list' ? (
         <>
-          {addingSubject && <div className="qh-subjcard is-editing"><SubjectAccessEditor st={st} actor={actor} onDone={() => setAddingSubject(false)} /></div>}
-          <PersonAccessView key={'pv' + openPerson.n} st={st} actor={actor} initial={openPerson.handle} />
-          {addPersonOpen && <AddPersonDialog st={st} onClose={() => setAddPersonOpen(false)}
-            onAdded={(p) => setOpenPerson(o => ({ n: o.n + 1, handle: p }))} />}
+          {bulk && !pagePerson && <BulkGrantPanel st={st} actor={actor} onDone={() => setBulk(false)} />}
+          {pagePerson
+            ? <PersonPage st={st} actor={actor} person={pagePerson} onBack={() => setPageHandle(null)} />
+            : <GraList st={st} actor={actor} canWrite={canWrite} fleet={fleet} fleetErr={fleetErr} onFleetRetry={loadFleet}
+                onFleetRows={(rows) => { setFleet(rows); setFleetErr(null); }} onPage={setPageHandle} />}
+          {addPersonOpen && <AddPersonDialog st={st} onClose={() => setAddPersonOpen(false)} onAdded={(p) => setPageHandle(p)} />}
         </>
       ) : mode === 'subject' ? (
         <>
@@ -2931,14 +3276,21 @@ function TeamMultiPick({ teams, value, onChange }) {
   const term = fold(q).trim();
   const opts = (teams || []).filter(t => chosen.indexOf(t.id) < 0 && (!term || fold(t.name).indexOf(term) >= 0)).slice(0, 12);
   const count = (t) => (t.memberCount != null ? t.memberCount : (t.members || []).length);
-  const add = (t) => { if (!t) return; onChange([...chosen, t.id]); setQ(''); setHi(0); };
+  // The list closes after a pick (Enter or a click) and the text clears.
+  const add = (t) => { if (!t) return; onChange([...chosen, t.id]); setQ(''); setHi(0); setOpen(false); };
   const nameOf = (id) => ((teams || []).find(t => t.id === id) || { name: String(id) }).name;
+  // "Team One (Lead Name)": several leads are joined with ", ", no lead means no ().
+  const labelOf = (t) => {
+    const leads = ((t && t.leads) || []).map(l => (l && typeof l === 'object' ? (l.name || l.id) : l)).filter(Boolean);
+    return t.name + (leads.length ? ' (' + leads.join(', ') + ')' : '');
+  };
+  const chipLabel = (id) => { const t = (teams || []).find(x => x.id === id); return t ? labelOf(t) : String(id); };
   return (
     <div className="qh-addp-teampick" ref={wrapRef}>
       {chosen.length > 0 && (
         <div className="qh-addp-chips" style={{ marginBottom: 6 }}>
           {chosen.map(id => (
-            <span key={id} className="qh-addp-chip" data-team-chip={id}>{nameOf(id)}
+            <span key={id} className="qh-addp-chip" data-team-chip={id}>{chipLabel(id)}
               <button type="button" aria-label={'Remove team ' + nameOf(id)} onClick={() => onChange(chosen.filter(x => x !== id))}>{'×'}</button>
             </span>
           ))}
@@ -2959,7 +3311,7 @@ function TeamMultiPick({ teams, value, onChange }) {
           {opts.map((t, i) => (
             <button type="button" key={t.id} className={'qh-addp-teamopt' + (i === hi ? ' is-hi' : '')}
               onMouseEnter={() => setHi(i)} onMouseDown={e => { e.preventDefault(); add(t); }}>
-              <span>{t.name}</span><span>{count(t)} member{count(t) === 1 ? '' : 's'}</span>
+              <span>{labelOf(t)}</span><span>{count(t)} member{count(t) === 1 ? '' : 's'}</span>
             </button>
           ))}
           {!opts.length && <div className="qh-pcombo-none">{term ? 'No team matches.' : 'No more teams to add.'}</div>}
@@ -2969,18 +3321,108 @@ function TeamMultiPick({ teams, value, onChange }) {
   );
 }
 
+// A small segmented choice for the Add person dialog. `options` is [[value, label]].
+function AddpSeg({ options, value, onChange, label, cls }) {
+  return (
+    <div className={'qh-seg qh-seg-sm ' + (cls || '')} role="group" aria-label={label}>
+      {options.map(([v, l]) => (
+        <button key={v} type="button" data-v={v} aria-pressed={value === v} className={'qh-seg-opt' + (value === v ? ' is-active' : '')}
+          onClick={() => onChange(v)}>{l}</button>
+      ))}
+    </div>
+  );
+}
+
+// Databases of one connection as an autocomplete with chips. Nothing chosen
+// means every database. `conn.databases` is a list of { id, name }.
+function AddpDbPick({ conn, value, onChange }) {
+  const [q, setQ] = useAcc('');
+  const [open, setOpen] = useAcc(false);
+  const [hi, setHi] = useAcc(0);
+  const wrapRef = qhUseDismiss(open, () => setOpen(false));
+  const chosen = value || [];
+  const all = (conn && conn.databases) || [];
+  const term = qhFoldText(q).trim();
+  const opts = all.filter(d => chosen.indexOf(d.id) < 0 && (!term || qhFoldText(d.name).indexOf(term) >= 0)).slice(0, 12);
+  const add = (d) => { if (!d) return; onChange([...chosen, d.id]); setQ(''); setHi(0); setOpen(false); };
+  const nameOf = (id) => (all.find(d => d.id === id) || { name: id }).name;
+  return (
+    <div className="qh-addp-dbpick" ref={wrapRef}>
+      {chosen.length > 0 && (
+        <div className="qh-addp-chips" style={{ marginBottom: 6 }}>
+          {chosen.map(id => (
+            <span key={id} className="qh-addp-chip" data-db-chip={id}>{nameOf(id)}
+              <button type="button" aria-label={'Remove database ' + nameOf(id)} onClick={() => onChange(chosen.filter(x => x !== id))}>{'×'}</button>
+            </span>
+          ))}
+        </div>
+      )}
+      <input className="qh-input qh-addp-db-in" placeholder={chosen.length ? 'Add another database' : 'All databases. Type a name to limit.'} value={q}
+        onFocus={() => setOpen(true)}
+        onChange={e => { setQ(e.target.value); setOpen(true); setHi(0); }}
+        onKeyDown={e => {
+          const n = opts.length;
+          if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setHi(h => (n ? (h + 1) % n : 0)); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => (n ? (h + n - 1) % n : 0)); }
+          else if (e.key === 'Enter') { e.preventDefault(); add(opts[hi]); }
+          else if (e.key === 'Escape') { if (open) { e.preventDefault(); e.stopPropagation(); setOpen(false); } }
+        }} />
+      {open && (
+        <div className="qh-addp-pop">
+          {opts.map((d, i) => (
+            <button type="button" key={d.id} className={'qh-addp-teamopt qh-addp-dbopt' + (i === hi ? ' is-hi' : '')}
+              onMouseEnter={() => setHi(i)} onMouseDown={e => { e.preventDefault(); add(d); }}>
+              <span>{d.name}</span>
+            </button>
+          ))}
+          {!opts.length && <div className="qh-pcombo-none">{term ? 'No database matches.' : 'No more databases to add.'}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AddPersonDialog({ st, onClose, onAdded }) {
+  const uid = React.useId();
+  const seq = React.useRef(0);
+  const nextKey = () => 'a' + (++seq.current);
+  const conns = st.connections || [];
   const [principal, setPrincipal] = useAcc('');
   const [teamIds, setTeamIds] = useAcc([]);
+  const [newTeams, setNewTeams] = useAcc([]);   // [{ k, name, lead }]
+  const [srv, setSrv] = useAcc([]);             // [{ k, connectionId, databases, tier, ttl, expDate }]
+  const [role, setRole] = useAcc('none');       // none | approver | admin | granter
+  const [ceil, setCeil] = useAcc('RO');         // approver tier ceiling
   const [copyFrom, setCopyFrom] = useAcc('');
   const [incAuto, setIncAuto] = useAcc(false);
   const [notify, setNotify] = useAcc(true);
   const [prev, setPrev] = useAcc(null);     // { key, data } or { key, error }
   const [busy, setBusy] = useAcc(false);
   const [err, setErr] = useAcc(null);
-  const body = (dryRun) => ({ principal, teamIds, copyFrom: copyFrom || null,
-    includeAutoApprove: !!copyFrom && incAuto, notify, dryRun });
-  const key = JSON.stringify(body(true));
+  const [askDiscard, setAskDiscard] = useAcc(false);
+  const setNt = (k, patch) => setNewTeams(rs => rs.map(r => (r.k === k ? { ...r, ...patch } : r)));
+  const setSv = (k, patch) => setSrv(rs => rs.map(r => (r.k === k ? { ...r, ...patch } : r)));
+  // `stable` leaves the end date as the form words it. A quick pick ("30 days")
+  // turns into a time that moves on every render, and the preview key must not.
+  const body = (dryRun, stable) => ({ principal, teamIds, copyFrom: copyFrom || null,
+    includeAutoApprove: !!copyFrom && incAuto, notify, dryRun,
+    newTeams: newTeams.filter(r => r.name.trim()).map(r => ({ name: r.name.trim(), lead: !!r.lead })),
+    grants: srv.filter(r => r.connectionId).map(r => ({ connectionId: r.connectionId,
+      databases: r.databases && r.databases.length ? r.databases : null, tier: r.tier,
+      expiresAt: stable ? (r.ttl || 'none') + ':' + (r.expDate || '') : expIso(r) })),
+    role: role === 'none' ? null : { role, scopeTeamId: null, scopeTargetId: null, maxTier: role === 'approver' ? ceil : null } });
+  const key = JSON.stringify(body(true, true));
+  const dirty = !!(principal || teamIds.length || newTeams.length || srv.length || role !== 'none' || copyFrom || incAuto || !notify);
+  // Esc, the close icon, Cancel and a click outside all come here. QhModal keeps
+  // the first `onClose` it gets for Esc, so it calls through a ref.
+  const requestClose = () => {
+    if (busy) return;
+    if (!dirty) { onClose(); return; }
+    setAskDiscard(v => !v);
+  };
+  const closeRef = React.useRef(requestClose);
+  closeRef.current = requestClose;
+  const modalClose = React.useCallback(() => closeRef.current(), []);
   React.useEffect(() => {
     if (!principal) { setPrev(null); return undefined; }
     let stale = false;
@@ -3004,15 +3446,26 @@ function AddPersonDialog({ st, onClose, onAdded }) {
   const tiersOf = (ts) => Array.from(new Set((ts || []).map(x => x.tier))).join('/');
   const n = (x) => (x || []).length;
   const disabledWhy = !principal ? 'Pick a person first.' : known ? 'This person is already in QueryHub.'
+    : newTeams.some(r => !r.name.trim()) ? 'Name the new team, or remove its row.'
+    : srv.some(r => !r.connectionId) ? 'Pick a server for the new row, or remove it.'
+    : srv.some(r => expBad(r)) ? 'Pick an end date from today on.'
     : !data ? 'Wait for the review.' : '';
+  const connOf = (id) => conns.find(c => c.id === id) || { id, name: id, databases: [] };
+  const takenSrv = {};
+  srv.forEach(r => { if (r.connectionId) takenSrv[r.connectionId] = 'already in the list'; });
+  const addNt = () => setNewTeams(rs => [...rs, { k: nextKey(), name: '', lead: false }]);
+  const addSrv = () => setSrv(rs => [...rs, { k: nextKey(), connectionId: '', databases: [], tier: 'RO', ttl: 'none', expDate: '' }]);
+  const roleSay = { approver: 'Approver', admin: 'Admin', granter: 'Granter' };
+  const outsideWarn = !!(data && (data.outsideDomain || (data.warnings || []).some(w => w.kind === 'outside_domain')));
+  const outsideDom = qhMailDomain(data && data.email);
   return (
-    <QhModal onClose={busy ? () => {} : onClose} panelClass="qh-addp-panel">
+    <QhModal onClose={modalClose} panelClass="qh-addp-panel">
       <div className="qh-modal-head">
         <div>
           <div className="qh-modal-title">Add person</div>
           <div className="qh-modal-sub">Pick who they are, then choose how they get access.</div>
         </div>
-        <button className="qh-icon-btn" onClick={onClose} aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        <button className="qh-icon-btn" onClick={requestClose} aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
       </div>
       <div className="qh-modal-body">
         <div className="qh-addp-sec">
@@ -3022,6 +3475,63 @@ function AddPersonDialog({ st, onClose, onAdded }) {
         <div className="qh-addp-sec">
           <div className="qh-field-lbl">Teams <span className="qh-addp-opt">optional</span></div>
           <TeamMultiPick teams={st.teams} value={teamIds} onChange={setTeamIds} />
+        </div>
+        <div className="qh-addp-sec qh-addp-sec-newteam">
+          <div className="qh-field-lbl">New team <span className="qh-addp-opt">optional</span></div>
+          {newTeams.map(r => (
+            <div key={r.k} className="qh-addp-row qh-addp-nt" data-k={r.k}>
+              <input className="qh-input qh-addp-nt-name" aria-label="New team name" placeholder="Team name" value={r.name}
+                onChange={e => setNt(r.k, { name: e.target.value })} />
+              <AddpSeg cls="qh-addp-nt-role" label="Role in the new team" value={r.lead ? 'lead' : 'member'}
+                options={[['lead', 'Lead'], ['member', 'Member']]} onChange={v => setNt(r.k, { lead: v === 'lead' })} />
+              <button type="button" className="qh-acced-x qh-addp-rm" aria-label="Remove the new team row" title="Remove the new team row"
+                onClick={() => setNewTeams(rs => rs.filter(x => x.k !== r.k))}><AIcon.x /></button>
+            </div>
+          ))}
+          <div><button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-addp-add-nt" onClick={addNt}>+ New team</button></div>
+        </div>
+        <div className="qh-addp-sec qh-addp-sec-servers">
+          <div className="qh-field-lbl">Servers <span className="qh-addp-opt">optional</span></div>
+          {srv.map(r => {
+            const c = connOf(r.connectionId);
+            return (
+              <div key={r.k} className="qh-addp-row qh-addp-srv" data-k={r.k}>
+                <div className="qh-addp-rowhead">
+                  {r.connectionId
+                    ? <><span className="qh-addp-srv-name">{c.name}</span>
+                      <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-addp-srv-change" onClick={() => setSv(r.k, { connectionId: '', databases: [] })}>Change</button></>
+                    : <ConnPick conns={conns} taken={takenSrv} inputId={uid + r.k + 'conn'} autoFocus
+                        onPick={cid => setSv(r.k, { connectionId: cid, databases: [] })} />}
+                  <button type="button" className="qh-acced-x qh-addp-rm" aria-label="Remove the server row" title="Remove the server row"
+                    onClick={() => setSrv(rs => rs.filter(x => x.k !== r.k))}><AIcon.x /></button>
+                </div>
+                {r.connectionId && (
+                  <div className="qh-addp-fields">
+                    <span className="qh-addp-k">Databases</span>
+                    <div><AddpDbPick conn={c} value={r.databases} onChange={dbs => setSv(r.k, { databases: dbs })} /></div>
+                    <span className="qh-addp-k">Access level</span>
+                    <div><AddpSeg cls="qh-addp-tier" label="Access level" value={r.tier}
+                      options={QH_TIERS.map(t => [t, t])} onChange={v => setSv(r.k, { tier: v })} /></div>
+                    <span className="qh-addp-k">Access ends</span>
+                    <div><ExpiryPick f={r} onChange={p => setSv(r.k, p)} /></div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <div><button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-addp-add-srv" onClick={addSrv}>+ Add server</button></div>
+        </div>
+        <div className="qh-addp-sec qh-addp-sec-role">
+          <div className="qh-field-lbl">Role <span className="qh-addp-opt">optional</span></div>
+          <AddpSeg cls="qh-addp-role" label="Role" value={role}
+            options={[['none', 'None'], ['approver', 'Approver'], ['admin', 'Admin'], ['granter', 'Granter']]} onChange={setRole} />
+          {role === 'approver' && (
+            <div className="qh-addp-rolerow">
+              <span className="qh-addp-k">Highest tier they approve</span>
+              <AddpSeg cls="qh-addp-ceil" label="Highest tier they approve" value={ceil} options={[['RO', 'RO'], ['RW', 'RW']]} onChange={setCeil} />
+            </div>
+          )}
+          {role !== 'none' && <div className="qh-addp-muted qh-addp-rolenote">The role covers everything. The Roles page sets a narrower scope later.</div>}
         </div>
         <div className="qh-addp-sec">
           <div className="qh-field-lbl">Same access as <span className="qh-addp-opt">optional</span></div>
@@ -3046,7 +3556,7 @@ function AddPersonDialog({ st, onClose, onAdded }) {
         </div>
         <label className="qh-addp-check">
           <input type="checkbox" className="qh-addp-notify" checked={notify} onChange={e => setNotify(e.target.checked)} />
-          Tell them on Slack
+          Notify on Slack
         </label>
         <div className="qh-addp-sec">
           <div className="qh-field-lbl">Review</div>
@@ -3056,13 +3566,27 @@ function AddPersonDialog({ st, onClose, onAdded }) {
             {cur && cur.error && <div className="qh-addp-err" role="alert">{cur.error}</div>}
             {data && (
               <>
-                <div className="qh-addp-line qh-addp-person"><b>{data.name || data.principal}</b>{data.email ? ' · ' + data.email : ''} · {data.principal}</div>
-                {n(data.teams) === 0 && !known && <div className="qh-addp-line qh-addp-muted">No teams chosen.</div>}
+                <div className="qh-addp-line qh-addp-person"><b>{data.name || data.principal}</b>{data.title ? ' · ' + data.title : ''}{data.email ? ' · ' + data.email : ''} · {data.principal}</div>
+                {outsideWarn && <div className="qh-addp-outside-warn" role="alert">{'This email is outside ' + outsideDom + '. Check before adding.'}</div>}
+                {n(data.teams) === 0 && n(data.newTeams) === 0 && !known && <div className="qh-addp-line qh-addp-muted">No teams chosen.</div>}
                 {(data.teams || []).map(t => (
                   <div key={t.id} className="qh-addp-line qh-addp-team">
                     <b>{t.name}</b>{' · '}{t.allTargets ? 'every server' : n(t.targets) + ' server' + (n(t.targets) === 1 ? '' : 's') + (n(t.targets) ? ' · ' + tiersOf(t.targets) : '')}
                   </div>
                 ))}
+                {(data.newTeams || []).map((t, i) => (
+                  <div key={'nt' + i} className="qh-addp-line qh-addp-newteamline">New team <b>{t.name}</b>{' · '}{t.lead ? 'they are the lead' : 'they are a member'}</div>
+                ))}
+                {(data.grants || []).map((g, i) => (
+                  <div key={'g' + i} className="qh-addp-line qh-addp-grantline">
+                    Server <b>{g.connectionId}</b>{' · '}{g.tier}{' · '}{g.databases && g.databases.length ? g.databases.join(', ') : 'all databases'}{' · '}{g.expiresAt ? 'ends ' + String(g.expiresAt).slice(0, 10) : 'no end date'}
+                  </div>
+                ))}
+                {data.role && (
+                  <div className="qh-addp-line qh-addp-roleline">
+                    Role <b>{roleSay[data.role.role] || data.role.role}</b>{data.role.maxTier ? ' · up to ' + data.role.maxTier : ''}{' · covers everything'}
+                  </div>
+                )}
                 {data.copy && (
                   <div className="qh-addp-line qh-addp-copyline">
                     Same access as <b>{data.copy.fromName || data.copy.from}</b>{': '}
@@ -3071,10 +3595,12 @@ function AddPersonDialog({ st, onClose, onAdded }) {
                     {incAuto && <span>{'. ' + data.copy.autoApprove + ' auto-approve rule' + (data.copy.autoApprove === 1 ? '' : 's')}</span>}
                   </div>
                 )}
-                {(data.warnings || []).map((w, i) => (
-                  <div key={i} className="qh-addp-warn" role="alert">{w.tier} on a production server: {w.connectionId} (from {w.source})</div>
+                {(data.warnings || []).filter(w => w.kind !== 'outside_domain').map((w, i) => (
+                  w.kind === 'role'
+                    ? <div key={i} className="qh-addp-warn qh-addp-warn-role" role="alert">{w.text}</div>
+                    : <div key={i} className="qh-addp-warn" role="alert">{w.tier} on a production server: {w.connectionId} (from {w.source})</div>
                 ))}
-                {data.empty && !known && <div className="qh-addp-line qh-addp-emptyline">They can sign in but reach no server yet. They can ask with Request database access.</div>}
+                {data.empty && !known && !srv.length && !newTeams.length && role === 'none' &&<div className="qh-addp-line qh-addp-emptyline">They can sign in but reach no server yet. They can ask with Request database access.</div>}
                 {known && (
                   <div className="qh-addp-known">
                     <span>Already in QueryHub.</span>
@@ -3088,9 +3614,14 @@ function AddPersonDialog({ st, onClose, onAdded }) {
         {err && <div className="qh-addp-err qh-addp-submit-err" role="alert">{err}</div>}
       </div>
       <div className="qh-modal-foot">
-        <button className="qh-btn qh-btn-ghost qh-addp-cancel" onClick={onClose} disabled={busy}>Cancel</button>
-        <button className="qh-btn qh-btn-primary qh-addp-go" onClick={submit} disabled={busy || !!disabledWhy}
-          title={disabledWhy || undefined}>{busy ? 'Adding...' : 'Add person'}</button>
+        {askDiscard
+          ? <div className="qh-addp-discard"><InlineConfirm say="Discard your changes?" cancelLabel="Keep editing" confirmLabel="Discard" danger
+              onCancel={() => setAskDiscard(false)} onConfirm={onClose} /></div>
+          : <>
+            <button className="qh-btn qh-btn-ghost qh-addp-cancel" onClick={requestClose} disabled={busy}>Cancel</button>
+            <button className="qh-btn qh-btn-primary qh-addp-go" onClick={submit} disabled={busy || !!disabledWhy}
+              title={disabledWhy || undefined}>{busy ? 'Adding...' : 'Add person'}</button>
+          </>}
       </div>
     </QhModal>
   );
@@ -3104,6 +3635,6 @@ function AddPersonDialog({ st, onClose, onAdded }) {
 // segmented control would be a second grouping idiom on one page.
 // `QH_TIER_WORD` / `qhTierWord` too (2026-10-21): the Roles screen and the
 // access editor say Read, Write and Schema from one table.
-Object.assign(window, { InlineConfirm, AddPersonDialog, TeamMultiPick, GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, FleetGrantsBlock, connHealthState, connBannerSay, scopeConnList, ScopeForm, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, EndChip, EndPick, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord,
+Object.assign(window, { InlineConfirm, AddPersonDialog, TeamMultiPick, AddpSeg, AddpDbPick, GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, FleetGrantsBlock, connHealthState, connBannerSay, scopeConnList, ScopeForm, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, EndChip, EndPick, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord,
   // The end of an auto-approve rule (2026-10-24).
   AUTO_TIER_SAY, autoMaxOf, endPicks, endDefault, endKeepable, expMaxDay, autoEndWhy, autoEndInit });

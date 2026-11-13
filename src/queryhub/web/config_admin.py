@@ -65,6 +65,9 @@ _TYPES = {
     "target_ssl_rootcert": "str", "target_ssl_verify_hosts": "str",
     "target_ssl_verify_exempt_hosts": "str", "web_base_url": "str",
     "web_repo_slug": "str",
+    # `hide` (default) or `show`: whether the Add person picker lists Slack
+    # people whose email is outside `web_allowed_email_domain`.
+    "people_directory_other_domains": "str",
     # tz — a validated IANA timezone name, rendered as a searchable dropdown.
     "web_display_timezone": "tz",
 }
@@ -73,7 +76,8 @@ _TYPES = {
 _GROUPS = [
     ("web", "Web app", [
         "web_auth_slack_enabled", "web_base_url", "web_cookie_secure",
-        "web_display_timezone", "web_repo_slug"]),
+        "web_display_timezone", "web_repo_slug",
+        "people_directory_other_domains"]),
     ("approval", "Approval & review", [
         "require_justification", "pending_expiry_enabled", "pending_expiry_hours",
         "max_open_requests_per_user", "min_query_length", "max_schedule_days"]),

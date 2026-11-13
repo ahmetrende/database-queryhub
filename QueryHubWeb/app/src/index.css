@@ -1795,6 +1795,74 @@
   .qh-addp-err { color: var(--danger-solid-medium); font-weight: 600; }
   .qh-addp-known { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-weight: 600; }
   .qh-addp-muted { color: var(--fg-tertiary); }
+  .qh-addp-outside { display: inline-block; margin-left: 6px; padding: 1px 7px; font-size: 11.5px; font-weight: 700; color: var(--danger-solid-medium); background: var(--danger-adaptive-light); border: 1px solid var(--stroke-danger); border-radius: 999px; }
+  .qh-addp-outside-warn { padding: 6px 9px; font-weight: 700; color: var(--danger-solid-medium); background: var(--danger-adaptive-light); border: 1px solid var(--stroke-danger); border-radius: var(--r-xs); }
+  .qh-addp-hidden { color: var(--fg-tertiary); }
+  .qh-addp-row { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px; background: var(--bg-light); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); }
+  .qh-addp-row.qh-addp-nt { flex-direction: row; align-items: center; flex-wrap: wrap; }
+  .qh-addp-nt-name { flex: 1 1 200px; min-width: 0; }
+  .qh-addp-rowhead { display: flex; align-items: center; gap: 8px; }
+  .qh-addp-rowhead .qh-connpick { flex: 1 1 auto; }
+  .qh-addp-srv-name { flex: 1 1 auto; font-family: var(--qh-mono); font-size: 12.5px; font-weight: 600; color: var(--fg-primary); overflow-wrap: anywhere; }
+  .qh-addp-fields { display: grid; grid-template-columns: 110px 1fr; gap: 8px 10px; align-items: start; }
+  .qh-addp-k { font-size: 12.5px; font-weight: 600; color: var(--fg-secondary); padding-top: 6px; }
+  .qh-addp-rolerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .qh-addp-rolerow .qh-addp-k { padding-top: 0; }
+  .qh-addp-dbpick { position: relative; }
+  .qh-addp-discard { flex: 1 1 auto; }
+  .qh-addp-warn-role { margin-top: 0; }
+  /* 2026-11-13 · Grants, layout A (person first). Tokens only: each token has its own dark value in the theme file, so no raw colour and no dark partner is needed here. Text on the danger and warning tints uses the strong stops of the status chips (4.99:1 and 6.4:1 measured there). */
+  .qh-gra { display: flex; flex-direction: column; gap: 12px; }
+  .qh-gra-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .qh-gra-filters .qh-search { margin-left: auto; min-width: 220px; }
+  .qh-gra-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; font-family: inherit; font-size: 12.5px; font-weight: 600; color: var(--fg-secondary); background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: 999px; cursor: pointer; }
+  .qh-gra-chip:hover { background: var(--adaptive-light); }
+  .qh-gra-chip.is-on { color: var(--fg-accent); background: var(--brand-adaptive-light); border-color: var(--stroke-accent); }
+  .qh-gra-chip:focus-visible, .qh-gra-rowbtn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-gra-chip-n { font-variant-numeric: tabular-nums; font-weight: 700; }
+  .qh-gra-bar { display: flex; align-items: center; gap: 12px; }
+  .qh-gra-shown { font-size: 12px; color: var(--fg-tertiary); }
+  .qh-gra-table { background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); overflow: hidden; }
+  .qh-gra-head, .qh-gra-rowbtn { display: grid; grid-template-columns: minmax(160px, 1.2fr) minmax(200px, 1.6fr) minmax(140px, 1fr) 96px; gap: 12px; align-items: start; }
+  .qh-gra-head { padding: 8px 14px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-tertiary); background: var(--bg-light); border-bottom: 1px solid var(--stroke-medium); }
+  .qh-gra-row + .qh-gra-row { border-top: 1px solid var(--stroke-light); }
+  .qh-gra-rowbtn { width: 100%; padding: 10px 14px; font-family: inherit; text-align: left; color: var(--fg-primary); background: transparent; border: 0; cursor: pointer; }
+  .qh-gra-rowbtn:hover, .qh-gra-row.is-open .qh-gra-rowbtn { background: var(--adaptive-light); }
+  .qh-gra-who, .qh-gra-reach { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .qh-gra-name { font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+  .qh-gra-sub, .qh-gra-from { font-size: 12px; color: var(--fg-tertiary); overflow-wrap: anywhere; }
+  .qh-gra-reachtop { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12.5px; }
+  .qh-gra-n { padding: 1px 8px; font-weight: 700; background: var(--bg-medium); border-radius: 999px; }
+  .qh-gra-tiers { color: var(--fg-secondary); font-variant-numeric: tabular-nums; }
+  .qh-gra-flags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .qh-gra-flag { display: inline-block; padding: 1px 8px; font-size: 11.5px; font-weight: 700; line-height: 1.5; white-space: nowrap; border: 1px solid transparent; border-radius: 999px; }
+  .qh-gra-flag.is-danger { color: var(--danger-solid-medium); background: var(--danger-adaptive-light); border-color: var(--stroke-danger); }
+  .qh-gra-flag.is-warn { color: var(--warning-solid-strong); background: var(--warning-adaptive-light); border-color: var(--stroke-warning); }
+  .qh-gra-flag.is-off { color: var(--fg-secondary); background: var(--bg-medium); border-color: var(--stroke-medium); }
+  .qh-gra-ends { font-size: 12.5px; color: var(--fg-secondary); }
+  .qh-gra-detail { display: flex; flex-direction: column; gap: 10px; padding: 4px 14px 14px; background: var(--adaptive-light); }
+  .qh-gra-lines { display: flex; flex-direction: column; gap: 6px; }
+  .qh-gra-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 10px; font-size: 12.5px; background: var(--bg-white); border: 1px solid var(--stroke-light); border-radius: var(--r-xs); }
+  .qh-gra-line.is-ended { color: var(--fg-tertiary); }
+  .qh-gra-srv { font-family: var(--qh-mono); font-weight: 600; overflow-wrap: anywhere; }
+  .qh-gra-dbs, .qh-gra-src { color: var(--fg-secondary); overflow-wrap: anywhere; }
+  .qh-gra-note { padding: 1px 7px; font-size: 11.5px; color: var(--fg-tertiary); border: 1px dashed var(--stroke-medium); border-radius: 999px; }
+  .qh-gra-remove { margin-left: auto; }
+  .qh-gra-none { padding: 8px 2px; font-size: 12.5px; color: var(--fg-tertiary); }
+  .qh-gra-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+  .qh-gra-edit { margin: 4px 14px 14px; }
+  .qh-gra-empty { padding: 18px 14px; font-size: 13px; color: var(--fg-secondary); }
+  .qh-gra-empty .qh-linkbtn, .qh-gra-foot .qh-linkbtn { font-size: inherit; }
+  .qh-gra-skel { padding: 6px 14px; }
+  .qh-gra-skelrow { display: flex; align-items: center; height: 38px; }
+  .qh-gra-skelrow .qh-skel-bar { display: block; }
+  .qh-gra-foot { font-size: 12.5px; color: var(--fg-tertiary); }
+  .qh-gra-bulkbtn { margin-left: auto; }
+  @media (max-width: 760px) {
+    .qh-gra-head { display: none; }
+    .qh-gra-rowbtn { grid-template-columns: 1fr; gap: 6px; }
+    .qh-gra-filters .qh-search { margin-left: 0; min-width: 0; flex: 1 1 100%; }
+  }
   .qh-accedit-label { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-tertiary); margin-bottom: 8px; display: flex; align-items: baseline; gap: 10px; }
   .qh-accedit-hint { font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--fg-tertiary); }
   .qh-acctargets { display: flex; flex-direction: column; gap: 8px; }

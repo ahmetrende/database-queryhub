@@ -28,6 +28,9 @@ class _Cur:
         return []
 
     def fetchone(self):
+        # A new team asks for its id back.
+        if self.sql and "RETURNING id" in self.sql[-1]:
+            return {"id": 42}
         return None
 
 
@@ -88,6 +91,29 @@ def wired(monkeypatch):
                         lambda p, t: {"mode": "rw"})
     monkeypatch.setattr(ra.mapping, "env_of", lambda alias: "production")
     monkeypatch.setattr(ra, "_copy_access_core", copy_core)
+    state["settings"] = {"web_allowed_email_domain": "example.com"}
+    monkeypatch.setattr(ra.cfg, "get_setting",
+                        lambda key, default=None: state["settings"].get(key, default))
+    state["taken_teams"] = set()
+    monkeypatch.setattr(
+        ra, "_resolve_team",
+        lambda name: {"id": 1, "name": name} if name in state["taken_teams"] else None)
+    monkeypatch.setattr(ra, "_target_id_of",
+                        lambda alias: {"prod-main": 7, "stage-main": 8, "queryhub": 9}.get(alias))
+    monkeypatch.setattr(ra.grants, "control_plane_target_ids", lambda: {9})
+    monkeypatch.setattr(ra.access_model, "target_is_super_admin_only", lambda tid: False)
+    monkeypatch.setattr(ra.mapping, "env_of",
+                        lambda alias: "production" if alias.startswith("prod") else "staging")
+    state["grant_writes"] = []
+    monkeypatch.setattr(ra.grants, "_write_grant",
+                        lambda c, **kw: state["grant_writes"].append(kw))
+    state["role_writes"] = []
+
+    def write_role(c, uid, actor_name, body, tier):
+        state["role_writes"].append((body, tier))
+        return 55
+
+    monkeypatch.setattr(ra, "_write_role", write_role)
     monkeypatch.setattr(ra.audit, "log_in",
                         lambda c, r, u, n, a, d: state["audit"].append((a, d)))
     return state
@@ -204,6 +230,132 @@ def test_one_person_added_audit_row(wired):
     assert rows[0]["teams"] == ["Team One"]
     assert rows[0]["copy_from"] == REF
     assert len(wired["audit"]) == 1
+
+
+def _g(**kw):
+    kw.setdefault("connectionId", "prod-main")
+    return ra.NewPersonGrantIn(**kw)
+
+
+def test_grants_are_written_through_the_grant_writer_in_one_transaction(wired):
+    out = _add(grants=[_g(databases=["orders"], tier="RW"),
+                       _g(connectionId="stage-main", databases=["*"], tier="RO")])
+    assert wired["txn"] == 1
+    first, second = wired["grant_writes"]
+    assert first["target_id"] == 7 and first["mode"] == "rw"
+    assert first["databases"] == ["orders"] and first["grantee_id"] == NEW
+    assert second["target_id"] == 8 and second["databases"] is None
+    assert out["grantsWritten"] == ["prod-main", "stage-main"]
+
+
+def test_the_control_plane_connection_is_refused(wired):
+    with pytest.raises(HTTPException) as e:
+        _add(grants=[_g(connectionId="queryhub")])
+    assert e.value.status_code == 403
+    assert wired["cur"].sql == [] and wired["grant_writes"] == []
+
+
+def test_a_bad_grant_tier_or_connection_or_date_is_refused(wired):
+    for bad, code in ((_g(tier="root"), 400), (_g(connectionId="nope"), 404),
+                      (_g(expiresAt="2001-01-01T00:00:00Z"), 400),
+                      (_g(expiresAt="soon"), 400)):
+        with pytest.raises(HTTPException) as e:
+            _add(grants=[bad])
+        assert e.value.status_code == code
+    assert wired["cur"].sql == []
+
+
+def test_a_connection_listed_twice_is_refused(wired):
+    with pytest.raises(HTTPException) as e:
+        _add(grants=[_g(), _g(tier="RW")])
+    assert e.value.status_code == 400
+
+
+def test_a_dry_run_lists_grants_and_warns_on_rw_in_production(wired):
+    out = _add(dryRun=True, grants=[_g(tier="DDL"), _g(connectionId="stage-main", tier="RW")])
+    assert wired["cur"].sql == [] and wired["grant_writes"] == []
+    assert [(g["connectionId"], g["tier"], g["env"]) for g in out["grants"]] == [
+        ("prod-main", "DDL", "production"), ("stage-main", "RW", "staging")]
+    assert out["warnings"] == [{"connectionId": "prod-main", "tier": "DDL", "source": "Servers"}]
+    assert out["empty"] is False
+
+
+def test_the_role_goes_through_the_role_spec_check(wired):
+    out = _add(role=ra.NewPersonRoleIn(role="approver", maxTier="rw", scopeTeamId=3))
+    body, tier = wired["role_writes"][0]
+    assert (body.subject, body.role, body.scopeTeamId, body.maxTier) == (NEW, "approver", 3, "rw")
+    assert tier == "rw" and out["role"] == 55
+
+
+def test_a_role_the_spec_refuses_writes_nothing(wired):
+    for spec in (ra.NewPersonRoleIn(role="approver", maxTier="DDL"),
+                 ra.NewPersonRoleIn(role="admin", scopeTeamId=3),
+                 ra.NewPersonRoleIn(role="chief")):
+        with pytest.raises(HTTPException) as e:
+            _add(role=spec)
+        assert e.value.status_code == 400
+    assert wired["cur"].sql == [] and wired["role_writes"] == []
+
+
+def test_a_dry_run_warns_about_an_admin_role(wired):
+    out = _add(dryRun=True, role=ra.NewPersonRoleIn(role="admin"))
+    assert out["role"] == {"role": "admin", "scopeTeamId": None,
+                           "scopeTargetId": None, "maxTier": None}
+    assert [w for w in out["warnings"] if w.get("kind") == "role"]
+    assert wired["role_writes"] == []
+
+
+def test_a_new_team_is_created_with_the_person_as_lead(wired):
+    out = _add(newTeams=[ra.NewPersonTeamIn(name="Team Nine", lead=True),
+                         ra.NewPersonTeamIn(name="Team Ten")])
+    cur = wired["cur"]
+    members = [p for s, p in zip(cur.sql, cur.params) if "INSERT INTO team_member " in s]
+    assert members == [(42, True, NEW), (42, False, NEW)]
+    created = [d for a, d in wired["audit"] if a == "team_created"]
+    assert [d["team"] for d in created] == ["Team Nine", "Team Ten"]
+    assert out["teamsCreated"] == ["Team Nine", "Team Ten"]
+
+
+def test_a_taken_team_name_is_a_400(wired):
+    wired["taken_teams"].add("Team One")
+    with pytest.raises(HTTPException) as e:
+        _add(newTeams=[ra.NewPersonTeamIn(name="Team One")])
+    assert e.value.status_code == 400
+    assert "A team named Team One already exists." in str(e.value.detail)
+    assert wired["cur"].sql == []
+    with pytest.raises(HTTPException):
+        _add(newTeams=[ra.NewPersonTeamIn(name="Same"), ra.NewPersonTeamIn(name="same")])
+
+
+def test_a_dry_run_lists_new_teams(wired):
+    out = _add(dryRun=True, newTeams=[ra.NewPersonTeamIn(name="Team Nine", lead=True)])
+    assert out["newTeams"] == [{"name": "Team Nine", "lead": True}]
+    assert out["empty"] is False and wired["cur"].sql == []
+
+
+def test_the_audit_row_carries_the_new_fields(wired):
+    _add(grants=[_g(tier="RW")], role=ra.NewPersonRoleIn(role="admin"),
+         newTeams=[ra.NewPersonTeamIn(name="Team Nine", lead=True)])
+    rows = [d for a, d in wired["audit"] if a == "person_added"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["grants"][0]["target_id"] == 7 and row["grants"][0]["tier"] == "rw"
+    assert row["role"]["role"] == "admin"
+    assert row["new_teams"] == [{"name": "Team Nine", "lead": True}]
+
+
+def test_an_outside_domain_email_warns_but_still_applies(wired):
+    wired["resolve"] = dict(wired["resolve"], email="jordan@other.test", title="Platform")
+    out = _add(dryRun=True)
+    assert out["outsideDomain"] is True and out["title"] == "Platform"
+    assert {"kind": "outside_domain", "email": "jordan@other.test"} in out["warnings"]
+    assert _add()["principal"] == NEW
+
+
+def test_an_inside_domain_email_has_no_outside_warning(wired):
+    out = _add(dryRun=True)
+    assert out["outsideDomain"] is False
+    assert not [w for w in out["warnings"] if w.get("kind") == "outside_domain"]
 
 
 def test_the_preview_counts_auto_approve_rules_before_the_box_is_checked(wired):

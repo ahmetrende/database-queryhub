@@ -18,27 +18,41 @@ const PEOPLE = [
 ];
 const TEAMS = [
   { id: 3, name: 'Team One', members: ['a', 'b', 'c', 'd'] },
-  { id: 4, name: 'Team Two', members: [] },
+  { id: 4, name: 'Team Two', members: [], leads: [{ id: KNOWN, name: 'Sam New' }] },
 ];
+const OUTSIDE = 'U0EXAMPLE00O';
+const CONNS = [
+  { id: 'prod-main', name: 'prod-main', engine: 'PostgreSQL', enabled: true, env: 'production',
+    databases: [{ id: 'orders', name: 'orders' }, { id: 'billing', name: 'billing' }] },
+];
+const DIRECTORY = {
+  people: [{ principal: OUTSIDE, known: false, name: 'Riley Stone', email: 'riley.stone@other-example.org',
+    title: 'Contractor', outsideDomain: true }],
+  directory: 'ok', more: false, hiddenOutside: 2,
+};
 
 function mount({ failApply } = {}) {
-  const ui = page(FILES);
+  const ui = page(FILES, { prep: (win) => { win.qhApi = { adminPeopleDirectory: () => Promise.resolve(DIRECTORY) }; } });
   const bodies = [];
   const added = [];
   const st = {
-    people: PEOPLE, teams: TEAMS, resolvePerson: () => Promise.resolve(null),
+    people: PEOPLE, teams: TEAMS, connections: CONNS, resolvePerson: () => Promise.resolve(null),
     addPerson: (b) => {
       bodies.push({ ...b });
       if (!b.dryRun) return failApply ? Promise.reject(new Error('Unknown team: 9.')) : Promise.resolve({ principal: b.principal, name: 'Jordan Blake' });
-      const person = PEOPLE.find(p => p.handle === b.principal);
+      const person = PEOPLE.find(p => p.handle === b.principal) || { name: 'Riley Stone' };
+      const outside = b.principal === OUTSIDE;
       const teams = (b.teamIds || []).map(id => {
         const t = TEAMS.find(x => x.id === id);
         return { id, name: t.name, allTargets: false, targets: [{ connectionId: 'prod-main', tier: 'RW', env: 'production' }] };
       });
       const copy = b.copyFrom ? { from: b.copyFrom, fromName: 'Sam New', targets: [], teams: [], autoApprove: 2 } : null;
-      return Promise.resolve({ dryRun: true, principal: b.principal, name: person.name, email: 'x@example.com',
+      return Promise.resolve({ dryRun: true, principal: b.principal, name: person.name,
+        email: outside ? 'riley.stone@other-example.org' : 'x@example.com', outsideDomain: outside,
         known: b.principal === KNOWN, teams, copy,
-        warnings: teams.map(t => ({ connectionId: 'prod-main', tier: 'RW', source: t.name })),
+        newTeams: b.newTeams || [], grants: b.grants || [], role: b.role || null,
+        warnings: teams.map(t => ({ connectionId: 'prod-main', tier: 'RW', source: t.name }))
+          .concat(outside ? [{ kind: 'outside_domain', email: 'riley.stone@other-example.org' }] : []),
         empty: !teams.length && !copy, notify: b.notify });
     },
   };
@@ -149,6 +163,115 @@ test('Add person sends dryRun false and calls onAdded', opts, async () => {
   assert.equal(sent.dryRun, false);
   assert.equal(sent.principal, HANDLE);
   assert.deepEqual(ui.added, [HANDLE, 'closed']);
+});
+
+test('the Slack box says Notify on Slack', opts, async () => {
+  const ui = mount();
+  const label = ui.doc.querySelector('.qh-addp-notify').closest('label');
+  assert.match(label.textContent, /Notify on Slack/);
+  assert.doesNotMatch(label.textContent, /Tell them/);
+});
+
+test('the team list closes after a pick, with Enter and with a click', opts, async () => {
+  const ui = mount();
+  const input = ui.doc.querySelector('.qh-addp-team-in');
+  focus(ui, input);
+  setText(ui, input, 'team o');
+  assert.ok(ui.doc.querySelector('.qh-addp-pop'));
+  ui.key(input, 'Enter');
+  assert.equal(ui.doc.querySelector('.qh-addp-pop'), null);
+  assert.equal(input.value, '');
+  setText(ui, input, 'team t');
+  down(ui, ui.doc.querySelector('.qh-addp-teamopt'));
+  assert.equal(ui.doc.querySelector('.qh-addp-pop'), null);
+  assert.equal(ui.all('.qh-addp-chip').length, 2);
+});
+
+test('a team lead shows in parentheses in the list and on the chip, and no lead shows none', opts, async () => {
+  const ui = mount();
+  const input = ui.doc.querySelector('.qh-addp-team-in');
+  focus(ui, input);
+  setText(ui, input, 'team');
+  const opts2 = ui.all('.qh-addp-teamopt').map(b => b.firstChild.textContent);
+  assert.deepEqual(opts2, ['Team One', 'Team Two (Sam New)']);
+  setText(ui, input, 'team t');
+  down(ui, ui.doc.querySelector('.qh-addp-teamopt'));
+  assert.match(ui.doc.querySelector('.qh-addp-chip').textContent, /Team Two \(Sam New\)/);
+});
+
+test('an outside-domain hit has a chip, the picker counts hidden people, the review warns', opts, async () => {
+  const ui = mount();
+  const el = ui.all('.qh-pcombo-in')[0];
+  focus(ui, el);
+  setText(ui, el, 'riley');
+  down(ui, ui.doc.querySelector('.qh-pcombo-find'));
+  await ui.flush();
+  const hit = ui.doc.querySelector('.qh-pcombo-hit');
+  assert.match(hit.textContent, /Riley Stone · Contractor/);
+  assert.match(hit.querySelector('.qh-addp-outside').textContent, /Outside other-example\.org/);
+  assert.match(ui.doc.querySelector('.qh-addp-hidden').textContent, /2 people outside the company domain are hidden\./);
+  down(ui, hit);
+  await wait(ui);
+  assert.match(ui.doc.querySelector('.qh-addp-outside-warn').textContent, /This email is outside other-example\.org\. Check before adding\./);
+  assert.equal(ui.all('.qh-addp-outside-warn').length, 1);
+});
+
+test('Esc with a change asks first, Keep editing stays, Discard closes', opts, async () => {
+  const ui = mount();
+  pickPerson(ui, 0, 'Jordan Blake');
+  ui.key(ui.doc.body, 'Escape');
+  assert.match(ui.doc.querySelector('.qh-addp-discard').textContent, /Discard your changes\?/);
+  assert.deepEqual(ui.added, []);
+  const btn = (t) => ui.all('.qh-addp-discard button').find(b => b.textContent === t);
+  ui.click(btn('Keep editing'));
+  assert.equal(ui.doc.querySelector('.qh-addp-discard'), null);
+  ui.click(ui.doc.querySelector('.qh-addp-cancel'));
+  assert.ok(ui.doc.querySelector('.qh-addp-discard'), 'Cancel asks too');
+  ui.click(btn('Discard'));
+  assert.deepEqual(ui.added, ['closed']);
+});
+
+test('the close icon asks when something changed', opts, async () => {
+  const ui = mount();
+  pickPerson(ui, 0, 'Jordan Blake');
+  ui.click(ui.doc.querySelector('.qh-icon-btn[aria-label="Close"]'));
+  assert.ok(ui.doc.querySelector('.qh-addp-discard'));
+  assert.deepEqual(ui.added, []);
+});
+
+test('Esc with no change closes at once', opts, async () => {
+  const ui = mount();
+  ui.key(ui.doc.body, 'Escape');
+  assert.equal(ui.doc.querySelector('.qh-addp-discard'), null);
+  assert.deepEqual(ui.added, ['closed']);
+});
+
+test('a New team row, a Servers row and a Role choice are sent in the body', opts, async () => {
+  const ui = mount();
+  pickPerson(ui, 0, 'Jordan Blake');
+  ui.click(ui.doc.querySelector('.qh-addp-add-nt'));
+  setText(ui, ui.doc.querySelector('.qh-addp-nt-name'), 'Team Nine');
+  ui.click(ui.doc.querySelector('.qh-addp-nt-role [data-v="lead"]'));
+  ui.click(ui.doc.querySelector('.qh-addp-add-srv'));
+  down(ui, ui.all('.qh-connpick-opt').find(b => b.textContent.includes('prod-main')));
+  ui.click(ui.doc.querySelector('.qh-addp-tier [data-v="RW"]'));
+  ui.click(ui.doc.querySelector('.qh-addp-role [data-v="approver"]'));
+  ui.click(ui.doc.querySelector('.qh-addp-ceil [data-v="RW"]'));
+  await wait(ui);
+  const d = lastDry(ui);
+  assert.deepEqual(d.newTeams, [{ name: 'Team Nine', lead: true }]);
+  assert.deepEqual(d.grants, [{ connectionId: 'prod-main', databases: null, tier: 'RW', expiresAt: null }]);
+  assert.deepEqual(d.role, { role: 'approver', scopeTeamId: null, scopeTargetId: null, maxTier: 'RW' });
+  assert.match(ui.doc.querySelector('.qh-addp-newteamline').textContent, /Team Nine/);
+  assert.match(ui.doc.querySelector('.qh-addp-grantline').textContent, /prod-main · RW · all databases · no end date/);
+  assert.match(ui.doc.querySelector('.qh-addp-roleline').textContent, /Approver · up to RW/);
+  ui.click(ui.doc.querySelector('.qh-addp-go'));
+  await ui.flush();
+  const sent = ui.bodies[ui.bodies.length - 1];
+  assert.equal(sent.dryRun, false);
+  assert.deepEqual(sent.grants, d.grants);
+  assert.deepEqual(sent.role, d.role);
+  assert.deepEqual(sent.newTeams, d.newTeams);
 });
 
 test('a refused apply shows the server message and keeps the dialog open', opts, async () => {

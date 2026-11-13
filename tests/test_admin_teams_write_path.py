@@ -44,9 +44,11 @@ def test_every_mutation_resolves_through_it():
 
 
 def test_all_three_writes_follow_the_switch():
-    for fn in (routes_admin.admin_create_team, routes_admin.admin_update_team,
+    # Create writes through `_insert_team`, which POST /people shares.
+    for fn in (routes_admin._insert_team, routes_admin.admin_update_team,
                routes_admin.admin_delete_team):
         assert "teams_mod.use_v2()" in _code(fn), fn.__name__
+    assert "_insert_team(" in _code(routes_admin.admin_create_team)
 
 
 def test_a_synced_team_is_refused_not_silently_reconciled():
@@ -60,7 +62,7 @@ def test_a_synced_team_is_refused_not_silently_reconciled():
 def test_a_team_made_here_is_not_claimed_by_an_importer():
     """`source` stays NULL on a hand-made team; the importers only reconcile
     rows carrying their own source, so a NULL one survives every sync."""
-    src = _code(routes_admin.admin_create_team)
+    src = _code(routes_admin._insert_team)
     i = src.index("INSERT INTO team ")
     assert "source" not in src[i:i + 200]
 

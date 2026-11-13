@@ -22,14 +22,20 @@ HERE = [
 SLACK = [
     {"principal": "U0EXAMPLE004", "name": "Zo\u00eb \u00c5ngstr\u00f6m", "email": "z.angstrom@example.com"},
     {"principal": "U0EXAMPLE002", "name": "Jordan Ray", "email": "jordan.ray@example.com"},
-    {"principal": "U0EXAMPLE005", "name": "Jordan Blake", "email": "jordan.blake@example.com"},
+    {"principal": "U0EXAMPLE005", "name": "Jordan Blake", "email": "jordan.blake@example.com",
+     "title": "Platform"},
+    {"principal": "U0EXAMPLE010", "name": "Jordan Visitor", "email": "jordan.visitor@other.test",
+     "title": "Guest"},
 ]
 
 
 @pytest.fixture
 def world(monkeypatch):
-    st = {"slack_calls": [], "email_calls": [], "slack_error": None}
+    st = {"slack_calls": [], "email_calls": [], "slack_error": None,
+          "settings": {"web_allowed_email_domain": "example.com"}}
     monkeypatch.setattr(ra.admin, "require_admin", lambda claims, area: None)
+    monkeypatch.setattr(ra.cfg, "get_setting",
+                        lambda key, default=None: st["settings"].get(key, default))
     monkeypatch.setattr(ra.db, "fetch_all", lambda sql, params=None: [dict(r) for r in HERE])
     # cfg.ENV is frozen, and slack_enabled is a property: swap the object.
     monkeypatch.setattr(ra.cfg, "ENV", SimpleNamespace(slack_enabled=True, slack_bot_token="x"))
@@ -58,8 +64,56 @@ def test_a_name_finds_people_in_queryhub_first_then_in_slack(world):
     assert _ids(r) == ["U0EXAMPLE002", "U0EXAMPLE005"]
     assert r["people"][0]["known"] is True
     assert r["people"][1] == {"principal": "U0EXAMPLE005", "known": False, "name": "Jordan Blake",
-                              "email": "jordan.blake@example.com", "enabled": False, "admin": False}
+                              "email": "jordan.blake@example.com", "enabled": False, "admin": False,
+                              "title": "Platform", "outsideDomain": False}
     assert r["directory"] == "ok" and r["more"] is False
+
+
+def test_outside_domain_slack_people_are_hidden_and_counted_by_default(world):
+    r = ra.admin_people_directory(q="jordan", claims=ADMIN)
+    assert "U0EXAMPLE010" not in _ids(r)
+    assert r["hiddenOutside"] == 1
+
+
+def test_show_lists_outside_domain_people_with_a_flag(world):
+    world["settings"]["people_directory_other_domains"] = "show"
+    r = ra.admin_people_directory(q="jordan", claims=ADMIN)
+    by_id = {p["principal"]: p for p in r["people"]}
+    assert by_id["U0EXAMPLE010"]["outsideDomain"] is True
+    assert by_id["U0EXAMPLE010"]["title"] == "Guest"
+    assert by_id["U0EXAMPLE005"]["outsideDomain"] is False
+    assert r["hiddenOutside"] == 0
+
+
+def test_an_empty_allowed_domain_flags_nobody(world):
+    world["settings"]["web_allowed_email_domain"] = ""
+    r = ra.admin_people_directory(q="jordan", claims=ADMIN)
+    assert "U0EXAMPLE010" in _ids(r)
+    assert all(p["outsideDomain"] is False for p in r["people"])
+    assert r["hiddenOutside"] == 0
+
+
+def test_a_person_without_an_email_is_not_outside(world):
+    assert ra._outside_domain(None) is False
+    assert ra._outside_domain("") is False
+    assert ra._outside_domain("a@Example.com") is False
+    assert ra._outside_domain("a@other.test") is True
+
+
+def test_a_queryhub_person_outside_the_domain_stays_but_is_flagged(world, monkeypatch):
+    here_out = [{"principal": "U0EXAMPLE011", "name": "Jordan Contractor",
+                 "email": "jc@other.test", "enabled": True, "is_admin": False}]
+    monkeypatch.setattr(ra.db, "fetch_all", lambda sql, params=None: [dict(r) for r in here_out])
+    r = ra.admin_people_directory(q="jordan contractor", claims=ADMIN)
+    assert _ids(r) == ["U0EXAMPLE011"]
+    assert r["people"][0]["outsideDomain"] is True and r["hiddenOutside"] == 0
+
+
+def test_slack_titles_come_from_the_profile():
+    got = ra._slack_person({"id": "U0EXAMPLE012", "real_name": "Ada Test",
+                            "profile": {"email": "ada@example.com", "title": " Data "}})
+    assert got["title"] == "Data"
+    assert ra._slack_person({"id": "U0EXAMPLE013", "profile": {}})["title"] is None
 
 
 def test_a_name_without_accents_finds_the_accented_name(world):

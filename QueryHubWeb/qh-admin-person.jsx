@@ -403,4 +403,6 @@ function PersonAccessView({ st, actor, initial }) {
   );
 }
 
-Object.assign(window, { PersonAccessView });
+// PersonPage and BulkGrantPanel (2026-11-13): the Grants list (layout A) opens a
+// person's page and the several-people form without the card grid.
+Object.assign(window, { PersonAccessView, PersonPage, BulkGrantPanel });

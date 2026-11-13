@@ -367,6 +367,8 @@ test('a grant without the box sends no end, as before', opts, () => {
 
 test('reads that skip review on every server need an end, and plain access does not', opts, () => {
   const ui = mount('GrantsView', { autoMaxDays: 30 }, { name: 'Example Admin', role: 'super' });
+  // Layout A (2026-11-13): the block opens from the fleet-wide footer.
+  ui.click(ui.button('Manage'));
   ui.click(ui.button('Add'));
   const form = ui.doc.querySelector('.qh-fleet-form');
   const select = () => form.querySelector('.qh-exppick select');

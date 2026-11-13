@@ -304,6 +304,17 @@ const MOCK_SLACK_DIR = {
   'U08NEW01': { name: 'Ada Dunn', email: 'ada.dunn@example.com' },
   'emma.tate': { name: 'Emma Tate', email: 'emma.tate@example.com' },
 };
+// Add person v2 (2026-11-13): job titles, and one person with an address outside
+// the mock company domain (the mock directory hides such people, as the server
+// does by default, unless the search is their exact id or email).
+Object.assign(MOCK_SLACK_DIR['U08NEW01'], { title: 'Platform' });
+Object.assign(MOCK_SLACK_DIR['emma.tate'], { title: 'Data' });
+MOCK_SLACK_DIR['U08OUT01'] = { name: 'Riley Stone', email: 'riley.stone@other-example.org', title: 'Contractor' };
+const MOCK_COMPANY_DOMAIN = 'example.com';
+function mockOutsideDomain(email) {
+  const at = String(email || '').lastIndexOf('@');
+  return at >= 0 && String(email).slice(at + 1).toLowerCase() !== MOCK_COMPANY_DOMAIN;
+}
 // Neutral on purpose (CODE 2026-09-24 (e)): an invented address, never the
 // brand's domain, so the public export has nothing to rewrite here.
 function mockEmail(handle) {
@@ -3392,11 +3403,15 @@ const qhApi = {
     const hit = (name, email) => isEmail ? fold(email) === fold(text)
       : fold(text).split(/\s+/).filter(Boolean).every(w => (fold(name) + ' ' + fold(email)).indexOf(w) >= 0);
     const out = [];
+    let hiddenOutside = 0;
     ADMIN.people.forEach(p => { const em = p.email || mockEmail(p.handle);
-      if (hit(p.name, em) || (!isEmail && hit(p.handle, ''))) out.push({ principal: p.handle, known: true, name: p.name, email: em, enabled: true, admin: ADMIN.scopes.some(s => s.admin === p.handle) }); });
+      if (hit(p.name, em) || (!isEmail && hit(p.handle, ''))) out.push({ principal: p.handle, known: true, name: p.name, email: em, title: null, outsideDomain: mockOutsideDomain(em), enabled: true, admin: ADMIN.scopes.some(s => s.admin === p.handle) }); });
     Object.keys(MOCK_SLACK_DIR).forEach(id => { const d = MOCK_SLACK_DIR[id];
-      if (!out.some(x => x.principal === id) && (hit(d.name, d.email) || id === text)) out.push({ principal: id, known: false, name: d.name, email: d.email || null, enabled: false, admin: false }); });
-    return { people: out.slice(0, 20), directory: 'ok', more: out.length > 20 };
+      if (out.some(x => x.principal === id) || !(hit(d.name, d.email) || id === text)) return;
+      const outside = mockOutsideDomain(d.email);
+      if (outside && id !== text && fold(d.email) !== fold(text)) { hiddenOutside += 1; return; }
+      out.push({ principal: id, known: false, name: d.name, email: d.email || null, title: d.title || null, outsideDomain: outside, enabled: false, admin: false }); });
+    return { people: out.slice(0, 20), directory: 'ok', more: out.length > 20, hiddenOutside };
   }, 160),
   // POST /admin/people (2026-11-13). `dryRun: true` answers the preview and
   // writes nothing. A known person answers `known: true` on a dry run and 409 on apply.
@@ -3436,10 +3451,28 @@ const qhApi = {
     const warnings = [];
     teamRows.forEach(t => t.targets.forEach(x => { if (x.env === 'production' && (x.tier === 'RW' || x.tier === 'DDL')) warnings.push({ connectionId: x.connectionId, tier: x.tier, source: t.name }); }));
     if (copy) copy.targets.forEach(x => { if (x.env === 'production' && (x.tier === 'RW' || x.tier === 'DDL')) warnings.push({ connectionId: x.connectionId, tier: x.tier, source: copy.fromName }); });
+    // v2 fields: new teams, direct server grants and one role.
+    const newTeams = (b.newTeams || []).map(t => ({ name: String(t.name || '').trim(), lead: !!t.lead }));
+    for (const t of newTeams) {
+      if (!t.name) return mockFail('Name the new team.', 400, 'bad_request');
+      if (ADMIN.teams.some(x => x.name.toLowerCase() === t.name.toLowerCase())) return mockFail('A team named ' + t.name + ' already exists.', 400, 'bad_request');
+    }
+    const grants = (b.grants || []).map(g => ({ connectionId: g.connectionId, databases: g.databases && g.databases.length ? g.databases : null,
+      tier: g.tier, env: envOf(g.connectionId), expiresAt: g.expiresAt || null }));
+    const role = b.role ? { role: b.role.role, scopeTeamId: b.role.scopeTeamId == null ? null : b.role.scopeTeamId,
+      scopeTargetId: b.role.scopeTargetId == null ? null : b.role.scopeTargetId, maxTier: b.role.maxTier || null } : null;
+    if (role && role.role === 'approver' && role.maxTier === 'DDL') return mockFail('An approver can approve RO or RW only.', 400, 'bad_request');
+    grants.forEach(g => { if (g.env === 'production' && (g.tier === 'RW' || g.tier === 'DDL')) warnings.push({ connectionId: g.connectionId, tier: g.tier, source: 'this form' }); });
+    if (role && role.role === 'admin') warnings.push({ kind: 'role', text: 'Admin can grant access and change settings for everyone.' });
+    const outsideDomain = mockOutsideDomain(email);
+    if (outsideDomain) warnings.push({ kind: 'outside_domain', email });
     const notify = b.notify !== false;
-    if (b.dryRun) return { dryRun: true, principal, name, email, known: !!existing, teams: teamRows, copy, warnings,
-      empty: !teamRows.length && !copy, notify };
+    if (b.dryRun) return { dryRun: true, principal, name, email, title: (dir && dir.title) || null, outsideDomain, known: !!existing, teams: teamRows, newTeams, grants, role, copy, warnings,
+      empty: !teamRows.length && !copy && !newTeams.length && !grants.length && !role, notify };
     if (existing) return mockFail('This person is already in QueryHub.', 409, 'conflict');
+    newTeams.forEach(t => ADMIN.teams.push({ id: mockId('t'), name: t.name, desc: '', members: [principal], subteams: [] }));
+    grants.forEach(g => ADMIN.grants.push({ id: mockId('g'), subjectType: 'user', subject: principal, subjectName: name, connectionId: g.connectionId,
+      databases: g.databases || ['*'], tier: g.tier, expiresAt: g.expiresAt }));
     ADMIN.people = [{ id: mockId('p'), handle: principal, name, initials: mockInitials(name), email: email || mockEmail(principal), enabled: true }, ...ADMIN.people];
     teamRows.forEach(tr => { const t = ADMIN.teams.find(x => x.id === tr.id); if (t) t.members = [...(t.members || []), principal]; });
     mockAudit('Added person', name + ' · ' + principal, 'scope');
@@ -3634,7 +3667,11 @@ const qhApi = {
     // what a sentence needs (CODE brief 2026-09-01 §2).
     return { written, writtenTargets: rows.map(t => t.connectionId), revoked, autoApproveCopied, autoApproveSkippedDdl: skippedDdl, teams, mode };
   }, 340),
-  adminTeams: () => mockDelay(() => ({ teams: ADMIN.teams.map(t => ({ ...t, subteams: [] })) }), 160),
+  adminTeams: () => mockDelay(() => ({ teams: ADMIN.teams.map(t => {
+    // The first member of a team is its mock lead (add person v2: "Team (Lead)").
+    const lead = t.members && t.members[0] && ADMIN.people.find(p => p.handle === t.members[0]);
+    return { ...t, subteams: [], leads: lead ? [{ id: lead.handle, name: lead.name }] : [] };
+  }) }), 160),
   adminSaveTeam: (t) => mockDelay(() => {
     if (t.id) {
       const ex = ADMIN.teams.find(x => x.id === t.id);

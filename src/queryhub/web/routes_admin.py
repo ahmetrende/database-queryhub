@@ -1923,7 +1923,8 @@ def _slack_profile(uid: str) -> dict:
         u = WebClient(token=cfg.ENV.slack_bot_token).users_info(user=uid)["user"]
         prof = u.get("profile", {}) or {}
         return {"name": u.get("real_name") or prof.get("display_name"),
-                "email": prof.get("email"), "tz": u.get("tz")}
+                "email": prof.get("email"), "tz": u.get("tz"),
+                "title": (prof.get("title") or "").strip() or None}
     except Exception:
         return {}
 
@@ -1996,6 +1997,25 @@ def _refuse_flagged_unless_super(uid: str, tid: int) -> None:
                           "Only a super-admin can give access to this connection.")
 
 
+def _parse_grant_expiry(value: str | None):
+    """A grant's end as an aware datetime, or None for no end. A malformed or
+    past date is a 400. Shared by POST /grants and POST /people."""
+    if not value:
+        return None
+    try:
+        expires_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise deps._error(400, "bad_request",
+                          "expiresAt must be an ISO-8601 timestamp.")
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at <= datetime.now(timezone.utc):
+        raise deps._error(400, "bad_request",
+                          "expiresAt is in the past. That grant would "
+                          "never apply.")
+    return expires_at
+
+
 @router.post("/grants", status_code=201)
 def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user)):
     uid = admin.require_admin(claims, "access")
@@ -2035,19 +2055,7 @@ def admin_create_grant(body: GrantIn, claims: dict = Depends(deps.current_user))
     # past is refused rather than accepted-and-inert: writing a grant that is
     # dead on arrival reads to the admin as "access given", and the row would
     # sit in the list looking live.
-    expires_at = None
-    if body.expiresAt:
-        try:
-            expires_at = datetime.fromisoformat(body.expiresAt.replace("Z", "+00:00"))
-        except ValueError:
-            raise deps._error(400, "bad_request",
-                              "expiresAt must be an ISO-8601 timestamp.")
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if expires_at <= datetime.now(timezone.utc):
-            raise deps._error(400, "bad_request",
-                              "expiresAt is in the past. That grant would "
-                              "never apply.")
+    expires_at = _parse_grant_expiry(body.expiresAt)
     # A grant may have no end. A waiver written with it may not: it takes the
     # grant's end, and an auto-approve rule needs one, at most
     # `auto_approve_max_days` from now. Checked before either branch writes, for
@@ -2846,10 +2854,23 @@ def _teams_payload() -> list[dict]:
         by_team: dict[int, list[str]] = {}
         for m in members:
             by_team.setdefault(m["team_id"], []).append(m["slack_user_id"])
+        lead_rows = db.fetch_all(
+            "SELECT m.team_id, i.external_id AS handle, p.display_name AS name "
+            "  FROM team_member m "
+            "  JOIN principal p ON p.id = m.principal_id "
+            "  JOIN principal_identity i ON i.principal_id = m.principal_id "
+            "   AND i.provider = 'slack' AND NOT i.is_deleted "
+            " WHERE NOT m.is_deleted AND m.is_lead "
+            " ORDER BY lower(p.display_name)")
+        leads_by_team: dict[int, list[dict]] = {}
+        for m in lead_rows or []:
+            leads_by_team.setdefault(m["team_id"], []).append(
+                {"id": m["handle"], "name": m["name"] or m["handle"]})
         return [{
             "id": str(t["id"]),
             "name": t["display_name"] or t["name"],
             "desc": t["description"] or "",
+            "leads": leads_by_team.get(t["id"], []),
             "members": by_team.get(t["id"], []), "subteams": [],
             "syncedFrom": t["source"] if t["source"] != "manual" else None,
         } for t in rows]
@@ -2864,6 +2885,7 @@ def _teams_payload() -> list[dict]:
     # effective_grant_for_user), so the web UI does not offer it.
     return [{
         "id": str(t["id"]), "name": t["name"], "desc": t["description"] or "",
+        "leads": [],
         "members": by_team.get(t["id"], []), "subteams": [],
         "syncedFrom": None,
     } for t in legacy]
@@ -2946,32 +2968,46 @@ def admin_create_team(body: TeamIn, claims: dict = Depends(deps.current_user)):
         raise deps._error(409, "conflict", f"A team named '{name}' already exists.")
     members = _valid_member_ids(body.members)
     with db.transaction() as cur:
-        if teams_mod.use_v2():
-            # `source` stays NULL: a team made here is hand-made, and the
-            # importers only reconcile rows carrying their own source.
-            cur.execute(
-                "INSERT INTO team (name, display_name, description) "
-                "VALUES (%s, %s, %s) RETURNING id",
-                (name, name, (body.desc or "").strip() or None))
-            tid = cur.fetchone()["id"]
-            for m in members:
-                cur.execute(
-                    "INSERT INTO team_member (team_id, principal_id) "
-                    "SELECT %s, i.principal_id FROM principal_identity i "
-                    " WHERE i.external_id = %s AND i.provider = 'slack' "
-                    "   AND NOT i.is_deleted "
-                    "ON CONFLICT DO NOTHING", (tid, m))
-        else:
-            cur.execute("INSERT INTO teams (name, description) VALUES (%s, %s) "
-                        "RETURNING id", (name, (body.desc or "").strip() or None))
-            tid = cur.fetchone()["id"]
-            for m in members:
-                cur.execute("INSERT INTO team_members (team_id, slack_user_id) "
-                            "VALUES (%s, %s) ON CONFLICT DO NOTHING", (tid, m))
-        audit.log_in(cur, None, uid, claims.get("name"), "team_created",
-                     {"team": name, "team_id": tid, "members": members})
+        tid = _insert_team(cur, name, body.desc, members, uid, claims.get("name"))
     return {"id": str(tid), "name": name, "desc": (body.desc or "").strip(),
             "members": members, "subteams": []}
+
+
+def _insert_team(cur, name: str, desc: str | None, members: list[str],
+                 uid: str, actor_name: str | None,
+                 lead_ids: tuple[str, ...] = ()) -> int:
+    """Create one team on the caller's cursor, with its members and the
+    `team_created` audit row. Returns the new team id.
+
+    `members` must already be checked. `lead_ids` marks members as leads (the
+    new model only: the old `team_members` table has no lead flag). Shared by
+    POST /teams and POST /people."""
+    name = (name or "").strip()
+    if teams_mod.use_v2():
+        # `source` stays NULL: a team made here is hand-made, and the
+        # importers only reconcile rows carrying their own source.
+        cur.execute(
+            "INSERT INTO team (name, display_name, description) "
+            "VALUES (%s, %s, %s) RETURNING id",
+            (name, name, (desc or "").strip() or None))
+        tid = cur.fetchone()["id"]
+        for m in members:
+            cur.execute(
+                "INSERT INTO team_member (team_id, principal_id, is_lead) "
+                "SELECT %s, i.principal_id, %s FROM principal_identity i "
+                " WHERE i.external_id = %s AND i.provider = 'slack' "
+                "   AND NOT i.is_deleted "
+                "ON CONFLICT DO NOTHING", (tid, m in lead_ids, m))
+    else:
+        cur.execute("INSERT INTO teams (name, description) VALUES (%s, %s) "
+                    "RETURNING id", (name, (desc or "").strip() or None))
+        tid = cur.fetchone()["id"]
+        for m in members:
+            cur.execute("INSERT INTO team_members (team_id, slack_user_id) "
+                        "VALUES (%s, %s) ON CONFLICT DO NOTHING", (tid, m))
+    audit.log_in(cur, None, uid, actor_name, "team_created",
+                 {"team": name, "team_id": tid, "members": members})
+    return tid
 
 
 @router.put("/teams/{team_id}")
@@ -3229,12 +3265,16 @@ def _resolve_principal(pid: str) -> dict:
             "SELECT slack_user_id, name, NULL AS email, enabled, TRUE AS is_admin "
             "  FROM admins WHERE slack_user_id = %s", (pid,))
     if row is not None:
+        # The title is not stored. A known person's title is read from Slack.
+        title = (_slack_profile(pid).get("title")
+                 if pid.startswith("U") else None)
         return {"principal": pid, "known": True, "name": row["name"],
                 "email": row["email"], "enabled": bool(row["enabled"]),
-                "admin": bool(row["is_admin"])}
+                "admin": bool(row["is_admin"]), "title": title}
     prof = _slack_profile(pid) if pid.startswith("U") else {}
     return {"principal": pid, "known": False, "name": prof.get("name"),
-            "email": prof.get("email"), "enabled": False, "admin": False}
+            "email": prof.get("email"), "enabled": False, "admin": False,
+            "title": prof.get("title")}
 
 
 # ---- find a person by Slack id, email or name (2026-11-13) -----------------
@@ -3280,7 +3320,20 @@ def _slack_person(u: dict) -> dict:
     prof = u.get("profile") or {}
     return {"principal": u.get("id"),
             "name": u.get("real_name") or prof.get("real_name") or prof.get("display_name"),
-            "email": prof.get("email")}
+            "email": prof.get("email"),
+            "title": (prof.get("title") or "").strip() or None}
+
+
+def _outside_domain(email: str | None) -> bool:
+    """True when the email's domain is not the allowed company domain.
+
+    False when `web_allowed_email_domain` is empty (no check) or there is no
+    email."""
+    domain = (cfg.get_setting("web_allowed_email_domain", "") or "").strip().lower().lstrip("@")
+    mail = (email or "").strip().lower()
+    if not domain or "@" not in mail:
+        return False
+    return mail.rsplit("@", 1)[1] != domain
 
 
 def _slack_directory() -> list[dict]:
@@ -3339,8 +3392,9 @@ def admin_people_directory(q: str | None = None,
         raise deps._error(400, "bad_request", "Type at least two characters.")
     if _valid_principal(text):
         one = _resolve_principal(text)
+        one["outsideDomain"] = _outside_domain(one.get("email"))
         return {"people": [one] if (one["known"] or one["name"]) else [],
-                "directory": "ok", "more": False}
+                "directory": "ok", "more": False, "hiddenOutside": 0}
     rows = db.fetch_all(
         "SELECT r.slack_user_id AS principal, r.name, r.email, r.enabled, "
         "       (a.slack_user_id IS NOT NULL) AS is_admin "
@@ -3358,8 +3412,13 @@ def admin_people_directory(q: str | None = None,
 
     out = [{"principal": r["principal"], "known": True, "name": r["name"],
             "email": r["email"], "enabled": bool(r["enabled"]),
-            "admin": bool(r["is_admin"])}
+            "admin": bool(r["is_admin"]), "title": None,
+            "outsideDomain": _outside_domain(r["email"])}
            for r in rows if hit(r["name"], r["email"])]
+    show_outside = ((cfg.get_setting("people_directory_other_domains", "hide")
+                     or "hide").strip().lower() == "show")
+    hidden_outside = 0
+    titles: dict = {}
     status = "ok"
     if not cfg.ENV.slack_enabled:
         status = "off"
@@ -3374,20 +3433,54 @@ def admin_people_directory(q: str | None = None,
         except Exception:
             log.warning("people directory: Slack could not be read", exc_info=True)
             found, status = [], "unavailable"
+        titles = {p.get("principal"): p.get("title") for p in found}
         seen = {p["principal"] for p in out}
         for p in found:
             if not p.get("principal") or p["principal"] in seen:
                 continue
             seen.add(p["principal"])
             r = here.get(p["principal"])
+            email = (r or {}).get("email") or p.get("email")
+            outside = _outside_domain(email)
+            if outside and r is None and not show_outside:
+                hidden_outside += 1
+                continue
             out.append({"principal": p["principal"], "known": r is not None,
                         "name": (r or {}).get("name") or p["name"],
-                        "email": (r or {}).get("email") or p["email"],
+                        "email": email,
                         "enabled": bool(r and r["enabled"]),
-                        "admin": bool(r and r["is_admin"])})
+                        "admin": bool(r and r["is_admin"]),
+                        "title": p.get("title"),
+                        "outsideDomain": outside})
+    # A QueryHub person who is already listed gets the Slack title when the
+    # directory has one.
+    for item in out:
+        if item.get("title") is None:
+            item["title"] = titles.get(item["principal"])
     out.sort(key=lambda p: (not p["known"], _fold(p["name"])))
     return {"people": out[:_DIRECTORY_LIMIT], "directory": status,
-            "more": len(out) > _DIRECTORY_LIMIT}
+            "more": len(out) > _DIRECTORY_LIMIT,
+            "hiddenOutside": hidden_outside}
+
+
+class NewPersonGrantIn(BaseModel):
+    """One direct grant of a new person: a connection, databases, a tier."""
+    connectionId: str
+    databases: list[str] | None = None      # None or empty = all databases
+    tier: str = "RO"
+    expiresAt: str | None = None
+
+
+class NewPersonRoleIn(BaseModel):
+    role: str
+    scopeTeamId: int | None = None
+    scopeTargetId: int | str | None = None
+    maxTier: str | None = None
+
+
+class NewPersonTeamIn(BaseModel):
+    name: str
+    lead: bool = False
 
 
 class NewPersonIn(BaseModel):
@@ -3398,6 +3491,64 @@ class NewPersonIn(BaseModel):
     includeAutoApprove: bool = False
     notify: bool = True
     dryRun: bool = False
+    grants: list[NewPersonGrantIn] = Field(default_factory=list)
+    role: NewPersonRoleIn | None = None
+    newTeams: list[NewPersonTeamIn] = Field(default_factory=list)
+
+
+def _check_new_person_grants(uid: str, specs: list[NewPersonGrantIn]) -> list[dict]:
+    """Check each grant of a new person with the rules of POST /grants for a
+    user. Nothing is written. Returns the cleaned grants."""
+    out: list[dict] = []
+    seen: set[int] = set()
+    for g in specs:
+        tier = (g.tier or "ro").lower()
+        if tier not in ("ro", "rw", "ddl"):
+            raise deps._error(400, "bad_request", "tier must be RO, RW, or DDL.")
+        tid = _target_id_of(g.connectionId)
+        if tid is None:
+            raise deps._error(404, "not_found", "Unknown connection.")
+        if tid in grants.control_plane_target_ids():
+            raise deps._error(
+                403, "forbidden",
+                "Refused: that connection is the bot's own control-plane database. "
+                "Access to it would allow tampering with the audit log and the "
+                "admin list.")
+        _refuse_flagged_unless_super(uid, tid)
+        if tid in seen:
+            raise deps._error(400, "bad_request",
+                              f"{g.connectionId} is listed twice. Use one row per connection.")
+        seen.add(tid)
+        out.append({"connectionId": g.connectionId, "target_id": tid, "tier": tier,
+                    "databases": grants.normalise_databases(g.databases or None),
+                    "expires_at": _parse_grant_expiry(g.expiresAt)})
+    return out
+
+
+def _check_new_person_role(spec: NewPersonRoleIn | None) -> dict | None:
+    """Check the role with the rules of POST /roles. Nothing is written."""
+    if spec is None:
+        return None
+    target = _resolve_scope_target(spec.scopeTargetId)
+    tier = _check_role_spec(spec.role, spec.scopeTeamId, target, spec.maxTier)
+    return {"role": spec.role, "scope_team_id": spec.scopeTeamId,
+            "scope_target_id": target, "tier": tier}
+
+
+def _check_new_person_teams(specs: list[NewPersonTeamIn]) -> list[dict]:
+    """A new team's name must be free, in QueryHub and inside the request."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for t in specs:
+        name = (t.name or "").strip()
+        if not name:
+            raise deps._error(400, "bad_request", "Enter a team name.")
+        if name.casefold() in seen or _resolve_team(name):
+            raise deps._error(400, "bad_request",
+                              f"A team named {name} already exists.")
+        seen.add(name.casefold())
+        out.append({"name": name, "lead": bool(t.lead)})
+    return out
 
 
 _TIER_RANK = {"RO": 0, "RW": 1, "DDL": 2}
@@ -3528,6 +3679,11 @@ def admin_add_person(body: NewPersonIn, claims: dict = Depends(deps.current_user
     include_auto = bool(body.includeAutoApprove and source)
     team_ids = list(dict.fromkeys(body.teamIds or []))
     team_list = _team_rows(team_ids)
+    # Every extra is checked before anything is written, and by a dry run too.
+    grant_list = _check_new_person_grants(uid, body.grants)
+    role_spec = _check_new_person_role(body.role)
+    new_team_list = _check_new_person_teams(body.newTeams)
+    outside = _outside_domain(who["email"])
 
     if body.dryRun:
         teams_out = [_team_preview(t) for t in team_list]
@@ -3543,10 +3699,35 @@ def admin_add_person(body: NewPersonIn, claims: dict = Depends(deps.current_user
             if x["tier"] in ("RW", "DDL") and x["env"] == "production":
                 warnings.append({"connectionId": x["connectionId"],
                                  "tier": x["tier"], "source": source_name})
+        grants_out = []
+        for g in grant_list:
+            tier_up = g["tier"].upper()
+            env = mapping.env_of(g["connectionId"])
+            grants_out.append({
+                "connectionId": g["connectionId"], "databases": g["databases"],
+                "tier": tier_up, "env": env,
+                "expiresAt": g["expires_at"].isoformat() if g["expires_at"] else None})
+            if tier_up in ("RW", "DDL") and env == "production":
+                warnings.append({"connectionId": g["connectionId"],
+                                 "tier": tier_up, "source": "Servers"})
+        role_out = None
+        if role_spec is not None:
+            role_out = {"role": role_spec["role"],
+                        "scopeTeamId": role_spec["scope_team_id"],
+                        "scopeTargetId": role_spec["scope_target_id"],
+                        "maxTier": (role_spec["tier"] or "").upper() or None}
+            if role_spec["role"] == "admin":
+                warnings.append({"kind": "role",
+                                 "text": "An admin can change access for everyone."})
+        if outside:
+            warnings.append({"kind": "outside_domain", "email": who["email"]})
         return {"dryRun": True, "principal": principal, "name": who["name"],
-                "email": who["email"], "known": known, "teams": teams_out,
-                "copy": copy_out, "warnings": warnings,
-                "empty": not team_list and source is None,
+                "email": who["email"], "title": who.get("title"),
+                "outsideDomain": outside, "known": known, "teams": teams_out,
+                "copy": copy_out, "grants": grants_out, "role": role_out,
+                "newTeams": new_team_list, "warnings": warnings,
+                "empty": (not team_list and source is None and not grant_list
+                          and role_spec is None and not new_team_list),
                 "notify": bool(body.notify)}
 
     if known:
@@ -3590,14 +3771,52 @@ def admin_add_person(body: NewPersonIn, claims: dict = Depends(deps.current_user
                 uid, actor_name)
             copied = {"targets": res["writtenTargets"], "teams": res["teams"],
                       "autoApproveCopied": res["autoApproveCopied"]}
+        # New teams, direct grants and the role use the writers of the Teams,
+        # Grants and Roles routes, on this cursor. They write their own audit
+        # rows too.
+        for nt in new_team_list:
+            _insert_team(cur, nt["name"], None, [principal], uid, actor_name,
+                         lead_ids=(principal,) if nt["lead"] else ())
+        for g in grant_list:
+            grants._write_grant(
+                cur, granter_id=uid, granter_name=actor_name,
+                grantee_id=principal, grantee_profile=prof,
+                target_id=g["target_id"], mode=g["tier"],
+                databases=g["databases"], reason="added with the person",
+                expires_at=g["expires_at"])
+        role_id = None
+        if role_spec is not None:
+            role_id = _write_role(
+                cur, uid, actor_name,
+                RoleIn(subject=principal, role=role_spec["role"],
+                       scopeTeamId=role_spec["scope_team_id"],
+                       scopeTargetId=role_spec["scope_target_id"],
+                       maxTier=role_spec["tier"]),
+                role_spec["tier"])
         audit.log_in(cur, None, uid, actor_name, "person_added",
                      {"principal": principal,
                       "teams": [t["name"] for t in team_list],
                       "copy_from": source,
                       "include_auto_approve": include_auto,
-                      "notify": bool(body.notify)})
+                      "notify": bool(body.notify),
+                      "new_teams": [{"name": t["name"], "lead": t["lead"]}
+                                    for t in new_team_list],
+                      "grants": [{"target_id": g["target_id"],
+                                  "tier": g["tier"], "databases": g["databases"],
+                                  "expires_at": (g["expires_at"].isoformat()
+                                                 if g["expires_at"] else None)}
+                                 for g in grant_list],
+                      "role": ({"role": role_spec["role"],
+                                "scope_team_id": role_spec["scope_team_id"],
+                                "scope_target_id": role_spec["scope_target_id"],
+                                "max_tier": role_spec["tier"]}
+                               if role_spec else None),
+                      "outside_domain": outside})
     return {"principal": principal, "name": prof.get("name") or who["name"],
             "teamsJoined": [t["name"] for t in team_list],
+            "teamsCreated": [t["name"] for t in new_team_list],
+            "grantsWritten": [g["connectionId"] for g in grant_list],
+            "role": role_id,
             "copied": copied, "notified": bool(body.notify)}
 
 
@@ -5643,70 +5862,79 @@ def admin_create_role(body: RoleIn, claims: dict = Depends(deps.current_user)):
     tier = _check_role_spec(body.role, body.scopeTeamId, body.scopeTargetId, body.maxTier)
 
     with db.transaction() as cur:
-        cur.execute(
-            "SELECT p.id FROM principal p "
-            "  JOIN principal_identity i ON i.principal_id = p.id "
-            " WHERE i.provider = 'slack' AND i.external_id = %s "
-            "   AND NOT i.is_deleted AND NOT p.is_deleted", (body.subject,))
-        row = cur.fetchone()
-        if row is None:
-            raise deps._error(404, "no_account",
-                              "No such person in the new access model. They "
-                              "need a QueryHub account first.")
-        pid = row["id"]
-        if body.scopeTeamId is not None:
-            cur.execute("SELECT 1 FROM team WHERE id = %s AND NOT is_deleted",
-                        (body.scopeTeamId,))
-            if cur.fetchone() is None:
-                raise deps._error(404, "no_team", "No such team.")
-        # A role is immutable here: changing one means revoking it and
-        # creating the replacement, so the same statement must not be
-        # writable twice. `role_assignment_live_uq` (migration 110) is the
-        # real guarantee and covers the race between two of these; this
-        # lookup exists to answer with a sentence naming the row rather than
-        # a unique-violation traceback.
-        cur.execute(
-            "SELECT id, max_tier, mirrored_from FROM role_assignment "
-            " WHERE principal_id = %s AND role = %s "
-            "   AND scope_team_id IS NOT DISTINCT FROM %s "
-            "   AND scope_target_id IS NOT DISTINCT FROM %s "
-            "   AND revoked_at IS NULL AND NOT is_deleted",
-            (pid, body.role, body.scopeTeamId, body.scopeTargetId))
-        dup = cur.fetchone()
-        if dup is not None:
-            where = ("mirrors the admins table and"
-                     if dup["mirrored_from"] else "already exists and")
-            # `roleId` rides the envelope the way `expiredOn` rides
-            # `access_expired`. The id is in the sentence too, but a client
-            # that had to parse it back out of prose is how a duplicate once
-            # got re-sent with `confirmed: true` — the screen's
-            # revoke-and-recreate button reads this field or does not appear.
-            raise deps._error(
-                409, "conflict",
-                f"This person already holds {body.role} over that scope "
-                f"(role {dup['id']}, which {where} is unchanged). Revoke it first "
-                "if you meant to change its ceiling or expiry.",
-                roleId=dup["id"])
-        cur.execute(
-            "INSERT INTO role_assignment "
-            "  (principal_id, role, scope_team_id, all_teams, scope_target_id, "
-            "   all_targets, max_tier, any_tier, valid_until, reason, created_by) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
-            "        (SELECT p.id FROM principal p "
-            "           JOIN principal_identity i ON i.principal_id = p.id "
-            "          WHERE i.provider = 'slack' AND i.external_id = %s "
-            "            AND NOT i.is_deleted LIMIT 1)) "
-            "RETURNING id",
-            (pid, body.role, body.scopeTeamId, body.scopeTeamId is None,
-             body.scopeTargetId, body.scopeTargetId is None, tier,
-             tier is None, body.validUntil, body.reason, uid))
-        rid = cur.fetchone()["id"]
-        audit.log_in(cur, None, uid, claims.get("name"), "role_granted",
-                     {"subject": body.subject, "role": body.role,
-                      "scope_team_id": body.scopeTeamId,
-                      "scope_target_id": body.scopeTargetId,
-                      "max_tier": tier, "reason": body.reason})
+        rid = _write_role(cur, uid, claims.get("name"), body, tier)
     return {"id": rid}
+
+
+def _write_role(cur, uid: str, actor_name: str | None, body: RoleIn,
+                tier: str | None) -> int:
+    """The writes of one role, on the caller's cursor. `body.scopeTargetId`
+    is already a number and `tier` came from `_check_role_spec`. Returns the
+    role id. Shared by POST /roles and POST /people."""
+    cur.execute(
+        "SELECT p.id FROM principal p "
+        "  JOIN principal_identity i ON i.principal_id = p.id "
+        " WHERE i.provider = 'slack' AND i.external_id = %s "
+        "   AND NOT i.is_deleted AND NOT p.is_deleted", (body.subject,))
+    row = cur.fetchone()
+    if row is None:
+        raise deps._error(404, "no_account",
+                          "No such person in the new access model. They "
+                          "need a QueryHub account first.")
+    pid = row["id"]
+    if body.scopeTeamId is not None:
+        cur.execute("SELECT 1 FROM team WHERE id = %s AND NOT is_deleted",
+                    (body.scopeTeamId,))
+        if cur.fetchone() is None:
+            raise deps._error(404, "no_team", "No such team.")
+    # A role is immutable here: changing one means revoking it and
+    # creating the replacement, so the same statement must not be
+    # writable twice. `role_assignment_live_uq` (migration 110) is the
+    # real guarantee and covers the race between two of these; this
+    # lookup exists to answer with a sentence naming the row rather than
+    # a unique-violation traceback.
+    cur.execute(
+        "SELECT id, max_tier, mirrored_from FROM role_assignment "
+        " WHERE principal_id = %s AND role = %s "
+        "   AND scope_team_id IS NOT DISTINCT FROM %s "
+        "   AND scope_target_id IS NOT DISTINCT FROM %s "
+        "   AND revoked_at IS NULL AND NOT is_deleted",
+        (pid, body.role, body.scopeTeamId, body.scopeTargetId))
+    dup = cur.fetchone()
+    if dup is not None:
+        where = ("mirrors the admins table and"
+                 if dup["mirrored_from"] else "already exists and")
+        # `roleId` rides the envelope the way `expiredOn` rides
+        # `access_expired`. The id is in the sentence too, but a client
+        # that had to parse it back out of prose is how a duplicate once
+        # got re-sent with `confirmed: true` — the screen's
+        # revoke-and-recreate button reads this field or does not appear.
+        raise deps._error(
+            409, "conflict",
+            f"This person already holds {body.role} over that scope "
+            f"(role {dup['id']}, which {where} is unchanged). Revoke it first "
+            "if you meant to change its ceiling or expiry.",
+            roleId=dup["id"])
+    cur.execute(
+        "INSERT INTO role_assignment "
+        "  (principal_id, role, scope_team_id, all_teams, scope_target_id, "
+        "   all_targets, max_tier, any_tier, valid_until, reason, created_by) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+        "        (SELECT p.id FROM principal p "
+        "           JOIN principal_identity i ON i.principal_id = p.id "
+        "          WHERE i.provider = 'slack' AND i.external_id = %s "
+        "            AND NOT i.is_deleted LIMIT 1)) "
+        "RETURNING id",
+        (pid, body.role, body.scopeTeamId, body.scopeTeamId is None,
+         body.scopeTargetId, body.scopeTargetId is None, tier,
+         tier is None, body.validUntil, body.reason, uid))
+    rid = cur.fetchone()["id"]
+    audit.log_in(cur, None, uid, actor_name, "role_granted",
+                 {"subject": body.subject, "role": body.role,
+                  "scope_team_id": body.scopeTeamId,
+                  "scope_target_id": body.scopeTargetId,
+                  "max_tier": tier, "reason": body.reason})
+    return rid
 
 
 @router.delete("/roles/{role_id}", status_code=204)
