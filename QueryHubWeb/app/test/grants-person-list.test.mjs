@@ -191,7 +191,8 @@ test('a fleet-wide grant shows as "every server" and opens in the Manage block',
   const r = ui.row('Sam Lee');
   assert.equal(r.querySelector('.qh-gra-from').textContent, 'every server, via team Team Alpha');
   assert.equal(r.querySelector('.qh-gra-n').textContent, '2 servers');
-  assert.deepEqual([...r.querySelectorAll('.qh-gra-flag')].map(f => f.textContent), ['auto-approve']);
+  assert.equal(r.querySelectorAll('.qh-gra-flag').length, 0, 'RO auto-approve is the fleet default, not a flag');
+  assert.equal(ui.chip('Auto-approve').textContent, 'Auto-approve1');
   const foot = ui.doc.querySelector('.qh-gra-fleetfoot');
   assert.match(foot.textContent, /^1 fleet-wide grant/);
   assert.equal(ui.doc.querySelector('.qh-fleet'), null, 'no block on top');
@@ -239,4 +240,15 @@ test('the qh-gra- styles use tokens that exist and no raw colour', opts, () => {
       assert.ok(tokens.includes('--' + m[1] + ':'), 'unknown token --' + m[1]);
     }
   }
+});
+
+test('only an auto-approve rule that covers writes is a flag', opts, async () => {
+  const rule = (id, user, tier) => ({ id, user, subjectType: 'user', tier, connectionId: 'stage-db', databaseId: null, expiresAt: null, enabled: true });
+  const ui = mount({ stExtra: { autoGrants: [rule('a1', P1, 'RW'), rule('a2', P4, 'RO')] } });
+  await ui.flush();
+  assert.deepEqual([...ui.row('Jordan Ray').querySelectorAll('.qh-gra-flag')].map(f => f.textContent), ['RW on PROD', 'No end date', 'RW auto-approve']);
+  assert.deepEqual([...ui.row('Riley Stone').querySelectorAll('.qh-gra-flag')].map(f => f.textContent), ['Account off']);
+  assert.equal(ui.chip('Auto-approve').textContent, 'Auto-approve2', 'the chip counts RO rules too');
+  ui.click(ui.chip('Auto-approve'));
+  assert.deepEqual(ui.names(), ['Jordan Ray', 'Riley Stone']);
 });

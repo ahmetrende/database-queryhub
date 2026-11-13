@@ -1218,7 +1218,12 @@ function graSummary(st, fleet, s, now) {
   if (prodTier) flags.push({ kind: 'danger', text: prodTier + ' on PROD', say: 'Can write to a production server with ' + prodTier + '.' });
   if (s.kind === 'user' && live.some(l => l.source === 'direct' && l.tier !== 'RO' && !l.g.expiresAt))
     flags.push({ kind: 'warn', text: 'No end date', say: 'A direct RW or DDL grant has no end date.' });
-  if (autos.length || fleetAuto) flags.push({ kind: 'warn', text: 'auto-approve', say: 'Some of their queries run without a DBA.' });
+  // Only an auto-approve rule that covers writes is a flag (2026-11-13). RO
+  // auto-approve is the fleet default: on 2026-11-13 it marked 34 of 44 rows,
+  // and one rule in the fleet covered RW. The Auto-approve chip still finds both.
+  const autoWrite = autos.some(a => graTier(a.tier) !== 'RO')
+    || fleetLive.some(l => l.g.autoApprove && l.g.enabled !== false && l.tier !== 'RO');
+  if (autoWrite) flags.push({ kind: 'warn', text: 'RW auto-approve', say: 'Some of their write queries run without a DBA.' });
   if (s.enabled === false) flags.push({ kind: 'off', text: 'Account off', say: 'This account is disabled. Its grants are still standing.' });
 
   // The nearest end among the live grants.
