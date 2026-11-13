@@ -3398,6 +3398,55 @@ const qhApi = {
       if (!out.some(x => x.principal === id) && (hit(d.name, d.email) || id === text)) out.push({ principal: id, known: false, name: d.name, email: d.email || null, enabled: false, admin: false }); });
     return { people: out.slice(0, 20), directory: 'ok', more: out.length > 20 };
   }, 160),
+  // POST /admin/people (2026-11-13). `dryRun: true` answers the preview and
+  // writes nothing. A known person answers `known: true` on a dry run and 409 on apply.
+  adminAddPerson: (b) => mockDelay(() => {
+    const me = mockUser();
+    if (!me || me.role === 'developer') return mockFail('Admin only.', 403, 'forbidden');
+    const principal = String((b && b.principal) || '').trim();
+    if (!/^[UW][A-Za-z0-9]{6,}$/.test(principal) && !/^local:[A-Za-z0-9._-]+$/.test(principal) && !mockDirectory(principal))
+      return mockFail('principal must be a Slack user id or local:<username>.', 400, 'bad_request');
+    const existing = ADMIN.people.find(x => x.handle === principal);
+    const dir = mockDirectory(principal);
+    if (!existing && !dir && !/^local:/.test(principal)) return mockFail('Nobody in the Slack directory has this id.', 400, 'bad_request');
+    const name = existing ? existing.name : dir ? dir.name : principal.replace(/^local:/, '');
+    const email = existing ? (existing.email || mockEmail(principal)) : dir ? (dir.email || null) : null;
+    if (b.copyFrom === principal) return mockFail('Pick someone other than the new person.', 400, 'bad_request');
+    const conns = (typeof window !== 'undefined' && window.QH_CONNECTIONS) || [];
+    const envOf = (id) => ((conns.find(c => c.id === id) || {}).env) || 'production';
+    const teamRows = [];
+    for (const tid of (b.teamIds || [])) {
+      const t = ADMIN.teams.find(x => x.id === tid);
+      if (!t) return mockFail('Unknown team: ' + tid + '.', 400, 'bad_request');
+      const gs = ADMIN.grants.filter(g => g.subjectType === 'team' && g.subject === t.name);
+      teamRows.push({ id: t.id, name: t.name, allTargets: gs.some(g => g.connectionId === '*'),
+        targets: gs.filter(g => g.connectionId !== '*').map(g => ({ connectionId: g.connectionId, tier: g.tier, env: envOf(g.connectionId) })) });
+    }
+    let copy = null;
+    if (b.copyFrom) {
+      const ref = ADMIN.people.find(x => x.handle === b.copyFrom);
+      if (!ref) return mockFail('The reference person is not in QueryHub.', 400, 'bad_request');
+      const direct = ADMIN.grants.filter(g => g.subjectType === 'user' && g.subject === ref.handle);
+      const refTeams = ADMIN.teams.filter(t => (t.members || []).indexOf(ref.handle) >= 0);
+      copy = { from: ref.handle, fromName: ref.name,
+        targets: direct.map(g => ({ connectionId: g.connectionId, tier: g.tier, env: envOf(g.connectionId) })),
+        teams: refTeams.map(t => t.name),
+        autoApprove: ADMIN.auto.filter(a => a.user === ref.handle).length };
+    }
+    const warnings = [];
+    teamRows.forEach(t => t.targets.forEach(x => { if (x.env === 'production' && (x.tier === 'RW' || x.tier === 'DDL')) warnings.push({ connectionId: x.connectionId, tier: x.tier, source: t.name }); }));
+    if (copy) copy.targets.forEach(x => { if (x.env === 'production' && (x.tier === 'RW' || x.tier === 'DDL')) warnings.push({ connectionId: x.connectionId, tier: x.tier, source: copy.fromName }); });
+    const notify = b.notify !== false;
+    if (b.dryRun) return { dryRun: true, principal, name, email, known: !!existing, teams: teamRows, copy, warnings,
+      empty: !teamRows.length && !copy, notify };
+    if (existing) return mockFail('This person is already in QueryHub.', 409, 'conflict');
+    ADMIN.people = [{ id: mockId('p'), handle: principal, name, initials: mockInitials(name), email: email || mockEmail(principal), enabled: true }, ...ADMIN.people];
+    teamRows.forEach(tr => { const t = ADMIN.teams.find(x => x.id === tr.id); if (t) t.members = [...(t.members || []), principal]; });
+    mockAudit('Added person', name + ' · ' + principal, 'scope');
+    return { principal, name, teamsJoined: teamRows.map(t => t.name),
+      copied: copy ? { targets: copy.targets.map(t => t.connectionId), teams: copy.teams, autoApproveCopied: b.includeAutoApprove ? copy.autoApprove : 0 } : null,
+      notified: notify };
+  }, 300),
   adminResolvePerson: (principal) => mockDelay(() => {
     const me = mockUser();
     if (!me || me.role === 'developer') return mockFail('Admin only.', 403, 'forbidden');

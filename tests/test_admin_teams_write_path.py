@@ -122,7 +122,7 @@ def test_effective_access_reads_memberships_from_the_live_model():
 def test_copy_access_copies_memberships_from_the_live_model():
     """"Give this person what that person has" silently copied no teams, and
     reported success in the past tense."""
-    src = _code(routes_admin.admin_copy_access)
+    src = _code(routes_admin._copy_access_core)
     assert "teams_mod.use_v2()" in src
     assert "INSERT INTO team_member (team_id, principal_id)" in src
     assert "ON CONFLICT (team_id, principal_id) WHERE NOT is_deleted " in src

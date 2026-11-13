@@ -328,6 +328,13 @@ function useAdminState(pushToast, active, isAdminViewer) {
   // into a note, because the grant is still writable — the server resolves the
   // principal again when it writes it.
   const resolvePerson = (principal) => qhApi.adminResolvePerson(principal);
+  // Add a person (2026-11-13). A dry run writes nothing, so it does not reload.
+  // The promise is RETURNED: the dialog shows a refusal inline.
+  const addPerson = (body) =>
+    qhApi.adminAddPerson(body).then(r => {
+      if (!body.dryRun) { loadPeople(); loadTeams(); loadGrants(); loadAudit(); }
+      return r;
+    });
   // `mode` ('merge' | 'replace'), `includeAutoApprove` and `dryRun` (CODE brief
   // 2026-09-01 §2). A dry run writes nothing, so it must not reload or toast — it
   // is the preview the confirm step is drawn from, and a toast saying "copied"
@@ -633,7 +640,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
     loadError, loading, reload: reloadAll,
     decide, batchApprove, approveBundle, toggleKill, killHistory,
     addGrant, updateGrant, revokeGrant, setSubjectGrants, extendGrant, setAutoGrantEnabled,
-    effectiveAccess, teamEffectiveAccess, copyAccess, resolvePerson,
+    effectiveAccess, teamEffectiveAccess, copyAccess, resolvePerson, addPerson,
     addAutoGrant, addAutoGrants, updateAutoGrant, revokeAutoGrant, decideAutoRequest, closeManualRun,
     reloadGrants: loadGrants,
     saveScope, removeScope, decideEndpoint, saveConfig,

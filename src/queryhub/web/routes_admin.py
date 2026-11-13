@@ -3390,6 +3390,217 @@ def admin_people_directory(q: str | None = None,
             "more": len(out) > _DIRECTORY_LIMIT}
 
 
+class NewPersonIn(BaseModel):
+    """Add one person to QueryHub, with teams and a copy of a colleague's access."""
+    principal: str
+    teamIds: list[int] = Field(default_factory=list)
+    copyFrom: str | None = None
+    includeAutoApprove: bool = False
+    notify: bool = True
+    dryRun: bool = False
+
+
+_TIER_RANK = {"RO": 0, "RW": 1, "DDL": 2}
+
+
+def _team_rows(team_ids: list[int]) -> list[dict]:
+    """{id, name} for each team id, in the given order. An unknown id is a 400."""
+    if not team_ids:
+        return []
+    if teams_mod.use_v2():
+        rows = db.fetch_all(
+            "SELECT id, COALESCE(display_name, name) AS name FROM team "
+            " WHERE id = ANY(%s) AND NOT is_deleted", (team_ids,))
+    else:
+        rows = db.fetch_all("SELECT id, name FROM teams WHERE id = ANY(%s)",
+                            (team_ids,))
+    by_id = {r["id"]: r["name"] for r in rows or []}
+    for tid in team_ids:
+        if tid not in by_id:
+            raise deps._error(400, "bad_request", f"Unknown team: {tid}.")
+    return [{"id": tid, "name": by_id[tid]} for tid in team_ids]
+
+
+def _team_preview(team: dict) -> dict:
+    """What joining this team gives: its live grants that are not auto-approve."""
+    if teams_mod.use_v2():
+        rows = db.fetch_all(
+            "SELECT g.all_targets, ts.alias, g.tier "
+            "  FROM access_grant g "
+            "  LEFT JOIN target_servers ts ON ts.id = g.target_id "
+            " WHERE g.team_id = %s AND NOT g.is_deleted AND g.revoked_at IS NULL "
+            "   AND g.enabled AND NOT g.auto_approve "
+            "   AND (g.valid_until IS NULL OR g.valid_until > NOW())",
+            (team["id"],))
+    else:
+        rows = db.fetch_all(
+            "SELECT FALSE AS all_targets, ts.alias, g.mode AS tier "
+            "  FROM team_target_grants g "
+            "  JOIN target_servers ts ON ts.id = g.target_server_id "
+            " WHERE g.team_id = %s AND g.revoked_at IS NULL "
+            "   AND (g.expires_at IS NULL OR g.expires_at > NOW())",
+            (team["id"],))
+    all_targets = False
+    best: dict[str, str] = {}
+    for r in rows or []:
+        tier = (r["tier"] or "ro").upper()
+        if r.get("all_targets"):
+            all_targets = True
+            continue
+        alias = r["alias"]
+        if alias is None:
+            continue
+        if alias not in best or _TIER_RANK.get(tier, 0) > _TIER_RANK.get(best[alias], 0):
+            best[alias] = tier
+    return {"id": team["id"], "name": team["name"], "allTargets": all_targets,
+            "targets": [{"connectionId": a, "tier": t, "env": mapping.env_of(a)}
+                        for a, t in sorted(best.items())]}
+
+
+def _copy_preview(principal: str, source: str, source_name: str | None,
+                  include_auto: bool, uid: str, actor_name: str | None) -> dict:
+    """What a copy from `source` would give, computed and rolled back.
+
+    `autoApprove` counts the source's rules whether or not the box is checked:
+    the dialog shows the count next to the box, before anyone checks it. The
+    box only decides whether the save copies them. `include_auto` stays in
+    the signature for the callers."""
+    req = CopyAccessIn(source=source, includeTeams=True, mode="merge",
+                       includeAutoApprove=True, dryRun=True)
+    try:
+        with db.transaction() as cur:
+            _copy_access_core(cur, principal, req, uid, actor_name)
+        payload: dict = {}
+    except _CopyPreview as preview:
+        payload = preview.payload
+    aliases = list(payload.get("wouldWrite") or [])
+    ids: dict[str, int] = {}
+    if aliases:
+        rows = db.fetch_all(
+            "SELECT id, alias FROM target_servers WHERE alias = ANY(%s)", (aliases,))
+        ids = {r["alias"]: r["id"] for r in rows or []}
+    targets = []
+    for alias in aliases:
+        g = (teams_mod.effective_grant_for_user(source, ids[alias])
+             if alias in ids else None) or {}
+        targets.append({"connectionId": alias,
+                        "tier": (g.get("mode") or "ro").upper(),
+                        "env": mapping.env_of(alias)})
+    return {"from": source, "fromName": source_name, "targets": targets,
+            "teams": list(payload.get("wouldJoinTeams") or []),
+            "autoApprove": int(payload.get("wouldCopyAutoApprove") or 0)}
+
+
+@router.post("/people", status_code=201)
+def admin_add_person(body: NewPersonIn, claims: dict = Depends(deps.current_user)):
+    """Add a person to QueryHub, join teams, and copy a colleague's access.
+
+    A dry run writes nothing. It answers who the person is, what each team
+    gives, what a copy would give, and a warning for every RW or DDL target
+    in production. Apply writes the person, the teams, the copy and one audit
+    row in one transaction.
+    """
+    uid = admin.require_admin(claims, "access")
+    actor_name = claims.get("name")
+    principal = (body.principal or "").strip()
+    if not _valid_principal(principal):
+        raise deps._error(400, "bad_request",
+                          "principal must be a Slack user id or local:<username>.")
+    is_local = principal.startswith("local:")
+    who = _resolve_principal(principal)
+    if not is_local and not who["known"] and who["name"] is None:
+        raise deps._error(400, "bad_request",
+                          "Nobody in the Slack directory has this id.")
+    known = bool(who["known"] and who["enabled"])
+
+    source = (body.copyFrom or "").strip() or None
+    source_name = None
+    if source is not None:
+        if not _valid_principal(source) or source == principal:
+            raise deps._error(400, "bad_request",
+                              "Pick someone other than the new person.")
+        ref = db.fetch_one(
+            "SELECT name FROM requesters WHERE slack_user_id = %s", (source,))
+        if ref is None:
+            raise deps._error(400, "bad_request",
+                              "The reference person is not in QueryHub.")
+        source_name = ref["name"]
+    include_auto = bool(body.includeAutoApprove and source)
+    team_ids = list(dict.fromkeys(body.teamIds or []))
+    team_list = _team_rows(team_ids)
+
+    if body.dryRun:
+        teams_out = [_team_preview(t) for t in team_list]
+        copy_out = (_copy_preview(principal, source, source_name, include_auto,
+                                  uid, actor_name) if source else None)
+        warnings = []
+        for t in teams_out:
+            for x in t["targets"]:
+                if x["tier"] in ("RW", "DDL") and x["env"] == "production":
+                    warnings.append({"connectionId": x["connectionId"],
+                                     "tier": x["tier"], "source": t["name"]})
+        for x in (copy_out or {}).get("targets", []):
+            if x["tier"] in ("RW", "DDL") and x["env"] == "production":
+                warnings.append({"connectionId": x["connectionId"],
+                                 "tier": x["tier"], "source": source_name})
+        return {"dryRun": True, "principal": principal, "name": who["name"],
+                "email": who["email"], "known": known, "teams": teams_out,
+                "copy": copy_out, "warnings": warnings,
+                "empty": not team_list and source is None,
+                "notify": bool(body.notify)}
+
+    if known:
+        raise deps._error(409, "conflict", "This person is already in QueryHub.")
+
+    copied = None
+    with db.transaction() as cur:
+        prof = {} if is_local else _slack_profile(principal)
+        if not body.notify:
+            cur.execute("SET LOCAL app.auth_dm_suppress = 'on'")
+        cur.execute(
+            "INSERT INTO requesters (slack_user_id, name, email, tz, enabled, "
+            "                        added_at, added_by) "
+            "VALUES (%s, %s, %s, %s, TRUE, NOW(), %s) "
+            "ON CONFLICT (slack_user_id) DO UPDATE "
+            "  SET enabled = TRUE, "
+            "      name  = COALESCE(requesters.name,  EXCLUDED.name), "
+            "      email = COALESCE(requesters.email, EXCLUDED.email), "
+            "      tz    = COALESCE(requesters.tz,    EXCLUDED.tz)",
+            (principal, prof.get("name"), prof.get("email"), prof.get("tz"), uid))
+        if body.notify:
+            # Only the welcome DM is queued. Team and grant DMs stay off.
+            cur.execute("SET LOCAL app.auth_dm_suppress = 'on'")
+        for t in team_list:
+            if teams_mod.use_v2():
+                cur.execute(
+                    "INSERT INTO team_member (team_id, principal_id) "
+                    "SELECT %s, i.principal_id FROM principal_identity i "
+                    " WHERE i.external_id = %s AND i.provider = 'slack' "
+                    "   AND NOT i.is_deleted "
+                    "ON CONFLICT DO NOTHING", (t["id"], principal))
+            else:
+                cur.execute(
+                    "INSERT INTO team_members (team_id, slack_user_id) "
+                    "VALUES (%s, %s) ON CONFLICT DO NOTHING", (t["id"], principal))
+        if source:
+            res = _copy_access_core(
+                cur, principal,
+                CopyAccessIn(source=source, includeTeams=True, mode="merge",
+                             includeAutoApprove=include_auto),
+                uid, actor_name)
+            copied = {"targets": res["writtenTargets"], "teams": res["teams"],
+                      "autoApproveCopied": res["autoApproveCopied"]}
+        audit.log_in(cur, None, uid, actor_name, "person_added",
+                     {"principal": principal,
+                      "teams": [t["name"] for t in team_list],
+                      "copy_from": source,
+                      "include_auto_approve": include_auto,
+                      "notify": bool(body.notify)})
+    return {"principal": principal, "name": prof.get("name") or who["name"],
+            "teamsJoined": [t["name"] for t in team_list],
+            "copied": copied, "notified": bool(body.notify)}
+
+
 @router.post("/people/{slack_id}/copy-access", status_code=201)
 def admin_copy_access(slack_id: str, body: CopyAccessIn,
                       claims: dict = Depends(deps.current_user)):
@@ -3420,7 +3631,6 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
     if mode_in not in ("merge", "replace"):
         raise deps._error(400, "bad_request",
                           "mode must be 'merge' or 'replace'.")
-    replace = mode_in == "replace"
     for pid in (slack_id, body.source):
         if not _valid_principal(pid):
             raise deps._error(400, "bad_request",
@@ -3431,287 +3641,300 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
     if tier is not None and tier not in ("ro", "rw", "ddl"):
         raise deps._error(400, "bad_request", "tier must be RO, RW, or DDL.")
 
+    try:
+        with db.transaction() as cur:
+            return _copy_access_core(cur, slack_id, body, uid, claims.get("name"))
+    except _CopyPreview as preview:
+        return preview.payload
+
+
+def _copy_access_core(cur, slack_id: str, body: CopyAccessIn, uid: str,
+                      actor_name: str | None) -> dict:
+    """The writes of a copy, on the caller's cursor and inside its transaction.
+
+    Returns the dict the copy route answers. For a dry run it raises
+    `_CopyPreview` instead, so the caller's transaction rolls back. The caller
+    has already checked the principals, `mode` and `tier`. Add-person calls this
+    too, so a new person gets the same copy as an existing one."""
+    replace = (body.mode or "merge").strip().lower() == "replace"
+    tier = (body.tier or "").lower() or None
     # Never copy a grant on the bot's own control-plane database, whatever the
     # source happens to hold: that is the one target whose access would allow
     # editing the audit trail this endpoint writes to.
     forbidden = set(grants.control_plane_target_ids())
     team_names: list[str] = []
 
-    try:
-      with db.transaction() as cur:
-          # Whitelist the destination FIRST. This endpoint writes team_members and
-          # user_target_grants directly, so pointing it at a Slack id QueryHub has
-          # never seen produced grant rows for someone with no `requesters` row:
-          # every submission still refused (the whitelist gate), and the person
-          # invisible in the people list — grants that look right and do nothing.
-          # `grants.grant` has always done this; the copy path had to as well.
-          # A profile lookup fills the name so the row is not just an id, and the
-          # upsert never downgrades an existing person.
-          prof = _slack_profile(slack_id)
-          cur.execute("SET LOCAL app.auth_dm_suppress = 'on'")
-          cur.execute(
-              "INSERT INTO requesters (slack_user_id, name, email, tz, enabled, "
-              "                        added_at, added_by) "
-              "VALUES (%s, %s, %s, %s, TRUE, NOW(), %s) "
-              "ON CONFLICT (slack_user_id) DO UPDATE "
-              "  SET enabled = TRUE, "
-              "      name  = COALESCE(requesters.name,  EXCLUDED.name), "
-              "      email = COALESCE(requesters.email, EXCLUDED.email), "
-              "      tz    = COALESCE(requesters.tz,    EXCLUDED.tz)",
-              (slack_id, prof.get("name"), prof.get("email"), prof.get("tz"),
-               uid))
-          cur.execute(
-              "SELECT target_server_id, allowed_databases, mode "
-              "  FROM user_target_grants "
-              " WHERE slack_user_id = %s AND revoked_at IS NULL "
-              "   AND (expires_at IS NULL OR expires_at > NOW())",
-              (body.source,))
-          src_grants = {r["target_server_id"]: r for r in cur.fetchall()}
+    # Whitelist the destination FIRST. This endpoint writes team_members and
+    # user_target_grants directly, so pointing it at a Slack id QueryHub has
+    # never seen produced grant rows for someone with no `requesters` row:
+    # every submission still refused (the whitelist gate), and the person
+    # invisible in the people list — grants that look right and do nothing.
+    # `grants.grant` has always done this; the copy path had to as well.
+    # A profile lookup fills the name so the row is not just an id, and the
+    # upsert never downgrades an existing person.
+    prof = _slack_profile(slack_id)
+    cur.execute("SET LOCAL app.auth_dm_suppress = 'on'")
+    cur.execute(
+        "INSERT INTO requesters (slack_user_id, name, email, tz, enabled, "
+        "                        added_at, added_by) "
+        "VALUES (%s, %s, %s, %s, TRUE, NOW(), %s) "
+        "ON CONFLICT (slack_user_id) DO UPDATE "
+        "  SET enabled = TRUE, "
+        "      name  = COALESCE(requesters.name,  EXCLUDED.name), "
+        "      email = COALESCE(requesters.email, EXCLUDED.email), "
+        "      tz    = COALESCE(requesters.tz,    EXCLUDED.tz)",
+        (slack_id, prof.get("name"), prof.get("email"), prof.get("tz"),
+         uid))
+    cur.execute(
+        "SELECT target_server_id, allowed_databases, mode "
+        "  FROM user_target_grants "
+        " WHERE slack_user_id = %s AND revoked_at IS NULL "
+        "   AND (expires_at IS NULL OR expires_at > NOW())",
+        (body.source,))
+    src_grants = {r["target_server_id"]: r for r in cur.fetchall()}
 
-          # The source's TEAM access, in the legacy row shape the rest of this
-          # route writes from. Under the new model it is `access_grant` rows,
-          # one per database; the legacy read here answered nothing after the
-          # pod cutover, so "copy as explicit grants" dropped every
-          # team-derived target and reported the copy as done.
-          #
-          # A legacy user row holds ONE tier per target. Where the source's
-          # team rows on a target disagree on tier, the LOWEST is written: a
-          # copy must never hand the new person more than the source has on
-          # any database.
-          if teams_mod.use_v2():
-              cur.execute(
-                  "SELECT g.target_id AS target_server_id, "
-                  "       CASE WHEN bool_or(g.all_databases) THEN NULL "
-                  "            ELSE array_agg(DISTINCT g.database_name) END AS allowed_databases, "
-                  "       (array_agg(g.tier ORDER BY tr.rank ASC))[1] AS mode "
-                  "  FROM access_grant g "
-                  "  JOIN tier tr ON tr.name = g.tier "
-                  "  JOIN team_member m ON m.team_id = g.team_id AND NOT m.is_deleted "
-                  "  JOIN principal_identity i ON i.principal_id = m.principal_id "
-                  "   AND i.provider = 'slack' AND NOT i.is_deleted "
-                  " WHERE i.external_id = %s AND g.team_id IS NOT NULL "
-                  "   AND NOT g.auto_approve AND NOT g.all_targets "
-                  "   AND g.revoked_at IS NULL AND NOT g.is_deleted "
-                  "   AND g.valid_from <= NOW() "
-                  "   AND (g.valid_until IS NULL OR g.valid_until > NOW()) "
-                  " GROUP BY g.target_id",
-                  (body.source,))
-          else:
-              cur.execute(
-                  "SELECT g.target_server_id, g.allowed_databases, g.mode "
-                  "  FROM team_target_grants g "
-                  "  JOIN team_members m ON m.team_id = g.team_id "
-                  " WHERE m.slack_user_id = %s AND g.revoked_at IS NULL "
-                  "   AND (g.expires_at IS NULL OR g.expires_at > NOW())",
-                  (body.source,))
-          team_grants = list(cur.fetchall())
+    # The source's TEAM access, in the legacy row shape the rest of this
+    # route writes from. Under the new model it is `access_grant` rows,
+    # one per database; the legacy read here answered nothing after the
+    # pod cutover, so "copy as explicit grants" dropped every
+    # team-derived target and reported the copy as done.
+    #
+    # A legacy user row holds ONE tier per target. Where the source's
+    # team rows on a target disagree on tier, the LOWEST is written: a
+    # copy must never hand the new person more than the source has on
+    # any database.
+    if teams_mod.use_v2():
+        cur.execute(
+            "SELECT g.target_id AS target_server_id, "
+            "       CASE WHEN bool_or(g.all_databases) THEN NULL "
+            "            ELSE array_agg(DISTINCT g.database_name) END AS allowed_databases, "
+            "       (array_agg(g.tier ORDER BY tr.rank ASC))[1] AS mode "
+            "  FROM access_grant g "
+            "  JOIN tier tr ON tr.name = g.tier "
+            "  JOIN team_member m ON m.team_id = g.team_id AND NOT m.is_deleted "
+            "  JOIN principal_identity i ON i.principal_id = m.principal_id "
+            "   AND i.provider = 'slack' AND NOT i.is_deleted "
+            " WHERE i.external_id = %s AND g.team_id IS NOT NULL "
+            "   AND NOT g.auto_approve AND NOT g.all_targets "
+            "   AND g.revoked_at IS NULL AND NOT g.is_deleted "
+            "   AND g.valid_from <= NOW() "
+            "   AND (g.valid_until IS NULL OR g.valid_until > NOW()) "
+            " GROUP BY g.target_id",
+            (body.source,))
+    else:
+        cur.execute(
+            "SELECT g.target_server_id, g.allowed_databases, g.mode "
+            "  FROM team_target_grants g "
+            "  JOIN team_members m ON m.team_id = g.team_id "
+            " WHERE m.slack_user_id = %s AND g.revoked_at IS NULL "
+            "   AND (g.expires_at IS NULL OR g.expires_at > NOW())",
+            (body.source,))
+    team_grants = list(cur.fetchall())
 
-          teams_joined: list[int] = []
-          if body.includeTeams:
-              # Copy the memberships from the model that holds them. Against
-              # the legacy tables this copied nothing at all after the pod
-              # cutover, and said so in the past tense.
-              if teams_mod.use_v2():
-                  cur.execute(
-                      "INSERT INTO team_member (team_id, principal_id) "
-                      "SELECT m.team_id, dst.principal_id "
-                      "  FROM team_member m "
-                      "  JOIN principal_identity src "
-                      "    ON src.principal_id = m.principal_id "
-                      "   AND src.provider = 'slack' AND NOT src.is_deleted "
-                      "  CROSS JOIN principal_identity dst "
-                      " WHERE src.external_id = %s AND NOT m.is_deleted "
-                      "   AND dst.external_id = %s AND dst.provider = 'slack' "
-                      "   AND NOT dst.is_deleted "
-                      "ON CONFLICT (team_id, principal_id) WHERE NOT is_deleted "
-                      "DO NOTHING RETURNING team_id",
-                      (body.source, slack_id))
-              else:
-                  cur.execute(
-                      "INSERT INTO team_members (team_id, slack_user_id) "
-                      "SELECT team_id, %s FROM team_members WHERE slack_user_id = %s "
-                      "ON CONFLICT DO NOTHING RETURNING team_id",
-                      (slack_id, body.source))
-              teams_joined = [r["team_id"] for r in cur.fetchall()]
-              # Names, not just ids: the caller's confirmation says "joined
-              # petrels, platform", and it cannot build that from integers.
-              if teams_joined:
-                  cur.execute(
-                      "SELECT COALESCE(display_name, name) AS name FROM team "
-                      " WHERE id = ANY(%s) ORDER BY 1"
-                      if teams_mod.use_v2() else
-                      "SELECT name FROM teams WHERE id = ANY(%s) ORDER BY name",
-                      (teams_joined,))
-                  team_names = [r["name"] for r in cur.fetchall()]
-              to_write = src_grants
-          else:
-              # Team-derived targets become explicit grants. A user row supersedes
-              # the team's for that target, so where both exist the source's own
-              # grant wins — it is the narrower, deliberate one.
-              merged = {r["target_server_id"]: r for r in team_grants}
-              merged.update(src_grants)
-              to_write = merged
+    teams_joined: list[int] = []
+    if body.includeTeams:
+        # Copy the memberships from the model that holds them. Against
+        # the legacy tables this copied nothing at all after the pod
+        # cutover, and said so in the past tense.
+        if teams_mod.use_v2():
+            cur.execute(
+                "INSERT INTO team_member (team_id, principal_id) "
+                "SELECT m.team_id, dst.principal_id "
+                "  FROM team_member m "
+                "  JOIN principal_identity src "
+                "    ON src.principal_id = m.principal_id "
+                "   AND src.provider = 'slack' AND NOT src.is_deleted "
+                "  CROSS JOIN principal_identity dst "
+                " WHERE src.external_id = %s AND NOT m.is_deleted "
+                "   AND dst.external_id = %s AND dst.provider = 'slack' "
+                "   AND NOT dst.is_deleted "
+                "ON CONFLICT (team_id, principal_id) WHERE NOT is_deleted "
+                "DO NOTHING RETURNING team_id",
+                (body.source, slack_id))
+        else:
+            cur.execute(
+                "INSERT INTO team_members (team_id, slack_user_id) "
+                "SELECT team_id, %s FROM team_members WHERE slack_user_id = %s "
+                "ON CONFLICT DO NOTHING RETURNING team_id",
+                (slack_id, body.source))
+        teams_joined = [r["team_id"] for r in cur.fetchall()]
+        # Names, not just ids: the caller's confirmation says "joined
+        # petrels, platform", and it cannot build that from integers.
+        if teams_joined:
+            cur.execute(
+                "SELECT COALESCE(display_name, name) AS name FROM team "
+                " WHERE id = ANY(%s) ORDER BY 1"
+                if teams_mod.use_v2() else
+                "SELECT name FROM teams WHERE id = ANY(%s) ORDER BY name",
+                (teams_joined,))
+            team_names = [r["name"] for r in cur.fetchall()]
+        to_write = src_grants
+    else:
+        # Team-derived targets become explicit grants. A user row supersedes
+        # the team's for that target, so where both exist the source's own
+        # grant wins — it is the narrower, deliberate one.
+        merged = {r["target_server_id"]: r for r in team_grants}
+        merged.update(src_grants)
+        to_write = merged
 
-          # REPLACE means the person ends up with the source's access and
-          # nothing else — so it has to REVOKE what the source does not have.
-          # Worked out before anything is written, and reported by target ALIAS
-          # rather than id: an admin confirming a destructive copy is reading
-          # server names, and "revokes 3 grants" is not a sentence anyone can
-          # check.
-          revoked: list[dict] = []
-          if replace:
-              cur.execute(
-                  "SELECT target_server_id, mode FROM user_target_grants "
-                  " WHERE slack_user_id = %s AND revoked_at IS NULL", (slack_id,))
-              for r in cur.fetchall():
-                  tid = r["target_server_id"]
-                  if tid in to_write or tid in forbidden:
-                      continue
-                  revoked.append({"targetId": tid,
-                                  "tier": (r["mode"] or "ro").upper()})
+    # REPLACE means the person ends up with the source's access and
+    # nothing else — so it has to REVOKE what the source does not have.
+    # Worked out before anything is written, and reported by target ALIAS
+    # rather than id: an admin confirming a destructive copy is reading
+    # server names, and "revokes 3 grants" is not a sentence anyone can
+    # check.
+    revoked: list[dict] = []
+    if replace:
+        cur.execute(
+            "SELECT target_server_id, mode FROM user_target_grants "
+            " WHERE slack_user_id = %s AND revoked_at IS NULL", (slack_id,))
+        for r in cur.fetchall():
+            tid = r["target_server_id"]
+            if tid in to_write or tid in forbidden:
+                continue
+            revoked.append({"targetId": tid,
+                            "tier": (r["mode"] or "ro").upper()})
 
-          # A dry run answers the same question and writes nothing — the screen
-          # asks it to name the rows before the admin confirms. Raising here
-          # rolls the transaction back, including the requesters upsert above.
-          if body.dryRun:
-              # The preview says how many auto-approve windows would come
-              # across. Counted here rather than left out: the panel draws a
-              # line from it, and an absent field draws silence — which reads
-              # as "none" for the one option that skips human review.
-              would_auto = 0
-              would_skip = 0
-              if body.includeAutoApprove:
-                  # Switched-off rules are not copied (migration 146), so they
-                  # are not counted either. A DDL rule is not copied: the app
-                  # makes no auto-approve rule for DDL, and it counts apart.
-                  cur.execute(
-                      "SELECT count(*) FILTER (WHERE max_tier <> 'ddl') AS n, "
-                      "       count(*) FILTER (WHERE max_tier = 'ddl') AS skipped "
-                      "  FROM auto_approve_grants "
-                      " WHERE slack_user_id = %s AND enabled "
-                      "   AND (expires_at IS NULL OR expires_at > NOW())",
-                      (body.source,))
-                  got = cur.fetchone() or {}
-                  would_auto = int(got.get("n") or 0)
-                  would_skip = int(got.get("skipped") or 0)
-              raise _CopyPreview({
-                  "wouldCopyAutoApprove": would_auto,
-                  "wouldSkipAutoApprove": would_skip,
-                  "dryRun": True, "slackId": slack_id, "copiedFrom": body.source,
+    # A dry run answers the same question and writes nothing — the screen
+    # asks it to name the rows before the admin confirms. Raising here
+    # rolls the transaction back, including the requesters upsert above.
+    if body.dryRun:
+        # The preview says how many auto-approve windows would come
+        # across. Counted here rather than left out: the panel draws a
+        # line from it, and an absent field draws silence — which reads
+        # as "none" for the one option that skips human review.
+        would_auto = 0
+        would_skip = 0
+        if body.includeAutoApprove:
+            # Switched-off rules are not copied (migration 146), so they
+            # are not counted either. A DDL rule is not copied: the app
+            # makes no auto-approve rule for DDL, and it counts apart.
+            cur.execute(
+                "SELECT count(*) FILTER (WHERE max_tier <> 'ddl') AS n, "
+                "       count(*) FILTER (WHERE max_tier = 'ddl') AS skipped "
+                "  FROM auto_approve_grants "
+                " WHERE slack_user_id = %s AND enabled "
+                "   AND (expires_at IS NULL OR expires_at > NOW())",
+                (body.source,))
+            got = cur.fetchone() or {}
+            would_auto = int(got.get("n") or 0)
+            would_skip = int(got.get("skipped") or 0)
+        raise _CopyPreview({
+            "wouldCopyAutoApprove": would_auto,
+            "wouldSkipAutoApprove": would_skip,
+            "dryRun": True, "slackId": slack_id, "copiedFrom": body.source,
+            "mode": "replace" if replace else "merge",
+            "wouldWrite": [
+                _alias_map(cur, sorted(set(to_write) - forbidden)).get(t, str(t))
+                for t in sorted(set(to_write) - forbidden)],
+            "wouldRevoke": [
+                dict(r, connectionId=_alias_map(cur, [r["targetId"]])
+                     .get(r["targetId"], str(r["targetId"])))
+                for r in revoked],
+            "wouldJoinTeams": team_names,
+            "tier": tier})
+
+    written: list[int] = []
+    for tid, g in sorted(to_write.items()):
+        if tid in forbidden:
+            continue
+        cur.execute(
+            "INSERT INTO user_target_grants "
+            "  (slack_user_id, target_server_id, allowed_databases, mode, granted_by) "
+            "VALUES (%s, %s, %s, %s, %s) "
+            # On replace the row must END UP matching the source, so an
+            # existing grant is overwritten rather than left alone. Merge
+            # keeps the old DO NOTHING: it adds, it does not rewrite what
+            # somebody already decided.
+            + ("ON CONFLICT (slack_user_id, target_server_id) DO UPDATE "
+               "  SET allowed_databases = EXCLUDED.allowed_databases, "
+               "      mode = EXCLUDED.mode, granted_by = EXCLUDED.granted_by, "
+               "      granted_at = NOW(), revoked_at = NULL"
+               if replace else
+               "ON CONFLICT (slack_user_id, target_server_id) DO NOTHING"),
+            (slack_id, tid, g["allowed_databases"], tier or g["mode"], uid))
+        if cur.rowcount:
+            written.append(tid)
+
+    for r in revoked:
+        cur.execute(
+            "UPDATE user_target_grants SET revoked_at = NOW() "
+            " WHERE slack_user_id = %s AND target_server_id = %s "
+            "   AND revoked_at IS NULL", (slack_id, r["targetId"]))
+
+    # Auto-approve is a separate table and a separate decision: it skips
+    # human review, so it is copied only when asked for.
+    auto_copied: list[str] = []
+    auto_skipped: list[tuple] = []
+    if body.includeAutoApprove:
+        # A rule the source has switched off approves nothing for them,
+        # so it must not arrive switched on for the new person.
+        cur.execute(
+            "SELECT target_server_id, database_name, max_tier, expires_at "
+            "  FROM auto_approve_grants "
+            " WHERE slack_user_id = %s AND enabled "
+            "   AND (expires_at IS NULL OR expires_at > NOW())",
+            (body.source,))
+        for r in cur.fetchall():
+            if r["target_server_id"] in forbidden:
+                continue
+            if r["max_tier"] == "ddl":
+                # The app makes no auto-approve rule for DDL, so a copied
+                # DDL rule is skipped, and the result says so.
+                auto_skipped.append((r["target_server_id"], r["database_name"]))
+                continue
+            # A copy of a rule is a new rule, so it needs an end too. The
+            # source's end is kept when it is within the limit. A source
+            # with no end (a legacy permanent rule) gets the limit itself.
+            cur.execute(
+                "INSERT INTO auto_approve_grants "
+                "  (slack_user_id, target_server_id, database_name, "
+                "   max_tier, granted_by, expires_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (slack_id, r["target_server_id"], r["database_name"],
+                 r["max_tier"], uid,
+                 auto_approve_limits.copied_end(r["expires_at"])))
+            auto_copied.append((r["target_server_id"], r["database_name"]))
+
+    # Every id the response will name, resolved in one query.
+    names = _alias_map(cur, set(written)
+                       | {r["targetId"] for r in revoked}
+                       | {t for t, _ in auto_copied})
+    written_names = [names.get(t, str(t)) for t in written]
+    for r in revoked:
+        r["connectionId"] = names.get(r["targetId"], str(r["targetId"]))
+    auto_names = [(names.get(t) or "all targets")
+                  + (f"/{d}" if d else "") for t, d in auto_copied]
+
+    audit.log_in(cur, None, uid, actor_name, "access_copied",
+                 {"to": slack_id, "from": body.source,
                   "mode": "replace" if replace else "merge",
-                  "wouldWrite": [
-                      _alias_map(cur, sorted(set(to_write) - forbidden)).get(t, str(t))
-                      for t in sorted(set(to_write) - forbidden)],
-                  "wouldRevoke": [
-                      dict(r, connectionId=_alias_map(cur, [r["targetId"]])
-                           .get(r["targetId"], str(r["targetId"])))
-                      for r in revoked],
-                  "wouldJoinTeams": team_names,
-                  "tier": tier})
-
-          written: list[int] = []
-          for tid, g in sorted(to_write.items()):
-              if tid in forbidden:
-                  continue
-              cur.execute(
-                  "INSERT INTO user_target_grants "
-                  "  (slack_user_id, target_server_id, allowed_databases, mode, granted_by) "
-                  "VALUES (%s, %s, %s, %s, %s) "
-                  # On replace the row must END UP matching the source, so an
-                  # existing grant is overwritten rather than left alone. Merge
-                  # keeps the old DO NOTHING: it adds, it does not rewrite what
-                  # somebody already decided.
-                  + ("ON CONFLICT (slack_user_id, target_server_id) DO UPDATE "
-                     "  SET allowed_databases = EXCLUDED.allowed_databases, "
-                     "      mode = EXCLUDED.mode, granted_by = EXCLUDED.granted_by, "
-                     "      granted_at = NOW(), revoked_at = NULL"
-                     if replace else
-                     "ON CONFLICT (slack_user_id, target_server_id) DO NOTHING"),
-                  (slack_id, tid, g["allowed_databases"], tier or g["mode"], uid))
-              if cur.rowcount:
-                  written.append(tid)
-
-          for r in revoked:
-              cur.execute(
-                  "UPDATE user_target_grants SET revoked_at = NOW() "
-                  " WHERE slack_user_id = %s AND target_server_id = %s "
-                  "   AND revoked_at IS NULL", (slack_id, r["targetId"]))
-
-          # Auto-approve is a separate table and a separate decision: it skips
-          # human review, so it is copied only when asked for.
-          auto_copied: list[str] = []
-          auto_skipped: list[tuple] = []
-          if body.includeAutoApprove:
-              # A rule the source has switched off approves nothing for them,
-              # so it must not arrive switched on for the new person.
-              cur.execute(
-                  "SELECT target_server_id, database_name, max_tier, expires_at "
-                  "  FROM auto_approve_grants "
-                  " WHERE slack_user_id = %s AND enabled "
-                  "   AND (expires_at IS NULL OR expires_at > NOW())",
-                  (body.source,))
-              for r in cur.fetchall():
-                  if r["target_server_id"] in forbidden:
-                      continue
-                  if r["max_tier"] == "ddl":
-                      # The app makes no auto-approve rule for DDL, so a copied
-                      # DDL rule is skipped, and the result says so.
-                      auto_skipped.append((r["target_server_id"], r["database_name"]))
-                      continue
-                  # A copy of a rule is a new rule, so it needs an end too. The
-                  # source's end is kept when it is within the limit. A source
-                  # with no end (a legacy permanent rule) gets the limit itself.
-                  cur.execute(
-                      "INSERT INTO auto_approve_grants "
-                      "  (slack_user_id, target_server_id, database_name, "
-                      "   max_tier, granted_by, expires_at) "
-                      "VALUES (%s, %s, %s, %s, %s, %s)",
-                      (slack_id, r["target_server_id"], r["database_name"],
-                       r["max_tier"], uid,
-                       auto_approve_limits.copied_end(r["expires_at"])))
-                  auto_copied.append((r["target_server_id"], r["database_name"]))
-
-          # Every id the response will name, resolved in one query.
-          names = _alias_map(cur, set(written)
-                             | {r["targetId"] for r in revoked}
-                             | {t for t, _ in auto_copied})
-          written_names = [names.get(t, str(t)) for t in written]
-          for r in revoked:
-              r["connectionId"] = names.get(r["targetId"], str(r["targetId"]))
-          auto_names = [(names.get(t) or "all targets")
-                        + (f"/{d}" if d else "") for t, d in auto_copied]
-
-          audit.log_in(cur, None, uid, claims.get("name"), "access_copied",
-                       {"to": slack_id, "from": body.source,
-                        "mode": "replace" if replace else "merge",
-                        "targets_granted": written,
-                        "targets_revoked": [r["targetId"] for r in revoked],
-                        "auto_approve_copied": auto_names,
-                        "auto_approve_skipped_ddl": len(auto_skipped),
-                        "teams_joined": teams_joined,
-                        "include_teams": body.includeTeams,
-                        "tier_override": tier,
-                        "skipped_control_plane": sorted(
-                            set(to_write) & forbidden)})
-
-    except _CopyPreview as preview:
-        return preview.payload
+                  "targets_granted": written,
+                  "targets_revoked": [r["targetId"] for r in revoked],
+                  "auto_approve_copied": auto_names,
+                  "auto_approve_skipped_ddl": len(auto_skipped),
+                  "teams_joined": teams_joined,
+                  "include_teams": body.includeTeams,
+                  "tier_override": tier,
+                  "skipped_control_plane": sorted(
+                      set(to_write) & forbidden)})
 
     return {"slackId": slack_id, "copiedFrom": body.source,
             "mode": "replace" if replace else "merge",
             "targetsGranted": len(written), "teamsJoined": len(teams_joined),
-            # `written` and `teams` are what the UI reads to say what happened.
-            # Kept alongside the counts rather than replacing them: the counts
-            # are what the audit row and any script would want.
+            # `written` and `teams` are what the UI reads to say what
+            # happened. Kept alongside the counts rather than replacing
+            # them: the counts are what the audit row and any script
+            # would want.
             "written": len(written), "writtenTargets": written_names,
             "teams": team_names,
-            # Named, not counted: a revoke the admin cannot see is a revoke
-            # they cannot check.
+            # Named, not counted: a revoke the admin cannot see is a
+            # revoke they cannot check.
             "revoked": revoked,
             "autoApproveCopied": len(auto_names),
             "autoApproveCopiedTargets": auto_names,
-            # DDL rules that were not copied. The app makes no auto-approve
-            # rule for DDL (tier_not_allowed).
+            # DDL rules that were not copied. The app makes no
+            # auto-approve rule for DDL (tier_not_allowed).
             "autoApproveSkippedDdl": len(auto_skipped),
             "tier": tier}
 

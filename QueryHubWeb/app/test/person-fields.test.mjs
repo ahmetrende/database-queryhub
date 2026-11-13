@@ -26,7 +26,8 @@ test('the picker searches by name and by handle', () => {
   const at = src.indexOf('function PersonPick');
   const pick = src.slice(at, src.indexOf('\nfunction ', at + 1));
   // One filter over both, so a Slack id typed in full still finds the row.
-  assert.match(pick, /\(p\.name \+ ' ' \+ p\.handle\)\.toLowerCase\(\)\.includes\(term\)/);
+  // Accents and case are folded on both sides (qhFoldText, 2026-11-13).
+  assert.match(pick, /qhFoldText\(p\.name \+ ' ' \+ p\.handle\)\.includes\(term\)/);
   // …and a pasted principal id is still allowed, checked rather than refused.
   assert.match(pick, /resolve \? resolve\(id\) : null/);
 });

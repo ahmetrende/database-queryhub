@@ -240,7 +240,7 @@ def test_the_legacy_person_view_lists_only_switched_on_rules():
 
 
 def test_copying_access_never_copies_a_switched_off_rule():
-    src = inspect.getsource(ra.admin_copy_access)
+    src = inspect.getsource(ra._copy_access_core)
     assert src.count("WHERE slack_user_id = %s AND enabled") == 2
 
 

@@ -276,11 +276,15 @@ function PersonPick({ people, value, onChange, resolve, search, autoFocus }) {
   const [res, setRes] = useAcc(null);
   // A directory lookup (2026-11-13): { q, pending } then { q, people, status, more } or { q, error }.
   const [found, setFound] = useAcc(null);
+  // The text being typed survives a close and a refocus (2026-11-13): a switch
+  // to another window and back focused the box again, and focus reset it to ''.
+  const draftRef = React.useRef('');
   const open = q !== null;
   const wrapRef = qhUseDismiss(open, () => setQ(null));
   const known = (people || []).find(p => p.handle === value || p.id === value) || null;
-  const term = (q || '').trim().toLowerCase();
-  const list = (people || []).filter(p => !term || (p.name + ' ' + p.handle).toLowerCase().includes(term)).slice(0, 8);
+  // Accents and case do not matter, as in the server directory: "dogukan" finds "Do\u011fukan".
+  const term = qhFoldText((q || '').trim());
+  const list = (people || []).filter(p => !term || qhFoldText(p.name + ' ' + p.handle).includes(term)).slice(0, 8);
   const raw = (q || '').trim();
   // GET /admin/people/directory finds a person by Slack id, email or name, in
   // QueryHub and in the Slack directory. Without it, the typed text can only be
@@ -302,8 +306,9 @@ function PersonPick({ people, value, onChange, resolve, search, autoFocus }) {
     ...hits.map(h => ({ kind: 'hit', h })),
   ];
   const n = opts.length;
-  const pickPerson = (h) => { onChange(h); setRes(null); setQ(null); };
+  const pickPerson = (h) => { draftRef.current = ''; onChange(h); setRes(null); setQ(null); };
   const useId = (id) => {
+    draftRef.current = '';
     onChange(id); setQ(null); setRes({ principal: id, pending: true });
     Promise.resolve(resolve ? resolve(id) : null)
       .then(r => setRes(r ? { ...r, principal: r.principal || id } : null))
@@ -318,7 +323,7 @@ function PersonPick({ people, value, onChange, resolve, search, autoFocus }) {
         e => setFound({ q: text, error: (e && e.message) || 'The directory could not be read.' }));
   };
   // A directory hit carries the `resolve` shape, so the note below words it.
-  const pickHit = (h) => { onChange(h.principal); setRes({ ...h }); setQ(null); setFound(null); };
+  const pickHit = (h) => { draftRef.current = ''; onChange(h.principal); setRes({ ...h }); setQ(null); setFound(null); };
   const act = (o) => {
     if (!o) return;
     if (o.kind === 'person') pickPerson(o.p.handle);
@@ -341,8 +346,8 @@ function PersonPick({ people, value, onChange, resolve, search, autoFocus }) {
       <input className="qh-input qh-pcombo-in" autoFocus={autoFocus}
         placeholder={doSearch ? 'Search people: a Slack id, an email or a name…' : 'Search people, or paste a principal id…'}
         value={open ? q : (known ? qhPersonName(known.name) + ' · ' + known.handle : (value || ''))}
-        onFocus={() => { setQ(''); setHi(0); }}
-        onChange={e => { setQ(e.target.value); setHi(0); }}
+        onFocus={() => { setQ(draftRef.current); setHi(0); }}
+        onChange={e => { draftRef.current = e.target.value; setQ(e.target.value); setHi(0); }}
         onKeyDown={e => {
           if (e.key === 'ArrowDown') { e.preventDefault(); setHi(h => (n ? (h + 1) % n : 0)); }
           else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => (n ? (h + n - 1) % n : 0)); }
@@ -391,6 +396,13 @@ function PersonPick({ people, value, onChange, resolve, search, autoFocus }) {
       {note()}
     </div>
   );
+}
+
+// Lower case with no accents, for the picker filters (2026-11-13). The dotless
+// and the dotted capital i fold to a plain i first, as the server's _fold does.
+function qhFoldText(text) {
+  return String(text == null ? '' : text).replace(/\u0131/g, 'i').replace(/\u0130/g, 'i')
+    .normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
 
 // A Slack user id or a local account id: used as typed, never looked up by name.
@@ -1117,7 +1129,15 @@ function GrantsView({ st, user }) {
     return arr.sort((a, b) => a.subjectType !== b.subjectType ? (a.subjectType === 'team' ? -1 : 1) : (a.subject < b.subject ? -1 : 1));
   })();
 
-  const newBtn = () => { if (mode === 'grant') { setAdding(a => !a); setEditId(null); } else { setAddingSubject(true); setEditKey(null); } };
+  // Person mode opens the Add person dialog (2026-11-13). `onAdded` opens that
+  // person's access page in the Person view, where single servers are added.
+  const [addPersonOpen, setAddPersonOpen] = useAcc(false);
+  const [openPerson, setOpenPerson] = useAcc({ n: 0, handle: null });
+  const newBtn = () => {
+    if (mode === 'grant') { setAdding(a => !a); setEditId(null); }
+    else if (mode === 'person') setAddPersonOpen(true);
+    else { setAddingSubject(true); setEditKey(null); }
+  };
 
   return (
     <div className="qh-apad">
@@ -1141,7 +1161,9 @@ function GrantsView({ st, user }) {
       {mode === 'person' ? (
         <>
           {addingSubject && <div className="qh-subjcard is-editing"><SubjectAccessEditor st={st} actor={actor} onDone={() => setAddingSubject(false)} /></div>}
-          <PersonAccessView st={st} actor={actor} />
+          <PersonAccessView key={'pv' + openPerson.n} st={st} actor={actor} initial={openPerson.handle} />
+          {addPersonOpen && <AddPersonDialog st={st} onClose={() => setAddPersonOpen(false)}
+            onAdded={(p) => setOpenPerson(o => ({ n: o.n + 1, handle: p }))} />}
         </>
       ) : mode === 'subject' ? (
         <>
@@ -2896,6 +2918,184 @@ function ConnectionsView({ st, user, readOnly }) {
   );
 }
 
+// ---------- Add person dialog (2026-11-13) ----------
+// A team chooser that takes more than one team: type to filter, Enter or a click
+// adds a chip. `value` is a list of team ids.
+function TeamMultiPick({ teams, value, onChange }) {
+  const [q, setQ] = useAcc('');
+  const [open, setOpen] = useAcc(false);
+  const [hi, setHi] = useAcc(0);
+  const wrapRef = qhUseDismiss(open, () => setOpen(false));
+  const chosen = value || [];
+  const fold = qhFoldText;
+  const term = fold(q).trim();
+  const opts = (teams || []).filter(t => chosen.indexOf(t.id) < 0 && (!term || fold(t.name).indexOf(term) >= 0)).slice(0, 12);
+  const count = (t) => (t.memberCount != null ? t.memberCount : (t.members || []).length);
+  const add = (t) => { if (!t) return; onChange([...chosen, t.id]); setQ(''); setHi(0); };
+  const nameOf = (id) => ((teams || []).find(t => t.id === id) || { name: String(id) }).name;
+  return (
+    <div className="qh-addp-teampick" ref={wrapRef}>
+      {chosen.length > 0 && (
+        <div className="qh-addp-chips" style={{ marginBottom: 6 }}>
+          {chosen.map(id => (
+            <span key={id} className="qh-addp-chip" data-team-chip={id}>{nameOf(id)}
+              <button type="button" aria-label={'Remove team ' + nameOf(id)} onClick={() => onChange(chosen.filter(x => x !== id))}>{'×'}</button>
+            </span>
+          ))}
+        </div>
+      )}
+      <input className="qh-input qh-addp-team-in" placeholder="Add a team: type a name" value={q}
+        onFocus={() => setOpen(true)}
+        onChange={e => { setQ(e.target.value); setOpen(true); setHi(0); }}
+        onKeyDown={e => {
+          const n = opts.length;
+          if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setHi(h => (n ? (h + 1) % n : 0)); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => (n ? (h + n - 1) % n : 0)); }
+          else if (e.key === 'Enter') { e.preventDefault(); add(opts[hi]); }
+          else if (e.key === 'Escape') { if (open) { e.preventDefault(); e.stopPropagation(); setOpen(false); } }
+        }} />
+      {open && (
+        <div className="qh-addp-pop">
+          {opts.map((t, i) => (
+            <button type="button" key={t.id} className={'qh-addp-teamopt' + (i === hi ? ' is-hi' : '')}
+              onMouseEnter={() => setHi(i)} onMouseDown={e => { e.preventDefault(); add(t); }}>
+              <span>{t.name}</span><span>{count(t)} member{count(t) === 1 ? '' : 's'}</span>
+            </button>
+          ))}
+          {!opts.length && <div className="qh-pcombo-none">{term ? 'No team matches.' : 'No more teams to add.'}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddPersonDialog({ st, onClose, onAdded }) {
+  const [principal, setPrincipal] = useAcc('');
+  const [teamIds, setTeamIds] = useAcc([]);
+  const [copyFrom, setCopyFrom] = useAcc('');
+  const [incAuto, setIncAuto] = useAcc(false);
+  const [notify, setNotify] = useAcc(true);
+  const [prev, setPrev] = useAcc(null);     // { key, data } or { key, error }
+  const [busy, setBusy] = useAcc(false);
+  const [err, setErr] = useAcc(null);
+  const body = (dryRun) => ({ principal, teamIds, copyFrom: copyFrom || null,
+    includeAutoApprove: !!copyFrom && incAuto, notify, dryRun });
+  const key = JSON.stringify(body(true));
+  React.useEffect(() => {
+    if (!principal) { setPrev(null); return undefined; }
+    let stale = false;
+    const t = setTimeout(() => {
+      Promise.resolve().then(() => st.addPerson(body(true)))
+        .then(data => { if (!stale) setPrev({ key, data }); },
+          e => { if (!stale) setPrev({ key, error: (e && e.message) || 'The preview failed.' }); });
+    }, 300);
+    return () => { stale = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  const cur = prev && prev.key === key ? prev : null;
+  const data = cur && cur.data;
+  const known = !!(data && data.known);
+  const submit = () => {
+    setBusy(true); setErr(null);
+    Promise.resolve().then(() => st.addPerson(body(false)))
+      .then(() => { setBusy(false); onAdded && onAdded(principal); onClose(); },
+        e => { setBusy(false); setErr((e && e.message) || 'Adding the person failed.'); });
+  };
+  const tiersOf = (ts) => Array.from(new Set((ts || []).map(x => x.tier))).join('/');
+  const n = (x) => (x || []).length;
+  const disabledWhy = !principal ? 'Pick a person first.' : known ? 'This person is already in QueryHub.'
+    : !data ? 'Wait for the review.' : '';
+  return (
+    <QhModal onClose={busy ? () => {} : onClose} panelClass="qh-addp-panel">
+      <div className="qh-modal-head">
+        <div>
+          <div className="qh-modal-title">Add person</div>
+          <div className="qh-modal-sub">Pick who they are, then choose how they get access.</div>
+        </div>
+        <button className="qh-icon-btn" onClick={onClose} aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </div>
+      <div className="qh-modal-body">
+        <div className="qh-addp-sec">
+          <div className="qh-field-lbl">Person</div>
+          <PersonPick people={st.people} value={principal} onChange={v => { setPrincipal(v); setErr(null); }} resolve={st.resolvePerson} autoFocus />
+        </div>
+        <div className="qh-addp-sec">
+          <div className="qh-field-lbl">Teams <span className="qh-addp-opt">optional</span></div>
+          <TeamMultiPick teams={st.teams} value={teamIds} onChange={setTeamIds} />
+        </div>
+        <div className="qh-addp-sec">
+          <div className="qh-field-lbl">Same access as <span className="qh-addp-opt">optional</span></div>
+          <div className="qh-addp-refpick">
+            <PersonPick people={st.people} value={copyFrom}
+              onChange={v => { setCopyFrom(v); if (!v) setIncAuto(false); }}
+              resolve={st.resolvePerson}
+              search={(q) => qhApi.adminPeopleDirectory(q).then(r => ({ ...r, people: ((r && r.people) || []).filter(p => p.known) }))} />
+          </div>
+          {copyFrom && (
+            <div className="qh-addp-copy">
+              <label className="qh-addp-check">
+                <input type="checkbox" className="qh-addp-auto" checked={incAuto} onChange={e => setIncAuto(e.target.checked)} />
+                Also copy their auto-approve rules
+              </label>
+              <div className="qh-addp-warn-auto" role="note">
+                <span>Auto-approve skips the DBA review: this person's reads run without anyone checking them.</span>
+                {data && data.copy && <span>{data.copy.autoApprove} rule{data.copy.autoApprove === 1 ? '' : 's'} available.</span>}
+              </div>
+            </div>
+          )}
+        </div>
+        <label className="qh-addp-check">
+          <input type="checkbox" className="qh-addp-notify" checked={notify} onChange={e => setNotify(e.target.checked)} />
+          Tell them on Slack
+        </label>
+        <div className="qh-addp-sec">
+          <div className="qh-field-lbl">Review</div>
+          <div className="qh-addp-review" aria-live="polite">
+            {!principal && <div className="qh-addp-muted">Pick a person to see the review.</div>}
+            {principal && !cur && <div className="qh-addp-muted">Checking...</div>}
+            {cur && cur.error && <div className="qh-addp-err" role="alert">{cur.error}</div>}
+            {data && (
+              <>
+                <div className="qh-addp-line qh-addp-person"><b>{data.name || data.principal}</b>{data.email ? ' · ' + data.email : ''} · {data.principal}</div>
+                {n(data.teams) === 0 && !known && <div className="qh-addp-line qh-addp-muted">No teams chosen.</div>}
+                {(data.teams || []).map(t => (
+                  <div key={t.id} className="qh-addp-line qh-addp-team">
+                    <b>{t.name}</b>{' · '}{t.allTargets ? 'every server' : n(t.targets) + ' server' + (n(t.targets) === 1 ? '' : 's') + (n(t.targets) ? ' · ' + tiersOf(t.targets) : '')}
+                  </div>
+                ))}
+                {data.copy && (
+                  <div className="qh-addp-line qh-addp-copyline">
+                    Same access as <b>{data.copy.fromName || data.copy.from}</b>{': '}
+                    {n(data.copy.targets) ? data.copy.targets.map(x => x.connectionId + ' ' + x.tier).join(', ') : 'no direct servers'}
+                    {n(data.copy.teams) > 0 && <span>{'. Brings teams: ' + data.copy.teams.join(', ')}</span>}
+                    {incAuto && <span>{'. ' + data.copy.autoApprove + ' auto-approve rule' + (data.copy.autoApprove === 1 ? '' : 's')}</span>}
+                  </div>
+                )}
+                {(data.warnings || []).map((w, i) => (
+                  <div key={i} className="qh-addp-warn" role="alert">{w.tier} on a production server: {w.connectionId} (from {w.source})</div>
+                ))}
+                {data.empty && !known && <div className="qh-addp-line qh-addp-emptyline">They can sign in but reach no server yet. They can ask with Request database access.</div>}
+                {known && (
+                  <div className="qh-addp-known">
+                    <span>Already in QueryHub.</span>
+                    <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-addp-open" onClick={() => { onAdded && onAdded(principal); onClose(); }}>Open their access</button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+        {err && <div className="qh-addp-err qh-addp-submit-err" role="alert">{err}</div>}
+      </div>
+      <div className="qh-modal-foot">
+        <button className="qh-btn qh-btn-ghost qh-addp-cancel" onClick={onClose} disabled={busy}>Cancel</button>
+        <button className="qh-btn qh-btn-primary qh-addp-go" onClick={submit} disabled={busy || !!disabledWhy}
+          title={disabledWhy || undefined}>{busy ? 'Adding...' : 'Add person'}</button>
+      </div>
+    </QhModal>
+  );
+}
+
 // `PersonPick` / `ExpiryPick` / the expiry helpers are shared with the
 // person-first screen (`qh-admin-person.jsx`), which is a separate Babel scope:
 // one picker for every field that names a person, one expiry control everywhere
@@ -2904,6 +3104,6 @@ function ConnectionsView({ st, user, readOnly }) {
 // segmented control would be a second grouping idiom on one page.
 // `QH_TIER_WORD` / `qhTierWord` too (2026-10-21): the Roles screen and the
 // access editor say Read, Write and Schema from one table.
-Object.assign(window, { InlineConfirm, GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, FleetGrantsBlock, connHealthState, connBannerSay, scopeConnList, ScopeForm, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, EndChip, EndPick, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord,
+Object.assign(window, { InlineConfirm, AddPersonDialog, TeamMultiPick, GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, FleetGrantsBlock, connHealthState, connBannerSay, scopeConnList, ScopeForm, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, EndChip, EndPick, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord,
   // The end of an auto-approve rule (2026-10-24).
   AUTO_TIER_SAY, autoMaxOf, endPicks, endDefault, endKeepable, expMaxDay, autoEndWhy, autoEndInit });

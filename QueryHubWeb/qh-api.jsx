@@ -326,6 +326,8 @@ const qhApi = {
   // what creates a person, so this is how the subject combo can show a name for
   // an id QueryHub has never seen — and catch a typo while it is still a typo.
   adminResolvePerson:(principal) => qhFetch('/admin/people/resolve?principal=' + encodeURIComponent(principal)),
+  // Add a person with teams and a copy of another person's access. `dryRun: true` previews (2026-11-13).
+  adminAddPerson: (body) => qhFetch('/admin/people', { method: 'POST', body: JSON.stringify(body) }),
   // Find people by Slack id, email or name, in QueryHub and the Slack directory (2026-11-13).
   adminPeopleDirectory:(q)     => qhFetch('/admin/people/directory?q=' + encodeURIComponent(q)),
   adminCopyAccess:(id, body) => qhFetch('/admin/people/' + encodeURIComponent(id) + '/copy-access',

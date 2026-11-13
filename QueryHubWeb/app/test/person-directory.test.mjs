@@ -109,3 +109,30 @@ test('without a search the typed text is offered as an id, as before', opts, () 
   assert.equal(ui.doc.querySelector('.qh-pcombo-find'), null);
   assert.ok(opts_(ui).some(b => b.textContent.includes('Use “' + handle + '”')));
 });
+
+test('the typed text survives a refocus, as after a switch to another window', opts, () => {
+  const ui = mount({ search: () => Promise.resolve({ people: [] }) });
+  type(ui, 'dogukan');
+  // Another window takes the focus, then the box gets it back.
+  ui.React.act(() => input(ui).blur());
+  ui.React.act(() => { input(ui).dispatchEvent(new ui.win.FocusEvent('focusin', { bubbles: true })); input(ui).focus(); });
+  assert.equal(input(ui).value, 'dogukan');
+  assert.ok(ui.doc.querySelector('.qh-pcombo-find'), 'the Find row is still offered');
+});
+
+test('a click outside closes the list, and the text comes back on the next focus', opts, () => {
+  const ui = mount({ search: () => Promise.resolve({ people: [] }) });
+  type(ui, 'dogukan');
+  ui.React.act(() => ui.doc.body.dispatchEvent(new ui.win.MouseEvent('pointerdown', { bubbles: true })));
+  ui.React.act(() => { input(ui).dispatchEvent(new ui.win.FocusEvent('focusin', { bubbles: true })); input(ui).focus(); });
+  assert.equal(input(ui).value, 'dogukan');
+});
+
+test('the people list ignores accents and case', opts, () => {
+  const ui = mount({ search: () => Promise.resolve({ people: [] }) });
+  ui.rerender({ people: [{ id: 'U0EXAMPLE011', handle: 'jose.lane', name: 'Jos\u00e9 Lane', initials: 'JL' }] });
+  type(ui, 'jose lane');
+  const rows = opts_(ui).filter(b => b.querySelector('.qh-peravatar'));
+  assert.equal(rows.length, 1);
+  assert.match(rows[0].textContent, /jose\.lane/);
+});

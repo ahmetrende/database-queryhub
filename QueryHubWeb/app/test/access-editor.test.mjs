@@ -246,10 +246,13 @@ test('a locked subject shows no user/team switch, and the add flow keeps it', op
   const card = teams.doc.querySelector('.qh-teamcard.is-editing');
   assert.equal((card.textContent.match(/Access for team/g) || []).length, 1, 'the subject is named once');
 
-  // Grants > Add person: the subject is not picked yet, so the switch stays.
+  // Grants > By subject > Grant access: the subject is not picked yet, so the
+  // switch stays. Person mode's "Add person" opens the Add person dialog
+  // since 2026-11-13 (add-person-dialog.test.mjs).
   const grants = mount('GrantsView');
   await grants.settle();
-  grants.click(grants.button('Add person'));
+  grants.click(grants.button('By subject'));
+  grants.click(grants.button('Grant access'));
   grants.button('user', grants.ed());
   grants.button('team', grants.ed());
   assert.match(grants.ed().textContent, /Pick a person first\./);

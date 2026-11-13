@@ -370,8 +370,10 @@ function PersonPage({ st, actor, person, onBack }) {
   );
 }
 
-function PersonAccessView({ st, actor }) {
-  const [pick, setPick] = usePer(null);
+// `initial` (2026-11-13): a handle to open at once, for the Add person dialog.
+// The page shows as soon as the people list holds that handle.
+function PersonAccessView({ st, actor, initial }) {
+  const [pick, setPick] = usePer(initial || null);
   const [q, setQ] = usePer('');
   const [bulk, setBulk] = usePer(false);
   const people = st.people || [];

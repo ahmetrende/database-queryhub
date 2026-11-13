@@ -208,7 +208,7 @@ def test_an_unknown_team_is_a_404(team):
 # --- copy access -------------------------------------------------------------
 
 def test_copying_team_access_reads_the_live_model_and_never_widens():
-    src = inspect.getsource(ra.admin_copy_access)
+    src = inspect.getsource(ra._copy_access_core)
     i = src.index("if teams_mod.use_v2():")
     v2 = src[i:src.index("else:", i)]
     assert "FROM access_grant g" in v2

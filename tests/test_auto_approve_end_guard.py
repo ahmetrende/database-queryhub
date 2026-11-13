@@ -47,7 +47,7 @@ TIER_CHECKS = frozenset({"check_tier", "_checked_tier", "check_waiver_tier"})
 # the source's tier and skip a DDL source by hand, which `check_tier` cannot
 # say for a copy. Each entry names its reason.
 TIER_BY_COPY = {
-    "admin_copy_access": "skips a copied rule whose max_tier is ddl and counts it "
+    "_copy_access_core": "skips a copied rule whose max_tier is ddl and counts it "
                          "(autoApproveSkippedDdl)",
 }
 # `decide_window` refuses tier ddl by its own code (`ddl`), and files no row for
@@ -196,7 +196,7 @@ def test_the_scanner_reads_the_real_tree_and_finds_every_known_writer():
     auto-approve row today."""
     names = {f.function for f, _e, _t in _scan_tree()}
     known = {"_insert_user_waiver", "_insert_team_waiver", "_write_waivers",
-             "admin_add_fleet_grant", "admin_copy_access", "decide_window"}
+             "admin_add_fleet_grant", "_copy_access_core", "decide_window"}
     assert known <= names, sorted(known - names)
 
 
@@ -221,8 +221,8 @@ WRITE = "cur.execute('INSERT INTO auto_approve_grants (slack_user_id) VALUES (%s
     ("def f(cur):\n    grants.check_waiver_end(t, e)\n    grants.check_waiver_tier(m, t)\n"
      "    " + WRITE, [("f", True, True)]),
     # A copy: the end is capped by copied_end, the tier is exempt by name.
-    ("def admin_copy_access(cur):\n    auto_approve_limits.copied_end(e)\n    " + WRITE,
-     [("admin_copy_access", True, True)]),
+    ("def _copy_access_core(cur):\n    auto_approve_limits.copied_end(e)\n    " + WRITE,
+     [("_copy_access_core", True, True)]),
     # A check on another module is not the check.
     ("def f(cur):\n    other.check_end(e)\n    other.check_tier(t)\n    " + WRITE,
      [("f", False, False)]),
