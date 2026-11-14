@@ -130,6 +130,9 @@ async function mountAdmin(api) {
 
 test('the admin form shows the state and never a key', jsdomOpts, async () => {
   const { p } = await mountAdmin({ adminAi: () => Promise.resolve(ADMIN_VIEW) });
+  // The preset menu says what it is, and what a choice does.
+  assert.equal(p.doc.querySelector('[aria-label="Choose a provider"] option').textContent, 'Choose a provider…');
+  assert.equal(p.doc.querySelector('.qh-ai-addhint').textContent, 'Fills in the protocol, base URL and model names. You can change them.');
   assert.equal(p.doc.querySelector('.qh-ai-ready').textContent, 'Off: The assistant is off.');
   assert.equal(p.doc.querySelector('.qh-ai-keystate').textContent, 'API key set by U0EXAMPLE001.');
   assert.equal(p.doc.querySelector('.qh-ai-keyin').getAttribute('type'), 'password');
