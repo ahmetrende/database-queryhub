@@ -1351,6 +1351,7 @@ function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSea
                 <TierBadge tier={h.tier} sm />
                 <StatusPill status={h.status} awaitingDba={h.awaitingDba} outcome={h.outcome} />
                 <RanOnBadge ranOn={h.ranOn} />
+                {h.aiAssisted && <span className="qh-ai-chip" title="Written with the AI assistant">AI</span>}
                 <span className="qh-hist-when">{h.when}</span>
               </div>
               <div className="qh-hist-sql">{h.sql}</div>

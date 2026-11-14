@@ -327,7 +327,7 @@ jobs:
       - name: Install with every optional extra
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,slack,mssql,aws,clickhouse]"
+          pip install -e ".[dev,slack,mssql,aws,clickhouse,ai]"
       - name: Assert the optional modules import
         env:
           BOT_DB_HOST: localhost
@@ -336,8 +336,8 @@ jobs:
           BOT_DB_PASSWORD: x
           MASTER_KEY_PATH: /tmp/nonexistent-key
         run: |
-          python -c "import pyodbc, boto3, clickhouse_driver; import queryhub.mssql_exec; \
-            import queryhub.clickhouse_exec; print('optional extras import OK')"
+          python -c "import pyodbc, boto3, clickhouse_driver, anthropic; import queryhub.mssql_exec; \
+            import queryhub.clickhouse_exec; import queryhub.ai; print('optional extras import OK')"
       - name: Tests with the extras present
         run: pytest
 

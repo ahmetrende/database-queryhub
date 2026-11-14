@@ -2160,6 +2160,28 @@ function connTagsOf(id) {
 }
 
 // ---------- The mock client ----------
+// The AI assistant of the prototype: on, with one invented provider that has a
+// key. Nothing here is a real key.
+const MOCK_AI = {
+  settings: { enabled: true, defaultProvider: 1, defaultModel: '', userModelChoice: false, effort: '',
+    instructions: '', maxCallsPerHour: 30, timeoutSec: 180, schemaMaxTables: 200 },
+  providers: [{ id: 1, name: 'Anthropic', kind: 'anthropic', baseUrl: null, models: ['claude-opus-5-5', 'claude-haiku-5-5'],
+    supportsTools: true, enabled: true, keySet: true, keySetBy: 'U0EXAMPLE001', keySetAt: '2026-11-14T09:00:00+00:00' }],
+};
+function mockAiView() {
+  const s = MOCK_AI.settings;
+  const def = MOCK_AI.providers.find(p => p.id === s.defaultProvider);
+  const ready = !!(s.enabled && def && def.enabled && def.keySet && def.models.length);
+  return {
+    settings: { ...s }, providers: MOCK_AI.providers.map(p => ({ ...p, models: p.models.slice() })),
+    presets: [{ name: 'Anthropic', kind: 'anthropic', baseUrl: null, models: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'] },
+      { name: 'OpenAI', kind: 'openai', baseUrl: 'https://api.openai.com/v1', models: [] },
+      { name: 'Other', kind: 'openai', baseUrl: '', models: [] }],
+    efforts: ['', 'low', 'medium', 'high', 'xhigh', 'max'],
+    ready, notReady: ready ? null : 'The assistant is off.', anthropicSdk: true,
+  };
+}
+
 const qhApi = {
   // ---- auth / identity ----
   me: () => mockDelay(null, 90).then(() => {
@@ -3873,6 +3895,41 @@ const qhApi = {
       } };
   }, 380),
   adminFeedback: () => mockDelay(() => ({ feedback: ADMIN.feedback.slice() }), 180),
+  // The AI assistant. Invented providers, and a canned answer with one SQL
+  // block so the panel shows Insert.
+  aiStatus: () => mockDelay(() => (MOCK_AI.settings.enabled
+    ? { enabled: true, default: '1:claude-opus-5-5', userModelChoice: false, callsPerHour: 30,
+        modes: ['generate', 'explain', 'optimize', 'fix', 'chat'], sends: ['prompt', 'sql', 'tableNames', 'tableDetail'],
+        models: [{ id: '1:claude-opus-5-5', provider: 'Anthropic', model: 'claude-opus-5-5' }] }
+    : { enabled: false }), 120),
+  aiComplete: (body) => mockDelay(() => ({
+    text: 'This lists the newest orders.\n\n```sql\nSELECT id, status, created_at\nFROM orders\nORDER BY created_at DESC\nLIMIT 100;\n```',
+    model: '1:claude-opus-5-5', provider: 'Anthropic', modelName: 'claude-opus-5-5', stop: 'end', refused: false,
+    sent: { promptChars: String(body && body.prompt || '').length, sqlChars: String(body && body.sql || '').length, tableNames: 12, tablesRead: ['public.orders'] },
+    ms: 900 }), 700),
+  adminAi: () => mockDelay(() => mockAiView(), 200),
+  adminAiSave: (settings) => mockDelay(() => { MOCK_AI.settings = { ...MOCK_AI.settings, ...(settings || {}) }; return { ...mockAiView(), applied: Object.keys(settings || {}).length }; }, 260),
+  adminAiProviderAdd: (body) => mockDelay(() => {
+    const id = MOCK_AI.providers.reduce((n, p) => Math.max(n, p.id), 0) + 1;
+    const models = String(body.models || '').split(',').map(x => x.trim()).filter(Boolean);
+    MOCK_AI.providers.push({ id, name: body.name, kind: body.kind, baseUrl: body.baseUrl || null, models, supportsTools: true,
+      enabled: true, keySet: !!body.apiKey, keySetBy: body.apiKey ? 'U0EXAMPLE001' : null, keySetAt: body.apiKey ? new Date().toISOString() : null });
+    return { ...mockAiView(), id };
+  }, 260),
+  adminAiProviderSave: (id, body) => mockDelay(() => {
+    const p = MOCK_AI.providers.find(x => x.id === Number(id));
+    if (!p) throw Object.assign(new Error('Unknown provider.'), { code: 'not_found', status: 404 });
+    if (body.name != null) p.name = body.name;
+    if (body.baseUrl != null) p.baseUrl = body.baseUrl || null;
+    if (body.models != null) p.models = String(body.models).split(',').map(x => x.trim()).filter(Boolean);
+    if (body.enabled != null) p.enabled = !!body.enabled;
+    if (body.supportsTools != null) p.supportsTools = !!body.supportsTools;
+    if (body.apiKey) { p.keySet = true; p.keySetBy = 'U0EXAMPLE001'; p.keySetAt = new Date().toISOString(); }
+    if (body.clearKey) { p.keySet = false; p.keySetBy = null; p.keySetAt = null; }
+    return mockAiView();
+  }, 260),
+  adminAiProviderDelete: (id) => mockDelay(() => { MOCK_AI.providers = MOCK_AI.providers.filter(x => x.id !== Number(id)); return mockAiView(); }, 220),
+  adminAiTest: (providerId) => mockDelay(() => ({ ok: true, model: 'claude-opus-5-5', text: 'OK', ms: 840 }), 600),
   adminConfig: () => mockDelay(() => ({ config: JSON.parse(JSON.stringify(ADMIN.config)) }), 220),
   adminConfigSave: (changes) => mockDelay(() => {
     ADMIN.config.values = { ...ADMIN.config.values, ...(changes || {}) };

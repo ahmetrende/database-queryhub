@@ -117,6 +117,25 @@ default instead of stopping the process.
 > the build if the code reads a key that no migration seeds. Migration 079 is
 > the pattern to copy.
 
+## AI assistant
+
+The AI assistant of the web editor. It is off until an admin turns it on and
+the default provider has an API key. The providers and their keys live in the
+`ai_providers` table, not here. See `docs/AI.md`. The app reads every key below
+on each call, so a change needs no restart.
+
+| Key | Default | What it does |
+|---|---|---|
+| `ai_enabled` | `off` | The switch. `on` = the editor shows the assistant, when the default provider has a key and a model. |
+| `ai_default_provider` | empty | The `ai_providers.id` that the assistant uses when the user does not choose one. |
+| `ai_default_model` | empty | The default model. Empty = the first model of the default provider. |
+| `ai_user_model_choice` | `off` | `on` = a user can choose any enabled provider and model. `off` = everyone uses the default. |
+| `ai_effort` | empty | The effort for Anthropic models: `low`, `medium`, `high`, `xhigh` or `max`. Empty = the model default. |
+| `ai_instructions` | empty | Extra instructions for each call, for example house SQL style. At most 8,000 characters. |
+| `ai_max_calls_per_hour` | `30` | Calls per user per hour, 1 to 1,000. |
+| `ai_timeout_sec` | `180` | Seconds for one call with all its schema lookups, 10 to 600. |
+| `ai_schema_max_tables` | `200` | Table names in the first message of a call, 0 to 300. The model can look up more. |
+
 ## MCP door (Claude Code)
 
 The MCP door lets a person use QueryHub from Claude Code, through the portal.

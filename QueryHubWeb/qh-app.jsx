@@ -298,6 +298,10 @@ function App() {
   // Editor snippets (2026-11-11, Devart D3 and D4): the person's own and every
   // shared one, from GET /snippets. The editor offers them by key (qhSnippetsFor).
   const [userSnippets, setUserSnippets] = useState([]);
+  // The AI assistant (M13): what GET /ai/status says, and whether the panel is
+  // open. `enabled: false` hides the button and the panel.
+  const [aiStatus, setAiStatus] = useState({ enabled: false });
+  const [aiOpen, setAiOpen] = useState(false);
   const [canDelShared, setCanDelShared] = useState(false);
   const [sessions, setSessions] = useState(qhLoadSessions);
   const [sessionModal, setSessionModal] = useState(false);
@@ -532,6 +536,9 @@ function App() {
       setUserSnippets(Array.isArray(r.snippets) ? r.snippets : []);
       setCanDelShared(!!r.canDeleteShared);
     }).catch(() => {});
+    // The AI assistant loads on its own too. A failure keeps it hidden.
+    qhApi.aiStatus().then(r => setAiStatus(r && r.enabled ? r : { enabled: false }))
+      .catch(() => setAiStatus({ enabled: false }));
     const jobs = [
       qhApi.connections().then(r => setConns(r.connections || [])).finally(() => setConnsLoading(false)),
       qhApi.history().then(r => setHistory((r.history || []).map(qhHistoryRow))),
@@ -941,6 +948,13 @@ function App() {
   // of the open tab puts the SQL at its caret. A page with no editor (Home,
   // What's new) opens the query in a new tab, as a click on the row does.
   const [insSig, setInsSig] = useState(null);   // { text, n } for SqlEditor insertSignal
+  // Insert from the AI assistant: the same path as a saved query, so one undo
+  // takes it back. The tab is marked, and its next run sends `aiAssisted`.
+  const aiInsert = (text) => {
+    if (tab.kind || view !== 'dev') return;
+    setInsSig(x => ({ text: text || '', n: (x ? x.n : 0) + 1 }));
+    patch(activeId, { aiAssisted: true });
+  };
   const insertSaved = (s) => {
     if (tab.kind || view !== 'dev') { loadSaved(s); return; }
     setInsSig(x => ({ text: s.sql || '', n: (x ? x.n : 0) + 1 }));
@@ -1362,6 +1376,9 @@ function App() {
         // Sent only while it is on, and never by anyone else — a non-super-admin
         // request carrying it is answered 403, and that server check is the gate.
         ...(cur.unmasked ? { unmasked: true } : null),
+        // The SQL of this tab came from the AI assistant. A mark for the
+        // approver. The server keeps it only while the assistant is on.
+        ...(cur.aiAssisted ? { aiAssisted: true } : null),
         // Where it runs — sent only when the tab left Auto, spread-first like
         // `unmasked`. replicaId always rides with a replica, one or several.
         ...(ro && ro.mode === 'primary' ? { runOn: 'primary' } : null),
@@ -1937,7 +1954,8 @@ function App() {
             </button>
             <EditorTabs tabs={tabsForBar} activeId={activeId} onSelect={selectTab} onClose={(id) => requestClose('one', id)} onNew={newTab}
               wrap={wrap} onToggleWrap={() => setWrap(w => !w)} lint={lint} onToggleLint={() => setLint(v => !v)} lintCount={lintRanges.length} onFormat={() => setFmtSig(n => n + 1)} fmtEngine={editorEngine}
-              onCloseOthers={(id) => requestClose('others', id)} onCloseRight={(id) => requestClose('right', id)} onCloseAll={() => requestClose('all', activeId)} onDuplicate={duplicateTab} onRename={renameTab} onCopySql={copyTabSql} onDownloadSql={requestDownloadSql} onReorder={reorderTabs} />
+              onCloseOthers={(id) => requestClose('others', id)} onCloseRight={(id) => requestClose('right', id)} onCloseAll={() => requestClose('all', activeId)} onDuplicate={duplicateTab} onRename={renameTab} onCopySql={copyTabSql} onDownloadSql={requestDownloadSql} onReorder={reorderTabs}
+              onAi={aiStatus.enabled && !tab.kind ? () => setAiOpen(o => !o) : null} aiOpen={aiOpen} />
           </div>
 
           {isWelcome ? (
@@ -2004,6 +2022,12 @@ function App() {
             </>
           )}
         </div>
+
+        {aiStatus.enabled && aiOpen && !tab.kind && (
+          <QhAiPanel status={aiStatus} tabId={tab.id} conn={tab.conn} db={tab.db}
+            getSql={() => curSel() || tab.sql} onInsert={aiInsert}
+            onClose={() => setAiOpen(false)} onToast={pushToast} />
+        )}
 
         {t.sidebarSide === 'right' && sideEl}
       </div>

@@ -11,6 +11,7 @@ import inspect
 
 import pytest
 
+from queryhub import schema_tools
 from queryhub.mcp_server import caller, catalog, policy, tools
 
 
@@ -102,8 +103,8 @@ def test_no_tool_takes_a_caller_argument():
     this for many people, only `caller.acting_principal` changes and no tool
     signature moves. It is also what stops a client naming whoever it likes."""
     for fn in (tools.list_connections, tools.describe_database,
-               tools.classify_sql, tools.submit_query, tools.query_status,
-               tools.fetch_result):
+               tools.describe_table, tools.classify_sql, tools.submit_query,
+               tools.query_status, tools.fetch_result):
         params = set(inspect.signature(fn).parameters)
         assert not params & {"user", "user_id", "uid", "principal",
                              "principal_id", "as_user", "on_behalf_of"}, fn.__name__
@@ -111,8 +112,8 @@ def test_no_tool_takes_a_caller_argument():
 
 def test_every_tool_resolves_the_caller_itself():
     for fn in (tools.list_connections, tools.describe_database,
-               tools.classify_sql, tools.submit_query, tools.query_status,
-               tools.fetch_result):
+               tools.describe_table, tools.classify_sql, tools.submit_query,
+               tools.query_status, tools.fetch_result):
         assert "_me()" in inspect.getsource(fn), fn.__name__
 
 
@@ -189,7 +190,8 @@ def test_another_persons_request_is_indistinguishable_from_a_missing_one():
 def test_an_ungranted_connection_is_indistinguishable_from_an_unknown_one():
     """Otherwise a caller enumerates real server names by watching which
     refusal comes back."""
-    src = inspect.getsource(tools._granted)
+    assert "schema_tools.granted_target(" in inspect.getsource(tools._granted)
+    src = inspect.getsource(schema_tools.granted_target)
     assert "effective_grant_for_user" in src
     assert src.count("unknown_connection") == 1
 
@@ -226,10 +228,8 @@ def test_listing_a_database_returns_names_not_every_column():
     """Measured on the largest catalogue here: 2,727 tables with their columns
     is 2.6 MB of JSON. Names alone are 27 KB, and they are what an assistant
     needs first -- it asks what exists, then asks about one thing."""
-    src = inspect.getsource(tools.describe_database)
-    head = src[:src.index("if not want:")]
-    assert "table: str | None = None" in head
-    listing = src[src.index("if not want:"):src.index("WITH hit AS (")]
+    assert "table: str | None = None" in inspect.getsource(tools.describe_database)
+    listing = inspect.getsource(schema_tools.table_names)
     assert "COUNT(sc.id)" in listing, "the listing counts columns, it does not fetch them"
     assert "sc.column_name" not in listing
 
@@ -237,10 +237,11 @@ def test_listing_a_database_returns_names_not_every_column():
 def test_both_halves_are_capped_and_say_when_they_truncate():
     """A cap that stays quiet reads as "that is all there is", which sends the
     reader looking for a table that the answer simply left out."""
-    src = inspect.getsource(tools.describe_database)
-    assert "MAX_TABLES" in src and "MAX_DETAIL_TABLES" in src
-    assert src.count('"truncated"') == 2
-    assert "Use a more specific `table` filter" in src
+    names = inspect.getsource(schema_tools.table_names)
+    matching = inspect.getsource(schema_tools.tables_matching)
+    assert "MAX_TABLES" in names and "MAX_DETAIL_TABLES" in matching
+    assert names.count('"truncated"') == 1 and matching.count('"truncated"') == 1
+    assert "Use a more specific `table` filter" in matching
 
 
 RESTRICTED_TO_APP = {"mode": "ro", "allowed_databases": {"app"}}

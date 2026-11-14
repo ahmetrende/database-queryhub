@@ -54,6 +54,9 @@ import './qh-admin-insights.jsx';
 // built app while the raw prototype looks correct.
 import './qh-admin-audit.jsx';
 import './qh-admin-config.jsx';
+// The AI assistant (M13): the editor panel and the admin form. After
+// qh-admin-access.jsx (InlineConfirm), before qh-admin.jsx and qh-app.jsx.
+import './qh-ai.jsx';
 import './qh-admin.jsx';
 import './qh-whatsnew.jsx';
 import './qh-app.jsx';

@@ -441,6 +441,17 @@ const qhApi = {
   adminFeedback:   ()     => qhFetch('/admin/feedback'),
   adminConfig:     ()      => qhFetch('/admin/config'),
   adminConfigSave: (changes) => qhFetch('/admin/config', { method: 'PUT', body: JSON.stringify({ changes }) }),
+  // The AI assistant (M13). `aiStatus` says `enabled: false` when it is off.
+  // The admin calls need a super-admin. A key goes in through `apiKey` and the
+  // server never sends it back.
+  aiStatus:              ()         => qhFetch('/ai/status'),
+  aiComplete:            (body)     => qhFetch('/ai/complete', { method: 'POST', body: JSON.stringify(body) }),
+  adminAi:               ()         => qhFetch('/admin/ai'),
+  adminAiSave:           (settings) => qhFetch('/admin/ai', { method: 'PUT', body: JSON.stringify({ settings }) }),
+  adminAiProviderAdd:    (body)     => qhFetch('/admin/ai/providers', { method: 'POST', body: JSON.stringify(body) }),
+  adminAiProviderSave:   (id, body) => qhFetch('/admin/ai/providers/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify(body) }),
+  adminAiProviderDelete: (id)       => qhFetch('/admin/ai/providers/' + encodeURIComponent(id), { method: 'DELETE' }),
+  adminAiTest:           (providerId, model) => qhFetch('/admin/ai/test', { method: 'POST', body: JSON.stringify({ providerId, ...(model ? { model } : null) }) }),
 };
 
 // "2 min ago" style labels for history rows (server sends ISO timestamps).

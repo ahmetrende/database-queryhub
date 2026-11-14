@@ -1,5 +1,5 @@
 {
-  "version": "25d463864419bb730a56c2af992cb5d972fc714085c5e917fe3ad263307b59be",
+  "version": "ae5e72c2df33bdfa3bb350a7abb3dd8aad9c66d0c6514f032ff5a4bef6e76c5a",
   "tools": [
     {
       "name": "list_connections",
@@ -33,6 +33,33 @@
         "required": [
           "connection",
           "database"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "describe_table",
+      "description": "Returns the full schema of one table: the columns with their types and defaults, the keys, the indexes, the foreign keys, the triggers, the CREATE script and the statistics. The statistics are numbers only. QueryHub never returns a value from the table. If `distinct` is negative, it is a fraction of the row count. A column with `masked` shows masked values in a result. Get the table name from `queryhub_describe_database` first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "type": "string",
+            "description": "A connection name from `queryhub_list_connections`."
+          },
+          "database": {
+            "type": "string",
+            "description": "A database name from `queryhub_list_connections`."
+          },
+          "table": {
+            "type": "string",
+            "description": "A table name from `queryhub_describe_database`. Write `schema.table` if two schemas have a table with this name."
+          }
+        },
+        "required": [
+          "connection",
+          "database",
+          "table"
         ],
         "additionalProperties": false
       }

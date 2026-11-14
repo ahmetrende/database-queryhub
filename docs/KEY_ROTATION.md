@@ -21,6 +21,7 @@ The key does not expire automatically. QueryHub will not remind you.
 | `target_servers.password_encrypted` | the RO credential per target |
 | `target_servers.password_rw_encrypted` | the RW credential |
 | `target_servers.password_ddl_encrypted` | the DDL credential |
+| `ai_providers.api_key_encrypted` | the API key of each AI assistant provider |
 | `$SECRETS_ENC_PATH` (optional) | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `BOT_DB_PASSWORD` |
 
 Not affected: **local account passwords**. They are PBKDF2 hashes, not

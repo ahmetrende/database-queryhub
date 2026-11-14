@@ -320,6 +320,8 @@ def history_entry(row: dict, alias_of: "callable",
         # Where the request came from. The page opens a tab for each request
         # from Claude, so it has to tell them apart.
         "origin": row.get("origin") or "slack",
+        # The SQL came from the AI assistant of the editor. A mark only.
+        "aiAssisted": bool(row.get("ai_assisted")),
         # When the requester first read the request after it ended. The portal
         # keeps a request from Claude in Current session until then.
         "seenAt": iso(row.get("requester_seen_at")),
@@ -520,6 +522,9 @@ def queue_item(row: dict, alias_of: "callable", tags_of=None,
         "bundlePosition": row.get("position") if row.get("bundle_id") else None,
         "bundleSize": row.get("bundle_size") if row.get("bundle_id") else None,
         "origin": (row.get("origin") or "slack"),
+        # The SQL came from the AI assistant of the editor. The approver sees
+        # a mark. No rule reads it.
+        "aiAssisted": bool(row.get("ai_assisted")),
         "expiresAt": iso(pending_expiry.expires_at(row, expiry)),
         # Null for every item, because the queue lists pending requests only.
         # The field is here so that a queue item and GET /queries/{id} carry

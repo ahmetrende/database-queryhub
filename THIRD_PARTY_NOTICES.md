@@ -62,6 +62,7 @@ file-level copyleft and neither is modified here.
 | `mssql` | `pyodbc` | MIT |
 | `aws` | `boto3` | Apache-2.0 |
 | `clickhouse` | `clickhouse-driver` (with `pytz`, `tzlocal`) | MIT |
+| `ai` | `anthropic` (with `httpx2` BSD-3-Clause, `jiter` MIT, `docstring_parser` MIT) | Apache-2.0 |
 
 `pyodbc` needs Microsoft's ODBC Driver for SQL Server (`msodbcsql18`), which is
 **not** installed by QueryHub and is **not** open source — it carries its own

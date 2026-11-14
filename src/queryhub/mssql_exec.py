@@ -721,6 +721,78 @@ def object_ddl(host, port, database, user, password, schema: str | None,
     return ("table", script, True)
 
 
+# Live facts about one table for the schema tools (M13, 2026-11-14): the
+# triggers and the statistics objects. Numbers only: no query here reads a
+# histogram (DBCC SHOW_STATISTICS), because its steps hold real column values.
+_FACTS_TRIGGERS_SQL = """
+SELECT tr.name, OBJECT_DEFINITION(tr.object_id), tr.is_disabled
+  FROM sys.triggers tr
+ WHERE tr.parent_id = OBJECT_ID(?)
+ ORDER BY tr.name
+"""
+_FACTS_ROWS_SQL = """
+SELECT SUM(p.rows)
+  FROM sys.partitions p
+ WHERE p.object_id = OBJECT_ID(?) AND p.index_id IN (0, 1)
+"""
+_FACTS_STATS_SQL = """
+SELECT s.stats_id, s.name, STATS_DATE(s.object_id, s.stats_id),
+       sp.rows, sp.rows_sampled, sp.modification_counter
+  FROM sys.stats s
+  OUTER APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp
+ WHERE s.object_id = OBJECT_ID(?)
+ ORDER BY s.name
+"""
+_FACTS_STATS_COLUMNS_SQL = """
+SELECT sc.stats_id, c.name
+  FROM sys.stats_columns sc
+  JOIN sys.columns c ON c.object_id = sc.object_id AND c.column_id = sc.column_id
+ WHERE sc.object_id = OBJECT_ID(?)
+ ORDER BY sc.stats_id, sc.stats_column_id
+"""
+
+
+def table_facts(host, port, database, user, password, schema: str, table: str,
+                *, timeout_sec: int = 5) -> dict | None:
+    """Triggers, row count and statistics objects of `schema.table` in
+    `database`, or None when there is no such object. A statistics read that
+    the login may not do leaves `stats` as None and keeps the rest."""
+    ref = _bracket(schema) + "." + _bracket(table)
+    conn = connect(host, port, database, user, password,
+                   timeout_sec=timeout_sec, read_only=False)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT OBJECT_ID(?)", ref)
+        row = cur.fetchone()
+        if not row or row[0] is None:
+            return None
+        cur.execute(_FACTS_TRIGGERS_SQL, ref)
+        triggers = [{"name": r[0], "def": (r[1] or "").strip() or None,
+                     "enabled": not r[2]} for r in cur.fetchall()]
+        cur.execute(_FACTS_ROWS_SQL, ref)
+        rows = cur.fetchone()
+        stats = None
+        try:
+            cur.execute(_FACTS_STATS_COLUMNS_SQL, ref)
+            cols: dict[int, list[str]] = {}
+            for sid, name in cur.fetchall():
+                cols.setdefault(sid, []).append(name)
+            cur.execute(_FACTS_STATS_SQL, ref)
+            stats = [{"name": r[1], "columns": cols.get(r[0], []),
+                      "lastUpdated": r[2].isoformat() if r[2] is not None else None,
+                      "rows": r[3], "rowsSampled": r[4], "modifications": r[5]}
+                     for r in cur.fetchall()]
+        except Exception as e:                      # noqa: BLE001
+            # dm_db_stats_properties needs SELECT on the columns. Without it
+            # the triggers and the row count are still worth returning.
+            log.info("table_facts: statistics of %s unreadable: %s", ref, type(e).__name__)
+    finally:
+        conn.close()
+    return {"triggers": triggers,
+            "rows": int(rows[0]) if rows and rows[0] is not None else None,
+            "stats": stats}
+
+
 def catalog_snapshot(host, port, database, user, password, *,
                      timeout_sec: int = 120) -> tuple[list[dict], list[dict]]:
     """Read one database's table + column catalog, returning (tables, columns)

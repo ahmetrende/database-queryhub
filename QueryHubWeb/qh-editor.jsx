@@ -5830,7 +5830,7 @@ function FormatOptions({ engineId, onFormat, style }) {
   );
 }
 
-function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWrap, lint, onToggleLint, lintCount, onFormat, fmtEngine, onCloseOthers, onCloseRight, onCloseAll, onDuplicate, onRename, onCopySql, onDownloadSql, onReorder }) {
+function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWrap, lint, onToggleLint, lintCount, onFormat, fmtEngine, onCloseOthers, onCloseRight, onCloseAll, onDuplicate, onRename, onCopySql, onDownloadSql, onReorder, onAi, aiOpen }) {
   const [kb, setKb] = React.useState(false);
   const [dragId, setDragId] = React.useState(null);
   const [overId, setOverId] = React.useState(null);
@@ -6032,6 +6032,16 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
           aria-pressed={lint ? 'true' : 'false'} aria-label={lint ? 'Code analysis on' : 'Code analysis off'}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h10M4 12h8M4 17h6"/><path d="M14 16l2.5 2.5L21 14"/></svg>
           {lint && lintCount > 0 ? <span className="qh-lint-n">{lintCount}</span> : null}
+        </button>
+      )}
+      {/* The AI assistant (M13). Only when the server says it is on, and only
+          for a query tab. */}
+      {onAi && (
+        <button className={'qh-kb-btn qh-ai-btn' + (aiOpen ? ' is-on' : '')} onClick={onAi}
+          data-kbd={aiOpen ? 'Close the AI assistant' : 'AI assistant'}
+          aria-pressed={aiOpen ? 'true' : 'false'} aria-label="AI assistant">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+          <span className="qh-ai-btnlabel">AI</span>
         </button>
       )}
       <div className="qh-kb-wrap" ref={kbWrapRef}>

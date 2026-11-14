@@ -49,7 +49,7 @@ REQUEST_RETURNING = (
     "decided_by_slack_id, decided_by_name, decided_at, scheduled_for, "
     "requester_dm_channel_id, requester_dm_message_ts, "
     "bundle_id, position, risk_summary, origin, engine, required_tier, "
-    "unmasked, run_on"
+    "unmasked, run_on, ai_assisted"
 )
 
 
@@ -120,6 +120,9 @@ class Prepared:
     # 'primary' or 'replica:<target id>'. INTENT only, like `unmasked` -- see
     # migrations/137_request_run_on.sql and executor._run.
     run_on: str | None = None
+    # The SQL came from the AI assistant of the editor. The approver sees a
+    # mark. No rule reads it. See migrations/210_ai_assistant.sql.
+    ai_assisted: bool = False
 
 
 @dataclass
@@ -175,6 +178,7 @@ def validate_submission(
     unmasked: bool = False,
     run_on: str = "auto",
     replica_id: str | None = None,
+    ai_assisted: bool = False,
 ) -> Prepared | Rejection:
     """Run every submit-time check in the exact order the Slack modal
     always has. Returns a Prepared on success, a Rejection on the first
@@ -626,6 +630,7 @@ def validate_submission(
         user_agent=user_agent,
         unmasked=unmasked,
         run_on=stored_run_on,
+        ai_assisted=ai_assisted,
     )
 
 
@@ -964,9 +969,10 @@ def create_request(
                 f" query, wants_result, result_format, justification, scheduled_for, "
                 f" explain_plan, risk_summary, query_fingerprint, status, "
                 f" decided_by_slack_id, decided_by_name, decided_at, decision_reason, "
-                f" origin, engine, required_tier, unmasked, query_secret, run_on) "
+                f" origin, engine, required_tier, unmasked, query_secret, run_on, "
+                f" ai_assisted) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, "
-                f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s) "
+                f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s) "
                 f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
@@ -991,6 +997,7 @@ def create_request(
                     prep.unmasked,
                     query_secret,
                     prep.run_on,
+                    prep.ai_assisted,
                 ),
             )
             row = cur.fetchone()
@@ -1010,6 +1017,8 @@ def create_request(
                     submit_details["user_agent"] = prep.user_agent
             if prep.run_on:
                 submit_details["run_on"] = prep.run_on
+            if prep.ai_assisted:
+                submit_details["ai_assisted"] = True
             approve_actor_name = None
             if aa_grant is not None:
                 # The waiver's id, or the archive rule's basis when no waiver
@@ -1048,9 +1057,9 @@ def create_request(
                 f"({id_col}requester_slack_id, requester_name, target_server_id, database_name, "
                 f" query, wants_result, result_format, justification, scheduled_for, "
                 f" explain_plan, risk_summary, query_fingerprint, origin, "
-                f" engine, required_tier, unmasked, query_secret, run_on) "
+                f" engine, required_tier, unmasked, query_secret, run_on, ai_assisted) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, "
-                f"        %s, %s, %s, %s, %s) "
+                f"        %s, %s, %s, %s, %s, %s) "
                 f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
@@ -1071,6 +1080,7 @@ def create_request(
                     prep.unmasked,
                     query_secret,
                     prep.run_on,
+                    prep.ai_assisted,
                 ),
             )
             row = cur.fetchone()
@@ -1089,6 +1099,8 @@ def create_request(
                     submit_details["user_agent"] = prep.user_agent
             if prep.run_on:
                 submit_details["run_on"] = prep.run_on
+            if prep.ai_assisted:
+                submit_details["ai_assisted"] = True
             if human_only:
                 submit_details["human_approval_forced"] = True
             audit.log_in(cur, row["id"], prep.user_id, prep.user_name,

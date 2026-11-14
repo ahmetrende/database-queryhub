@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 
 from .. import people
 from .. import admins, audit as audit_mod
-from .. import (cancellation, core_submit, db, engines, origins, pending_expiry, pii,
+from .. import (ai, cancellation, core_submit, db, engines, origins, pending_expiry, pii,
                pre_flight, profile_sync, query_safety, requesters, result_export)
 from .. import config as cfg
 from . import deps, mapping, sessions
@@ -91,6 +91,9 @@ class QueryIn(BaseModel):
     # runOn is `replica`.
     runOn: Literal["auto", "primary", "replica"] = "auto"
     replicaId: str | None = None
+    # The SQL came from the AI assistant of the editor. A mark for the
+    # approver, kept only while the assistant is on. No rule reads it.
+    aiAssisted: bool = False
 
 
 class BatchItemIn(BaseModel):
@@ -346,6 +349,7 @@ def submit_query(body: QueryIn, request: Request,
         unmasked=body.unmasked,
         run_on=body.runOn,
         replica_id=body.replicaId if body.runOn == "replica" else None,
+        ai_assisted=body.aiAssisted and ai.is_enabled(),
     )
     if isinstance(prep, core_submit.Rejection):
         _record_refusal(claims, "web", t.id, body.databaseId, body.sql, prep)
@@ -1249,6 +1253,8 @@ def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
         "databaseId": database_id,
         # Where the request came from. A link to a request from Claude names its tab.
         "origin": row.get("origin") or "slack",
+        # The SQL came from the AI assistant of the editor. A mark only.
+        "aiAssisted": bool(row.get("ai_assisted")),
         # When it was sent. A tab that a link or a reload opened has no local
         # submit time, and the waiting card counts from this one.
         "submittedAt": mapping.iso(row.get("created_at")),
