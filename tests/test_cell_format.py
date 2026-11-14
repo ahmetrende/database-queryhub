@@ -140,7 +140,9 @@ def test_the_csv_writer_actually_applies_it():
     import pathlib
     src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "queryhub"
            / "executor.py").read_text(encoding="utf-8")
-    assert "cell_format.row_formatter(getattr(cur, \"description\", None))" in src
+    assert "cell_format.row_formatter(_description_of(cur, description))" in src
+    # A streamed read passes rows, not the cursor: the description goes along.
+    assert src.count("description=cur.description") == 2
     assert "if fmt_row is not None:" in src
     # and it must run BEFORE the CSV row is serialized
     i_fmt = src.index("r = fmt_row(r)")
@@ -240,3 +242,66 @@ def test_both_codes_are_registered_so_no_query_can_die_on_them():
     assert "SQL_VARIANT = -16" in src and "SQL_SS_UDT = -151" in src
     assert "conn.add_output_converter(SQL_VARIANT, passthrough_or_hex)" in src
     assert "conn.add_output_converter(SQL_SS_UDT, passthrough_or_hex)" in src
+
+
+# ---------- binary columns: hex in the engine's own form ----------
+#
+# psycopg returns a bytea as bytes, and `csv.writer` called str(), so a PNG
+# reached the result file as `b'\x89PNG\r\n...'`. Found from the web data viewer
+# 2026-11-14: no Image view, and a Hex view of the repr characters.
+
+PNG = bytes.fromhex("89504e470d0a1a0a")
+
+
+class _PgColumn(tuple):
+    """psycopg's Column: indexes like the 7-tuple and has `.type_code`, an OID."""
+    def __new__(cls, name, oid):
+        self = super().__new__(cls, (name, oid, None, None, None, None, None))
+        self.type_code = oid
+        return self
+
+
+def _odbc(name, py_type):
+    """pyodbc's description entry: a plain 7-tuple, a Python type at [1]."""
+    return (name, py_type, None, None, None, None, None)
+
+
+def test_postgres_bytea_is_the_psql_hex_form():
+    fmt = cell_format.row_formatter([_PgColumn("img", 17)])
+    assert fmt is not None
+    assert fmt([PNG]) == ["\\x89504e470d0a1a0a"]
+    assert fmt([memoryview(PNG)]) == ["\\x89504e470d0a1a0a"]
+
+
+def test_sql_server_varbinary_is_the_ssms_hex_form():
+    fmt = cell_format.row_formatter([_odbc("blob", bytearray)])
+    assert fmt([b"\x00\xff\x10"]) == ["0x00FF10"]
+    assert fmt([bytearray(b"\xab")]) == ["0xAB"]
+
+
+def test_an_empty_binary_value_is_the_prefix_alone_and_null_stays_null():
+    fmt = cell_format.row_formatter([_PgColumn("b", 17), _odbc("v", bytes)])
+    assert fmt([b"", None]) == ["\\x", None]
+    assert fmt([None, b""]) == [None, "0x"]
+
+
+def test_a_masked_bytea_is_text_by_now_and_stays_text():
+    """PII masking runs first and returns text for a bytea with PII in it."""
+    fmt = cell_format.row_formatter([_PgColumn("b", 17)])
+    assert fmt(["v***@example.com"]) == ["v***@example.com"]
+
+
+def test_other_type_codes_are_not_binary():
+    assert cell_format.binary_prefix(_PgColumn("t", 25)) is None          # text
+    assert cell_format.binary_prefix(_PgColumn("j", 3802)) is None        # jsonb
+    assert cell_format.binary_prefix(_odbc("s", str)) is None
+    assert cell_format.binary_prefix(_odbc("ok", bool)) is None
+    assert cell_format.binary_prefix(("c", "String", None, None, None, None, None)) is None
+    assert cell_format.binary_prefix(_PgColumn("flag", True)) is None
+    assert cell_format.row_formatter([_PgColumn("t", 25), _odbc("s", str)]) is None
+
+
+def test_binary_and_trimmed_time_in_one_row():
+    fmt = cell_format.row_formatter([_PgColumn("b", 17), _Desc("ts", scale=3)])
+    out = fmt([b"\x01", datetime(2026, 7, 30, 1, 2, 3, 400000)])
+    assert out == ["\\x01", "2026-07-30 01:02:03.400"]

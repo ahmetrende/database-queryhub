@@ -2205,6 +2205,17 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
   // (drag-select owns the mouse), so a long value could be neither read nor
   // partially copied. Double-click opens the full value in a selectable box.
   const [peek, setPeek] = React.useState(null);
+  // The window opens at the cell or at the menu. Its HTML and Image views are
+  // taller than the Text view, so measure the box after each render and move
+  // it until all of it is on the screen (qhPeekPlace).
+  const peekRef = React.useRef(null);
+  React.useLayoutEffect(() => {
+    const el = peekRef.current;
+    if (!peek || !el) return;
+    const b = el.getBoundingClientRect();
+    const at = qhPeekPlace(peek.top, peek.left, b.width, b.height, window.innerWidth, window.innerHeight);
+    if (at.top !== peek.top || at.left !== peek.left) setPeek((p) => (p ? { ...p, ...at } : p));
+  }, [peek]);
 
   // Grid context menu. The browser's own menu never offers "Copy" here: the
   // grid is user-select:none (drag-select owns the mouse), so there is no text
@@ -2753,7 +2764,7 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
       {peek && (
         <>
           <div className="qh-ctx-backdrop" onClick={() => setPeek(null)} />
-          <div className="qh-peek" style={{ top: peek.top, left: peek.left }} onMouseDown={(e) => e.stopPropagation()}>
+          <div className="qh-peek" ref={peekRef} style={{ top: peek.top, left: peek.left }} onMouseDown={(e) => e.stopPropagation()}>
             <div className="qh-peek-head">
               <b>{peek.col}</b>
               <span>{peek.value.length.toLocaleString()} chars</span>
@@ -2778,7 +2789,8 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
               // document (qhHtmlSrcdoc): the markup renders, nothing runs.
               ? <iframe className="qh-peek-frame" title={'HTML view of ' + peek.col} sandbox="" srcDoc={qhHtmlSrcdoc(peek.value)} />
               : peekMode === 'image' && peekImage
-                ? <div className="qh-peek-img"><img src={peekImage} alt={'Image in ' + peek.col} /></div>
+                ? <div className="qh-peek-img"><img src={peekImage} alt={'Image in ' + peek.col}
+                    onLoad={() => setPeek((p) => (p ? { ...p } : p))} /></div>
                 : <textarea readOnly value={peekShown} autoFocus onFocus={(e) => e.target.select()} />}
           </div>
         </>

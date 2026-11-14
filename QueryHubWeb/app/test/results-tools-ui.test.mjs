@@ -162,6 +162,28 @@ test('a JSON cell peeks as pretty text and Raw shows the original', opts, async 
   assert.equal(area().value, 'plain');
 });
 
+test('the full-value window moves up when it would leave the screen', opts, async () => {
+  const ui = qhResMount(qhResTable());
+  // jsdom has no layout. Give the window the size measured in Chrome 2026-11-14.
+  const proto = ui.win.HTMLElement.prototype;
+  const real = proto.getBoundingClientRect;
+  proto.getBoundingClientRect = function () {
+    if (this.classList && this.classList.contains('qh-peek')) return { top: 0, left: 0, width: 340, height: 475, right: 340, bottom: 475 };
+    return real.call(this);
+  };
+  try {
+    ui.fire(ui.cell(0, 2), 'contextmenu', { clientX: 10, clientY: 700 });
+    ui.click(ui.all('button').find(b => b.textContent.indexOf('Show full value') === 0));
+    await ui.flush();
+    const box = ui.doc.querySelector('.qh-peek');
+    const vh = ui.win.innerHeight;
+    assert.equal(box.style.top, (vh - 475 - 8) + 'px', 'the bottom edge is 8 px above the screen edge');
+    assert.equal(box.style.left, '10px', 'a box that fits across keeps its left edge');
+  } finally {
+    proto.getBoundingClientRect = real;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Edge cases added after the mutation check
 // ---------------------------------------------------------------------------

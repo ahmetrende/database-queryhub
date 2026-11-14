@@ -44,3 +44,13 @@ test('the HTML document blocks every network load', () => {
   assert.match(doc, /Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"/);
   assert.ok(doc.endsWith('<img src="https://example.test/x.png">'));
 });
+
+test('the full-value window moves until all of it is on the screen', () => {
+  // Measured 2026-11-14: the HTML view opened at y 573 with a 475 px box on a
+  // 953 px screen, so its bottom was at 1048.
+  assert.deepEqual(w.qhPeekPlace(573, 814, 340, 475, 1800, 953), { top: 470, left: 814 });
+  assert.deepEqual(w.qhPeekPlace(100, 1700, 340, 200, 1800, 953), { top: 100, left: 1452 });
+  assert.deepEqual(w.qhPeekPlace(100, 200, 340, 200, 1800, 953), { top: 100, left: 200 }, 'a box that fits stays');
+  assert.deepEqual(w.qhPeekPlace(500, 300, 340, 2000, 1800, 953), { top: 8, left: 300 }, 'too tall: top edge stays on screen');
+  assert.deepEqual(w.qhPeekPlace(-40, -10, 340, 200, 1800, 953), { top: 8, left: 8 });
+});

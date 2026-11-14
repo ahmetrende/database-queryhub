@@ -2072,13 +2072,13 @@ def _execute_main_statement(
         out_path, rows_written, t_rows, t_size = _stream_to_xlsx(
             request_id, columns, rows, max_rows, max_csv_bytes,
             suffix=f"_q{index}", pii_found=pii_found, pii_cols=pii_cols,
-            pii_skip=pii_skip,
+            pii_skip=pii_skip, description=cur.description,
         )
     else:
         out_path, rows_written, t_rows, t_size = _stream_to_csv(
             request_id, columns, rows, max_rows, max_csv_bytes,
             suffix=f"_q{index}", pii_found=pii_found, pii_cols=pii_cols,
-            pii_skip=pii_skip,
+            pii_skip=pii_skip, description=cur.description,
         )
     res.rowcount = rows_written
     res.truncated_rows = t_rows
@@ -2115,6 +2115,14 @@ def _execute_main_statement(
     return res
 
 
+def _description_of(cur, description):
+    """The column description for the result writers: the one the caller
+    passed, else the one on `cur` when `cur` is a real cursor."""
+    if description is not None:
+        return description
+    return getattr(cur, "description", None)
+
+
 def _stream_to_csv(
     request_id: int,
     columns: list[str],
@@ -2125,6 +2133,7 @@ def _stream_to_csv(
     pii_found: set | None = None,
     pii_cols: dict | None = None,
     pii_skip: set | None = None,
+    description=None,
 ) -> tuple[Path, int, bool, bool]:
     """Stream rows from `cur` into a CSV file, capping by row count and
     cumulative byte size. Returns (path, rows_written, truncated_rows,
@@ -2152,7 +2161,11 @@ def _stream_to_csv(
     # DATETIME's three real digits out to `…36.520000`. This is the one seam that
     # fixes every reader (Slack CSV, Copy CSV, the web grid, which all read this
     # file). None when no column in the result needs it, which is the usual case.
-    fmt_row = cell_format.row_formatter(getattr(cur, "description", None))
+    # `cur` is often not the cursor. A streamed Postgres read hands over the
+    # row iterator from `cur.stream()`, and an iterator has no `description`.
+    # So the caller passes the description, and without it no column got its
+    # format: measured 2026-11-14, a bytea still arrived as `b'...'` text.
+    fmt_row = cell_format.row_formatter(_description_of(cur, description))
 
     with path.open("w", newline="", encoding="utf-8") as fh:
         _own_only(path)
@@ -2204,6 +2217,7 @@ def _stream_to_xlsx(
     pii_found: set | None = None,
     pii_cols: dict | None = None,
     pii_skip: set | None = None,
+    description=None,
 ) -> tuple[Path, int, bool, bool]:
     """XLSX counterpart of `_stream_to_csv`. Uses openpyxl's
     write-only Workbook so rows stream to disk without accumulating
@@ -2238,7 +2252,7 @@ def _stream_to_xlsx(
     # better than any string we could produce — Excel holds the real value and
     # formats it. But a `time` has no native mapping, falls through to str(),
     # and so carried the same padded six digits the CSV path used to.
-    fmt_row = cell_format.row_formatter(getattr(cur, "description", None),
+    fmt_row = cell_format.row_formatter(_description_of(cur, description),
                                         skip_types=(datetime,))
 
     for r in cur:

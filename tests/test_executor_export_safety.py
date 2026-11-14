@@ -107,3 +107,44 @@ def test_the_web_xlsx_conversion_guards_every_cell_including_the_header():
     assert "ws.append([_xlsx_cell(v) for v in rec])" in src
     assert "ws.append(rec)" not in src
     assert executor._xlsx_cell(executor._xlsx_cell("=1+1")) == "'=1+1"
+
+
+# ---- binary cells: hex, not Python's repr (2026-11-14) ----------------------
+# A bytea PNG reached the web data viewer as `b'\x89PNG...'`, so it found no
+# image and its Hex view dumped the repr characters.
+
+class _DescCur(_FakeCur):
+    """A fake cursor with a psycopg-shaped description: one bytea column."""
+    def __init__(self, rows):
+        super().__init__(rows)
+        col = type("Col", (tuple,), {})(("b", 17, None, None, None, None, None))
+        col.type_code = 17
+        self.description = [col]
+
+
+def test_csv_export_writes_a_bytea_as_hex():
+    path, n, *_ = executor._stream_to_csv(
+        4, ["b"], _DescCur([(b"\x89PNG",)]), max_rows=10, max_csv_bytes=10_000_000)
+    assert n == 1
+    assert list(csvmod.reader(path.open()))[1] == ["\\x89504e47"]
+
+
+def test_csv_export_masks_a_bytea_before_it_becomes_hex():
+    """The masker reads UTF-8 text in a bytea. Hex first would hide the PII
+    from the masker and leave it readable in the Hex view of the cell."""
+    found: set = set()
+    path, *_ = executor._stream_to_csv(
+        5, ["b"], _DescCur([(b"victim@example.com",)]), max_rows=10,
+        max_csv_bytes=10_000_000, pii_found=found, pii_cols={})
+    cell = list(csvmod.reader(path.open()))[1][0]
+    assert "victim@example.com" not in cell and not cell.startswith("\\x")
+    assert "email" in found
+
+
+def test_xlsx_export_writes_a_bytea_as_hex():
+    openpyxl = pytest.importorskip("openpyxl")
+    path, *_ = executor._stream_to_xlsx(
+        6, ["b"], _DescCur([(b"\x89PNG",)]), max_rows=10, max_csv_bytes=10_000_000)
+    wb = openpyxl.load_workbook(path, read_only=True)
+    assert list(wb["result"].iter_rows(values_only=True))[1] == ("\\x89504e47",)
+    wb.close()

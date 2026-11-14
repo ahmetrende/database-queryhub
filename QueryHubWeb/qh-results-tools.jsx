@@ -441,6 +441,14 @@ function qhViewModes(value) {
   return { modes, initial };
 }
 
+// Where the full-value window goes. It opens at the asked point and moves up
+// or left until the whole box is on the screen, `pad` pixels from each edge. A
+// box larger than the screen keeps its top-left corner on the screen.
+function qhPeekPlace(top, left, width, height, vw, vh, pad = 8) {
+  const fit = (at, size, room) => Math.max(pad, Math.min(at, room - size - pad));
+  return { top: fit(top, height, vh), left: fit(left, width, vw) };
+}
+
 const QH_VIEW_LABELS = { text: 'Text', json: 'JSON', xml: 'XML', html: 'HTML', hex: 'Hex', image: 'Image' };
 
 function qhUseResultView(result) {
@@ -574,6 +582,6 @@ function qhUseResultView(result) {
 Object.assign(window, { qhResJsonKind, qhResJsonCell,
   QH_RES_MAX_ROWS, qhResCompareCells, qhResSortRows, qhResFilterRows,
   qhResAggregate, qhPrettyJson, qhUseResultView,
-  QH_VIEW_HEX_MAX, qhCellBytes, qhHexDump, qhImageDataUrl, qhPrettyXml, qhHtmlSrcdoc, qhViewModes, QH_VIEW_LABELS,
+  QH_VIEW_HEX_MAX, qhCellBytes, qhHexDump, qhImageDataUrl, qhPrettyXml, qhHtmlSrcdoc, qhViewModes, QH_VIEW_LABELS, qhPeekPlace,
   qhResMatcher, qhResFilterSplit, qhResOptsOn, QH_RES_COPY_KINDS, qhResCopyAs, qhResColumnNames,
 });

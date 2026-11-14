@@ -18,6 +18,9 @@ first because `getdate()` is the query everyone types.
 Engine-modular by construction: the precision comes from the driver's own
 `cursor.description`, which every DBAPI driver fills in, so a new engine needs no
 code here — see `sub_second_digits` for the one place the drivers disagree.
+
+The same seam writes a binary cell as hex in the engine's own text form. See
+`binary_prefix`.
 """
 from __future__ import annotations
 
@@ -93,6 +96,60 @@ def format_temporal(value, digits: int | None) -> str:
     return str(value).replace(printed, trimmed, 1)
 
 
+# ---- binary columns -----------------------------------------------------------
+#
+# psycopg returns a PostgreSQL `bytea` as `bytes`, and `csv.writer` calls
+# `str()`. So a PNG reached the result file as Python's repr,
+# `b'\x89PNG\r\n\x1a\n...'`. Measured from the web UI 2026-11-14 with a
+# `decode(..., 'base64')` PNG: the data viewer found no image in that text, and
+# its Hex view showed the bytes of the repr, not the bytes of the value.
+#
+# A binary cell is now hex in the text form of its own engine, so the file
+# matches the tool the reader already knows:
+#
+#   PostgreSQL  `\x89504e47`  psql, with the default bytea_output = hex
+#   SQL Server  `0x89504E47`  SSMS, and `mssql_exec.passthrough_or_hex`
+#
+# PII masking runs BEFORE this step. A bytea that holds UTF-8 text with PII in
+# it is already masked text by then, so it stays text.
+PG_BYTEA_OID = 17
+_BINARY_TYPES = (bytes, bytearray, memoryview)
+
+
+def binary_prefix(desc_entry) -> tuple[str, bool] | None:
+    """`(prefix, uppercase)` for a binary column, or None.
+
+    The drivers report the type in different ways:
+
+    | driver              | `type_code`              | binary column     |
+    |---------------------|--------------------------|-------------------|
+    | psycopg / Postgres  | the type OID, an `int`   | 17 (`bytea`)      |
+    | pyodbc / SQL Server | a Python type            | `bytearray`       |
+
+    The ClickHouse and Athena cursors put a type NAME there, a `str`, so they
+    never match. Never raises.
+    """
+    try:
+        code = getattr(desc_entry, "type_code", None)
+        if code is None and len(desc_entry) > 1:
+            code = desc_entry[1]
+    except Exception:
+        return None
+    if isinstance(code, bool):
+        return None
+    if isinstance(code, int):
+        return ("\\x", False) if code == PG_BYTEA_OID else None
+    if isinstance(code, type) and issubclass(code, _BINARY_TYPES):
+        return ("0x", True)
+    return None
+
+
+def format_binary(value, prefix: str, uppercase: bool) -> str:
+    """`value` as `prefix` + hex. An empty value is the prefix alone."""
+    digits = bytes(value).hex()
+    return prefix + (digits.upper() if uppercase else digits)
+
+
 def row_formatter(description, skip_types: tuple = ()):
     """A `row -> row` callable for this result, or None when none is needed.
 
@@ -104,20 +161,24 @@ def row_formatter(description, skip_types: tuple = ()):
     through to `str()`, so those still get trimmed.
 
     Returns None — rather than a list of identity functions — when no column in
-    the result declares reduced precision, so the streaming row loop keeps its
-    original shape for the overwhelmingly common case and pays nothing.
+    the result declares reduced precision or holds binary data, so the
+    streaming row loop keeps its original shape for the overwhelmingly common
+    case and pays nothing.
 
     Never raises: a formatting nicety must not be the reason a delivered result
     fails. On any surprise from a driver the rows go out exactly as before.
     """
     try:
-        digits = [sub_second_digits(d) for d in (description or ())]
+        entries = list(description or ())
+        digits = [sub_second_digits(d) for d in entries]
+        binary = [binary_prefix(d) for d in entries]
     except Exception:
-        log.debug("sub-second precision probe failed", exc_info=True)
+        log.debug("cell format probe failed", exc_info=True)
         return None
     narrowed = [i for i, d in enumerate(digits)
                 if d is not None and d < PY_SUBSECOND_DIGITS]
-    if not narrowed:
+    hexed = [i for i, b in enumerate(binary) if b is not None]
+    if not narrowed and not hexed:
         return None
 
     def fmt(row):
@@ -135,6 +196,15 @@ def row_formatter(description, skip_types: tuple = ()):
                 continue
             if isinstance(v, (datetime, time)):
                 out[i] = format_temporal(v, digits[i])
+        for i in hexed:
+            if i >= len(out):
+                continue
+            v = out[i]
+            # Only a value that is still bytes. A masked bytea is text now,
+            # and a UDT that `mssql_exec` converted is text already.
+            if isinstance(v, _BINARY_TYPES):
+                prefix, uppercase = binary[i]
+                out[i] = format_binary(v, prefix, uppercase)
         return out
 
     return fmt

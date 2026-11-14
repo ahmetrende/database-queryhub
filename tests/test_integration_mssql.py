@@ -577,7 +577,7 @@ def test_sql_server_types_reach_the_result_file_and_pii_is_masked(server, monkey
         "12345.6700",
         LABEL,
         "j***@example.com",                  # the value scan
-        "b'\\x00\\xff\\x10'",                # binary that is not text: Python's repr
+        "0x00FF10",                          # binary that is not text: SSMS hex
         "j***@example.com",                  # the value scan reads UTF-8 in binary
     ]
     assert result.pii_masked == {"email"}
