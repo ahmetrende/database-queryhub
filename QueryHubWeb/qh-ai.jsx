@@ -280,10 +280,11 @@ function QhAiAddProvider({ presets, busy, run }) {
     <div className="qh-ai-add">
       <div className="qh-ai-addhead">
         <b>Add a provider</b>
-        <select className="qh-select" value="" onChange={e => pick(e.target.value)} aria-label="Start from">
-          <option value="">Start from…</option>
+        <select className="qh-select" value="" onChange={e => pick(e.target.value)} aria-label="Choose a provider">
+          <option value="">Choose a provider…</option>
           {(presets || []).map(ps => <option key={ps.name} value={ps.name}>{ps.name}</option>)}
         </select>
+        <span className="qh-ai-addhint">Fills in the protocol, base URL and model names. You can change them.</span>
       </div>
       {form && (
         <div className="qh-ai-provgrid">
