@@ -45,7 +45,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import admins, audit, crypto, db, schema_tools
+from . import admins, audit, crypto, db, requesters, schema_tools
 from . import config as cfg
 
 log = logging.getLogger(__name__)
@@ -285,17 +285,20 @@ def readiness(s: Settings, provs: list[Provider]) -> tuple[bool, str | None]:
     return True, None
 
 
-def is_enabled() -> bool:
+def is_enabled_for(uid: str) -> bool:
+    """On, with a usable default, and open for this user."""
     s = settings()
-    return s.enabled and default_choice(s, providers()) is not None
+    return (s.enabled and default_choice(s, providers()) is not None
+            and in_audience(uid))
 
 
-def status() -> dict:
-    """What the editor needs to show the assistant. Nothing else when off."""
+def status(uid: str) -> dict:
+    """What the editor needs to show the assistant. Nothing else when off, or
+    when the assistant is not open for this user."""
     s = settings()
     provs = providers()
     d = default_choice(s, provs)
-    if not s.enabled or d is None:
+    if not s.enabled or d is None or not in_audience(uid):
         return {"enabled": False}
     opts = choices(s, provs)
     return {
@@ -335,6 +338,165 @@ def take_slot(uid: str, limit: int, now: float | None = None) -> bool:
 def reset_rate_limit() -> None:
     with _calls_lock:
         _calls.clear()
+
+
+# --- who can use it -----------------------------------------------------------
+
+#: The rule kinds of `ai_audience`. A rule only opens the assistant.
+AUDIENCE_KINDS = ("everyone", "person", "team", "role")
+
+#: Values one write may add.
+MAX_AUDIENCE_VALUES = 100
+
+#: Role values -> the words of the admin form.
+AUDIENCE_ROLES = {
+    "super_admin": "Super-admins",
+    "dba": "DBAs",
+    "admin": "Admins",
+    "approver": "Approvers",
+}
+
+_PRINCIPAL_RE = re.compile(r"^(?:[UW][A-Z0-9]{8,}|local:[a-z0-9._-]{1,64})$")
+
+
+def audience_rules() -> list[dict]:
+    return db.fetch_all("SELECT id, kind, value, created_by, created_at "
+                        "FROM ai_audience ORDER BY kind, value, id")
+
+
+def _team_ids(uid: str) -> set[int]:
+    """The teams of a principal, from the access model tables."""
+    rows = db.fetch_all(
+        "SELECT tm.team_id FROM team_member tm "
+        "  JOIN team t ON t.id = tm.team_id AND NOT t.is_deleted "
+        "  JOIN principal_identity i ON i.principal_id = tm.principal_id "
+        "   AND i.provider = 'slack' AND NOT i.is_deleted "
+        " WHERE i.external_id = %s AND NOT tm.is_deleted",
+        (uid,))
+    return {int(r["team_id"]) for r in rows if r.get("team_id") is not None}
+
+
+def _has_role(uid: str, role: str) -> bool:
+    if role == "super_admin":
+        return admins.is_super_admin(uid)
+    if role == "dba":
+        return admins.is_super_admin(uid) or admins.is_dba(uid)
+    if role == "admin":
+        return admins.is_admin(uid)
+    if role == "approver":
+        return admins.holds_approval_role(uid)
+    return False
+
+
+def in_audience(uid: str, rules: list[dict] | None = None) -> bool:
+    """True when a rule names `uid`. With no rule, nobody passes.
+
+    The team list is read once, and only when a person and an everyone rule
+    did not already decide.
+    """
+    rules = audience_rules() if rules is None else rules
+    teams: set[int] | None = None
+
+    def names(rule: dict) -> bool:
+        nonlocal teams
+        kind, value = rule["kind"], rule["value"]
+        if kind == "everyone":
+            return True
+        if kind == "person":
+            return value == uid
+        if kind == "team":
+            if teams is None:
+                teams = _team_ids(uid)
+            return value.isdigit() and int(value) in teams
+        if kind == "role":
+            return _has_role(uid, value)
+        return False
+
+    # Cheap kinds first, so a team read happens only when it can decide.
+    order = {"everyone": 0, "person": 1, "role": 2, "team": 3}
+    return any(names(r) for r in sorted(rules, key=lambda r: order.get(r["kind"], 9)))
+
+
+def audience_count(rules: list[dict]) -> int | None:
+    """How many enabled requesters and active admins pass the rules now.
+    None when the count fails: the form then says nothing rather than 0."""
+    try:
+        people = set(requesters.list_enabled_ids())
+        people |= {a["slack_user_id"] for a in admins.list_active() if a.get("slack_user_id")}
+        return sum(1 for uid in people if in_audience(uid, rules))
+    except Exception:                               # noqa: BLE001
+        log.warning("ai: audience count failed", exc_info=True)
+        return None
+
+
+def clean_audience(kind: Any, values: Any) -> tuple[str, list[str]]:
+    """(kind, values) of one write, checked. `everyone` takes no value. The
+    other kinds take one or more values, and each must exist."""
+    if kind not in AUDIENCE_KINDS:
+        raise ValueError("The kind must be everyone, person, team or role.")
+    if kind == "everyone":
+        return kind, [""]
+    raw = values if isinstance(values, list) else [values]
+    out: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        if text and text not in out:
+            out.append(text)
+    if not out:
+        raise ValueError("Choose at least one.")
+    if len(out) > MAX_AUDIENCE_VALUES:
+        raise ValueError(f"Add at most {MAX_AUDIENCE_VALUES} at a time.")
+    if kind == "person":
+        bad = [v for v in out if not _PRINCIPAL_RE.match(v)]
+        if bad:
+            raise ValueError(f"'{bad[0][:40]}' is not a person.")
+    elif kind == "team":
+        ids = [int(v) for v in out if v.isdigit()]
+        rows = db.fetch_all("SELECT id FROM team WHERE id = ANY(%s) AND NOT is_deleted",
+                            (ids,)) if ids else []
+        known = {str(r["id"]) for r in rows}
+        missing = [v for v in out if v not in known]
+        if missing:
+            raise ValueError(f"Team {missing[0][:40]} does not exist.")
+    else:
+        bad = [v for v in out if v not in AUDIENCE_ROLES]
+        if bad:
+            raise ValueError("The role must be super_admin, dba, admin or approver.")
+    return kind, out
+
+
+def add_audience(cur, kind: str, values: list[str], uid: str,
+                 actor_name: str | None) -> int:
+    """Add one rule per value and one audit row per new rule. A rule that
+    already exists stays as it is. Returns how many rules are new."""
+    added = 0
+    for value in values:
+        cur.execute(
+            "INSERT INTO ai_audience (kind, value, created_by) VALUES (%s, %s, %s) "
+            "ON CONFLICT (kind, value) DO NOTHING RETURNING id", (kind, value, uid))
+        row = cur.fetchone()
+        if row is None:
+            continue
+        audit.log_in(cur, None, uid, actor_name, "ai_audience_added",
+                     {"rule_id": row["id"], "kind": kind, "value": value})
+        added += 1
+    return added
+
+
+def remove_audience(cur, rule: dict, uid: str, actor_name: str | None) -> None:
+    cur.execute("DELETE FROM ai_audience WHERE id = %s", (rule["id"],))
+    audit.log_in(cur, None, uid, actor_name, "ai_audience_removed",
+                 {"rule_id": rule["id"], "kind": rule["kind"], "value": rule["value"]})
+
+
+def audience_view(rules: list[dict]) -> dict:
+    return {
+        "rules": [{"id": r["id"], "kind": r["kind"], "value": r["value"],
+                   "createdBy": r.get("created_by")}
+                  for r in rules],
+        "count": audience_count(rules),
+        "roles": dict(AUDIENCE_ROLES),
+    }
 
 
 # --- the tools of the model ---------------------------------------------------
@@ -816,6 +978,9 @@ def complete(uid: str, actor_name: str | None, ask: Ask) -> dict:
     if not s.enabled:
         raise AIError(404, "not_found", "The AI assistant is off.")
     choice = _pick(s, provs, ask.model)
+    if not in_audience(uid):
+        raise AIError(403, "forbidden", "The AI assistant is not open for you. "
+                                        "Ask a super-admin.")
     _check(ask)
     t = _granted(uid, ask.connection, ask.database)
     if not take_slot(uid, s.max_calls_per_hour):

@@ -120,19 +120,21 @@ def test_readiness_names_the_missing_piece(s, provs, why):
 
 
 def test_status_says_nothing_but_off_when_off(monkeypatch):
+    monkeypatch.setattr(ai, "in_audience", lambda uid, rules=None: True)
     monkeypatch.setattr(ai, "settings", lambda: _settings(enabled=False))
     monkeypatch.setattr(ai, "providers", lambda: [_prov()])
-    assert ai.status() == {"enabled": False}
+    assert ai.status(ME) == {"enabled": False}
     monkeypatch.setattr(ai, "settings", lambda: _settings())
     monkeypatch.setattr(ai, "providers", lambda: [_prov(key=False)])
-    assert ai.status() == {"enabled": False}
+    assert ai.status(ME) == {"enabled": False}
 
 
 def test_status_when_on_lists_the_models_and_what_leaves(monkeypatch):
+    monkeypatch.setattr(ai, "in_audience", lambda uid, rules=None: True)
     monkeypatch.setattr(ai, "settings", lambda: _settings(user_model_choice=True))
     monkeypatch.setattr(ai, "providers",
                         lambda: [_prov(models=("claude-opus-5-5", "claude-haiku-5-5"))])
-    st = ai.status()
+    st = ai.status(ME)
     assert st["enabled"] and st["default"] == "1:claude-opus-5-5"
     assert st["userModelChoice"] is True and len(st["models"]) == 2
     assert st["sends"] == ["prompt", "sql", "tableNames", "tableDetail"]
@@ -536,6 +538,8 @@ def call(monkeypatch, lookups):
     monkeypatch.setattr(ai, "providers", lambda: st["providers"])
     monkeypatch.setattr(ai, "_key_of", lambda pid: "sk-SECRET-KEY")
     monkeypatch.setattr(ai.admins, "is_admin", lambda uid: st["admin"])
+    st["audience"] = True
+    monkeypatch.setattr(ai, "in_audience", lambda uid, rules=None: st["audience"])
 
     def granted(uid, connection, database, named):
         if st["grant"]:
@@ -812,3 +816,162 @@ def test_the_test_call_is_audited_and_reports_a_failure(monkeypatch):
     monkeypatch.setattr(ai, "_call", ok)
     assert ai.test_provider(ME, "Ex", 1)["ok"] is True
     assert seen["toolbox"] is None and seen["messages"] == [{"role": "user", "content": "Say OK."}]
+
+
+# --- who can use it -------------------------------------------------------------
+
+
+def _rule(kind, value="", rid=1):
+    return {"id": rid, "kind": kind, "value": value}
+
+
+@pytest.fixture
+def roles(monkeypatch):
+    """Role and team answers for the audience tests."""
+    st = {"super": set(), "dba": set(), "admin": set(), "approver": set(),
+          "teams": {}, "team_reads": []}
+    monkeypatch.setattr(ai.admins, "is_super_admin", lambda uid: uid in st["super"])
+    monkeypatch.setattr(ai.admins, "is_dba", lambda uid: uid in st["dba"])
+    monkeypatch.setattr(ai.admins, "is_admin", lambda uid: uid in st["admin"])
+    monkeypatch.setattr(ai.admins, "holds_approval_role", lambda uid: uid in st["approver"])
+
+    def team_ids(uid):
+        st["team_reads"].append(uid)
+        return st["teams"].get(uid, set())
+    monkeypatch.setattr(ai, "_team_ids", team_ids)
+    return st
+
+
+OTHER = "U0EXAMPLE002"
+
+
+def test_no_rule_means_nobody(roles):
+    assert not ai.in_audience(ME, [])
+
+
+def test_each_kind_of_rule(roles):
+    roles["teams"] = {ME: {4}}
+    roles["approver"] = {ME}
+    assert ai.in_audience(ME, [_rule("everyone")])
+    assert ai.in_audience(ME, [_rule("person", ME)])
+    assert not ai.in_audience(OTHER, [_rule("person", ME)])
+    assert ai.in_audience(ME, [_rule("team", "4")])
+    assert not ai.in_audience(OTHER, [_rule("team", "4")])
+    assert ai.in_audience(ME, [_rule("role", "approver")])
+    assert not ai.in_audience(OTHER, [_rule("role", "approver")])
+
+
+def test_mixed_rules_open_to_each_group(roles):
+    roles["teams"] = {ME: {4}, "U0EXAMPLE003": {5}}
+    roles["approver"] = {"U0EXAMPLE004"}
+    rules = [_rule("team", "4", 1), _rule("team", "5", 2), _rule("person", OTHER, 3),
+             _rule("role", "approver", 4)]
+    for uid in (ME, OTHER, "U0EXAMPLE003", "U0EXAMPLE004"):
+        assert ai.in_audience(uid, rules), uid
+    assert not ai.in_audience("U0EXAMPLE005", rules)
+
+
+@pytest.mark.parametrize("role,where", [("super_admin", "super"), ("dba", "dba"),
+                                         ("admin", "admin"), ("approver", "approver")])
+def test_each_role(roles, role, where):
+    rules = [_rule("role", role)]
+    assert not ai.in_audience(ME, rules)
+    roles[where].add(ME)
+    assert ai.in_audience(ME, rules)
+
+
+def test_a_super_admin_counts_as_a_dba(roles):
+    roles["super"].add(ME)
+    assert ai.in_audience(ME, [_rule("role", "dba")])
+
+
+def test_teams_are_read_only_when_they_can_decide(roles):
+    ai.in_audience(ME, [_rule("team", "4", 1), _rule("person", ME, 2)])
+    assert roles["team_reads"] == []
+    ai.in_audience(OTHER, [_rule("team", "4", 1), _rule("person", ME, 2)])
+    assert roles["team_reads"] == [OTHER]
+
+
+def test_the_count_covers_requesters_and_admins(roles, monkeypatch):
+    monkeypatch.setattr(ai.requesters, "list_enabled_ids", lambda: {ME, OTHER})
+    monkeypatch.setattr(ai.admins, "list_active", lambda: [{"slack_user_id": "U0EXAMPLE003"}])
+    roles["super"].add("U0EXAMPLE003")
+    assert ai.audience_count([_rule("everyone")]) == 3
+    assert ai.audience_count([_rule("role", "super_admin")]) == 1
+
+
+def test_a_failed_count_says_nothing(monkeypatch):
+    def boom():
+        raise RuntimeError("db down")
+    monkeypatch.setattr(ai.requesters, "list_enabled_ids", boom)
+    assert ai.audience_count([_rule("everyone")]) is None
+
+
+def test_audience_writes_are_checked(monkeypatch):
+    monkeypatch.setattr(ai.db, "fetch_all",
+                        lambda sql, params=None: [{"id": i} for i in params[0] if i in (4, 5)])
+    assert ai.clean_audience("everyone", ["x"]) == ("everyone", [""])
+    assert ai.clean_audience("person", [" U0EXAMPLE001 ", "U0EXAMPLE001", "local:sam.lee"]) == (
+        "person", [ME, "local:sam.lee"])
+    assert ai.clean_audience("team", ["4", "5"]) == ("team", ["4", "5"])
+    assert ai.clean_audience("role", "dba") == ("role", ["dba"])
+    for bad in (("group", ["x"]), ("person", []), ("person", ["bob"]),
+                ("team", ["4", "9"]), ("team", ["x"]), ("role", ["owner"]),
+                ("person", [f"U0EXAMPLE{i:03d}" for i in range(ai.MAX_AUDIENCE_VALUES + 1)])):
+        with pytest.raises(ValueError):
+            ai.clean_audience(*bad)
+
+
+class _InsertCur:
+    """A cursor whose INSERT ... RETURNING gives a row for new values only."""
+
+    def __init__(self, existing=()):
+        self.existing = set(existing)
+        self.next_id = 10
+        self.last = None
+
+    def execute(self, sql, params=None):
+        if "INSERT INTO ai_audience" in sql:
+            kind, value = params[0], params[1]
+            if (kind, value) in self.existing:
+                self.last = None
+            else:
+                self.existing.add((kind, value))
+                self.next_id += 1
+                self.last = {"id": self.next_id}
+
+    def fetchone(self):
+        return self.last
+
+
+def test_a_batch_adds_the_new_rules_and_audits_each(monkeypatch):
+    rows = []
+    monkeypatch.setattr(audit, "log_in", lambda cur, *a: rows.append(a))
+    cur = _InsertCur(existing={("team", "4")})
+    assert ai.add_audience(cur, "team", ["4", "5", "6"], ME, "Ex") == 2
+    assert [r[3] for r in rows] == ["ai_audience_added", "ai_audience_added"]
+    assert [r[4]["value"] for r in rows] == ["5", "6"]
+
+
+def test_a_removal_is_audited(monkeypatch):
+    rows = []
+    monkeypatch.setattr(audit, "log_in", lambda cur, *a: rows.append(a))
+    ai.remove_audience(_Cur(), {"id": 5, "kind": "team", "value": "4"}, ME, "Ex")
+    assert rows[0][3] == "ai_audience_removed"
+    assert rows[0][4] == {"rule_id": 5, "kind": "team", "value": "4"}
+
+
+def test_a_call_outside_the_audience_is_refused_before_the_provider(call):
+    call.st["audience"] = False
+    with pytest.raises(ai.AIError) as got:
+        call()
+    assert got.value.status == 403 and "not open for you" in got.value.message
+    assert not call.st["calls"]
+
+
+def test_status_is_off_outside_the_audience(monkeypatch):
+    monkeypatch.setattr(ai, "settings", lambda: _settings())
+    monkeypatch.setattr(ai, "providers", lambda: [_prov()])
+    monkeypatch.setattr(ai, "in_audience", lambda uid, rules=None: uid == ME)
+    assert ai.status(ME)["enabled"] is True
+    assert ai.status(OTHER) == {"enabled": False}

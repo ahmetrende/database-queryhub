@@ -28,6 +28,29 @@ The admin form is **Admin → System → AI assistant** (super-admin). It edits 
 settings and the providers, saves or clears an API key and runs a test call.
 It deletes a provider only after an inline confirmation.
 
+## Who can use it
+
+The `ai_audience` table holds the rules. Edit them in the admin form, card
+"Who can use it". Each rule names one of these:
+
+| Kind | Names |
+|---|---|
+| Everyone | every signed-in user |
+| Person | one principal (a Slack user id, or `local:<name>`) |
+| Team | one team |
+| Role | Super-admins, DBAs, Admins or Approvers |
+
+A person can use the assistant when a rule names them. With no rule, nobody
+can use it. Rules only open the assistant: there is no rule that closes it.
+Mix as many people, teams and roles as you need. One save can add several
+people, teams or roles. A rule that already exists stays as it is.
+
+Migration 211 adds one rule: the super-admins. So the first calls are a pilot.
+
+For a person outside the audience, `GET /api/ai/status` says `enabled: false`,
+`POST /api/ai/complete` returns 403, and `POST /api/queries` drops
+`aiAssisted`. The form shows how many enabled users the rules name now.
+
 ## What leaves QueryHub
 
 On each call, QueryHub sends these items to the AI provider:
@@ -94,6 +117,8 @@ Edit the settings in the admin form, or in System configuration under
 | `PUT /api/admin/ai/providers/{id}` | super-admin | change a provider, set or clear its key |
 | `DELETE /api/admin/ai/providers/{id}` | super-admin | delete a provider |
 | `POST /api/admin/ai/test` | super-admin | a small call to one provider |
+| `POST /api/admin/ai/audience` | super-admin | add rules of who can use it: `kind` and `values` |
+| `DELETE /api/admin/ai/audience/{id}` | super-admin | delete a rule |
 
 `POST /api/ai/complete` takes `mode` (`generate`, `explain`, `optimize`,
 `fix`, `chat`), `prompt`, `sql`, `messages` (earlier turns as text),
@@ -117,6 +142,7 @@ queue show `aiAssisted`. The mark changes no rule.
 | `ai_provider_tested` | each test call from the admin form |
 | `ai_provider_created`, `ai_provider_updated`, `ai_provider_deleted` | admin changes to a provider |
 | `ai_settings_set` | admin changes to the settings |
+| `ai_audience_added`, `ai_audience_removed` | admin changes to who can use it |
 | `table_detail_read` | each `describe_table` lookup, with `via: ai` |
 
 No row holds a prompt, SQL, an answer or a key. `ai_settings_set` records only

@@ -2167,6 +2167,7 @@ const MOCK_AI = {
     instructions: '', maxCallsPerHour: 30, timeoutSec: 180, schemaMaxTables: 200 },
   providers: [{ id: 1, name: 'Anthropic', kind: 'anthropic', baseUrl: null, models: ['claude-opus-5-5', 'claude-haiku-5-5'],
     supportsTools: true, enabled: true, keySet: true, keySetBy: 'U0EXAMPLE001', keySetAt: '2026-11-14T09:00:00+00:00' }],
+  audience: [{ id: 1, kind: 'role', value: 'super_admin', createdBy: 'migration 211' }],
 };
 function mockAiView() {
   const s = MOCK_AI.settings;
@@ -2179,6 +2180,8 @@ function mockAiView() {
       { name: 'Other', kind: 'openai', baseUrl: '', models: [] }],
     efforts: ['', 'low', 'medium', 'high', 'xhigh', 'max'],
     ready, notReady: ready ? null : 'The assistant is off.', anthropicSdk: true,
+    audience: { rules: MOCK_AI.audience.map(r => ({ ...r })), count: MOCK_AI.audience.length ? 2 : 0,
+      roles: { super_admin: 'Super-admins', dba: 'DBAs', admin: 'Admins', approver: 'Approvers' } },
   };
 }
 
@@ -3929,6 +3932,18 @@ const qhApi = {
     return mockAiView();
   }, 260),
   adminAiProviderDelete: (id) => mockDelay(() => { MOCK_AI.providers = MOCK_AI.providers.filter(x => x.id !== Number(id)); return mockAiView(); }, 220),
+  adminAiAudienceAdd: (body) => mockDelay(() => {
+    const values = body.kind === 'everyone' ? [''] : (body.values || []).map(String);
+    let added = 0;
+    values.forEach(v => {
+      if (MOCK_AI.audience.some(r => r.kind === body.kind && r.value === v)) return;
+      const id = MOCK_AI.audience.reduce((n, r) => Math.max(n, r.id), 0) + 1;
+      MOCK_AI.audience.push({ id, kind: body.kind, value: v, createdBy: 'U0EXAMPLE001' });
+      added += 1;
+    });
+    return { ...mockAiView(), added };
+  }, 220),
+  adminAiAudienceRemove: (id) => mockDelay(() => { MOCK_AI.audience = MOCK_AI.audience.filter(r => r.id !== Number(id)); return mockAiView(); }, 200),
   adminAiTest: (providerId) => mockDelay(() => ({ ok: true, model: 'claude-opus-5-5', text: 'OK', ms: 840 }), 600),
   adminConfig: () => mockDelay(() => ({ config: JSON.parse(JSON.stringify(ADMIN.config)) }), 220),
   adminConfigSave: (changes) => mockDelay(() => {

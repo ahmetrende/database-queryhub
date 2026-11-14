@@ -304,6 +304,95 @@ function QhAiAddProvider({ presets, busy, run }) {
   );
 }
 
+// Who can use the assistant: rules on everyone, people, teams or roles. A rule
+// only opens the assistant. With no rule, nobody can use it.
+const QH_AI_AUD_KIND = { everyone: 'Everyone', person: 'People', team: 'Teams', role: 'Roles' };
+const QH_AI_AUD_ONE = { everyone: 'Everyone', person: 'Person', team: 'Team', role: 'Role' };
+
+function qhAiAudLabel(rule, st, roles) {
+  if (rule.kind === 'everyone') return 'Everyone';
+  if (rule.kind === 'person') {
+    const p = ((st && st.people) || []).find(x => x.handle === rule.value || x.id === rule.value);
+    return p && p.name ? p.name + ' (' + rule.value + ')' : rule.value;
+  }
+  if (rule.kind === 'team') {
+    const t = ((st && st.teams) || []).find(x => String(x.id) === String(rule.value));
+    return t ? (t.name || t.displayName || ('Team ' + rule.value)) : 'Team ' + rule.value;
+  }
+  return (roles && roles[rule.value]) || rule.value;
+}
+
+function QhAiAudience({ aud, st, busy, run }) {
+  const [kind, setKind] = React.useState('team');
+  const [chosen, setChosen] = React.useState([]);     // ids: Slack ids, team ids or role keys
+  const roles = (aud && aud.roles) || {};
+  const rules = (aud && aud.rules) || [];
+  const people = (st && st.people) || [];
+  const has = (k, v) => rules.some(r => r.kind === k && String(r.value) === String(v));
+  const toggle = (v) => setChosen(c => (c.indexOf(v) >= 0 ? c.filter(x => x !== v) : [...c, v]));
+  const pickKind = (k) => { setKind(k); setChosen([]); };
+  const n = kind === 'everyone' ? 1 : chosen.length;
+  const add = () => run(api => api.adminAiAudienceAdd({ kind, values: kind === 'everyone' ? [] : chosen.map(String) }),
+    n === 1 ? 'Rule added.' : n + ' rules added.').then(ok => { if (ok) setChosen([]); });
+  const personName = (h) => { const p = people.find(x => x.handle === h || x.id === h); return p && p.name ? p.name : h; };
+  return (
+    <div className="qh-cfg-card">
+      <div className="qh-cfg-cardhead"><div>
+        <div className="qh-cfg-cardtitle">Who can use it</div>
+        <div className="qh-cfg-carddesc">A person can use the assistant when a rule names them. Add as many people, teams and roles as you need. With no rule, nobody can use it.</div>
+      </div></div>
+      {aud && aud.count != null && <div className="qh-ai-audcount">{aud.count} {aud.count === 1 ? 'person can' : 'people can'} use it now.</div>}
+      {rules.length === 0 && <div className="qh-ai-empty">No rule. Nobody can use the assistant.</div>}
+      {rules.map(r => (
+        <div key={r.id} className="qh-ai-audrow">
+          <span className="qh-ai-kind">{QH_AI_AUD_ONE[r.kind] || r.kind}</span>
+          <span className="qh-ai-audname">{qhAiAudLabel(r, st, roles)}</span>
+          <div className="qh-flex1" />
+          <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" disabled={busy}
+            onClick={() => run(api => api.adminAiAudienceRemove(r.id), 'Rule removed.')}>Remove</button>
+        </div>
+      ))}
+      <div className="qh-ai-audadd">
+        <select className="qh-select" value={kind} onChange={e => pickKind(e.target.value)} aria-label="Whom to add">
+          {Object.keys(QH_AI_AUD_KIND).map(k => <option key={k} value={k}>{QH_AI_AUD_KIND[k]}</option>)}
+        </select>
+        {kind === 'person' && (
+          <div className="qh-ai-audpick">
+            <PersonPick people={people} value="" onChange={v => { if (v && chosen.indexOf(v) < 0) setChosen(c => [...c, v]); }} resolve={st && st.resolvePerson} />
+            {chosen.length > 0 && (
+              <div className="qh-ai-audchips">
+                {chosen.map(h => (
+                  <span key={h} className="qh-ai-audchip">{personName(h)}
+                    <button type="button" aria-label={'Remove ' + personName(h)} onClick={() => toggle(h)}>{'×'}</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {kind === 'team' && (
+          <div className="qh-ai-audpick">
+            <TeamMultiPick teams={(st && st.teams) || []} value={chosen} onChange={setChosen} />
+          </div>
+        )}
+        {kind === 'role' && (
+          <div className="qh-ai-audroles" role="group" aria-label="Roles">
+            {Object.keys(roles).map(k => (
+              <label key={k} className="qh-ai-audrole">
+                <input type="checkbox" checked={chosen.indexOf(k) >= 0} disabled={has('role', k)} onChange={() => toggle(k)} />
+                {roles[k]}{has('role', k) ? ' (added)' : ''}
+              </label>
+            ))}
+          </div>
+        )}
+        <button type="button" className="qh-btn qh-btn-primary qh-btn-sm" disabled={busy || n === 0 || (kind === 'everyone' && has('everyone', ''))} onClick={add}>
+          {kind === 'everyone' ? 'Add everyone' : n > 1 ? 'Add ' + n + ' rules' : 'Add rule'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 const QH_AI_SETTING_KEYS = ['enabled', 'defaultProvider', 'defaultModel', 'userModelChoice', 'effort', 'instructions', 'maxCallsPerHour', 'timeoutSec', 'schemaMaxTables'];
 
 function AiAdminView({ st }) {
@@ -401,6 +490,8 @@ function AiAdminView({ st }) {
             sdk={data.anthropicSdk} busy={busy} run={run} onTest={() => test(p)} test={tests[p.id]} />)}
           <QhAiAddProvider presets={data.presets} busy={busy} run={run} />
         </div>
+
+        <QhAiAudience aud={data.audience} st={st} busy={busy} run={run} />
       </div>
 
       {changed.length > 0 && (
@@ -416,4 +507,4 @@ function AiAdminView({ st }) {
   );
 }
 
-Object.assign(window, { QH_AI_MODES, qhAiSegments, qhAiSentLine, QhAiPanel, AiAdminView });
+Object.assign(window, { QH_AI_MODES, qhAiSegments, qhAiSentLine, qhAiAudLabel, QhAiPanel, AiAdminView });

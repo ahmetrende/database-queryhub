@@ -8,6 +8,8 @@
     PUT    /api/admin/ai/providers/{id}    change a provider, set or clear its key
     DELETE /api/admin/ai/providers/{id}    delete a provider
     POST   /api/admin/ai/test              a small call to one provider
+    POST   /api/admin/ai/audience          add a rule of who can use it
+    DELETE /api/admin/ai/audience/{id}     delete a rule
 
 The rules live in `ai.py`. The admin routes are for a super-admin only: they
 hold the API keys. A key goes in through POST or PUT and never comes out. The
@@ -53,9 +55,10 @@ class CompleteIn(BaseModel):
 
 @router.get("/ai/status")
 def ai_status(claims: dict = Depends(deps.current_user)):
-    """`enabled` false hides the assistant. Nothing else is said then."""
+    """`enabled` false hides the assistant. Nothing else is said then. It is
+    false too when the assistant is not open for this user."""
     deps.require_whitelisted(claims)
-    return ai.status()
+    return ai.status(claims["sub"])
 
 
 @router.post("/ai/complete")
@@ -88,6 +91,8 @@ def _admin_view() -> dict:
         "notReady": why,
         # An Anthropic provider needs the optional `anthropic` package.
         "anthropicSdk": importlib.util.find_spec("anthropic") is not None,
+        # Who can use the assistant (ai_audience).
+        "audience": ai.audience_view(ai.audience_rules()),
     }
 
 
@@ -197,6 +202,36 @@ def admin_ai_provider_delete(provider_id: int, claims: dict = Depends(deps.curre
                                            "another default provider first.")
     with db.transaction() as cur:
         ai.delete_provider(cur, current, uid, claims.get("name"))
+    return _admin_view()
+
+
+class AudienceIn(BaseModel):
+    kind: str
+    # One or more people, teams or roles. Empty for `everyone`.
+    values: list[str] = Field(default_factory=list, max_length=ai.MAX_AUDIENCE_VALUES * 2)
+
+
+@router.post("/admin/ai/audience", status_code=201)
+def admin_ai_audience_add(body: AudienceIn, claims: dict = Depends(deps.current_user)):
+    """Add one rule per value, in one transaction. A rule that exists stays."""
+    uid = admin.require_admin(claims, "access")
+    try:
+        kind, values = ai.clean_audience(body.kind, body.values)
+    except ValueError as e:
+        raise deps._error(400, "bad_request", str(e)) from e
+    with db.transaction() as cur:
+        added = ai.add_audience(cur, kind, values, uid, claims.get("name"))
+    return {**_admin_view(), "added": added}
+
+
+@router.delete("/admin/ai/audience/{rule_id}")
+def admin_ai_audience_remove(rule_id: int, claims: dict = Depends(deps.current_user)):
+    uid = admin.require_admin(claims, "access")
+    rule = next((r for r in ai.audience_rules() if r["id"] == rule_id), None)
+    if rule is None:
+        raise deps._error(404, "not_found", "Unknown rule.")
+    with db.transaction() as cur:
+        ai.remove_audience(cur, rule, uid, claims.get("name"))
     return _admin_view()
 
 

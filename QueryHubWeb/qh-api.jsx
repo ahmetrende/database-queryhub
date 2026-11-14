@@ -451,6 +451,8 @@ const qhApi = {
   adminAiProviderAdd:    (body)     => qhFetch('/admin/ai/providers', { method: 'POST', body: JSON.stringify(body) }),
   adminAiProviderSave:   (id, body) => qhFetch('/admin/ai/providers/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify(body) }),
   adminAiProviderDelete: (id)       => qhFetch('/admin/ai/providers/' + encodeURIComponent(id), { method: 'DELETE' }),
+  adminAiAudienceAdd:    (body)     => qhFetch('/admin/ai/audience', { method: 'POST', body: JSON.stringify(body) }),
+  adminAiAudienceRemove: (id)       => qhFetch('/admin/ai/audience/' + encodeURIComponent(id), { method: 'DELETE' }),
   adminAiTest:           (providerId, model) => qhFetch('/admin/ai/test', { method: 'POST', body: JSON.stringify({ providerId, ...(model ? { model } : null) }) }),
 };
 
