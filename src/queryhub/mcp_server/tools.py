@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from .. import (admins, auto_approve, core_submit, db, db_scope, engines, errors, origins,
-                query_safety, targets, teams)
+                query_safety, schema_tools, targets, teams)
 from . import caller, catalog, policy
 
 log = logging.getLogger(__name__)
@@ -28,13 +28,10 @@ log = logging.getLogger(__name__)
 #: one query by accident.
 MAX_ROWS = 200
 
-#: Table names one listing may return. The largest catalogue here holds
-#: 2,727 tables; all of them, with columns, is 2.6 MB of JSON.
-MAX_TABLES = 300
-
-#: Tables one filtered call may describe in full. A loose filter still
-#: matches hundreds, and each carries every column.
-MAX_DETAIL_TABLES = 25
+#: The caps of the schema tools, which the AI assistant shares
+#: (`schema_tools`).
+MAX_TABLES = schema_tools.MAX_TABLES
+MAX_DETAIL_TABLES = schema_tools.MAX_DETAIL_TABLES
 
 #: How long `submit_query` will wait for a result before handing back an
 #: id to poll: the default and the maximum. Under the time limits of the
@@ -48,13 +45,9 @@ MAX_WAIT_SECONDS = catalog.WAIT_SECONDS
 INLINE_ROWS = 20
 
 
-class ToolError(Exception):
-    """A refusal the caller can act on. `code` is short and log-safe."""
-
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
-        self.message = message
+#: A refusal the caller can act on. One class with the schema tools, so a
+#: refusal from a shared tool reaches the door as it is.
+ToolError = schema_tools.ToolError
 
 
 def _require_enabled() -> None:
@@ -76,18 +69,10 @@ def _granted(uid: str, connection: str):
     """Resolve an alias the caller named, with the caller's grant on it.
 
     Refuses it if they hold no grant. Unknown and ungranted are the same
-    answer, which is the rule the web door already applies: distinguishing
-    them lets a caller enumerate real server names by watching which refusal
-    comes back.
+    answer (`schema_tools.granted_target`), which is the rule the web door
+    already applies.
     """
-    t = targets.by_alias(connection)
-    grant = teams.effective_grant_for_user(uid, t.id) if t is not None else None
-    if t is None or grant is None:
-        raise ToolError("unknown_connection",
-                        f"There is no connection named '{connection}' that you "
-                        f"can use. Call {catalog.named('list_connections')} to see "
-                        f"your connections.")
-    return t, grant
+    return schema_tools.granted_target(uid, connection, named=catalog.named)
 
 
 def _target_or_refuse(uid: str, connection: str):
@@ -169,108 +154,30 @@ def describe_database(connection: str, database: str,
     """What is in a database. Two questions, two answers.
 
     Without `table` this lists table NAMES. With one it returns the columns of
-    the tables whose name contains it. That split is not tidiness: asked for
-    everything, the largest catalogued database here answers with 2,727 tables
-    and 2.6 MB of JSON, which lands in the caller's context in one go and
-    leaves no room for the work it was fetched for. Names alone are ~30x
-    smaller, and they are what an assistant actually needs first -- it asks
-    what exists, then asks about one thing.
-
-    Both halves are capped and say so when they truncate. A cap that stays
-    quiet reads as "that is all there is", which is worse than a short answer.
+    the tables whose name contains it. Asked for everything, the largest
+    catalogued database here answers with 2,727 tables and 2.6 MB of JSON,
+    which leaves no room in the caller's context for the work it was fetched
+    for. The AI assistant asks the same two questions through the same
+    functions (`schema_tools`).
     """
     uid = _me()
     t, grant = _granted(uid, connection)
-    # A database outside the person's list gets one answer, whether it exists
-    # or not. The first read below cannot tell the two apart for an
-    # unrestricted grant, so the list decides.
-    usable =db_scope.usable_databases(t, grant)
-    if database not in usable:
-        raise ToolError("no_access",
-                        db_scope.no_access_message(t.alias, database, usable))
-    want = (table or "").strip().lower()
+    schema_tools.require_database(t, grant, database)
+    if table is None or not table.strip():
+        return schema_tools.table_names(t, database)
+    return schema_tools.tables_matching(t, database, table, named=catalog.named)
 
-    if not want:
-        rows = db.fetch_all(
-            "SELECT st.schema_name, st.table_name, st.relkind, "
-            "       COUNT(sc.id) AS columns "
-            "  FROM schema_tables st "
-            "  LEFT JOIN schema_columns sc ON sc.table_id = st.id "
-            " WHERE st.target_server_id = %s AND st.database_name = %s "
-            " GROUP BY st.schema_name, st.table_name, st.relkind "
-            " ORDER BY st.schema_name, st.table_name "
-            " LIMIT %s", (t.id, database, MAX_TABLES + 1))
-        if not rows:
-            raise ToolError(
-                "no_catalog",
-                f"The schema of '{database}' on '{connection}' is not catalogued "
-                f"yet. The first snapshot has not run.")
-        more = len(rows) > MAX_TABLES
-        rows = rows[:MAX_TABLES]
-        return {
-            "connection": t.alias, "database": database,
-            "tables": [{"schema": r["schema_name"], "table": r["table_name"],
-                        "kind": r["relkind"], "columns": r["columns"]}
-                       for r in rows],
-            "truncated": more,
-            "note": (f"This database has more than {MAX_TABLES} tables. The list "
-                     f"shows the first {MAX_TABLES}. To see columns, pass `table` "
-                     f"with part of a table name."
-                     if more else
-                     "To see columns, pass `table` with part of a table name."),
-        }
 
-    # The tables are chosen in SQL, capped, and only their columns are read. A
-    # loose filter (`table="a"`) matched 2,073 tables on the largest database,
-    # and every column of every one of them used to come back here to be
-    # dropped. A table with no catalogued column is not a match, as before.
-    like = f"%{want}%"
-    rows = db.fetch_all(
-        "WITH hit AS ("
-        "  SELECT st.id, st.schema_name, st.table_name, st.relkind "
-        "    FROM schema_tables st "
-        "   WHERE st.target_server_id = %s AND st.database_name = %s "
-        "     AND lower(st.table_name) LIKE %s "
-        "     AND EXISTS (SELECT 1 FROM schema_columns x WHERE x.table_id = st.id) "
-        "   ORDER BY st.schema_name, st.table_name "
-        "   LIMIT %s) "
-        "SELECT h.schema_name, h.table_name, h.relkind, "
-        "       sc.column_name, sc.data_type, sc.is_pk "
-        "  FROM hit h JOIN schema_columns sc ON sc.table_id = h.id "
-        " ORDER BY h.schema_name, h.table_name, sc.column_name",
-        (t.id, database, like, MAX_DETAIL_TABLES))
-    if not rows:
-        raise ToolError(
-            "no_match",
-            f"No catalogued table in '{database}' on '{connection}' matches "
-            f"'{table}'. To see the table names, call "
-            f"{catalog.named('describe_database')} without `table`.")
-    tables: dict[tuple, dict] = {}
-    for r in rows:
-        e = tables.setdefault((r["schema_name"], r["table_name"]),
-                              {"schema": r["schema_name"],
-                               "table": r["table_name"],
-                               "kind": r["relkind"], "columns": []})
-        e["columns"].append({"name": r["column_name"], "type": r["data_type"],
-                             "pk": bool(r["is_pk"])})
-    matched = len(tables)
-    if matched >= MAX_DETAIL_TABLES:
-        # Only a full page can hide more. Counting reads no columns.
-        counted = db.fetch_one(
-            "SELECT count(*) AS n FROM schema_tables st "
-            " WHERE st.target_server_id = %s AND st.database_name = %s "
-            "   AND lower(st.table_name) LIKE %s "
-            "   AND EXISTS (SELECT 1 FROM schema_columns x WHERE x.table_id = st.id)",
-            (t.id, database, like))
-        matched = counted["n"] if counted else matched
-    return {
-        "connection": t.alias, "database": database, "match": table,
-        "tables": list(tables.values()),
-        "truncated": matched > len(tables),
-        "note": (f"{matched} tables matched. This result shows {len(tables)} of "
-                 f"them. Use a more specific `table` filter."
-                 if matched > len(tables) else None),
-    }
+def describe_table(connection: str, database: str, table: str) -> dict:
+    """Everything about one table: the catalog part (columns, keys, indexes,
+    foreign keys, size) and the live part (CREATE script, triggers, numeric
+    statistics). Never a value of the table. See `schema_tools.table_detail`.
+    """
+    uid = _me()
+    t, grant = _granted(uid, connection)
+    schema_tools.require_database(t, grant, database)
+    return schema_tools.table_detail(uid, caller.display_name(uid), t, database,
+                                     table, via="mcp", named=catalog.named)
 
 
 def classify_sql(connection: str, sql: str) -> dict:

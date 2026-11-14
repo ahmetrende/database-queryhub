@@ -18,7 +18,8 @@ The door is off until an operator turns it on. Every key is in
 | `/mcp` | MCP over Streamable HTTP. Only the portal calls it. | `web/routes_mcp.py` |
 | The MCP server of the portal | Answers `initialize` and `tools/list` for Claude Code, lists each tool as `queryhub_<name>`, and sends each tool call to `/mcp`. It is not in this repository. | the portal |
 | Catalog file | The tool list that the portal embeds | `docs/mcp-tools.idp.json` |
-| Tools | `list_connections`, `describe_database`, `classify_sql`, `submit_query`, `query_status`, `fetch_result` | `mcp_server/tools.py` |
+| Tools | `list_connections`, `describe_database`, `describe_table`, `classify_sql`, `submit_query`, `query_status`, `fetch_result` | `mcp_server/tools.py` |
+| Schema tools | The table list and the full schema of one table. The AI assistant of the web editor uses the same functions. | `schema_tools.py`, `table_facts.py` |
 | Catalog | The tool names, descriptions and argument shapes | `mcp_server/catalog.py` |
 | `/sql claude` | The Slack command that says how to connect | `slack_app/claude_cmd.py` |
 
@@ -136,6 +137,22 @@ The door gets this body from the portal, with the bare tool name:
   (`db_scope.py`). A database outside the list gets one answer: "You have no
   access to database `X` on `alias`." The answer is the same when the database
   does not exist.
+- **Schema.** `describe_database` reads the hourly catalog only.
+  `describe_table` gives one table in full. The catalog part has the columns
+  with types and defaults, the keys, the indexes, the foreign keys and the
+  size. The live part has the CREATE script, the triggers and the numeric
+  statistics. QueryHub reads the live part on the target with the read login,
+  in a read-only transaction with a 5-second statement timeout. The statistics
+  are numbers only: null fraction, distinct count, average width,
+  correlation, row and scan counts, and the last vacuum and analyze. QueryHub
+  never reads a statistic that holds a column value (`most_common_vals`,
+  `histogram_bounds`, a SQL Server histogram). On SQL Server the read login has
+  no VIEW DEFINITION, so a trigger comes back with its name and state and no
+  text. When the target does not answer, the answer has the catalog part and
+  `liveError`. Each call writes one audit row, `table_detail_read`, with the
+  table and the door (`via`: `mcp` or `ai`). The AI assistant of the web
+  editor uses the same functions (`schema_tools.py`), so the two doors give
+  the same answer.
 - **The database of a submit.** `submit_query` needs `database`. Slack and the
   web UI fall back to the default database of the connection. The person sees
   that choice in the form. A program never chose it, so a call without
@@ -224,6 +241,7 @@ status. The portal turns it into a tool result too.
 | `query` | The statement is empty, too long or not allowed | Read the message and change the statement |
 | `no_catalog` | The first snapshot of the database has not run | Wait for the hourly job |
 | `no_match` | No catalogued table has the name that `table` gives | Call `describe_database` without `table` |
+| `ambiguous` (`describe_table`) | Two schemas have a table with this name | Write `schema.table` |
 | `blocked` | The safety rules refuse the statement | Change the statement |
 | `tier_refused` | The statement needs more than `mcp_max_tier` | Use Slack or the web UI |
 | `tier_exceeds` | The grant is below the needed tier | Ask for a grant |

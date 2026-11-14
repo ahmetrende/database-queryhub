@@ -18,10 +18,11 @@ const AdminIcons = {
   feedback: () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>,
   kill: () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18.4 6.6a9 9 0 11-12.8 0M12 2v10"/></svg>,
   effective: () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/><path d="M8.5 11l1.8 1.8L14 9"/></svg>,
+  ai: () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>,
   config: () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h7M15 18h5"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="13" cy="18" r="2"/></svg>,
 };
 
-const QH_ADMIN_SECTIONS = ['approvals', 'kill', 'effective', 'grants', 'auto', 'scopes', 'teams', 'roles', 'mask', 'conns', 'audit', 'metrics', 'feedback', 'config'];
+const QH_ADMIN_SECTIONS = ['approvals', 'kill', 'effective', 'grants', 'auto', 'scopes', 'teams', 'roles', 'mask', 'conns', 'audit', 'metrics', 'feedback', 'config', 'ai'];
 // Deep-link support: the admin section lives in the URL as #admin/<section>.
 // Which door a request came through. Two values existed when this was written
 // and the chip coerced everything to them — `web`, or else Slack — so a third
@@ -41,7 +42,7 @@ function qhOriginWhere(o) {
 // no end date on every connection. 'super' is a super-admin only. A section not
 // listed opens for every admin. The server enforces the same levels. The nav
 // only stops a click that the server would refuse.
-const QH_ADMIN_NEED = { effective: 'dba', conns: 'dba', grants: 'super', auto: 'super', scopes: 'super', teams: 'super', mask: 'super', config: 'super' };
+const QH_ADMIN_NEED = { effective: 'dba', conns: 'dba', grants: 'super', auto: 'super', scopes: 'super', teams: 'super', mask: 'super', config: 'super', ai: 'super' };
 // 'super' | 'dba' | 'admin'. `isDba` is false when /me does not send it, so an
 // older server gives a DBA the same nav as before, never a wider one.
 function qhAdminLevel(user) {
@@ -110,6 +111,8 @@ function AdminPanel({ st, user, modeEntry }) {
     ]},
     { label: 'System', items: [
       ['config', 'System configuration', AdminIcons.config, null],
+      // Super-admin only: the screen holds the API keys of the AI assistant.
+      ['ai', 'AI assistant', AdminIcons.ai, null],
     ]},
   ];
 
@@ -211,6 +214,7 @@ function AdminPanel({ st, user, modeEntry }) {
         {curNav === 'metrics' && <MetricsView st={st} />}
         {curNav === 'feedback' && <FeedbackView st={st} />}
         {curNav === 'config' && <SystemConfigView st={st} user={user} />}
+        {curNav === 'ai' && <AiAdminView st={st} />}
       </div>
     </div>
   );
@@ -247,6 +251,9 @@ function QueueCard({ it, selected, onSelect, checked, onCheck }) {
           <span className="qh-qname" title={qhIsHandleName(it.submitter.name) ? it.submitter.name : null}>{qhPersonName(it.submitter.name)}</span>
           <TierBadge tier={it.tier} sm />
           <span className={'qh-origin-chip o-' + qhOriginKey(it.origin)} title={'Submitted via ' + qhOriginWhere(it.origin)}>{qhOriginKey(it.origin)}</span>
+          {/* The requester wrote this SQL with the AI assistant. A mark only:
+              the approval rule is the same. */}
+          {it.aiAssisted && <span className="qh-ai-chip" title="The requester wrote this SQL with the AI assistant">AI</span>}
           {/* Inside a batch the chip says WHICH one — `bundlePosition` /
               `bundleSize` (GET /admin/queue, 2026-08-20). "bundle" alone told
               an approver a batch existed and nothing about where this row sat

@@ -90,6 +90,21 @@ TOOLS: tuple[Tool, ...] = (
          "table": {**_STR, "description": "Part of a table name. Optional."}},
         ("connection", "database")),
     Tool(
+        "describe_table",
+        "Returns the full schema of one table: the columns with their types "
+        "and defaults, the keys, the indexes, the foreign keys, the triggers, "
+        "the CREATE script and the statistics. The statistics are numbers "
+        "only. QueryHub never returns a value from the table. If `distinct` "
+        "is negative, it is a fraction of the row count. A column with "
+        "`masked` shows masked values in a result. Get the table name from "
+        "`describe_database` first.",
+        {"connection": {**_STR, "description": "A connection name from `list_connections`."},
+         "database": {**_STR, "description": "A database name from `list_connections`."},
+         "table": {**_STR, "description": ("A table name from `describe_database`. Write "
+                                           "`schema.table` if two schemas have a table "
+                                           "with this name.")}},
+        ("connection", "database", "table")),
+    Tool(
         "classify_sql",
         "Returns the tier that a statement needs, and whether QueryHub accepts "
         "the statement. This tool is optional. `submit_query` does the same "

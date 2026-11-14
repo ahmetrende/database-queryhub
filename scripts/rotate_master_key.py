@@ -11,6 +11,7 @@ What it covers, i.e. everything encrypted with Fernet:
     target_servers.password_encrypted        (the RO credential)
     target_servers.password_rw_encrypted
     target_servers.password_ddl_encrypted
+    ai_providers.api_key_encrypted           (the AI assistant API keys)
     the env-secrets file                     (SECRETS_ENC_PATH, if present)
 
 local_users.password_hash is deliberately NOT here: it is a PBKDF2 hash, not
@@ -74,6 +75,21 @@ def _plan_targets() -> tuple[list[dict], int, int]:
             else:
                 todo += 1
     return rows, todo, current
+
+
+def _plan_ai_keys() -> tuple[list[dict], int, int]:
+    """(rows, keys_needing_rotation, keys_already_current) of ai_providers.
+
+    An install that has not applied migration 210 has no such table, and
+    nothing to rotate there.
+    """
+    exists = db.fetch_one("SELECT to_regclass('ai_providers') IS NOT NULL AS ok")
+    if not exists or not exists["ok"]:
+        return [], 0, 0
+    rows = db.fetch_all("SELECT id, name, api_key_encrypted FROM ai_providers "
+                        "WHERE api_key_encrypted IS NOT NULL ORDER BY id")
+    todo = sum(1 for r in rows if not crypto.encrypted_with_primary(r["api_key_encrypted"]))
+    return rows, todo, len(rows) - todo
 
 
 def _rotate_value(ciphertext: str) -> str:
@@ -154,6 +170,12 @@ def main() -> int:
     print(f"targets: {len(rows)}")
     print(f"  values already on the primary key: {current}")
     print(f"  values to re-encrypt:              {todo}")
+    ai_rows, ai_todo, ai_current = _plan_ai_keys()
+    print(f"AI provider keys: {len(ai_rows)}")
+    print(f"  keys already on the primary key:   {ai_current}")
+    print(f"  keys to re-encrypt:                {ai_todo}")
+    todo += ai_todo
+    current += ai_current
 
     if not args.apply:
         if not args.skip_secrets_file:
@@ -190,6 +212,21 @@ def main() -> int:
             print(f"  target {row['id']:>3} {row['alias']}: "
                   f"{', '.join(updates)} re-encrypted")
 
+        for row in ai_rows:
+            val = row["api_key_encrypted"]
+            if crypto.encrypted_with_primary(val):
+                continue
+            try:
+                fresh = _rotate_value(val)
+            except Exception as e:
+                raise RuntimeError(
+                    f"AI provider {row['id']} ({row['name']}): {e}. "
+                    f"Nothing has been committed.") from e
+            cur.execute("UPDATE ai_providers SET api_key_encrypted = %s WHERE id = %s",
+                        (fresh, row["id"]))
+            rotated += 1
+            print(f"  AI provider {row['id']:>3} {row['name']}: key re-encrypted")
+
         cur.execute(
             "INSERT INTO audit_log (actor_slack_id, actor_name, action, details) "
             "VALUES (%s, %s, 'master_key_rotated', %s::jsonb) RETURNING id",
@@ -198,6 +235,7 @@ def main() -> int:
                 "values_already_current": current,
                 "keys_on_ring": len(keys),
                 "targets_examined": len(rows),
+                "ai_keys_examined": len(ai_rows),
             })))
         audit_id = cur.fetchone()["id"]
 

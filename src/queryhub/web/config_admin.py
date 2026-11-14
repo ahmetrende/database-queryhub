@@ -36,6 +36,7 @@ _TYPES = {
     "rating_enabled": "bool", "require_justification": "bool",
     "security_override_ttl_enabled": "bool", "web_auth_slack_enabled": "bool",
     "web_cookie_secure": "bool",
+    "ai_enabled": "bool", "ai_user_model_choice": "bool",
     # int
     "access_grant_default_days": "int", "auto_approve_max_days": "int",
     "batch_max_items": "int", "connection_health_interval_sec": "int",
@@ -53,6 +54,8 @@ _TYPES = {
     "risk_seq_scan_rows": "int", "ro_burst_threshold": "int",
     "ro_burst_window_min": "int", "ro_window_minutes": "int",
     "security_override_ttl_minutes": "int",
+    "ai_max_calls_per_hour": "int", "ai_timeout_sec": "int",
+    "ai_schema_max_tables": "int",
     # str
     "auto_approve_feed_channel": "str", "bot_display_icon": "str",
     "bot_display_name": "str", "kill_switch_message": "str", "log_level": "str",
@@ -68,6 +71,10 @@ _TYPES = {
     # `hide` (default) or `show`: whether the Add person picker lists Slack
     # people whose email is outside `web_allowed_email_domain`.
     "people_directory_other_domains": "str",
+    # The AI assistant. Its own admin form (GET/PUT /api/admin/ai) checks the
+    # provider and the model together. This screen shows the same keys.
+    "ai_default_provider": "str", "ai_default_model": "str",
+    "ai_effort": "str", "ai_instructions": "str",
     # tz — a validated IANA timezone name, rendered as a searchable dropdown.
     "web_display_timezone": "tz",
 }
@@ -96,6 +103,10 @@ _GROUPS = [
         "query_plan_logging", "risk_high_cost", "risk_seq_scan_rows",
         "set_allowed_params"]),
     ("pii", "Data protection (PII)", ["pii_masking_enabled"]),
+    ("ai", "AI assistant", [
+        "ai_enabled", "ai_default_provider", "ai_default_model",
+        "ai_user_model_choice", "ai_effort", "ai_instructions",
+        "ai_max_calls_per_hour", "ai_timeout_sec", "ai_schema_max_tables"]),
     ("targets", "Targets & fleet policy", [
         "target_alias_allow_patterns", "target_host_allow_patterns",
         "target_ssl_mode", "target_ssl_rootcert", "target_ssl_verify_hosts",
@@ -193,6 +204,10 @@ _MUST_BE_POSITIVE = frozenset({
 _RANGES = {
     "auto_approve_max_days": (1, 365),
     "access_grant_default_days": (1, 365),
+    # The same bounds as ai.settings() clamps to.
+    "ai_max_calls_per_hour": (1, 1000),
+    "ai_timeout_sec": (10, 600),
+    "ai_schema_max_tables": (0, 300),
 }
 
 

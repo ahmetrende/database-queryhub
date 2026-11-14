@@ -3340,6 +3340,64 @@
   .qh-probs-text b { color: var(--fg-primary); font-weight: 600; }
   .qh-probs-off { padding: 8px 10px; color: var(--fg-tertiary); font-size: 12px; }
 
+  /* ---------- AI assistant (M13): editor side panel, chips, admin form ---------- */
+  .qh-ai { width: 360px; min-width: 300px; flex-shrink: 0; display: flex; flex-direction: column; min-height: 0;
+    background: var(--bg-light); border-left: 1px solid var(--stroke-medium); }
+  .qh-ai-head { display: flex; align-items: center; gap: 8px; padding: 9px 10px 8px 14px; border-bottom: 1px solid var(--stroke-light); }
+  .qh-ai-title { font-weight: 650; font-size: 13px; color: var(--fg-primary); }
+  .qh-ai-model { max-width: 170px; height: 28px; font-size: 12px; }
+  .qh-ai-x { width: 28px; height: 28px; border: 0; background: transparent; border-radius: var(--r-xs); color: var(--fg-tertiary); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  .qh-ai-x:hover { background: var(--adaptive-medium); color: var(--fg-secondary); }
+  .qh-ai-x:focus-visible, .qh-ai-mode:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-ai-modes { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--stroke-light); }
+  .qh-ai-mode { border: 1px solid var(--stroke-medium); background: var(--bg-white); color: var(--fg-secondary); font-size: 12px; padding: 3px 9px; border-radius: var(--r-sm); cursor: pointer; }
+  .qh-ai-mode:hover { color: var(--fg-primary); }
+  .qh-ai-mode.is-active { background: var(--brand-adaptive-light); color: var(--fg-accent); border-color: var(--stroke-accent); font-weight: 600; }
+  .qh-ai-log { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+  .qh-ai-empty { font-size: 12.5px; color: var(--fg-secondary); line-height: 1.5; padding: 6px 4px; }
+  .qh-cfg-card > .qh-ai-empty { padding: 10px 16px; border-top: 1px solid var(--stroke-light); }
+  .qh-ai-turn { font-size: 12.5px; line-height: 1.5; color: var(--fg-primary); border-radius: var(--r-md); padding: 8px 10px; }
+  .qh-ai-turn.is-user { background: var(--brand-adaptive-light); align-self: flex-end; max-width: 92%; }
+  .qh-ai-turn.is-ai { background: var(--bg-white); border: 1px solid var(--stroke-light); }
+  .qh-ai-turn.is-error { background: var(--sup-orange-light); color: var(--fg-primary); }
+  .qh-ai-turnhead { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-accent); margin-bottom: 2px; }
+  .qh-ai-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .qh-ai-text + .qh-ai-text, .qh-ai-text + .qh-ai-code, .qh-ai-code + .qh-ai-text { margin-top: 8px; }
+  .qh-ai-meta { font-size: 11px; color: var(--fg-tertiary); margin-top: 6px; }
+  .qh-ai-note { font-size: 11.5px; color: var(--fg-warning); margin-top: 6px; }
+  .qh-ai-code { border: 1px solid var(--stroke-light); border-radius: var(--r-sm); background: var(--bg-light); overflow: hidden; }
+  .qh-ai-pre { margin: 0; padding: 8px 10px; font-family: var(--qh-mono); font-size: 12px; line-height: 1.5; overflow-x: auto; white-space: pre; color: var(--fg-primary); }
+  .qh-ai-codebar { display: flex; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--stroke-light); background: var(--bg-white); }
+  .qh-ai-busy { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg-secondary); padding: 2px 4px; }
+  .qh-ai-spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--stroke-medium); border-top-color: var(--fg-accent); animation: qh-ai-spin 0.8s linear infinite; }
+  @keyframes qh-ai-spin { to { transform: rotate(360deg); } }
+  .qh-ai-compose { border-top: 1px solid var(--stroke-light); padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
+  .qh-ai-need { font-size: 11.5px; color: var(--fg-warning); }
+  .qh-ai-prompt { width: 100%; resize: vertical; min-height: 60px; font-size: 12.5px; box-sizing: border-box; }
+  .qh-ai-sendrow { display: flex; align-items: center; gap: 8px; }
+  .qh-ai-sends { flex: 1; font-size: 10.5px; color: var(--fg-tertiary); line-height: 1.35; }
+  .qh-ai-btn { width: auto; padding: 0 8px; gap: 4px; }
+  .qh-ai-btn.is-on { background: var(--brand-adaptive-light); color: var(--fg-accent); }
+  .qh-ai-btnlabel { font-size: 11px; font-weight: 700; }
+  .qh-ai-chip { font-size: 9px; font-weight: 700; letter-spacing: 0.03em; padding: 1px 6px; border-radius: var(--r-2xs); color: var(--fg-accent); background: var(--sup-purple-light); }
+  .qh-ai-ready { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: var(--r-sm); color: var(--fg-secondary); background: var(--adaptive-medium); white-space: nowrap; }
+  .qh-ai-ready.is-on { color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  .qh-ai-prov, .qh-ai-add { border-top: 1px solid var(--stroke-light); padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+  .qh-ai-provhead, .qh-ai-addhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+  .qh-ai-kind { font-size: 11.5px; color: var(--fg-tertiary); }
+  .qh-ai-provsw { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-secondary); }
+  .qh-ai-provgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+  .qh-ai-provgrid label { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--fg-secondary); }
+  .qh-ai-wide { grid-column: 1 / -1; }
+  .qh-ai-keyrow, .qh-ai-provactions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .qh-ai-keystate { font-size: 12px; color: var(--fg-secondary); }
+  .qh-ai-keyin { width: 220px; }
+  .qh-ai-test { font-size: 12px; }
+  .qh-ai-test.is-ok { color: var(--fg-accent); }
+  .qh-ai-test.is-bad { color: var(--fg-danger); }
+  .qh-ai-warn { font-size: 12px; color: var(--fg-warning); }
+  @media (max-width: 900px) { .qh-ai { width: 300px; } .qh-ai-provgrid { grid-template-columns: 1fr; } }
+
 /* ---- local additions (CODE-owned; override the design above) ---- */
 /* CODE-owned CSS layered ON TOP of the design CSS.
    Generated index.css = QueryHub.html <style> + this file (this file wins on

@@ -54,6 +54,14 @@ INFORMATIONAL = frozenset({
     # The CREATE script of one object went to a person with a grant on its
     # database (GET .../ddl). An access record. Nothing changes.
     "object_ddl_read",
+    # The schema of one table went to the MCP door or the AI assistant
+    # (schema_tools.table_detail). An access record. Nothing changes.
+    "table_detail_read",
+    # One call of the AI assistant (ai.complete): who, the provider, the model,
+    # the sizes and the tables read. An access record. Nothing changes.
+    "ai_call",
+    # A test call to one AI provider from the admin form. Nothing changes.
+    "ai_provider_tested",
 })
 
 UNREADABLE = "<not a string literal>"

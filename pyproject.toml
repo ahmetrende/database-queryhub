@@ -102,6 +102,13 @@ aws = [
 clickhouse = [
     "clickhouse-driver>=0.2.11,<0.3",
 ]
+# The AI assistant with an Anthropic provider (ai_providers.kind = 'anthropic').
+# Imported only on an assistant call. An OpenAI-compatible provider needs no
+# extra: it goes through httpx. Upper-bounded because a major release of the
+# SDK may change the API.
+ai = [
+    "anthropic>=2.8,<3",
+]
 
 [project.urls]
 Homepage = "https://github.com/ahmetrende/database-queryhub"

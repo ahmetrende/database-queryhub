@@ -606,3 +606,31 @@ def test_a_server_error_reaches_the_requester_scrubbed_and_the_value_hidden(
     assert "jordan.ray@example.com" not in shown
     assert "The duplicate key value is [hidden]" in shown
     assert "[Microsoft]" not in shown and "[SQL Server]" not in shown
+
+
+# --- live table facts for the schema tools (M13) ----------------------------
+
+
+def test_table_facts_reads_triggers_and_statistics_with_the_ro_login(server):
+    """`mssql_exec.table_facts` with the RO login of the grant script: the
+    triggers, the row count and the statistics objects, and no value of the
+    table. The RO login has no VIEW DEFINITION, so a trigger comes back with
+    its name and state and no text. A login with that right gets the text."""
+    server.execute("CREATE TRIGGER dbo.people_touch ON dbo.people AFTER UPDATE "
+                   "AS SET NOCOUNT ON")
+    server.execute("DISABLE TRIGGER dbo.people_touch ON dbo.people")
+    server.execute("CREATE STATISTICS people_name_stats ON dbo.people (full_name)")
+    user, password = server.login("ro")
+    facts = mssql_exec.table_facts(HOST, PORT, DATABASE, user, password, "dbo", "people")
+    assert [(t["name"], t["enabled"]) for t in facts["triggers"]] == [("people_touch", False)]
+    assert facts["triggers"][0]["def"] is None
+    assert facts["rows"] == 1
+    stats = {s["name"]: s for s in facts["stats"]}
+    assert stats["people_name_stats"]["columns"] == ["full_name"]
+    assert stats["people_name_stats"]["lastUpdated"] is not None
+    text = repr(facts)
+    assert "jordan" not in text.lower() and "Jordan Ray" not in text
+    assert mssql_exec.table_facts(HOST, PORT, DATABASE, user, password, "dbo", "gone") is None
+    full = mssql_exec.table_facts(HOST, PORT, DATABASE, "sa", os.environ["QH_MSSQL_SA_PASSWORD"],
+                                  "dbo", "people")
+    assert full["triggers"][0]["def"].startswith("CREATE TRIGGER dbo.people_touch")

@@ -665,7 +665,7 @@ def history(limit: int = 50,
         # What `ranOn` reads, as the status poll does.
         # completed_at: what `durationMs` reads, with executed_at.
         "       executed_at, completed_at, executed_target_id, executed_tier, engine, "
-        "       origin, requester_seen_at, "
+        "       origin, requester_seen_at, ai_assisted, "
         # The batch or fleet run of the request, so History can open all of it.
         "       bundle_id "
         # status <> 'draft': a reserved id from an open tab is not history.

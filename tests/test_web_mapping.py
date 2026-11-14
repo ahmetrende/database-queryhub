@@ -90,6 +90,8 @@ def test_history_entry_shape():
         "createdAt": "2026-07-14T12:53:00+00:00",
         # A row with no origin is a Slack request.
         "origin": "slack",
+        # The SQL did not come from the AI assistant.
+        "aiAssisted": False,
         # Nobody read it after it ended yet.
         "seenAt": None,
         "approver": "alex.kim",

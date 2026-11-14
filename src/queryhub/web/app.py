@@ -289,7 +289,8 @@ def create_app() -> FastAPI:
     # ---- routers ------------------------------------------------------
     # Auth (login, OAuth round-trip, refresh, sign-out) is routes_auth;
     # it is a router like the rest rather than a block inside this factory.
-    from . import routes_admin, routes_data, routes_mcp, routes_queries, routes_requests
+    from . import (routes_admin, routes_ai, routes_data, routes_mcp, routes_queries,
+                   routes_requests)
     app.include_router(routes_auth.router)
 
     # Avatar bytes come from our own origin so the CSP can stay at
@@ -300,6 +301,9 @@ def create_app() -> FastAPI:
     app.include_router(routes_queries.router)
     app.include_router(routes_requests.router)
     app.include_router(routes_admin.router)
+    # The AI assistant of the editor and its admin form (M13). Off until an
+    # admin turns it on and enters an API key. See ai.py.
+    app.include_router(routes_ai.router)
     # The MCP door has its own identity. It is not under /api, so no web
     # dependency judges it. See routes_mcp.
     app.include_router(routes_mcp.router)

@@ -1453,6 +1453,8 @@ function qhHistoryRow(h) {
     durationMs: typeof h.durationMs === 'number' ? h.durationMs : null,
     // The batch or fleet run of the request, so History can open all its items.
     bundleId: h.bundleId ? String(h.bundleId) : null,
+    // The SQL came from the AI assistant. A mark only.
+    aiAssisted: !!h.aiAssisted,
   };
 }
 

@@ -20,7 +20,7 @@ import inspect
 import pytest
 
 from queryhub import core_submit as cs
-from queryhub import db, db_scope, lifecycle, targets
+from queryhub import db, db_scope, lifecycle, schema_tools, targets
 from queryhub.mcp_server import policy, tools
 from queryhub.web import routes_data
 
@@ -184,7 +184,9 @@ def test_the_web_and_mcp_lists_come_from_the_same_function():
     asks `db_scope.usable_databases`, which asks the same function."""
     assert "db_scope.visible_databases" in inspect.getsource(routes_data.connections)
     assert "db_scope.visible_databases" in inspect.getsource(tools.list_connections)
-    assert "db_scope.usable_databases" in inspect.getsource(tools.describe_database)
+    for fn in (tools.describe_database, tools.describe_table):
+        assert "schema_tools.require_database(" in inspect.getsource(fn)
+    assert "db_scope.usable_databases" in inspect.getsource(schema_tools.require_database)
     assert "visible_databases(" in inspect.getsource(db_scope.usable_databases)
     assert "db_scope.grant_covers" in inspect.getsource(routes_data._granted_db)
 

@@ -315,6 +315,10 @@ def _request_blocks(
     # whether it was submitted from Slack or the web app.
     origin_label = origins.label(request.get("origin"))
     second_row_bits = [f"via {origin_label}", f"result: {result_label}"]
+    # The requester wrote this SQL with the AI assistant of the editor. A mark
+    # only: the approval rule is the same.
+    if request.get("ai_assisted"):
+        second_row_bits.insert(1, "written with the AI assistant")
     sched = request.get("scheduled_for")
     if sched is not None:
         sched_fallback = f"{sched:%Y-%m-%d %H:%M UTC}"
