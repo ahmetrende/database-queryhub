@@ -20,10 +20,18 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
-import anthropic
 import httpx
-import httpx2
 import pytest
+
+# The `anthropic` SDK is the optional [ai] extra. The base install has no SDK,
+# so only the tests that build an SDK error need it. The optional-extras CI job
+# installs the extra and runs them.
+try:
+    import anthropic
+    import httpx2
+except ImportError:                                 # the base install
+    anthropic = httpx2 = None
+needs_sdk = pytest.mark.skipif(anthropic is None, reason="the [ai] extra is not installed")
 
 from queryhub import ai, audit, schema_tools
 
@@ -372,23 +380,27 @@ def test_a_fallback_and_a_pause_are_followed(fake_anthropic):
     assert (reply.stop, reply.model) == ("max_tokens", "claude-opus-4-8")
 
 
-def _api_error(cls, status):
+def _sdk_error(name, status):
+    """An SDK exception, built in the test so that collection needs no SDK."""
+    cls = getattr(anthropic, name)
     req = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    if status is None:
+        return cls(request=req)
     return cls("x", response=httpx2.Response(status, request=req), body=None)
 
 
-@pytest.mark.parametrize("exc,code", [
-    (_api_error(anthropic.AuthenticationError, 401), "provider_auth"),
-    (_api_error(anthropic.NotFoundError, 404), "provider_model"),
-    (_api_error(anthropic.RateLimitError, 429), "provider_busy"),
-    (_api_error(anthropic.BadRequestError, 400), "provider_rejected"),
-    (_api_error(anthropic.InternalServerError, 500), "provider_error"),
-    (anthropic.APIConnectionError(request=httpx2.Request("POST", "https://a.test")),
-     "provider_unreachable"),
-    (anthropic.APITimeoutError(request=httpx2.Request("POST", "https://a.test")), "timeout"),
+@needs_sdk
+@pytest.mark.parametrize("name,status,code", [
+    ("AuthenticationError", 401, "provider_auth"),
+    ("NotFoundError", 404, "provider_model"),
+    ("RateLimitError", 429, "provider_busy"),
+    ("BadRequestError", 400, "provider_rejected"),
+    ("InternalServerError", 500, "provider_error"),
+    ("APIConnectionError", None, "provider_unreachable"),
+    ("APITimeoutError", None, "timeout"),
 ])
-def test_anthropic_errors_become_short_answers(fake_anthropic, exc, code):
-    fake_anthropic([exc])
+def test_anthropic_errors_become_short_answers(fake_anthropic, name, status, code):
+    fake_anthropic([_sdk_error(name, status)])
     with pytest.raises(ai.AIError) as got:
         ai.call_anthropic(ai.Choice(_prov(), "claude-opus-5-5"), "k", "S",
                           [{"role": "user", "content": "q"}], None, _settings(), _deadline())
