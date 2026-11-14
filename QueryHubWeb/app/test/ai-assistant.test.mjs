@@ -7,7 +7,7 @@ import { bareWindow, loadInto } from './_load.mjs';
 import { page, web, jsdomOpts } from './_mount.mjs';
 
 const PANEL_FILES = ['qh-data.jsx', 'qh-ai.jsx'];
-const ADMIN_FILES = ['qh-data.jsx', 'qh-admin-access.jsx', 'qh-ai.jsx'];
+const ADMIN_FILES = ['qh-data.jsx', 'qh-modal.jsx', 'qh-admin-access.jsx', 'qh-ai.jsx'];
 
 const STATUS = { enabled: true, default: '1:claude-opus-5-5', userModelChoice: false, models: [] };
 const ANSWER = {
@@ -224,4 +224,106 @@ test('the queue and history show the AI chip', () => {
   assert.match(web('qh-panels.jsx'), /h\.aiAssisted && <span className="qh-ai-chip"/);
   assert.match(web('qh-data.jsx'), /aiAssisted: !!h\.aiAssisted/);
   assert.match(web('qh-admin.jsx'), /ai: 'super'/);
+});
+
+// ---- who can use it -----------------------------------------------------------
+
+function pick(p, el, v) {
+  return p.React.act(() => {
+    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set;
+    setter.call(el, v);
+    el.dispatchEvent(new p.win.Event('change', { bubbles: true }));
+  });
+}
+
+const AUD_VIEW = {
+  ...ADMIN_VIEW,
+  audience: { count: 2, roles: { super_admin: 'Super-admins', dba: 'DBAs', approver: 'Approvers' },
+    rules: [{ id: 1, kind: 'role', value: 'super_admin' },
+            { id: 2, kind: 'person', value: 'U0EXAMPLE009' }] },
+};
+
+async function mountAud(api) {
+  const p = page(ADMIN_FILES, { url: 'https://localhost/#admin/ai', prep: (win) => { win.qhApi = api; } });
+  const st = { pushToast: () => {}, teams: [{ id: 4, name: 'Data' }, { id: 5, name: 'Backend' }],
+    people: [{ id: 'U0EXAMPLE009', handle: 'U0EXAMPLE009', name: 'Sam Lee' }], resolvePerson: () => {} };
+  p.render(p.React.createElement(p.win.AiAdminView, { st }));
+  await p.flush(); await p.flush();
+  return p;
+}
+
+const addButton = (p) => p.all('.qh-ai-audadd button.qh-btn-primary')[0];
+
+test('the audience card lists the rules and the count, with no Block', jsdomOpts, async () => {
+  const p = await mountAud({ adminAi: () => Promise.resolve(AUD_VIEW) });
+  assert.equal(p.doc.querySelector('.qh-ai-audcount').textContent, '2 people can use it now.');
+  const rows = p.all('.qh-ai-audrow').map(r => r.querySelector('.qh-ai-kind').textContent + ' ' + r.querySelector('.qh-ai-audname').textContent);
+  assert.deepEqual(rows, ['Role Super-admins', 'Person Sam Lee (U0EXAMPLE009)']);
+  assert.ok(!/Block/.test(p.doc.querySelector('.qh-cfg-sections').textContent));
+  assert.equal(p.all('[aria-label="Allow or block"]').length, 0);
+});
+
+test('several roles go to the server in one call', jsdomOpts, async () => {
+  const added = [];
+  const p = await mountAud({ adminAi: () => Promise.resolve(AUD_VIEW),
+    adminAiAudienceAdd: (b) => { added.push(b); return Promise.resolve(AUD_VIEW); } });
+  await pick(p, p.doc.querySelector('[aria-label="Whom to add"]'), 'role');
+  assert.equal(addButton(p).disabled, true);
+  const boxes = p.all('.qh-ai-audrole input');
+  // Super-admins already has a rule, so its box is off.
+  assert.equal(boxes[0].disabled, true);
+  p.click(boxes[1]);
+  p.click(boxes[2]);
+  assert.equal(addButton(p).textContent, 'Add 2 rules');
+  p.click(addButton(p));
+  await p.flush(); await p.flush();
+  assert.deepEqual(added, [{ kind: 'role', values: ['dba', 'approver'] }]);
+});
+
+test('several teams go to the server as strings', jsdomOpts, async () => {
+  const added = [];
+  const p = await mountAud({ adminAi: () => Promise.resolve(AUD_VIEW),
+    adminAiAudienceAdd: (b) => { added.push(b); return Promise.resolve(AUD_VIEW); } });
+  // Teams is the first choice. TeamMultiPick lists the teams as buttons.
+  const input = p.doc.querySelector('.qh-addp-team-in');
+  await setValue(p, input, 'a');
+  for (const name of ['Data', 'Backend']) {
+    const opt = p.all('.qh-addp-teamopt').find(b => b.textContent.startsWith(name));
+    assert.ok(opt, name);
+    p.React.act(() => opt.dispatchEvent(new p.win.MouseEvent('mousedown', { bubbles: true })));
+    p.click(opt);
+    await setValue(p, p.doc.querySelector('.qh-addp-team-in'), 'a');
+  }
+  p.click(addButton(p));
+  await p.flush(); await p.flush();
+  assert.equal(added.length, 1);
+  assert.equal(added[0].kind, 'team');
+  assert.deepEqual(added[0].values.slice().sort(), ['4', '5']);
+});
+
+test('everyone needs no value, and Remove deletes one rule', jsdomOpts, async () => {
+  const added = [], removed = [];
+  const p = await mountAud({ adminAi: () => Promise.resolve(AUD_VIEW),
+    adminAiAudienceAdd: (b) => { added.push(b); return Promise.resolve(AUD_VIEW); },
+    adminAiAudienceRemove: (id) => { removed.push(id); return Promise.resolve(AUD_VIEW); } });
+  await pick(p, p.doc.querySelector('[aria-label="Whom to add"]'), 'everyone');
+  assert.equal(addButton(p).textContent, 'Add everyone');
+  p.click(addButton(p));
+  await p.flush(); await p.flush();
+  assert.deepEqual(added, [{ kind: 'everyone', values: [] }]);
+  p.click(p.all('.qh-ai-audrow button')[1]);
+  await p.flush(); await p.flush();
+  assert.deepEqual(removed, [2]);
+});
+
+test('the audience client calls hit the documented paths', async () => {
+  const calls = [];
+  const win = bareWindow();
+  win.fetch = async (url, o) => { calls.push([url.replace(/^.*\/api/, ''), (o && o.method) || 'GET', o && o.body ? JSON.parse(o.body) : null]);
+    return { ok: true, status: 200, json: async () => ({}) }; };
+  const { qhApi } = loadInto(win, 'qh-api.jsx');
+  await qhApi.adminAiAudienceAdd({ kind: 'team', values: ['4', '5'] });
+  await qhApi.adminAiAudienceRemove(7);
+  assert.deepEqual(calls, [['/admin/ai/audience', 'POST', { kind: 'team', values: ['4', '5'] }],
+    ['/admin/ai/audience/7', 'DELETE', null]]);
 });

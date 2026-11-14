@@ -52,6 +52,11 @@ def web(monkeypatch):
     monkeypatch.setattr(admin_mod.admins, "is_super_admin", lambda uid: st["super"])
     monkeypatch.setattr(ai, "settings", lambda: st["settings"])
     monkeypatch.setattr(ai, "providers", lambda: st["providers"])
+    st["rules"] = [{"id": 1, "kind": "role", "value": "super_admin",
+                    "created_by": "migration 211"}]
+    monkeypatch.setattr(ai, "audience_rules", lambda: st["rules"])
+    monkeypatch.setattr(ai, "audience_count", lambda rules: 3)
+    monkeypatch.setattr(ai, "in_audience", lambda uid, rules=None: uid == SUPER)
     monkeypatch.setattr(ai, "get_provider",
                         lambda pid: next((p for p in st["providers"] if p.id == pid), None))
 
@@ -72,10 +77,12 @@ def _err(r):
     return body.get("error") or body.get("detail") or body
 
 
-def test_status_is_open_to_a_whitelisted_person(web):
+def test_status_follows_the_audience(web):
+    assert web.get("/api/ai/status").json()["enabled"] is True
+    # A whitelisted person outside the audience sees it off.
     web.st["uid"] = PLAIN
     r = web.get("/api/ai/status")
-    assert r.status_code == 200 and r.json()["enabled"] is True
+    assert r.status_code == 200 and r.json() == {"enabled": False}
 
 
 def test_complete_maps_a_refusal_to_its_status(web, monkeypatch):
@@ -204,7 +211,7 @@ def submit(monkeypatch):
     monkeypatch.setattr(cs.db, "fetch_one", lambda sql, params=None: None)
     from queryhub import lifecycle
     monkeypatch.setattr(lifecycle, "is_draining", lambda: False)
-    monkeypatch.setattr(ai, "is_enabled", lambda: st["ai_on"])
+    monkeypatch.setattr(ai, "is_enabled_for", lambda uid: st["ai_on"])
     reached = {}
 
     def stop(prep, draft_id=None):
@@ -268,3 +275,58 @@ def test_the_migration_and_the_key_rotation_cover_the_new_table():
     rot = (ROOT / "scripts" / "rotate_master_key.py").read_text()
     assert "UPDATE ai_providers SET api_key_encrypted" in rot
     assert "ai_providers.api_key_encrypted" in (ROOT / "docs" / "KEY_ROTATION.md").read_text()
+
+
+# --- who can use it -------------------------------------------------------------
+
+
+def test_the_admin_view_carries_the_audience(web):
+    body = web.get("/api/admin/ai").json()
+    assert body["audience"]["count"] == 3
+    assert body["audience"]["rules"][0]["value"] == "super_admin"
+    assert "effect" not in body["audience"]["rules"][0]
+    assert body["audience"]["roles"]["approver"] == "Approvers"
+
+
+def test_several_rules_are_added_in_one_call(web, monkeypatch):
+    seen = []
+    monkeypatch.setattr(ai, "clean_audience", lambda k, v: (k, list(v)))
+    monkeypatch.setattr(ai, "add_audience",
+                        lambda cur, k, v, uid, name: seen.append((k, v, uid)) or len(v))
+    r = web.post("/api/admin/ai/audience", json={"kind": "team", "values": ["4", "5"]})
+    assert r.status_code == 201, r.text
+    assert seen == [("team", ["4", "5"], SUPER)] and r.json()["added"] == 2
+    assert len(web.st["tx"]) == 1
+
+
+def test_a_bad_audience_write_is_400(web, monkeypatch):
+    def bad(*a):
+        raise ValueError("Team 9 does not exist.")
+    monkeypatch.setattr(ai, "clean_audience", bad)
+    r = web.post("/api/admin/ai/audience", json={"kind": "team", "values": ["9"]})
+    assert r.status_code == 400 and _err(r)["message"] == "Team 9 does not exist."
+    assert not web.st["tx"]
+
+
+def test_an_audience_rule_is_removed_and_an_unknown_one_is_404(web, monkeypatch):
+    gone = []
+    monkeypatch.setattr(ai, "remove_audience", lambda cur, rule, uid, name: gone.append(rule["id"]))
+    assert web.delete("/api/admin/ai/audience/1").status_code == 200
+    assert gone == [1]
+    assert web.delete("/api/admin/ai/audience/99").status_code == 404
+
+
+def test_audience_writes_need_a_super_admin(web):
+    web.st["super"] = False
+    assert web.post("/api/admin/ai/audience", json={"kind": "everyone"}).status_code == 403
+    assert web.delete("/api/admin/ai/audience/1").status_code == 403
+    assert not web.st["tx"]
+
+
+def test_the_audience_migration_seeds_the_super_admins_and_has_no_block():
+    mig = (ROOT / "migrations" / "211_ai_audience.sql").read_text()
+    assert "CREATE TABLE IF NOT EXISTS ai_audience" in mig
+    assert "UNIQUE (kind, value)" in mig
+    assert "('role', 'super_admin', 'migration 211')" in mig
+    assert "ON CONFLICT (kind, value) DO NOTHING" in mig
+    assert "effect" not in mig and "block" not in mig.lower()

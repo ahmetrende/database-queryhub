@@ -349,7 +349,7 @@ def submit_query(body: QueryIn, request: Request,
         unmasked=body.unmasked,
         run_on=body.runOn,
         replica_id=body.replicaId if body.runOn == "replica" else None,
-        ai_assisted=body.aiAssisted and ai.is_enabled(),
+        ai_assisted=body.aiAssisted and ai.is_enabled_for(uid),
     )
     if isinstance(prep, core_submit.Rejection):
         _record_refusal(claims, "web", t.id, body.databaseId, body.sql, prep)
