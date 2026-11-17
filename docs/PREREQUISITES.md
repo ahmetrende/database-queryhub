@@ -275,6 +275,9 @@ The bot sets `application_name=queryhub req=<id> by=<email-or-slack-id>`
 on every target connection. With this prefix, the target's Postgres log
 tells you which request ran a query, next to the query itself.
 
+On SQL Server, a request session gets the same name as its `program_name`
+(`APP_NAME()`, `sys.dm_exec_sessions.program_name`).
+
 ### Per-team Postgres role enforcement
 
 For defense-in-depth beyond the bot's application-layer team grants,

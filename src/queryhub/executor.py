@@ -1016,6 +1016,10 @@ def _run(request: dict, client: WebClient) -> None:
                              request.get("requester_name"),
                              "execution_run_on_forced", forced)
 
+        # The session name of this request on the target: application_name on
+        # PostgreSQL, program_name on SQL Server.
+        app_name = _build_application_name(request)
+
         # SQL Server (MSSQL) uses a separate pyodbc flow — no search_path /
         # SET ROLE / SET LOCAL prelude / EXPLAIN plan / CONCURRENTLY rules.
         # It builds the same _StmtResult list and shares _finalize + the
@@ -1031,7 +1035,8 @@ def _run(request: dict, client: WebClient) -> None:
             # group's readable secondary and goes to the listener.
             _run_mssql(client, request, target, mode, report,
                        db_user, password, timeout_sec, max_rows, max_csv_bytes,
-                       unmask=unmask, force_primary=run_on.kind == "primary")
+                       unmask=unmask, force_primary=run_on.kind == "primary",
+                       app_name=app_name)
             return
 
         if target.engine == "clickhouse":
@@ -1039,7 +1044,6 @@ def _run(request: dict, client: WebClient) -> None:
                             timeout_sec, max_rows, max_csv_bytes, unmask=unmask)
             return
 
-        app_name = _build_application_name(request)
         # The request id and the requester, in front of each statement this
         # request sends. Some audit logs keep the text and lose app_name.
         audit_tag = sql_audit_comment.for_request(request)
@@ -1738,7 +1742,8 @@ def _log_athena_cost(request_id: int, target, cur) -> None:
 def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
                db_user: str, password: str, timeout_sec: int,
                max_rows: int, max_csv_bytes: int,
-               unmask: bool = False, force_primary: bool = False) -> None:
+               unmask: bool = False, force_primary: bool = False,
+               app_name: str = "QueryHub") -> None:
     """SQL Server execution path (pyodbc). Reached only for a WIRED mssql
     target (fail-closed until then), called inside _run's try so the outer
     handler surfaces any error via _fail (the ordering guard applies). Reuses the
@@ -1752,7 +1757,10 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
     and no PG-style EXPLAIN plan (capture_plan=False).
 
     `force_primary` is a super-admin's `run_on = 'primary'`: a read goes to the
-    listener like a write does, and the readable secondary is not looked up."""
+    listener like a write does, and the readable secondary is not looked up.
+
+    `app_name` is the session's program_name: `_run` passes the same
+    `queryhub req=<id> by=<email>` name that a PostgreSQL session gets."""
     from . import mssql_exec
     request_id = request["id"]
     main_stmts = [s for s in report.statements if s.kind != "set"]
@@ -1765,15 +1773,18 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
             timeout_sec=timeout_sec)
         if ep:
             conn = mssql_exec.connect(ep[0], ep[1], db_name, db_user, password,
-                                      timeout_sec=timeout_sec, read_only=True)
+                                      timeout_sec=timeout_sec, read_only=True,
+                                      app_name=app_name)
         else:
             log.warning("Request %s: MSSQL read-routing unavailable — running "
                         "RO on the primary (no read offload).", request_id)
             conn = mssql_exec.connect(target.host, target.port, db_name, db_user,
-                                      password, timeout_sec=timeout_sec, read_only=False)
+                                      password, timeout_sec=timeout_sec, read_only=False,
+                                      app_name=app_name)
     else:
         conn = mssql_exec.connect(target.host, target.port, db_name, db_user,
-                                  password, timeout_sec=timeout_sec, read_only=False)
+                                  password, timeout_sec=timeout_sec, read_only=False,
+                                  app_name=app_name)
     try:
         t_start = time.monotonic()
         cur = conn.cursor()

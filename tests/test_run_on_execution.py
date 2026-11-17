@@ -708,3 +708,19 @@ def test_without_the_switch_the_statement_path_gets_no_comment(run_env, monkeypa
     monkeypatch.setattr(executor, "_execute_main_statement", spy)
     _run(run_env)
     assert seen == [""]
+
+
+def test_a_sql_server_request_gets_the_same_session_name_as_postgres(
+        run_env, monkeypatch):
+    """`_run` builds the session name once and gives it to the SQL Server path,
+    which sends it as program_name."""
+    mssql = type("T", (), {"id": 8, "alias": "prod-sales", "engine": "mssql",
+                           "host": "sql.example.test", "port": 1433,
+                           "default_database": "sales", "enabled": True,
+                           "username": "reader", "replica_of": None})()
+    monkeypatch.setattr(executor.targets, "get", lambda tid: mssql)
+    seen = {}
+    monkeypatch.setattr(executor, "_run_mssql",
+                        lambda *a, **k: seen.update(k))
+    _run(run_env)
+    assert seen["app_name"] == "queryhub-test"   # _build_application_name, stubbed

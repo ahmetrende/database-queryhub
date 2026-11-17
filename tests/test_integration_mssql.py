@@ -697,3 +697,20 @@ def test_a_view_gets_the_audit_comment_in_its_own_batch(
         "SELECT definition FROM sys.sql_modules "
         "WHERE object_id = OBJECT_ID(N'dbo.audit_probe')")[0]
     assert definition == sql
+
+
+def test_a_request_session_has_the_postgres_style_program_name(server, monkeypatch):
+    """`_run` passes the request's session name to `_run_mssql`. SQL Server
+    then shows the same `queryhub req=<id> by=<who>` as a PostgreSQL
+    session's application_name."""
+    name = "queryhub req=900777 by=U0AB12CD34"   # an email is masked in the result
+    report = query_safety.analyze("SELECT APP_NAME() AS app", engine="mssql")
+    user, password = server.login("ro")
+    finished = {}
+    monkeypatch.setattr(executor, "_finalize",
+                        lambda client, request, results, *a, **k:
+                        finished.__setitem__("results", results))
+    executor._run_mssql(None, server.request(), server.target(user), "ro", report,
+                        user, password, 30, 1000, 10 * 1024 * 1024, app_name=name)
+    (result,) = finished["results"]
+    assert _csv_rows(result.csv_path) == [["app"], [name]]

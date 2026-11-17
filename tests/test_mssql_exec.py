@@ -31,6 +31,15 @@ def test_connstring_braces_special_password():
     assert "PWD={p;a}}b}" in cs
 
 
+def test_connstring_app_name_is_braced():
+    # The per-request name holds spaces and "=" and an email. Braces keep the
+    # whole value in the APP field.
+    cs = mx.odbc_connection_string(
+        "h", 1433, "d", "u", "p", app_name="queryhub req=42 by=a.b@example.com")
+    assert "APP={queryhub req=42 by=a.b@example.com};" in cs
+    assert "APP={QueryHub};" in mx.odbc_connection_string("h", 1433, "d", "u", "p")
+
+
 def test_connstring_trust_cert_opt_in():
     cs = mx.odbc_connection_string("h", 1433, "d", "u", "p", trust_server_cert=True)
     assert "TrustServerCertificate=yes" in cs
