@@ -136,7 +136,8 @@ def odbc_connection_string(
         f"Encrypt={'yes' if encrypt else 'no'}",
         f"TrustServerCertificate={'yes' if trust_server_cert else 'no'}",
         f"Connection Timeout={int(connect_timeout)}",
-        f"APP={app_name}",
+        # Braced: the per-request name holds spaces and "=" (see connect()).
+        f"APP={_brace(app_name)}",
     ]
     if application_intent:
         parts.append(f"ApplicationIntent={application_intent}")
@@ -286,6 +287,7 @@ def connect(
     read_only: bool = False,
     trust_server_cert: bool | None = None,
     multi_subnet_failover: bool | None = None,
+    app_name: str = "QueryHub",
 ):
     """Open a SQL Server connection (autocommit off, so the caller controls
     the transaction like the Postgres path). `timeout_sec` is the per-query
@@ -293,7 +295,11 @@ def connect(
     AG listener routes to a readable secondary — the executor sets it for
     RO-tier queries and leaves it off for RW/DDL (which must hit the primary).
     Raises if pyodbc / the ODBC driver isn't installed — the caller must have
-    gated on engines.is_executable('mssql') first."""
+    gated on engines.is_executable('mssql') first.
+
+    `app_name` becomes the session's `program_name`. The executor passes the
+    same name that a PostgreSQL request session gets as `application_name`
+    (`queryhub req=<id> by=<email>`), so both engines name a request alike."""
     import pyodbc  # lazy: optional dependency, only on MSSQL-serving hosts
 
     if trust_server_cert is None:
@@ -306,6 +312,7 @@ def connect(
             trust_server_cert=trust_server_cert,
             application_intent=("ReadOnly" if read_only else None),
             multi_subnet_failover=multi_subnet_failover,
+            app_name=app_name,
         ),
         timeout=_CONNECT_TIMEOUT,
         autocommit=False,
