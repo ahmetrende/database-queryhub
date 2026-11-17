@@ -48,9 +48,11 @@ def is_open(user_id: str | None) -> bool:
         val = (cfg.get_setting(SWITCH, "off") or "").strip().lower()
         if val not in _ON:
             return True
-        if user_id and user_id in _allowed_users():
+        if not user_id:
+            return False
+        if user_id in _allowed_users():
             return True
-        return bool(user_id) and admins.is_super_admin(user_id)
+        return admins.is_super_admin(user_id)
     except Exception:
         log.exception("slack entry gate: read failed for %s; refusing", user_id)
         return False
