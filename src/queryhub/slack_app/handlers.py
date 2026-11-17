@@ -50,7 +50,7 @@ def _kill_switch_message() -> str:
 from slack_bolt import Ack, App
 from slack_sdk.web import WebClient
 
-from .. import access_requests, admins, audit, auto_approve, auto_approve_limits, auto_approve_requests, bundles, csv_import, db, db_scope, engines, executor, favorites, grants, idp_sync_guard, manual_runs, pre_flight, profile_sync, query_safety, ratings, requesters, schema_catalog, targets, teams, templates
+from .. import access_requests, admins, audit, auto_approve, auto_approve_limits, auto_approve_requests, bundles, csv_import, db, db_scope, engines, executor, favorites, grants, idp_sync_guard, manual_runs, pre_flight, profile_sync, query_safety, ratings, requesters, schema_catalog, sql_audit_comment, targets, teams, templates
 from .. import config as cfg
 from .. import core_submit
 from .. import core_decide
@@ -1709,17 +1709,18 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
                 continue
             try:
                 rs = None
+                tag = sql_audit_comment.for_request(row)
                 if item["required_mode"] == "rw":
                     # UPDATE/DELETE/INSERT: affected-row estimate (planned,
                     # not run) — same hint the single-submit path adds.
                     rs = pre_flight.explain_write_estimate(
                         item["target_server_id"], item["database_name"],
-                        item["required_mode"], q,
+                        item["required_mode"], q, tag=tag,
                     )
                 else:
                     ok, _err, plan = pre_flight.explain(
                         item["target_server_id"], item["database_name"],
-                        item["required_mode"], q,
+                        item["required_mode"], q, tag=tag,
                     )
                     if ok and plan is not None:
                         rs = pre_flight.risk_summary_text(plan)

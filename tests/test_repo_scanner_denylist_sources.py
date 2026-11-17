@@ -146,8 +146,8 @@ def test_a_service_database_is_still_denied():
     the same reason this scan exists: a test that spelled the real ones would
     be the leak it is testing for."""
     is_distinctive = _scanner()._database_is_distinctive
-    for name in ("example_service", "alpha_integration_service", "betadb_log",
-                 "SomeAdminDb", "XPLACEHOLDER", "example_service_rollback"):
+    for name in ("sample_widget_service", "alpha_integration_service", "betadb_log",
+                 "SomeAdminDb", "XPLACEHOLDER", "sample_widget_service_rollback"):
         assert is_distinctive(name), name
 
 

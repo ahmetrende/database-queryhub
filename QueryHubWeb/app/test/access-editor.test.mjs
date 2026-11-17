@@ -166,6 +166,26 @@ test('a new row starts with no connection and blocks Save with a reason', opts, 
     [{ connectionId: 'beta-cache', databases: ['*'], tier: 'RO', expiresAt: null }], { untouched: [] }]]);
 });
 
+test('a database name finds its connection, and the pick limits the row to that database', opts, () => {
+  const ui = mount('TeamsView');
+  ui.editTeam('Team Beta');
+  ui.click(ui.button('Add a connection', ui.ed()));
+  ui.type(ui.combo(), 'billing');
+  const opt = ui.options();
+  assert.deepEqual(opt.map(o => o.querySelector('.qh-connpick-name').textContent), ['prod-main']);
+  assert.equal(opt[0].querySelector('.qh-connpick-db').textContent, 'DB: billing');
+  ui.key(ui.combo(), 'Enter');
+  assert.deepEqual(ui.titles(), ['prod-main']);
+  // The button above the list puts the next new row first.
+  ui.click(ui.button('Add a connection', ui.ed()));
+  const rows = ui.all('.qh-acced-row', ui.ed());
+  assert.ok(rows[0].classList.contains('is-pending'), 'the new row is first');
+  ui.click(rows[0].querySelector('.qh-acced-x'));
+  ui.click(ui.save());
+  assert.deepEqual(ui.rec.saved, [['team', 'Team Beta',
+    [{ connectionId: 'prod-main', databases: ['billing'], tier: 'RO', expiresAt: null }], { untouched: [] }]]);
+});
+
 test('a held row shows its connection as a title, never as a select', opts, () => {
   const ui = mount('TeamsView');
   ui.editTeam('Team Alpha');
@@ -283,7 +303,8 @@ test('the picker lists a connection that is in use, and refuses it with the reas
   assert.equal(ui.combo().value, '');
   assert.ok(ui.all('.qh-acced-row.is-pending', ui.ed()).length === 1);
   ui.mouseDown(byName('delta-logs'));
-  assert.deepEqual(ui.titles(), ['prod-main', 'beta-cache', 'gamma-report', 'delta-logs']);
+  // The first Add a connection button is the one above the list: its row goes first.
+  assert.deepEqual(ui.titles(), ['delta-logs', 'prod-main', 'beta-cache', 'gamma-report']);
   // Two empty rows never stand side by side.
   ui.click(ui.button('Add a connection', ui.ed()));
   ui.click(ui.button('Add a connection', ui.ed()));

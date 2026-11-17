@@ -122,6 +122,7 @@ def explain(
     *,
     summary: bool = False,
     allow_write: bool = False,
+    tag: str = "",
 ) -> tuple[bool, str | None, list | None]:
     """Run EXPLAIN against the target. Returns (ok, error, plan).
       ok=True,  error=None, plan=list-or-None  → query parses+plans cleanly.
@@ -186,8 +187,10 @@ def explain(
     # shows it); it is off by default so the Slack submit path is byte-for-
     # byte unchanged. ANALYZE stays OFF either way — nothing runs.
     _summary = ", SUMMARY ON" if summary else ""
+    # `tag` is the audit comment (see `sql_audit_comment`), or "".
     explain_sql = (
-        f"EXPLAIN (FORMAT JSON, ANALYZE OFF, COSTS ON, BUFFERS OFF{_summary}) "
+        tag
+        + f"EXPLAIN (FORMAT JSON, ANALYZE OFF, COSTS ON, BUFFERS OFF{_summary}) "
         + query
     )
 
@@ -268,6 +271,8 @@ def explain_write_estimate(
     database: str,
     mode: str,
     query: str,
+    *,
+    tag: str = "",
 ) -> str | None:
     """Estimated affected-row hint for a single data-modifying statement
     (UPDATE / DELETE / INSERT / MERGE), or None when unavailable.
@@ -309,7 +314,8 @@ def explain_write_estimate(
     except LookupError:
         return None
 
-    explain_sql = "EXPLAIN (FORMAT JSON, ANALYZE OFF, COSTS ON, BUFFERS OFF) " + query
+    explain_sql = (tag + "EXPLAIN (FORMAT JSON, ANALYZE OFF, COSTS ON, BUFFERS OFF) "
+                   + query)
     try:
         with psycopg.connect(
             host=target.host,
@@ -437,6 +443,7 @@ def validate_statements(
     statements: list,
     *,
     budget_s: float = _VALIDATE_BUDGET_S,
+    tag: str = "",
 ) -> tuple[bool, str | None, str | None]:
     """Plan every statement of a request. Returns (ok, error, hint).
 
@@ -518,7 +525,7 @@ def validate_statements(
                 current_sql = sql
                 cur.execute(f"SET LOCAL statement_timeout = {min(left_ms, 2000)}")
                 cur.execute(
-                    "EXPLAIN (FORMAT JSON, ANALYZE OFF, COSTS ON, BUFFERS OFF) "
+                    tag + "EXPLAIN (FORMAT JSON, ANALYZE OFF, COSTS ON, BUFFERS OFF) "
                     + sql, prepare=True)  # see "Why every EXPLAIN here"
                 row = cur.fetchone()
                 if index == 0:

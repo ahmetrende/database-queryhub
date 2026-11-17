@@ -186,9 +186,10 @@ def test_the_executor_checks_before_it_opens_a_portal():
     src = (pathlib.Path(__file__).resolve().parent.parent / "src"
            / "queryhub" / "executor.py").read_text(encoding="utf-8")
     i_guard = src.index("stmt_guard.check(cur, stmt.rewritten")
-    i_stream = src.index("stream = cur.stream(stmt.rewritten)")
-    i_exec = src.index("cur.execute(stmt.rewritten)")
-    assert i_guard < i_stream and i_guard < i_exec
+    i_stream = src.index("stream = cur.stream(run_sql)")
+    i_exec = src.index("cur.execute(run_sql)")
+    i_comment = src.index("cur.execute(audit_tag.rstrip())")
+    assert i_guard < i_stream and i_guard < i_exec and i_guard < i_comment
 
 
 def test_the_counted_text_is_the_text_that_runs():

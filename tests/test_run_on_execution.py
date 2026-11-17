@@ -676,3 +676,35 @@ def test_a_terminated_connection_after_a_stop_reads_as_a_stop(run_env, monkeypat
     (msg, k), = calls
     assert msg == "Cancelled by Jordan Ray while it was running."
     assert k["stopped"][0] == "cancelled_running"
+
+
+# --- the audit comment ---------------------------------------------------------------
+
+def test_the_audit_comment_of_the_request_reaches_the_statement_path(
+        run_env, monkeypatch):
+    """With bot_config sql_audit_comment on, the comment names this request and
+    its requester, and goes to the statement path."""
+    from queryhub import profile_sync
+    run_env["settings"]["sql_audit_comment"] = "on"
+    monkeypatch.setattr(profile_sync, "lookup_email", lambda uid: "ex@example.test")
+    seen = []
+    inner = executor._execute_main_statement
+
+    def spy(cur, *a, **k):
+        seen.append(k.get("audit_tag"))
+        return inner(cur, *a, **k)
+    monkeypatch.setattr(executor, "_execute_main_statement", spy)
+    _run(run_env)
+    assert seen == ["/* QueryHub (slack) req_id=1 by=ex@example.test */ "]
+
+
+def test_without_the_switch_the_statement_path_gets_no_comment(run_env, monkeypatch):
+    seen = []
+    inner = executor._execute_main_statement
+
+    def spy(cur, *a, **k):
+        seen.append(k.get("audit_tag"))
+        return inner(cur, *a, **k)
+    monkeypatch.setattr(executor, "_execute_main_statement", spy)
+    _run(run_env)
+    assert seen == [""]
