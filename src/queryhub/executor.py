@@ -35,7 +35,7 @@ except ModuleNotFoundError:  # vanilla profile: the [slack] extra isn't installe
 if TYPE_CHECKING:  # only a type hint — no runtime dependency on slack_sdk
     from slack_sdk.web import WebClient
 
-from . import access, admins, audit, auto_approve, cancellation, cell_format, core_submit, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, query_secrets, ratings, replicas, requesters, row_limits, stmt_guard, targets, teams
+from . import access, admins, audit, auto_approve, cancellation, cell_format, core_submit, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, query_secrets, ratings, replicas, requesters, row_limits, sql_audit_comment, stmt_guard, targets, teams
 from . import config as cfg
 from .slack_app import notifications
 
@@ -1040,6 +1040,9 @@ def _run(request: dict, client: WebClient) -> None:
             return
 
         app_name = _build_application_name(request)
+        # The request id and the requester, in front of each statement this
+        # request sends. Some audit logs keep the text and lose app_name.
+        audit_tag = sql_audit_comment.for_request(request)
 
         # Tighter cap on idle-in-transaction so a stalled bot can't hold
         # locks past the query's own timeout window. statement_timeout
@@ -1169,7 +1172,7 @@ def _run(request: dict, client: WebClient) -> None:
                         # Prelude SET LOCAL statements (auto-rewritten to LOCAL by
                         # query_safety). Empty in the autocommit path by construction.
                         for s in prelude_stmts:
-                            cur.execute(s.rewritten)
+                            cur.execute(audit_tag + s.rewritten)
 
                         # An EXPLAIN plan is delivered inline as a code block rather
                         # than a file — but only for a lone EXPLAIN statement, and
@@ -1203,6 +1206,7 @@ def _run(request: dict, client: WebClient) -> None:
                                 # Wire-level multi-command refusal (Postgres path only;
                                 # the pyodbc path has no equivalent knob).
                                 force_extended=True,
+                                audit_tag=audit_tag,
                             )
                             if res.csv_path is not None:
                                 csv_paths_to_cleanup.append(res.csv_path)
@@ -1657,6 +1661,9 @@ def _run_clickhouse(client: WebClient, request: dict, target, report,
     request_id = request["id"]
     main_stmts = [s for s in report.statements if s.kind != "set"]
     result_format = request.get("result_format") or "csv"
+    # Only in the text: the login is readonly=1, which refuses the
+    # `log_comment` setting like every other setting.
+    audit_tag = sql_audit_comment.for_request(request)
 
     t_start = time.monotonic()
     stmt_results: list[_StmtResult] = []
@@ -1677,6 +1684,7 @@ def _run_clickhouse(client: WebClient, request: dict, target, report,
                 requester_id=request["requester_slack_id"],
                 unmasked=unmask,
                 capture_plan=False,      # ClickHouse EXPLAIN is not Postgres's
+                audit_tag=audit_tag,
             )
         finally:
             # Also what ends a result read short at the row cap: the server
@@ -1750,6 +1758,7 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
     main_stmts = [s for s in report.statements if s.kind != "set"]
     result_format = request.get("result_format") or "csv"
     db_name = request["database_name"]
+    audit_tag = sql_audit_comment.for_request(request)
     if mode == "ro" and not force_primary:
         ep = mssql_exec.resolve_ro_endpoint(
             target.host, target.port, db_name, db_user, password,
@@ -1807,6 +1816,7 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
                     requester_id=request["requester_slack_id"],
                     unmasked=unmask,
                     capture_plan=False,   # no PG-style EXPLAIN plan on SQL Server
+                    audit_tag=audit_tag,
                 )
             except Exception:
                 if not wrapped:
@@ -1824,6 +1834,7 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
                     requester_id=request["requester_slack_id"],
                     unmasked=unmask,
                     capture_plan=False,
+                    audit_tag=audit_tag,
                 )
             stmt_results.append(res)
         conn.commit()
@@ -1857,6 +1868,7 @@ def _execute_main_statement(
     capture_plan: bool = False,
     on_committed=None,
     force_extended: bool = False,
+    audit_tag: str = "",
 ) -> _StmtResult:
     """Execute one main (non-SET) statement and capture its outcome.
 
@@ -1891,6 +1903,10 @@ def _execute_main_statement(
     `stream()` uses the extended protocol too, so the wire-level multi-command
     refusal above still applies. Only read-only leading keywords stream: the
     server reports no rowcount for a streamed statement, which DML needs.
+
+    `audit_tag` is the comment from `sql_audit_comment`, or "". It goes in
+    front of the text sent to the server and of the lineage EXPLAIN. The
+    checks and the result labels use the statement without it.
     """
     # Ask the server how many statements it reads here, and refuse if that is
     # more than the one that was approved. On Postgres the extended protocol
@@ -1917,21 +1933,31 @@ def _execute_main_statement(
     pii_lineage_map = None
     if wants_result and pii.is_enabled():
         pii_lineage_map = pii_lineage.source_columns(
-            cur, stmt.rewritten, engine=engine)
+            cur, stmt.rewritten, engine=engine, tag=audit_tag)
+
+    # On SQL Server a comment in front of CREATE PROCEDURE (or a function, a
+    # view, a trigger) becomes part of the module's stored text. Send it as
+    # its own batch on this connection instead, just before the statement.
+    run_sql = stmt.rewritten
+    if audit_tag:
+        if sql_audit_comment.needs_own_batch(stmt.rewritten, engine):
+            cur.execute(audit_tag.rstrip())
+        else:
+            run_sql = audit_tag + stmt.rewritten
 
     rows = cur          # what the row-consuming paths below iterate
     streamed = False
     if force_extended and stmt.leading.upper() in _STREAMABLE_LEADING:
-        stream = cur.stream(stmt.rewritten)
+        stream = cur.stream(run_sql)
         streamed = True
         # stream() is lazy and only fills cur.description once a row has been
         # produced, so pull one and put it back in front of the iterator.
         first = next(stream, _NO_ROW)
         rows = stream if first is _NO_ROW else itertools.chain([first], stream)
     elif force_extended:
-        cur.execute(stmt.rewritten, prepare=True)
+        cur.execute(run_sql, prepare=True)
     else:
-        cur.execute(stmt.rewritten)
+        cur.execute(run_sql)
     if on_committed is not None:
         on_committed()
     res = _StmtResult(index=index, leading=stmt.leading,

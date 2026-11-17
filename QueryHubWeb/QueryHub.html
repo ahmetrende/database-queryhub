@@ -1823,7 +1823,7 @@
   /* 2026-11-13 · Grants, layout A (person first). Tokens only: each token has its own dark value in the theme file, so no raw colour and no dark partner is needed here. Text on the danger and warning tints uses the strong stops of the status chips (4.99:1 and 6.4:1 measured there). */
   .qh-gra { display: flex; flex-direction: column; gap: 12px; }
   .qh-gra-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  .qh-gra-filters .qh-search { margin-left: auto; min-width: 220px; }
+  .qh-gra-filters .qh-search { flex: 0 1 300px; min-width: 220px; }
   .qh-gra-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; font-family: inherit; font-size: 12.5px; font-weight: 600; color: var(--fg-secondary); background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: 999px; cursor: pointer; }
   .qh-gra-chip:hover { background: var(--adaptive-light); }
   .qh-gra-chip.is-on { color: var(--fg-accent); background: var(--brand-adaptive-light); border-color: var(--stroke-accent); }
@@ -1959,6 +1959,9 @@
   .qh-connpick-opt.is-taken .qh-engine-logo, .qh-connpick-opt:has(.qh-conn-off) .qh-engine-logo { filter: grayscale(1); opacity: 0.45; }
   .qh-connpick-name { min-width: 0; font-family: var(--qh-mono); font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
   .qh-connpick-meta { margin-left: auto; font-size: 11.5px; color: var(--fg-secondary); }
+  .qh-connpick-db { font-size: 11.5px; color: var(--fg-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qh-gra-acts.is-top { margin-bottom: 8px; }
+  .qh-acced-addtop { align-self: flex-start; }
   .qh-connpick-none { padding: 10px 8px; font-size: 12.5px; color: var(--fg-secondary); }
   /* One action bar. `sticky` keeps it in view while the list is longer than
      the screen. The background hides the rows that scroll under it. Chrome

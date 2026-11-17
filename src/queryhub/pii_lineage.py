@@ -115,7 +115,8 @@ def _names_in(expr: str) -> set[str]:
     return out
 
 
-def _postgres(cur, sql: str, n_columns: int | None) -> list[set[str]] | None:
+def _postgres(cur, sql: str, n_columns: int | None,
+              tag: str = "") -> list[set[str]] | None:
     """Postgres lineage via EXPLAIN VERBOSE.
 
     Runs inside a SAVEPOINT and **always rolls back to it**, which is doing two
@@ -128,6 +129,9 @@ def _postgres(cur, sql: str, n_columns: int | None) -> list[set[str]] | None:
 
     The plan is already in Python by then; there is nothing in the transaction
     worth keeping.
+
+    `tag` is the audit comment (see `sql_audit_comment`), or "". It goes in
+    front of the EXPLAIN.
     """
     try:
         cur.execute("SAVEPOINT qh_pii_lineage")
@@ -136,7 +140,7 @@ def _postgres(cur, sql: str, n_columns: int | None) -> list[set[str]] | None:
         return None
     try:
         cur.execute(f"SET LOCAL statement_timeout = {_PLAN_TIMEOUT_MS}")
-        cur.execute("EXPLAIN (VERBOSE, FORMAT JSON, COSTS OFF) " + sql)
+        cur.execute(tag + "EXPLAIN (VERBOSE, FORMAT JSON, COSTS OFF) " + sql)
         row = cur.fetchone()
         plan = row[0] if isinstance(row, (list, tuple)) else row
         # dict_row cursors hand back {'QUERY PLAN': [...]}.
@@ -176,7 +180,8 @@ def supported(engine: str | None) -> bool:
 
 
 def source_columns(cur, sql: str, *, engine: str = "postgres",
-                   n_columns: int | None = None) -> list[set[str]] | None:
+                   n_columns: int | None = None,
+                   tag: str = "") -> list[set[str]] | None:
     """Source column names per result position, or None when unavailable.
 
     MUST be called before the caller opens a result portal on `cur`. Issuing a
@@ -193,7 +198,7 @@ def source_columns(cur, sql: str, *, engine: str = "postgres",
     if fn is None:
         return None
     try:
-        return fn(cur, sql, n_columns)
+        return fn(cur, sql, n_columns, tag)
     except Exception:
         log.debug("lineage resolver raised", exc_info=True)
         return None

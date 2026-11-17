@@ -158,6 +158,20 @@ test('a row click opens one line per server, and Edit access opens the editor', 
   assert.ok(ui.row('Jordan Ray').querySelector('.qh-acced'), 'the access editor opens in the row');
 });
 
+test('the search box comes first, and Edit access shows above and below the lines', opts, async () => {
+  const ui = mount();
+  await ui.flush();
+  const filters = ui.doc.querySelector('.qh-gra-filters');
+  assert.ok(filters.firstElementChild.classList.contains('qh-search'), 'the search box is on the left');
+  ui.click(ui.row('Jordan Ray').querySelector('.qh-gra-rowbtn'));
+  const edits = Array.from(ui.row('Jordan Ray').querySelectorAll('.qh-gra-acts button')).filter(b => b.textContent === 'Edit access');
+  assert.equal(edits.length, 2);
+  const detail = ui.row('Jordan Ray').querySelector('.qh-gra-detail');
+  assert.ok(detail.firstElementChild.classList.contains('is-top'), 'one is above the lines');
+  ui.click(edits[0]);
+  assert.ok(ui.row('Jordan Ray').querySelector('.qh-acced'), 'the top button opens the editor too');
+});
+
 test('Remove on a direct line asks first, then revokes that grant', opts, async () => {
   const ui = mount();
   await ui.flush();

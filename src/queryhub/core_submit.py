@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from . import admins, ast_safety, audit, auto_approve, db, db_scope, engines, pre_flight
 from . import config as cfg
 from . import (origins, profile_sync, query_safety, query_secrets, replicas, requesters,
-               targets, teams)
+               sql_audit_comment, targets, teams)
 
 log = logging.getLogger(__name__)
 
@@ -497,10 +497,14 @@ def validate_submission(
         except Exception:
             log.exception("athena risk hint failed; continuing without one")
 
+    # The pre-flight EXPLAINs carry the audit comment too. The request row
+    # does not exist yet, so the comment says req_id=none.
+    check_tag = sql_audit_comment.prefix(origin=origin, principal=user_id)
+
     if (pre_flight.is_enabled() and required_mode == "ro"
             and pre_flight.is_explainable(query)):
         ok, err, plan = pre_flight.explain(
-            target.id, database, required_mode, query,
+            target.id, database, required_mode, query, tag=check_tag,
         )
         if not ok:
             return Rejection(
@@ -538,7 +542,8 @@ def validate_submission(
         if pre_flight.script_validation_enabled():
             try:
                 ok, err, hint = pre_flight.validate_statements(
-                    target.id, database, required_mode, safety.statements)
+                    target.id, database, required_mode, safety.statements,
+                    tag=check_tag)
             except Exception:
                 log.exception("pre-flight validation crashed; continuing without it")
                 ok, err, hint = True, None, None
@@ -550,7 +555,7 @@ def validate_submission(
         elif required_mode == "rw":
             try:
                 risk_summary = pre_flight.explain_write_estimate(
-                    target.id, database, required_mode, query,
+                    target.id, database, required_mode, query, tag=check_tag,
                 )
             except Exception:
                 log.exception("write-estimate failed; continuing without hint")

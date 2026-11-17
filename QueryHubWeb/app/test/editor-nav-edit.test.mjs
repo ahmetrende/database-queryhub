@@ -230,6 +230,54 @@ test('a bracket or a quote over a selection wraps it', () => {
   assert.equal(W.qhWrapSelection('x', 0, 1, 'constructor'), null, 'no prototype key');
 });
 
+// ---------- auto-close pairs and the string guard ----------
+
+test('( [ and quotes close themselves before a space, a line end or a closing mark', () => {
+  assert.deepEqual(W.qhAutoPair('SELECT ', 7, '('), { value: 'SELECT ()', sel: [8, 8] });
+  assert.deepEqual(W.qhAutoPair('x = ', 4, "'"), { value: "x = ''", sel: [5, 5] });
+  assert.deepEqual(W.qhAutoPair('f(a, )', 5, '('), { value: 'f(a, ())', sel: [6, 6] });
+  assert.deepEqual(W.qhAutoPair('SELECT ', 7, '[', 'mssql'), { value: 'SELECT []', sel: [8, 8] });
+  assert.deepEqual(W.qhAutoPair('x = N', 5, "'", 'mssql'), { value: "x = N''", sel: [6, 6] }, 'a string prefix still pairs');
+  assert.equal(W.qhAutoPair('SELECT abc', 7, '('), null, 'before a word');
+  assert.equal(W.qhAutoPair('don', 3, "'"), null, 'right after a word');
+  assert.equal(W.qhAutoPair("x = 'abc ", 9, '('), null, 'in a string');
+  assert.equal(W.qhAutoPair('-- note ', 8, '('), null, 'in a comment');
+  assert.equal(W.qhAutoPair('x', 1, 'a'), null, 'another key');
+  assert.equal(W.qhAutoPair('x', 1, 'constructor'), null, 'no prototype key');
+});
+
+test('the closing mark at the caret is stepped over only when it closes something', () => {
+  assert.deepEqual(W.qhAutoPair("x = 'ab'", 7, "'"), { value: "x = 'ab'", sel: [8, 8] });
+  assert.deepEqual(W.qhAutoPair('count(x)', 7, ')'), { value: 'count(x)', sel: [8, 8] });
+  assert.deepEqual(W.qhAutoPair('[dbo]', 4, ']', 'mssql'), { value: '[dbo]', sel: [5, 5] });
+  assert.equal(W.qhAutoPair('max(count(x)', 11, ')'), null, 'a ) is missing: it types');
+  assert.equal(W.qhAutoPair("x = 'abc'", 4, "'"), null, 'a quote in front of a string types as usual');
+});
+
+test('Backspace in an empty pair removes both marks, but not an escaped quote', () => {
+  assert.deepEqual(W.qhPairBackspace('f()', 2), { value: 'f', sel: [1, 1] });
+  assert.deepEqual(W.qhPairBackspace("x = ''", 5), { value: 'x = ', sel: [4, 4] });
+  assert.equal(W.qhPairBackspace("'it''s'", 4), null, "'' in a string is one quote");
+  assert.equal(W.qhPairBackspace('f(x)', 3), null);
+  assert.equal(W.qhPairBackspace('', 0), null);
+});
+
+test('strings and comments, not quoted names, count as data', () => {
+  assert.equal(W.qhInStringOrComment("select 'ab"), true);
+  assert.equal(W.qhInStringOrComment("select 'it''s"), true);
+  assert.equal(W.qhInStringOrComment("select 'ab' x"), false);
+  assert.equal(W.qhInStringOrComment('select 1 -- note'), true);
+  assert.equal(W.qhInStringOrComment('select /* a */ x'), false);
+  assert.equal(W.qhInStringOrComment('select $$ab', 'postgres'), true);
+  assert.equal(W.qhInStringOrComment('select "Ab', 'postgres'), false, 'a quoted name keeps its list');
+  const SCHEMA = { tables: ['selection'], columns: ['sel_col'], dbs: [], functions: [], systemTables: [] };
+  const t = "SELECT * FROM selection WHERE sel_col = 'sel";
+  assert.equal(W.qhBuildSuggest(t, t.length, SCHEMA, 'postgres'), null, 'no list while typing in a string');
+  assert.ok(W.qhBuildSuggest(t, t.length, SCHEMA, 'postgres', { force: true }), 'Ctrl+Space still opens it');
+  const u = 'SELECT * FROM sel';
+  assert.ok(W.qhBuildSuggest(u, u.length, SCHEMA, 'postgres'), 'outside a string the list works');
+});
+
 // ---------- the real editor ----------
 
 function mount(initial, eng = 'postgres') {
@@ -322,6 +370,25 @@ test('( over a selection wraps it; ( with no selection types as usual', dom, asy
   assert.equal(ed.ctl.text, '[SELECT] (a + b)');
 });
 
+test('( closes itself, ) steps over, one Ctrl+Z undoes, Backspace removes an empty pair', dom, async () => {
+  const ed = mount('SELECT count');
+  ed.caret(12);
+  assert.equal(ed.press('(').defaultPrevented, true);
+  assert.equal(ed.ctl.text, 'SELECT count()');
+  await ed.wait(30);
+  assert.deepEqual(ed.sel, [13, 13]);
+  assert.equal(ed.press(')').defaultPrevented, true);
+  assert.equal(ed.ctl.text, 'SELECT count()', 'stepped over, not doubled');
+  assert.deepEqual(ed.sel, [14, 14]);
+  ed.press('z', { ctrlKey: true });
+  assert.equal(ed.ctl.text, 'SELECT count');
+  ed.caret(12);
+  ed.press('(');
+  await ed.wait(30);
+  assert.equal(ed.press('Backspace').defaultPrevented, true);
+  assert.equal(ed.ctl.text, 'SELECT count');
+});
+
 test('Alt+PageDown and Shift+F12 move the caret', dom, () => {
   const ed = mount('SELECT (1)\nSELECT 2');
   ed.caret(0);
@@ -361,6 +428,7 @@ test('the layer CSS and the shortcut list', () => {
   assert.match(html, /\.qh-pair \{ background: var\(--bg-medium\)/);
   const src = web('qh-editor.jsx');
   for (const k of ['Previous / next statement', 'Move line up / down', 'Add missing semicolons', 'Wrap the selection',
+                   'The closing mark goes in too. Backspace removes an empty pair',
                    'Go to the matching bracket, CASE/END or BEGIN/END']) {
     assert.ok(src.includes(k), k);
   }

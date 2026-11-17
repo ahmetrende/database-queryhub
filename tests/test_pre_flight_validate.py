@@ -410,7 +410,7 @@ def submit(monkeypatch):
     state = {"validate": (True, None, None), "validate_raises": False,
              "switch": True, "explain": (True, None, None)}
 
-    def validate(target_id, database, mode, statements):
+    def validate(target_id, database, mode, statements, tag=""):
         calls.append(f"validate:{mode}:{len(statements)}")
         if state["validate_raises"]:
             raise RuntimeError("boom")

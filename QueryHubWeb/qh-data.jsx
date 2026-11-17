@@ -69,7 +69,7 @@ function qhSvcTables(s) {
   const per = {
     orders: ['orders', 'order_items', 'shipments', 'audit_log'],
     billing: ['invoices', 'billing_ledger', 'payouts', 'audit_log'],
-    'conditional-order': ['conditional_orders', 'triggers', 'executions', 'audit_log'],
+    'conditional-order': ['stop_orders', 'triggers', 'executions', 'audit_log'],
     config: ['config_entries', 'feature_flags', 'service_registry', 'audit_log'],
     pricing: ['price_lists', 'price_changes', 'discounts', 'audit_log'],
     'payments-gateway': ['payments', 'transfers', 'providers', 'audit_log'],

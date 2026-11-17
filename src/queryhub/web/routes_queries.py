@@ -35,7 +35,8 @@ from pydantic import BaseModel, Field
 from .. import people
 from .. import admins, audit as audit_mod
 from .. import (ai, cancellation, core_submit, db, engines, origins, pending_expiry, pii,
-               pre_flight, profile_sync, query_safety, requesters, result_export)
+               pre_flight, profile_sync, query_safety, requesters, result_export,
+               sql_audit_comment)
 from .. import config as cfg
 from . import deps, mapping, sessions
 from .routes_data import _alias_of, _conn_state_resolver, _target_by_alias
@@ -1026,8 +1027,9 @@ def explain_query(body: ExplainIn, claims: dict = Depends(deps.current_user)):
             raise deps._error(403, "forbidden",
                               "Refused: a read-write plan preview needs a read-write grant.")
 
-    ok, err, plan = pre_flight.explain(t.id, database, explain_mode, sql,
-                                       summary=True, allow_write=True)
+    ok, err, plan = pre_flight.explain(
+        t.id, database, explain_mode, sql, summary=True, allow_write=True,
+        tag=sql_audit_comment.prefix(origin=_origin_for(claims), principal=uid))
     if not ok:
         raise deps._error(422, "validation",
                           err or "QueryHub could not plan the query.")

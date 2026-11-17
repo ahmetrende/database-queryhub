@@ -551,7 +551,10 @@ function ConnPick({ conns, taken, onPick, inputId, autoFocus }) {
   const wrapRef = qhUseDismiss(open, () => setOpen(false));
   const inRef = React.useRef(null);
   const term = q.trim().toLowerCase();
-  const list = (conns || []).filter(c => !term || (c.name + ' ' + (c.engine || '')).toLowerCase().includes(term));
+  // A database name finds its connection too: `heimdall` lists the server that
+  // holds a heimdall database. The option names the matching databases.
+  const dbHits = (c) => (term ? (c.databases || []).filter(d => String(d.name || d.id || '').toLowerCase().includes(term)) : []);
+  const list = (conns || []).filter(c => !term || (c.name + ' ' + (c.engine || '')).toLowerCase().includes(term) || dbHits(c).length > 0);
   const free = list.filter(c => !taken[c.id]);
   const cur = free.length ? free[Math.min(hi, free.length - 1)] : null;
   const optId = (c) => inputId + '-opt-' + c.id;
@@ -565,7 +568,14 @@ function ConnPick({ conns, taken, onPick, inputId, autoFocus }) {
     setUp(below < 320 && r.top > below);
   };
   React.useLayoutEffect(() => { if (open) place(); }, [open]);
-  const pick = (c) => { if (!c || taken[c.id]) return; setOpen(false); setQ(''); onPick(c.id); };
+  // The second argument is the one database the search names, when the
+  // connection was found by a database name and not by its own name.
+  const pick = (c) => {
+    if (!c || taken[c.id]) return;
+    const byName = (c.name + ' ' + (c.engine || '')).toLowerCase().includes(term);
+    const hits = byName ? [] : dbHits(c);
+    setOpen(false); setQ(''); onPick(c.id, hits.length === 1 ? hits[0].id : undefined);
+  };
   const move = (step) => setHi(h => (free.length ? (Math.min(h, free.length - 1) + step + free.length) % free.length : 0));
   return (
     <div className="qh-connpick" ref={wrapRef}>
@@ -595,6 +605,7 @@ function ConnPick({ conns, taken, onPick, inputId, autoFocus }) {
                 onMouseDown={e => { e.preventDefault(); pick(c); }}>
                 <img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} />
                 <span className="qh-connpick-name">{c.name}</span>
+                {dbHits(c).length > 0 && <span className="qh-connpick-db">{'DB: ' + dbHits(c).slice(0, 3).map(d => d.name || d.id).join(', ') + (dbHits(c).length > 3 ? ' +' + (dbHits(c).length - 3) : '')}</span>}
                 {state && <span className="qh-conn-off">{state}</span>}
                 {QH_SHOW_ENV_TAGS && c.env && <span className={'qh-envtag-sm env-' + c.env}>{c.env === 'production' ? 'PROD' : c.env === 'staging' ? 'STG' : c.env}</span>}
                 <span className="qh-connpick-meta">{why || c.engine || ''}</span>
@@ -665,13 +676,16 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
     setFocusSel(held.has(r.k) ? inRow(r.k, '.qh-acced-undo') : '.qh-acced-add, .qh-acced-empty .qh-btn');
   };
   // One empty row at a time: "Add a connection" while one waits goes to it.
-  const addRow = () => {
+  // The button above the list puts the new row first, so a long list does not
+  // hide it. The button below puts it last.
+  const addRow = (atTop) => {
     if (rows.some(r => !r.locked && !r.removed && !r.connectionId)) {
       const box = rootRef.current && rootRef.current.querySelector('.qh-connpick-in');
       if (box) box.focus();
       return;
     }
-    setRows(rs => [...rs, { k: nextKey(), connectionId: '', databases: ['*'], tier: 'RO', ttl: 'none', expDate: '' }]);
+    const row = { k: nextKey(), connectionId: '', databases: ['*'], tier: 'RO', ttl: 'none', expDate: '' };
+    setRows(rs => (atTop === true ? [row, ...rs] : [...rs, row]));
   };
   const live = rows.filter(r => !r.locked && !r.removed);
   const lockedConns = rows.filter(r => r.locked).map(r => r.connectionId);
@@ -756,7 +770,7 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
             {removeBtn(r, 'Remove the new row')}
           </div>
           <ConnPick conns={conns} taken={taken} inputId={id + 'conn'} autoFocus
-            onPick={cid => { setRow(r.k, { connectionId: cid, databases: ['*'] }); setFocusSel(inRow(r.k, '.qh-acced-levels .is-active')); }} />
+            onPick={(cid, db) => { setRow(r.k, { connectionId: cid, databases: db ? [db] : ['*'] }); setFocusSel(inRow(r.k, '.qh-acced-levels .is-active')); }} />
           <div className="qh-acced-hint">Pick a connection. Its access level, databases and end date open after that.</div>
         </div>
       );
@@ -810,12 +824,13 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
         <div className="qh-acced-empty">
           <div className="qh-acced-empty-t">No access yet.</div>
           <div className="qh-acced-empty-s">{subjectType === 'team' ? 'Every member of this team gets the access that you add here.' : 'Only the grants for this person show here. Access through a team stays as it is.'}</div>
-          <button type="button" className="qh-btn qh-btn-primary qh-btn-sm" onClick={addRow}><AIcon.plus />Add a connection</button>
+          <button type="button" className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => addRow(false)}><AIcon.plus />Add a connection</button>
         </div>
       ) : (
         <>
+          <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-acced-addtop" onClick={() => addRow(true)}><AIcon.plus />Add a connection</button>
           <div className="qh-acced-list">{rows.map(renderRow)}</div>
-          <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-acced-add" onClick={addRow}><AIcon.plus />Add a connection</button>
+          <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-acced-add" onClick={() => addRow(false)}><AIcon.plus />Add a connection</button>
         </>
       )}
 
@@ -1279,6 +1294,11 @@ function GraDetail({ st, actor, s, sum, showExpired, canWrite, onEdit, onPage })
     : l.source === 'team' ? 'team ' + l.team : (s.kind === 'team' ? 'team grant' : 'direct');
   return (
     <div className="qh-gra-detail">
+      {canWrite && lines.length > 0 && (
+        <div className="qh-gra-acts is-top">
+          <button type="button" className="qh-btn qh-btn-sm" onClick={onEdit}><AIcon.edit />Edit access</button>
+        </div>
+      )}
       <div className="qh-gra-lines" role="list" aria-label={'Access of ' + s.name}>
         {lines.map(l => (
           <React.Fragment key={l.source + ':' + l.g.id}>
@@ -1348,13 +1368,13 @@ function GraList({ st, actor, canWrite, fleet, fleetErr, onFleetRetry, onFleetRo
   return (
     <div className="qh-gra">
       <div className="qh-gra-filters" role="group" aria-label="Filters">
+        <AccSearch q={q} setQ={setQ} placeholder="Find a person, handle or server" />
         {GRA_CHIPS.map(([k, label]) => (
           <button key={k} type="button" aria-pressed={!!on[k]} className={'qh-gra-chip' + (on[k] ? ' is-on' : '')}
             onClick={() => setOn(o => ({ ...o, [k]: !o[k] }))}>
             {label}{GRA_COUNTED[k] && <span className="qh-gra-chip-n">{count(k)}</span>}
           </button>
         ))}
-        <AccSearch q={q} setQ={setQ} placeholder="Find a person, handle or server" />
       </div>
       <div className="qh-gra-bar">
         <div className="qh-seg qh-seg-sm" role="group" aria-label="Show">

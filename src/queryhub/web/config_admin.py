@@ -37,6 +37,7 @@ _TYPES = {
     "security_override_ttl_enabled": "bool", "web_auth_slack_enabled": "bool",
     "web_cookie_secure": "bool",
     "ai_enabled": "bool", "ai_user_model_choice": "bool",
+    "sql_audit_comment": "bool",
     # int
     "access_grant_default_days": "int", "auto_approve_max_days": "int",
     "batch_max_items": "int", "connection_health_interval_sec": "int",
@@ -97,7 +98,7 @@ _GROUPS = [
         "fingerprint_cache_enabled", "fingerprint_cache_ttl_days"]),
     ("execution", "Query execution", [
         "query_timeout_sec", "execution_lease_sec", "max_rows",
-        "batch_enabled", "batch_max_items"]),
+        "batch_enabled", "batch_max_items", "sql_audit_comment"]),
     ("safety", "Safety & pre-flight", [
         "ast_safety_enabled", "pre_flight_explain", "allow_explain_analyze",
         "query_plan_logging", "risk_high_cost", "risk_seq_scan_rows",

@@ -148,8 +148,10 @@ def test_lineage_is_resolved_before_any_portal_opens():
     src = (pathlib.Path(pii_lineage.__file__).parent / "executor.py") \
         .read_text(encoding="utf-8")
     i_lineage = src.index("pii_lineage.source_columns(")
-    assert i_lineage < src.index("stream = cur.stream(stmt.rewritten)")
-    assert i_lineage < src.index("cur.execute(stmt.rewritten)")
+    assert i_lineage < src.index("stream = cur.stream(run_sql)")
+    assert i_lineage < src.index("cur.execute(run_sql)")
+    # The audit comment batch on SQL Server is a statement too.
+    assert i_lineage < src.index("cur.execute(audit_tag.rstrip())")
 
 
 def test_arity_disagreement_is_refused_rather_than_mis_mapped():

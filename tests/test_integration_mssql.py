@@ -634,3 +634,66 @@ def test_table_facts_reads_triggers_and_statistics_with_the_ro_login(server):
     full = mssql_exec.table_facts(HOST, PORT, DATABASE, "sa", os.environ["QH_MSSQL_SA_PASSWORD"],
                                   "dbo", "people")
     assert full["triggers"][0]["def"].startswith("CREATE TRIGGER dbo.people_touch")
+
+
+# --- the audit comment (bot_config sql_audit_comment) ------------------------
+
+
+def _batches_with(server, marker):
+    """The text of the cached batches that hold `marker`, read as sysadmin."""
+    rows = server.query(
+        "SELECT t.text FROM sys.dm_exec_query_stats s "
+        "CROSS APPLY sys.dm_exec_sql_text(s.sql_handle) t "
+        "WHERE t.text LIKE ?", f"%{marker}%")
+    return [r[0] for r in rows or []]
+
+
+def test_the_audit_comment_reaches_the_server_in_front_of_a_query(
+        server, bot_config, monkeypatch):
+    """With the switch on, the server receives the comment and the statement as
+    one text, the comment first."""
+    from queryhub import profile_sync
+    bot_config["sql_audit_comment"] = "on"
+    monkeypatch.setattr(profile_sync, "lookup_email",
+                        lambda _pid: "jordan.ray@example.com")
+    request = server.request()
+    (result,) = _execute(server, "SELECT COUNT(*) AS n FROM dbo.people", "ro",
+                         monkeypatch, request=request)
+    assert _csv_rows(result.csv_path) == [["n"], ["1"]]
+    marker = f"req_id={request['id']} "
+    texts = _batches_with(server, marker)
+    assert any(t.startswith(f"/* QueryHub (slack) {marker}by=jordan.ray@example.com */ "
+                            "SELECT COUNT(*) AS n FROM dbo.people") for t in texts), texts
+
+
+def test_a_comment_in_the_same_batch_goes_into_the_procedure_text(server):
+    """Why a module statement gets the comment in its own batch: SQL Server
+    keeps the whole batch, comment included, as the module's definition."""
+    server.execute("/* QueryHub (slack) req_id=1 by=x */ "
+                   "CREATE PROCEDURE dbo.same_batch AS SELECT 1 AS a")
+    (definition,) = server.query(
+        "SELECT definition FROM sys.sql_modules "
+        "WHERE object_id = OBJECT_ID(N'dbo.same_batch')")[0]
+    assert definition.startswith("/* QueryHub")
+
+
+def test_a_view_gets_the_audit_comment_in_its_own_batch(
+        server, bot_config, monkeypatch):
+    """The server accepts the comment as a batch of its own, and the stored
+    view text does not hold it.
+
+    The test turns off the server statement count. SHOWPLAN reads the body of
+    a view or a procedure as a second statement, so `stmt_guard` refuses the
+    statement before the comment is sent. That is a separate issue."""
+    from queryhub import profile_sync
+    monkeypatch.setattr(stmt_guard, "check", lambda *args, **kwargs: None)
+    bot_config["sql_audit_comment"] = "on"
+    monkeypatch.setattr(profile_sync, "lookup_email",
+                        lambda _pid: "jordan.ray@example.com")
+    sql = "CREATE VIEW dbo.audit_probe AS SELECT id FROM dbo.ledger"
+    (result,) = _execute(server, sql, "ddl", monkeypatch)
+    assert not result.has_result_set
+    (definition,) = server.query(
+        "SELECT definition FROM sys.sql_modules "
+        "WHERE object_id = OBJECT_ID(N'dbo.audit_probe')")[0]
+    assert definition == sql

@@ -741,6 +741,7 @@ const QH_KW_AFTER_TABLE = new Set(['from', 'join', 'into', 'update', 'table', 't
 // `opts.force` (Ctrl+Space) also answers with nothing typed: every name matches.
 function qhBuildSuggest(value, caret, schema, engineId, opts) {
   const before = value.slice(0, caret);
+  if (!(opts && opts.force) && qhInStringOrComment(before, engineId)) return null;
   const m = before.match(/[A-Za-z_][A-Za-z0-9_]*$/);
   if (!m && !(opts && opts.force)) return null;
   const token = m ? m[0] : '';
@@ -1420,6 +1421,111 @@ function qhWrapSelection(value, a, b, ch) {
   if (!close || lo === hi) return null;
   const v = String(value == null ? '' : value);
   return { value: v.slice(0, lo) + ch + v.slice(lo, hi) + close + v.slice(hi), sel: [lo + 1, hi + 1] };
+}
+
+// Walk the code of `text` and skip strings, quoted names, `$tag$` bodies and
+// comments. `onChar` (optional) gets each code character. The answer is null
+// when the end of `text` is code. When the end is inside one of the others, the
+// answer is { kind: 'string' | 'name' | 'comment', q }, where `q` is the text
+// that closes it. `'' "" ]]` inside are escapes. `[...]` is a name on SQL
+// Server only: on the other engines `[` is an array subscript.
+function qhScanCode(text, engineId, onChar) {
+  const t = String(text == null ? '' : text);
+  const n = t.length;
+  let i = 0;
+  while (i < n) {
+    const c = t[i];
+    if (c === '-' && t[i + 1] === '-') {
+      const e = t.indexOf('\n', i + 2);
+      if (e < 0) return { kind: 'comment', q: '\n' };
+      i = e + 1; continue;
+    }
+    if (c === '/' && t[i + 1] === '*') {
+      const e = t.indexOf('*/', i + 2);
+      if (e < 0) return { kind: 'comment', q: '*/' };
+      i = e + 2; continue;
+    }
+    const close = (c === "'" || c === '"' || c === '`') ? c : (c === '[' && engineId === 'mssql') ? ']' : null;
+    if (close) {
+      let j = i + 1, open = true;
+      while (open) {
+        const k = t.indexOf(close, j);
+        if (k < 0) return { kind: c === "'" ? 'string' : 'name', q: close };
+        if (t[k + 1] === close) { j = k + 2; continue; }
+        i = k + 1; open = false;
+      }
+      continue;
+    }
+    if (c === '$' && engineId !== 'mssql' && !(i > 0 && /[A-Za-z0-9_]/.test(t[i - 1]))) {
+      const m = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(t.slice(i, i + 66));
+      if (m) {
+        const e = t.indexOf(m[0], i + m[0].length);
+        if (e < 0) return { kind: 'string', q: m[0] };
+        i = e + m[0].length; continue;
+      }
+    }
+    if (onChar) onChar(c, i);
+    i++;
+  }
+  return null;
+}
+
+// True when the end of `text` is inside a string or a comment. The typing list
+// stays shut there: a word in a string is data, not a name.
+function qhInStringOrComment(text, engineId) {
+  const st = qhScanCode(text, engineId);
+  return !!st && (st.kind === 'string' || st.kind === 'comment');
+}
+
+// Type ( [ ' " or ` with no selection and the closing mark goes in too. The
+// caret stays between the two. The closing mark goes in only before a space, a
+// line end, `)`, `]`, `,` or `;`. A mark typed in front of a word types as usual.
+// A quote right after a word types as usual too (`don't`), except after a
+// string prefix: N'..' E'..' B'..' X'..'. In a string, a quoted name or a
+// comment the key types as usual.
+// Type the closing mark when it is already at the caret and the caret steps
+// over it. A quote steps over only the quote that closes the string or name the
+// caret is in. ) and ] step over only when the text has as many closing as
+// opening marks, so a missing one can still be typed.
+// Returns { value, sel }, or null when the key types as usual. A step over
+// returns the same value with the caret one on.
+const QH_PAIR_BEFORE = /[\s)\],;]/;
+function qhAutoPair(value, caret, ch, engineId) {
+  const v = String(value == null ? '' : value);
+  const opens = Object.prototype.hasOwnProperty.call(QH_WRAP_PAIRS, ch);
+  const quote = ch === "'" || ch === '"' || ch === '`';
+  const closer = ch === ')' || ch === ']';
+  if (!opens && !closer) return null;
+  const st = qhScanCode(v.slice(0, caret), engineId);
+  const next = v[caret];
+  if (next === ch && (quote || closer)) {
+    if (st && st.q === ch) return { value: v, sel: [caret + 1, caret + 1] };
+    if (!st && closer) {
+      const o = ch === ')' ? '(' : '[';
+      let d = 0;
+      qhScanCode(v, engineId, (c) => { if (c === o) d++; else if (c === ch) d--; });
+      if (d <= 0) return { value: v, sel: [caret + 1, caret + 1] };
+    }
+    if (closer) return null;
+  }
+  if (!opens || st) return null;
+  if (next !== undefined && !QH_PAIR_BEFORE.test(next)) return null;
+  if (quote && caret > 0 && /[A-Za-z0-9_$]/.test(v[caret - 1])) {
+    const w = v.slice(0, caret).match(/[A-Za-z0-9_$]+$/)[0];
+    if (!(ch === "'" && /^[NEBXnebx]$/.test(w))) return null;
+  }
+  return { value: v.slice(0, caret) + ch + QH_WRAP_PAIRS[ch] + v.slice(caret), sel: [caret + 1, caret + 1] };
+}
+
+// Backspace between an empty pair -- () [] '' "" `` -- removes both marks. Not
+// in a string, a quoted name or a comment, where '' is an escaped quote.
+// Returns { value, sel }, or null for the usual Backspace.
+function qhPairBackspace(value, caret, engineId) {
+  const v = String(value == null ? '' : value);
+  const a = v[caret - 1], b = v[caret];
+  if (!a || !Object.prototype.hasOwnProperty.call(QH_WRAP_PAIRS, a) || QH_WRAP_PAIRS[a] !== b) return null;
+  if (qhScanCode(v.slice(0, caret - 1), engineId)) return null;
+  return { value: v.slice(0, caret - 1) + v.slice(caret + 1), sel: [caret - 1, caret - 1] };
 }
 
 // ---------------------------------------------------------------------------
@@ -4739,6 +4845,9 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
   const refreshAC = (ta, afterLookup, force) => {
     const caret = ta.selectionStart;
     if (caret !== ta.selectionEnd) { setAc(null); return; }
+    // In a string or a comment the list stays shut while typing: the words
+    // there are data. Ctrl+Space still opens it (qhInStringOrComment).
+    if (!force && qhInStringOrComment(ta.value.slice(0, caret), engineId)) { setAc(null); return; }
     // A list that Ctrl+Space opened in a column position stays one while the
     // caret stays in the same slot. Typing filters it.
     const cur = acNow.current;
@@ -5197,6 +5306,32 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
         restoreSel.current = { text: r.value, sel: r.sel };
         commit(r.value, 'wrap', [a, b], r.sel);
         return;
+      }
+      // With no selection: ( [ ' " or ` closes itself, the caret steps over the
+      // closing mark at the caret (qhAutoPair), and Backspace in an empty pair
+      // removes both (qhPairBackspace). Each is one typing step for undo.
+      if (a === b && !fieldSel(ta) && e.key.length === 1) {
+        const p = qhAutoPair(value, a, e.key, engineId);
+        if (p) {
+          e.preventDefault(); setAc(null);
+          if (p.value === value) ta.setSelectionRange(p.sel[0], p.sel[1]);
+          else { restoreSel.current = { text: p.value, sel: p.sel }; commit(p.value, 'type', [a, a], p.sel); }
+          const opened = e.key === '(';
+          requestAnimationFrame(() => {
+            const t = taRef.current;
+            if (t && document.activeElement === t) { refreshAC(t); updateSig(t, opened); }
+          });
+          return;
+        }
+      }
+      if (a === b && !fieldSel(ta) && e.key === 'Backspace' && !e.altKey && !e.shiftKey && !e.ctrlKey) {
+        const p = qhPairBackspace(value, a, engineId);
+        if (p) {
+          e.preventDefault(); setAc(null);
+          restoreSel.current = { text: p.value, sel: p.sel };
+          commit(p.value, 'back', [a, a], p.sel);
+          return;
+        }
       }
     }
     // Alt+Up / Alt+Down move the caret's line, or the lines of the selection
@@ -5905,7 +6040,7 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
   const [editId, setEditId] = React.useState(null);
   const [draft, setDraft] = React.useState('');
   const cancelledRef = React.useRef(false);
-  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current statement'], ['⇧ + F8', 'Run from the top to the current statement'], ['⇧ + ⌥ / Alt + S', 'Select current statement'], ['⌥ / Alt + PgUp / PgDn', 'Previous / next statement'], ['⇧ + F12 · ⌘/Ctrl + ⇧ + \\', 'Go to the matching bracket, CASE/END or BEGIN/END'], ['⌥ / Alt + ↑ / ↓', 'Move line up / down'], ['⇧ + ⌥ / Alt + ;', 'Add missing semicolons'], ['⇧ + ⌥ / Alt + E', 'Expand every * of the text or selection'], ['⇧ + F6', 'Rename the alias at the caret'], ['⌘ / Ctrl + B · ⌘ / Ctrl + click', 'Go to the definition: alias, CTE, or the object in the tree'], ['⇧ + ⌥ / Alt + D', 'CREATE script of the object at the caret'], ['⇧ + ⌥ / Alt + Q', 'Qualify table and column names'], ['Ctrl + Space after GROUP BY', 'The non-aggregated SELECT columns'], ['PgUp / PgDn in the list', 'Move 8 rows; drag the corner to resize'], ['Select, then ( \' " [', 'Wrap the selection'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Ctrl + Space', 'Suggestions; in a SELECT, all columns'], ['Ctrl + Space in the column list', 'Check a column; Enter inserts the checked ones'], ['Tab after INSERT INTO t, UPDATE t, EXEC p, CALL p', 'Statement template'], ['Tab / ⇧ + Tab in a template or snippet', 'Next / previous field'], ['Ctrl + ⇧ + Space', 'Parameter info of the function at the caret'], ['ssf + Tab', 'Snippet: type a key, pick it (list below)'], ['Tab', 'Indent'], ['⌥ / Alt + Z', 'Toggle word wrap'], ['⇧ + ⌥ / Alt + F', 'Format SQL'], ['⌥ / Alt + ← →', 'Previous / next result'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
+  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current statement'], ['⇧ + F8', 'Run from the top to the current statement'], ['⇧ + ⌥ / Alt + S', 'Select current statement'], ['⌥ / Alt + PgUp / PgDn', 'Previous / next statement'], ['⇧ + F12 · ⌘/Ctrl + ⇧ + \\', 'Go to the matching bracket, CASE/END or BEGIN/END'], ['⌥ / Alt + ↑ / ↓', 'Move line up / down'], ['⇧ + ⌥ / Alt + ;', 'Add missing semicolons'], ['⇧ + ⌥ / Alt + E', 'Expand every * of the text or selection'], ['⇧ + F6', 'Rename the alias at the caret'], ['⌘ / Ctrl + B · ⌘ / Ctrl + click', 'Go to the definition: alias, CTE, or the object in the tree'], ['⇧ + ⌥ / Alt + D', 'CREATE script of the object at the caret'], ['⇧ + ⌥ / Alt + Q', 'Qualify table and column names'], ['Ctrl + Space after GROUP BY', 'The non-aggregated SELECT columns'], ['PgUp / PgDn in the list', 'Move 8 rows; drag the corner to resize'], ['Select, then ( \' " [', 'Wrap the selection'], ['( \' " [ with no selection', 'The closing mark goes in too. Backspace removes an empty pair'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Ctrl + Space', 'Suggestions; in a SELECT, all columns'], ['Ctrl + Space in the column list', 'Check a column; Enter inserts the checked ones'], ['Tab after INSERT INTO t, UPDATE t, EXEC p, CALL p', 'Statement template'], ['Tab / ⇧ + Tab in a template or snippet', 'Next / previous field'], ['Ctrl + ⇧ + Space', 'Parameter info of the function at the caret'], ['ssf + Tab', 'Snippet: type a key, pick it (list below)'], ['Tab', 'Indent'], ['⌥ / Alt + Z', 'Toggle word wrap'], ['⇧ + ⌥ / Alt + F', 'Format SQL'], ['⌥ / Alt + ← →', 'Previous / next result'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
   const beginRename = (t) => { if (t.kind) return; setMenu(null); setEditId(t.id); setDraft(t.name); };
   const openMenu = (e, id) => { e.preventDefault(); e.stopPropagation(); setKb(false); setMenu({ x: Math.min(e.clientX, window.innerWidth - 200), y: e.clientY, id }); };
   React.useEffect(() => {
@@ -6089,6 +6224,6 @@ Object.assign(window, { SqlEditor, EditorTabs, FormatOptions, QH_FMT_ROWS, QH_FM
   QH_ALIAS_KEY, qhAliasOptsClean, qhAliasOptsLoad, qhAliasOptsSave, qhAliasRules, qhAliasBase, qhAutoAlias,
   qhNameInitials, qhExpandAllStars, qhApplyEdits, qhGroupByFill, qhGroupByItem, qhAcPage, QH_AC_MAX, QH_AC_PAGE, qhAcSizeLoad, QH_AC_SIZE_KEY,
   qhStatementRanges, qhAddSemicolons, qhStatementJump, qhToCaretRange, qhPairs, qhPairAt, qhPairJump, qhOccurrences, qhCaretMarks,
-  qhMoveLines, qhWrapSelection, QH_WRAP_PAIRS, QhCaretMarks,
+  qhMoveLines, qhWrapSelection, QH_WRAP_PAIRS, QhCaretMarks, qhScanCode, qhInStringOrComment, qhAutoPair, qhPairBackspace,
   qhHoverInfo, qhHoverLines, qhHoverOffsetAt,
   QH_FUNC_SIGS, qhSigParams, qhBuiltinSigs, qhCallAt, qhSignaturesFor, qhSigPick, qhSigActive, qhLintFindings, qhProblems });
