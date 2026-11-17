@@ -26,6 +26,14 @@ import pytest
 from queryhub import stmt_guard
 
 
+def _plan_of(*types):
+    """A SHOWPLAN document with one statement element per StatementType."""
+    stmts = "".join(f'<StmtSimple StatementType="{t}" />' for t in types)
+    return ('<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/'
+            f'showplan"><BatchSequence><Batch><Statements>{stmts}'
+            "</Statements></Batch></BatchSequence></ShowPlanXML>")
+
+
 def _plan(n_statements):
     """A SHOWPLAN document with `n` statement elements, namespaced the way SQL
     Server really emits it."""
@@ -86,6 +94,25 @@ def test_two_statements_are_refused():
         stmt_guard.check(cur, "SELECT 1", engine="mssql")
     assert "2 separate statements" in str(e.value)
     assert "reviewed and approved as one" in str(e.value)
+
+
+@pytest.mark.parametrize("types", [
+    # What SQL Server 2022 emits, measured: the CREATE and each body statement.
+    ("CREATE/ALTER VIEW", "CREATE/ALTER VIEW"),
+    ("CREATE/ALTER PROCEDURE",) * 3,
+    ("CREATE/ALTER FUNCTION", "CREATE/ALTER FUNCTION"),
+    ("CREATE/ALTER TRIGGER", "CREATE/ALTER TRIGGER"),
+])
+def test_a_module_and_its_body_count_as_one_statement(types):
+    cur = FakeCursor(plan_docs=[_plan_of(*types)])
+    assert stmt_guard._mssql_statement_count(cur, "CREATE ...") == 1
+    stmt_guard.check(FakeCursor(plan_docs=[_plan_of(*types)]), "CREATE ...",
+                     engine="mssql")                       # no raise
+
+
+def test_two_plain_statements_are_still_two():
+    cur = FakeCursor(plan_docs=[_plan_of("SELECT", "DELETE")])
+    assert stmt_guard._mssql_statement_count(cur, "SELECT 1; DELETE t") == 2
 
 
 def test_the_error_names_a_way_forward():

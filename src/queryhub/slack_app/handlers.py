@@ -54,7 +54,7 @@ from .. import access_requests, admins, audit, auto_approve, auto_approve_limits
 from .. import config as cfg
 from .. import core_submit
 from .. import core_decide
-from . import access, admin_grant, idp_sync_card, modal, notifications, ro_window, schema_browser, subcommands
+from . import access, admin_grant, entry_gate, idp_sync_card, modal, notifications, ro_window, schema_browser, subcommands
 
 log = logging.getLogger(__name__)
 
@@ -153,6 +153,15 @@ def register(app: App) -> None:
 def handle_slash_sql(ack: Ack, body: dict, client: WebClient, respond) -> None:
     user_id = body.get("user_id", "")
     text = (body.get("text") or "").strip()
+
+    # Layer -1: the Slack entry gate (bot_config slack_own_ui_super_admin_only).
+    # A closed entry refuses the modal and every subcommand, and points the
+    # person to the portal.
+    if not entry_gate.is_open(user_id):
+        ack()
+        log.info("slack entry closed: /sql from %s refused", user_id)
+        respond(entry_gate.ephemeral())
+        return
 
     # Sub-command path: /sql <subcmd ...>. Bypasses the modal. Allowlist
     # is still enforced (no roles/info leak to off-allowlist users), but
@@ -1162,6 +1171,11 @@ def handle_view_submission(ack: Ack, body: dict, client: WebClient) -> None:
     ack = _ack_logging(ack, body, "single")
     user = body["user"]
 
+    # A modal that was open before the entry closed cannot submit after it.
+    if not entry_gate.is_open(user.get("id")):
+        ack({"response_action": "update", "view": entry_gate.notice_view()})
+        return
+
     parsed = modal.parse_submission(body["view"])
 
     # Resolve the SQL: file_input takes precedence; fall back to the text box.
@@ -1545,6 +1559,10 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
     plus every item plus their audit log rows."""
     ack = _ack_logging(ack, body, "batch")
     user = body["user"]
+
+    if not entry_gate.is_open(user.get("id")):
+        ack({"response_action": "update", "view": entry_gate.notice_view()})
+        return
 
     if not bundles.is_enabled():
         ack({"response_action": "errors",
@@ -2894,6 +2912,9 @@ def handle_import_submission(ack: Ack, body: dict, client: WebClient) -> None:
     upload in the background (download + parse + table check + notify)."""
     user = body["user"]
     uid = user["id"]
+    if not entry_gate.is_open(uid):
+        ack({"response_action": "update", "view": entry_gate.notice_view()})
+        return
     parsed = modal.parse_import_submission(body["view"])
 
     def err(block, msg):
@@ -3174,6 +3195,12 @@ def handle_resubmit(ack: Ack, body: dict, client: WebClient) -> None:
         return
     trigger_id = body.get("trigger_id")
     if not trigger_id:
+        return
+    if not entry_gate.is_open(uid):
+        try:
+            client.views_open(trigger_id=trigger_id, view=entry_gate.notice_view())
+        except Exception:
+            log.exception("resubmit: could not show the entry notice to %s", uid)
         return
 
     target = targets.get(req["target_server_id"])
