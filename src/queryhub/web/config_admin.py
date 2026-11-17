@@ -37,7 +37,7 @@ _TYPES = {
     "security_override_ttl_enabled": "bool", "web_auth_slack_enabled": "bool",
     "web_cookie_secure": "bool",
     "ai_enabled": "bool", "ai_user_model_choice": "bool",
-    "sql_audit_comment": "bool",
+    "sql_audit_comment": "bool", "slack_own_ui_super_admin_only": "bool",
     # int
     "access_grant_default_days": "int", "auto_approve_max_days": "int",
     "batch_max_items": "int", "connection_health_interval_sec": "int",
@@ -72,6 +72,8 @@ _TYPES = {
     # `hide` (default) or `show`: whether the Add person picker lists Slack
     # people whose email is outside `web_allowed_email_domain`.
     "people_directory_other_domains": "str",
+    # Slack user ids that can use /sql while slack_own_ui_super_admin_only is on.
+    "slack_own_ui_allowed_users": "str",
     # The AI assistant. Its own admin form (GET/PUT /api/admin/ai) checks the
     # provider and the model together. This screen shows the same keys.
     "ai_default_provider": "str", "ai_default_model": "str",
@@ -119,6 +121,7 @@ _GROUPS = [
         "csv_import_enabled", "csv_size_mb", "import_max_mb", "import_max_rows",
         "import_timeout_sec", "import_csv_ttl_hours"]),
     ("slack", "Slack & notifications", [
+        "slack_own_ui_super_admin_only", "slack_own_ui_allowed_users",
         "auto_approve_feed_channel", "kill_switch", "kill_switch_message",
         "bot_display_name", "bot_display_icon", "rating_enabled"]),
     ("cost", "Cost model (metrics)", [

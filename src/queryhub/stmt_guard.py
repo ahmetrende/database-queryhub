@@ -63,6 +63,34 @@ def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+#: SHOWPLAN gives each statement in the body of a procedure, view, function or
+#: trigger its own element, typed as the CREATE itself. Measured on SQL Server
+#: 2022: `CREATE VIEW v AS SELECT 1` gives two elements, a procedure with two
+#: SELECTs gives three. These module statements must come first in their batch,
+#: and SQL Server reads the rest of the batch as the body, which does not run
+#: when the module is created. So all the elements of one module count as one
+#: statement. A statement before the CREATE, or after a view's SELECT, does not
+#: compile, so it is not counted here at all.
+_MODULE_TYPES = frozenset({
+    "CREATE/ALTER PROCEDURE", "CREATE/ALTER VIEW",
+    "CREATE/ALTER FUNCTION", "CREATE/ALTER TRIGGER",
+})
+
+
+def _count_statements(root) -> int:
+    """Statement elements in one plan document. The elements of a module body
+    count as one statement (see `_MODULE_TYPES`)."""
+    n, module = 0, False
+    for el in root.iter():
+        if not _local(el.tag).startswith(_STMT_TAG_PREFIX):
+            continue
+        if (el.get("StatementType") or "").upper() in _MODULE_TYPES:
+            module = True
+        else:
+            n += 1
+    return n + (1 if module else 0)
+
+
 def _mssql_statement_count(cur, sql: str) -> int | None:
     """Statements SQL Server finds in `sql`, or None if it would not say.
 
@@ -104,8 +132,7 @@ def _mssql_statement_count(cur, sql: str) -> int | None:
         except ET.ParseError as exc:
             log.warning("stmt_guard: unparseable plan document (%s)", exc)
             return None
-        n += sum(1 for el in root.iter()
-                 if _local(el.tag).startswith(_STMT_TAG_PREFIX))
+        n += _count_statements(root)
     return n or None
 
 

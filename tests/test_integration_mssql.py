@@ -680,13 +680,8 @@ def test_a_comment_in_the_same_batch_goes_into_the_procedure_text(server):
 def test_a_view_gets_the_audit_comment_in_its_own_batch(
         server, bot_config, monkeypatch):
     """The server accepts the comment as a batch of its own, and the stored
-    view text does not hold it.
-
-    The test turns off the server statement count. SHOWPLAN reads the body of
-    a view or a procedure as a second statement, so `stmt_guard` refuses the
-    statement before the comment is sent. That is a separate issue."""
+    view text does not hold it."""
     from queryhub import profile_sync
-    monkeypatch.setattr(stmt_guard, "check", lambda *args, **kwargs: None)
     bot_config["sql_audit_comment"] = "on"
     monkeypatch.setattr(profile_sync, "lookup_email",
                         lambda _pid: "jordan.ray@example.com")
@@ -714,3 +709,38 @@ def test_a_request_session_has_the_postgres_style_program_name(server, monkeypat
                         user, password, 30, 1000, 10 * 1024 * 1024, app_name=name)
     (result,) = finished["results"]
     assert _csv_rows(result.csv_path) == [["app"], [name]]
+
+
+@pytest.mark.parametrize("sql, check", [
+    ("CREATE VIEW dbo.guard_view AS SELECT id FROM dbo.ledger",
+     "SELECT COUNT(*) FROM sys.views WHERE name = 'guard_view'"),
+    ("CREATE PROCEDURE dbo.guard_proc AS BEGIN SELECT 1 AS a; SELECT 2 AS b; END",
+     "SELECT COUNT(*) FROM sys.procedures WHERE name = 'guard_proc'"),
+])
+def test_the_statement_count_passes_a_module_with_a_body(server, monkeypatch, sql, check):
+    """The DDL login can run SHOWPLAN. The server statement count reads a view
+    or a procedure with its body as one statement, so QueryHub creates it."""
+    user, password = server.login("ddl")
+    conn = mssql_exec.connect(HOST, PORT, DATABASE, user, password, timeout_sec=10)
+    try:
+        assert stmt_guard._mssql_statement_count(conn.cursor(), sql) == 1
+    finally:
+        conn.close()
+    _execute(server, sql, "ddl", monkeypatch)
+    assert server.query(check) == [(1,)]
+
+
+def test_a_statement_after_a_procedure_body_does_not_run(server):
+    """The count reads `CREATE PROCEDURE ... AS SELECT 1; DROP TABLE ...` as one
+    statement. That is safe: SQL Server stores the DROP in the procedure body
+    and does not run it when the procedure is created. (query_safety refuses
+    this text before the count, as an ambiguous statement.)"""
+    sql = "CREATE PROCEDURE dbo.guard_tail AS SELECT 1 AS a; DROP TABLE dbo.typed"
+    user, password = server.login("ddl")
+    conn = mssql_exec.connect(HOST, PORT, DATABASE, user, password, timeout_sec=10)
+    try:
+        assert stmt_guard._mssql_statement_count(conn.cursor(), sql) == 1
+    finally:
+        conn.close()
+    server.execute(sql)
+    assert server.query("SELECT COUNT(*) FROM sys.tables WHERE name = 'typed'") == [(1,)]
