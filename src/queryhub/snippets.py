@@ -26,6 +26,30 @@ MAX_FOLDER = 64
 # A bound per owner keeps the typing list and the panel usable.
 MAX_PER_OWNER = 500
 
+# The editor keywords of every engine, in lower case: QH_KEYWORDS and
+# QH_KW_ENGINE in QueryHubWeb/qh-editor.jsx. A key that is the start of one of
+# them is refused. Otherwise a shared snippet with the key `where` takes Tab
+# after a typed WHERE in every other person's editor and inserts its body.
+# The form checks the same rule (qhSnippetFormError); this is the real gate.
+# tests/test_editor_snippets.py keeps this list equal to the editor's.
+KEYWORDS = frozenset((
+    "select insert update delete from where join inner left right full outer on "
+    "group by order having limit offset as and or not null is in like ilike "
+    "between union all distinct into values set create alter drop table index "
+    "view truncate rename add column primary key foreign references default "
+    "case when then else end with returning asc desc interval current_date now "
+    "exists grant revoke merge using cascade constraint "
+    # postgres
+    "lateral filter conflict first last over partition window "
+    # mssql
+    "top apply output pivot unpivot nolock declare begin commit rollback tran "
+    "fetch next rows only "
+    # clickhouse
+    "prewhere final sample settings format global qualify array "
+    # athena
+    "unnest ordinality tablesample bernoulli"
+).split())
+
 _COLS = ("id, owner_id, key, description, body, engine, folder, is_shared, "
          "created_at, updated_at")
 
@@ -51,6 +75,11 @@ def clean(*, key, description=None, body, engine=None, folder=None,
             "bad_key",
             "Use 2 to 32 characters for the key: a letter first, then "
             "letters, digits or _.")
+    hit = min((w for w in KEYWORDS if w.startswith(k)), default=None)
+    if hit is not None:
+        raise SnippetError(
+            "keyword_key",
+            f"The key is the start of the keyword {hit.upper()}. Use a different key.")
     d = " ".join(str(description or "").split()) or None
     if d is not None and len(d) > MAX_DESCRIPTION:
         raise SnippetError(

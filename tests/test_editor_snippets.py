@@ -43,6 +43,40 @@ def test_clean_refuses_what_the_table_refuses(kw, code):
     assert e.value.code == code
 
 
+@pytest.mark.parametrize("key, word", [
+    ("where", "WHERE"),
+    ("wh", "WHEN"),
+    ("se", "SELECT"),
+    ("top", "TOP"),
+    ("prewhere", "PREWHERE"),
+    (" Unnest ", "UNNEST"),
+])
+def test_clean_refuses_a_key_that_starts_a_keyword(key, word):
+    # A shared snippet with such a key would take Tab after the keyword in
+    # every other person's editor and insert its body.
+    with pytest.raises(snippets.SnippetError) as e:
+        snippets.clean(key=key, body="DELETE FROM users")
+    assert e.value.code == "keyword_key"
+    assert f"keyword {word}." in str(e.value)
+
+
+def test_clean_takes_a_key_that_only_holds_a_keyword():
+    # `topn` and `wherex` start with a keyword but are not the start of one.
+    for key in ("topn", "wherex", "selects", "lastday"):
+        assert snippets.clean(key=key, body="SELECT 1")["key"] == key
+
+
+def test_the_keyword_list_is_the_editor_list():
+    import re
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "QueryHubWeb" / "qh-editor.jsx").read_text(encoding="utf-8")
+    common = re.search(r"const QH_KEYWORDS = \((.*?)\)\.split", src, re.S).group(1)
+    words = {w.lower() for part in re.findall(r"'([^']*)'", common) for w in part.split()}
+    engine = re.search(r"const QH_KW_ENGINE = \{(.*?)\n\};", src, re.S).group(1)
+    words |= {w.lower() for w in re.findall(r"'([A-Z_]+)'", engine)}
+    assert words == snippets.KEYWORDS
+
+
 def test_the_limits_at_their_edge_pass():
     v = snippets.clean(key="a" + "b" * 31, description="d" * 200, body="x" * 20_000, folder="f" * 64)
     assert len(v["key"]) == 32
