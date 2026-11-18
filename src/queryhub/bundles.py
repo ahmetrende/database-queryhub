@@ -65,6 +65,7 @@ def insert_bundle_with_items(
     origin: str = "slack",
     kind: str = "batch",
     on_failure: str | None = None,
+    result_to_slack: bool = False,
 ) -> dict:
     """Insert the parent bundle row and every item in one transaction.
     Caller MUST be inside `db.transaction()` — we don't manage commit /
@@ -104,13 +105,15 @@ def insert_bundle_with_items(
                 (requester_slack_id, requester_name, target_server_id,
                  database_name, query, wants_result, result_format,
                  justification, scheduled_for, explain_plan,
-                 bundle_id, position, origin, risk_summary, query_secret)
+                 bundle_id, position, origin, risk_summary, query_secret,
+                 result_to_slack)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
-                    %s, %s, %s)
+                    %s, %s, %s, %s)
             RETURNING id, requester_slack_id, requester_name,
                       target_server_id, database_name, query,
                       wants_result, result_format, justification, status,
-                      scheduled_for, bundle_id, position, origin
+                      scheduled_for, bundle_id, position, origin,
+                      result_to_slack
             """,
             (
                 requester_slack_id,
@@ -136,6 +139,7 @@ def insert_bundle_with_items(
                 origin,
                 item.get("risk_summary"),
                 query_secret,
+                result_to_slack,
             ),
         )
         row = cur.fetchone()
@@ -177,6 +181,8 @@ def list_items(cur: Any, bundle_id: int) -> list[dict]:
                -- the approval-scope check reads these; without them a tier
                -- ceiling admits nothing (see access.can_approve)
                r.required_tier, r.engine,
+               -- the requester summary DM reads these (Slack or not)
+               r.origin, r.result_to_slack,
                ts.alias AS target_alias, ts.host AS target_host
           FROM requests r
           JOIN target_servers ts ON ts.id = r.target_server_id

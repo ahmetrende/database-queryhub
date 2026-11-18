@@ -104,7 +104,7 @@ needs the database connection that they configure:
 An invalid or out-of-range pool value logs a warning, and the app uses the
 default instead of stopping the process.
 | `web_result_max_rows` | `1000` | Max rows the web result grid pages through. |
-| `web_result_to_slack` | `false` | Also deliver a web-submitted query's result to Slack. **(Slack)** |
+| `web_result_to_slack` | `false` | Global default: also deliver every non-Slack result to Slack. A requester can choose this for one request with the "Also send the result to Slack" box (`resultToSlack` in `POST /api/queries` and `/api/queries/batch`). **(Slack)** |
 | `web_repo_slug` | `""` | `owner/repo` to turn changelog commit SHAs into GitHub links. Empty = plain SHAs. |
 | `web_changelog_path` | `""` | Path to an external changelog JSON that feeds the in-app What's-new page. |
 | `web_max_tables_per_db` | `2000` | Maximum tables that one database adds to the `/connections` payload. Beyond this, the app truncates the list and flags it. Raise it if a database really has more. |

@@ -862,6 +862,11 @@ function App() {
   // this browser only.
   const [lint, setLint] = useState(() => { try { return localStorage.getItem('qh.lint.v1') !== '0'; } catch (e) { return true; } });
   useEffect(() => { try { localStorage.setItem('qh.lint.v1', lint ? '1' : '0'); } catch (e) {} }, [lint]);
+  // "Also send the result to Slack": a per-browser choice, off by default. The
+  // box shows only when /api/me says Slack can reach this person.
+  const [toSlack, setToSlack] = useState(() => { try { return localStorage.getItem('qh.resultToSlack.v1') === '1'; } catch (e) { return false; } });
+  useEffect(() => { try { localStorage.setItem('qh.resultToSlack.v1', toSlack ? '1' : '0'); } catch (e) {} }, [toSlack]);
+  const toSlackOn = !!(user && user.slackResultAvailable) && toSlack;
   // Code analysis (qhLint) of the whole tab. The deferred text keeps typing
   // fast in a long script: the rules run when the browser has time.
   const lintText = React.useDeferredValue(tab.kind ? '' : (tab.sql || ''));
@@ -1379,6 +1384,8 @@ function App() {
         // The SQL of this tab came from the AI assistant. A mark for the
         // approver. The server keeps it only while the assistant is on.
         ...(cur.aiAssisted ? { aiAssisted: true } : null),
+        // The person ticked "Also send the result to Slack".
+        ...(toSlackOn ? { resultToSlack: true } : null),
         // Where it runs — sent only when the tab left Auto, spread-first like
         // `unmasked`. replicaId always rides with a replica, one or several.
         ...(ro && ro.mode === 'primary' ? { runOn: 'primary' } : null),
@@ -1576,7 +1583,8 @@ function App() {
     const items = valid.map(id => { const x = tabs.find(t => t.id === id); return { connectionId: x.conn, databaseId: x.db, sql: x.sql, name: x.name }; });
     valid.forEach(id => patch(id, { status: 'pending', result: null,
       messages: [{ kind: 'info', text: 'Submitted in a batch — one approval round.', time: nowTime() }] }));
-    qhApi.submitBatch({ items, justification: (bundleWhy || '').trim() || null }).then(r => {
+    qhApi.submitBatch({ items, justification: (bundleWhy || '').trim() || null,
+      ...(toSlackOn ? { resultToSlack: true } : null) }).then(r => {
       (r.items || []).forEach((it, i) => {
         const tabId = valid[i];
         if (tabId) { patch(tabId, { qid: it.queryId, status: it.status }); track(tabId, it.queryId); }
@@ -1991,6 +1999,7 @@ function App() {
                 isSuper={isSuper} unmasked={!!tab.unmasked} onUnmask={(v) => patch(activeId, { unmasked: v })}
                 runOnConn={isSuper && conn && (conn.replicas || []).length ? conn : null} runOn={effRunOn(tab)}
                 onRunOn={(v) => patch(activeId, { runOn: v })}
+                slackResult={!!(user && user.slackResultAvailable)} toSlack={toSlack} onToSlack={setToSlack}
               />
 
               <WhyBar show={showWhy} need={needWhy} value={why} onChange={setWhy} err={whyErr && needWhy}
@@ -2585,7 +2594,7 @@ function RunOnToggle({ conn, runOn, tier, onRunOn, tight }) {
 }
 
 // ---------- Action bar (target context + security + actions) ----------
-function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, isAdminUser, onOpenFleet, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn, selLines }) {
+function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, isAdminUser, onOpenFleet, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn, selLines, slackResult, toSlack, onToSlack }) {
   const runOnConflict = !!(runOnConn && runOn && runOn.mode === 'replica' && hasSql && !classify.empty && classify.tier !== 'RO');
   const tierLabel = qhTierProse(classify.tier);
   const highRisks = (riskHints || []).filter(h => h.level !== 'low');
@@ -2648,6 +2657,13 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
       </button>
       )}
       {selLines > 0 && !busy && <span className="qh-sel-lines">{selLines === 1 ? '1 line selected' : selLines + ' lines selected'}</span>}
+      {slackResult && (
+        <label className="qh-sel-lines" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+          title="You always get the result here. Tick this to get it in Slack too.">
+          <input type="checkbox" checked={!!toSlack} disabled={busy} onChange={(e) => onToSlack(e.target.checked)} />
+          Also send the result to Slack
+        </label>
+      )}
 
       {/* One button for "stop this", from the moment there is something to
           stop. What it DOES depends on how far the request got, and the label

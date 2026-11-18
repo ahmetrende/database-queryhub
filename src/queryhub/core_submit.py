@@ -49,7 +49,7 @@ REQUEST_RETURNING = (
     "decided_by_slack_id, decided_by_name, decided_at, scheduled_for, "
     "requester_dm_channel_id, requester_dm_message_ts, "
     "bundle_id, position, risk_summary, origin, engine, required_tier, "
-    "unmasked, run_on, ai_assisted"
+    "unmasked, run_on, ai_assisted, result_to_slack"
 )
 
 
@@ -123,6 +123,9 @@ class Prepared:
     # The SQL came from the AI assistant of the editor. The approver sees a
     # mark. No rule reads it. See migrations/210_ai_assistant.sql.
     ai_assisted: bool = False
+    # The requester also wants the result in Slack. The web route stores it
+    # only when Slack can work. See migrations/214_request_result_to_slack.sql.
+    result_to_slack: bool = False
 
 
 @dataclass
@@ -179,6 +182,7 @@ def validate_submission(
     run_on: str = "auto",
     replica_id: str | None = None,
     ai_assisted: bool = False,
+    result_to_slack: bool = False,
 ) -> Prepared | Rejection:
     """Run every submit-time check in the exact order the Slack modal
     always has. Returns a Prepared on success, a Rejection on the first
@@ -636,6 +640,7 @@ def validate_submission(
         unmasked=unmasked,
         run_on=stored_run_on,
         ai_assisted=ai_assisted,
+        result_to_slack=result_to_slack,
     )
 
 
@@ -975,9 +980,9 @@ def create_request(
                 f" explain_plan, risk_summary, query_fingerprint, status, "
                 f" decided_by_slack_id, decided_by_name, decided_at, decision_reason, "
                 f" origin, engine, required_tier, unmasked, query_secret, run_on, "
-                f" ai_assisted) "
+                f" ai_assisted, result_to_slack) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, "
-                f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s) "
+                f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
@@ -1003,6 +1008,7 @@ def create_request(
                     query_secret,
                     prep.run_on,
                     prep.ai_assisted,
+                    prep.result_to_slack,
                 ),
             )
             row = cur.fetchone()
@@ -1062,9 +1068,10 @@ def create_request(
                 f"({id_col}requester_slack_id, requester_name, target_server_id, database_name, "
                 f" query, wants_result, result_format, justification, scheduled_for, "
                 f" explain_plan, risk_summary, query_fingerprint, origin, "
-                f" engine, required_tier, unmasked, query_secret, run_on, ai_assisted) "
+                f" engine, required_tier, unmasked, query_secret, run_on, ai_assisted, "
+                f" result_to_slack) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, "
-                f"        %s, %s, %s, %s, %s, %s) "
+                f"        %s, %s, %s, %s, %s, %s, %s) "
                 f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
@@ -1086,6 +1093,7 @@ def create_request(
                     query_secret,
                     prep.run_on,
                     prep.ai_assisted,
+                    prep.result_to_slack,
                 ),
             )
             row = cur.fetchone()
