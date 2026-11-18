@@ -579,7 +579,32 @@ function qhUseResultView(result) {
   };
 }
 
-Object.assign(window, { qhResJsonKind, qhResJsonCell,
+// Is this cell SQL NULL? The grid shows a NULL cell as a styled `NULL`, so the
+// reader can tell it from an empty string (2026-11-18, as in the IdP). A null
+// or undefined value is NULL. Web results come from the stored CSV, where a
+// NULL is '' — so '' is NULL only in a typed column that is not text (the same
+// rule as Copy as JSON, qhResJsonCell). In a text column, or with no type,
+// '' stays an empty cell: the CSV cannot tell the two apart there.
+function qhResIsNull(v, type) {
+  if (v === null || v === undefined) return true;
+  return v === '' && !!type && qhResJsonKind(type) !== 'text';
+}
+
+// The warning when the server capped a result, or '' when there is nothing
+// to say. The server's `truncated` also turns on when a complete result is
+// only longer than the first page it sends, and the grid then pages the rest
+// from /rows. So the warning shows only when the grid has no more pages to
+// fetch (`total` <= the rows sent), or when the server sends `capped`.
+function qhResCapNote(result) {
+  if (!result || result.kind !== 'table' || !result.truncated) return '';
+  const sent = Array.isArray(result.rows) ? result.rows.length : 0;
+  const total = Number.isFinite(result.total) ? result.total : sent;
+  const capped = result.capped != null ? !!result.capped : total <= sent;
+  if (!capped) return '';
+  return 'The server capped this result at ' + total.toLocaleString() + ' rows. There can be more rows than shown.';
+}
+
+Object.assign(window, { qhResIsNull, qhResCapNote, qhResJsonKind, qhResJsonCell,
   QH_RES_MAX_ROWS, qhResCompareCells, qhResSortRows, qhResFilterRows,
   qhResAggregate, qhPrettyJson, qhUseResultView,
   QH_VIEW_HEX_MAX, qhCellBytes, qhHexDump, qhImageDataUrl, qhPrettyXml, qhHtmlSrcdoc, qhViewModes, QH_VIEW_LABELS, qhPeekPlace,

@@ -228,19 +228,43 @@ function AdminPanel({ st, user, modeEntry }) {
 // submitted what, at which tier, against which target, and the SQL is read as
 // content instead of as part of the name.
 const QCHK = <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>;
+// Batch approve takes only what is on screen, and never a schema change
+// (operator decision, 2026-11-18). Before this, "Select all" took every queue
+// item, also the items that the DDL filter hid, and "Approve N" approved them
+// unseen. A DDL request is approved one by one, as in the IdP.
+function qhQueueIsDdl(it) { return !!(it && (it.escalate || it.tier === 'DDL')); }
+// The ids that "Select all" may take: the cards on screen, without DDL.
+function qhQueueBatchIds(shown) {
+  return (shown || []).filter(x => !qhQueueIsDdl(x)).map(x => x.id);
+}
+// Keep only the selected ids that are still allowed. The same array comes
+// back when nothing drops, so a state update does not render again.
+function qhQueuePrune(checked, allowed) {
+  const keep = (checked || []).filter(id => (allowed || []).indexOf(id) >= 0);
+  return keep.length === (checked || []).length ? checked : keep;
+}
+// The line under the batch bar. It names the DDL cards that stay out.
+function qhQueueBatchNote(ddlLeftOut) {
+  const base = 'Selects only the requests shown. Schema changes (DDL) are approved one by one.';
+  if (!ddlLeftOut) return base;
+  return base + ' ' + ddlLeftOut + (ddlLeftOut === 1 ? ' DDL request is' : ' DDL requests are') + ' not in the selection.';
+}
+
 function QueueCard({ it, selected, onSelect, checked, onCheck }) {
   const who = qhPersonName(it.submitter.name) + ', ' + it.tier + ' on '
     + it.connectionId + '/' + it.databaseId + ', ' + qhAgo(it.submittedAt);
   // DDL is the most dangerous tier and must not be mistakable for RO at a
   // glance: its own card treatment, a flag that leads the row rather than a
   // badge among badges, and the elevation's end date on the card itself.
-  const ddl = !!it.escalate || it.tier === 'DDL';
+  const ddl = qhQueueIsDdl(it);
   const el = it.elevation;
   return (
     <div className={'qh-qcard' + (selected ? ' is-active' : '') + (ddl ? ' is-ddl' : '')}>
-      <label className="qh-qcheck">
-        <input type="checkbox" checked={checked} onChange={() => onCheck(it.id)}
-               aria-label={'Select request from ' + who} />
+      {/* A DDL request is never in a batch. Its box is off. */}
+      <label className="qh-qcheck" title={ddl ? 'Approve a schema change (DDL) on its own.' : undefined}>
+        <input type="checkbox" checked={ddl ? false : !!checked} disabled={ddl}
+               onChange={() => { if (!ddl) onCheck(it.id); }}
+               aria-label={ddl ? 'Schema change from ' + who + '. Approve it on its own.' : 'Select request from ' + who} />
         <span className="qh-qcheck-box">{QCHK}</span>
       </label>
       <button type="button" className="qh-qcard-main" onClick={() => onSelect(it.id)}
@@ -381,7 +405,7 @@ function ApprovalsView({ st, user, role }) {
   // The DDL screen's one job — "show me only schema changes" — is a filter
   // here now. Counted, so the number the old nav badge carried is not lost.
   const [onlyDdl, setOnlyDdl] = useAdm(false);
-  const isDdl = (x) => !!x.escalate || x.tier === 'DDL';
+  const isDdl = qhQueueIsDdl;
   const ddlCount = items.filter(isDdl).length;
   const shown = onlyDdl ? items.filter(isDdl) : items;
   const [sel, setSel] = useAdm(items[0] ? items[0].id : null);
@@ -404,9 +428,17 @@ function ApprovalsView({ st, user, role }) {
 
   // Select all / none. Tri-state, because "some selected" and "all selected"
   // must not look identical when the next click empties the selection.
-  const allIds = items.map(x => x.id);
-  const allChecked = allIds.length > 0 && checked.length >= allIds.length;
-  const someChecked = checked.length > 0 && !allChecked;
+  // Only the cards on screen, and no DDL (qhQueueBatchIds). `live` is the
+  // selection cut to that list in THIS render, so "Approve N" can never send
+  // an id that left the screen. The effect then clears it from the state too:
+  // a filter change, a refetch or a single decision drops the id.
+  const allIds = qhQueueBatchIds(shown);
+  const allKey = allIds.join('\u0001');
+  React.useEffect(() => { setChecked(c => qhQueuePrune(c, allIds)); }, [allKey]);
+  const live = qhQueuePrune(checked, allIds);
+  const ddlLeftOut = shown.length - allIds.length;
+  const allChecked = allIds.length > 0 && live.length >= allIds.length;
+  const someChecked = live.length > 0 && !allChecked;
   const setMany = (ids, on) => setChecked(c => on ? [...new Set(c.concat(ids))] : c.filter(x => ids.indexOf(x) < 0));
 
   // A batch arrives as N rows interleaved with everyone else's. `bundleId` +
@@ -506,22 +538,26 @@ function ApprovalsView({ st, user, role }) {
             </div>
           </div>
         )}
-        {items.length > 0 && (
-          <div className={'qh-batchbar' + (checked.length ? ' is-armed' : '')}>
-            <label className="qh-qcheck qh-batchbar-all">
-              <input type="checkbox" checked={allChecked} onChange={() => setChecked(allChecked ? [] : allIds)}
-                     aria-label={allChecked ? 'Deselect all requests' : 'Select all ' + items.length + ' requests'} />
-              <span className={'qh-qcheck-box' + (someChecked ? ' is-some' : '')}>{QCHK}</span>
-            </label>
-            <span>{checked.length ? checked.length + ' selected' : 'Select all ' + items.length}</span>
-            <div className="qh-flex1" />
-            {checked.length > 0 && (
-              <div className="qh-batchbar-actions">
-                <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={killOn} title={killSay} onClick={() => { st.batchApprove(checked, actor); setChecked([]); }}>Approve {checked.length}</button>
-                <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setChecked([])}>Clear</button>
-              </div>
-            )}
-          </div>
+        {shown.length > 0 && (
+          <>
+            <div className={'qh-batchbar' + (live.length ? ' is-armed' : '')}>
+              <label className="qh-qcheck qh-batchbar-all">
+                <input type="checkbox" checked={allChecked} disabled={!allIds.length}
+                       onChange={() => setChecked(allChecked ? [] : allIds)}
+                       aria-label={allChecked ? 'Deselect all requests' : 'Select all ' + allIds.length + ' requests shown'} />
+                <span className={'qh-qcheck-box' + (someChecked ? ' is-some' : '')}>{QCHK}</span>
+              </label>
+              <span>{live.length ? live.length + ' selected' : 'Select all ' + allIds.length}</span>
+              <div className="qh-flex1" />
+              {live.length > 0 && (
+                <div className="qh-batchbar-actions">
+                  <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={killOn} title={killSay} onClick={() => { st.batchApprove(live, actor); setChecked([]); }}>Approve {live.length}</button>
+                  <button className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setChecked([])}>Clear</button>
+                </div>
+              )}
+            </div>
+            <div className="qh-batchbar-note">{qhQueueBatchNote(ddlLeftOut)}</div>
+          </>
         )}
         <div className="qh-qcards">
           <ManualRunsBlock st={st} />
@@ -531,15 +567,16 @@ function ApprovalsView({ st, user, role }) {
               by the hashchange listener in AdminPanel — no prop drilling. */}
           {items.length === 0 && <div className="qh-aempty"><AdminIcons.approvals /><div>Queue is clear.</div><div className="qh-aempty-hint">Nothing waiting. Approved and denied queries move to the <a className="qh-aempty-link" href="#admin/audit">audit log</a>.</div></div>}
           {groups.map(g => {
-            if (g.solo) return <QueueCard key={g.solo.id} it={g.solo} selected={cur && cur.id === g.solo.id} onSelect={setSel} checked={checked.includes(g.solo.id)} onCheck={toggleCheck} />;
-            const ids = g.rows.map(x => x.id);
-            const on = ids.every(id => checked.includes(id));
+            if (g.solo) return <QueueCard key={g.solo.id} it={g.solo} selected={cur && cur.id === g.solo.id} onSelect={setSel} checked={live.includes(g.solo.id)} onCheck={toggleCheck} />;
+            // The batch head selects its rows that can go in a batch: no DDL.
+            const ids = g.rows.filter(x => !isDdl(x)).map(x => x.id);
+            const on = ids.length > 0 && ids.every(id => live.includes(id));
             return (
               <div key={g.bundleId} className="qh-qbundle">
                 <div className="qh-qbundle-head">
                   <label className="qh-qcheck">
-                    <input type="checkbox" checked={on} onChange={() => setMany(ids, !on)} aria-label={(on ? 'Deselect' : 'Select') + ' the whole batch'} />
-                    <span className={'qh-qcheck-box' + (!on && ids.some(id => checked.includes(id)) ? ' is-some' : '')}>{QCHK}</span>
+                    <input type="checkbox" checked={on} disabled={!ids.length} onChange={() => setMany(ids, !on)} aria-label={(on ? 'Deselect' : 'Select') + ' the whole batch'} />
+                    <span className={'qh-qcheck-box' + (!on && ids.some(id => live.includes(id)) ? ' is-some' : '')}>{QCHK}</span>
                   </label>
                   <span className="qh-qbundle-t">Batch · {g.size} {g.size === 1 ? 'query' : 'queries'}</span>
                   {/* Only what is still waiting is here — say so rather than
@@ -548,7 +585,7 @@ function ApprovalsView({ st, user, role }) {
                   <div className="qh-flex1" />
                   <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={killOn} title={killSay} onClick={() => st.approveBundle(g.bundleId, actor)}>Approve all</button>
                 </div>
-                {g.rows.map(it => <QueueCard key={it.id} it={it} selected={cur && cur.id === it.id} onSelect={setSel} checked={checked.includes(it.id)} onCheck={toggleCheck} />)}
+                {g.rows.map(it => <QueueCard key={it.id} it={it} selected={cur && cur.id === it.id} onSelect={setSel} checked={live.includes(it.id)} onCheck={toggleCheck} />)}
               </div>
             );
           })}
@@ -848,4 +885,4 @@ function NoteBox({ mode, value, onChange, onCancel }) {
   );
 }
 
-Object.assign(window, { AdminPanel, AdminIcons, qhExpiresIn, qhRequesterHolds, qhFailingConnCount, qhAdminLevel, qhAdminCanOpen, qhAdminLockReason, qhKillLasted, qhKillCancelSay, qhKillWho, KillHistory, qhNoteCheck, qhNoteAdd, QH_NOTE_MIN });
+Object.assign(window, { AdminPanel, AdminIcons, qhQueueIsDdl, qhQueueBatchIds, qhQueuePrune, qhQueueBatchNote, qhExpiresIn, qhRequesterHolds, qhFailingConnCount, qhAdminLevel, qhAdminCanOpen, qhAdminLockReason, qhKillLasted, qhKillCancelSay, qhKillWho, KillHistory, qhNoteCheck, qhNoteAdd, QH_NOTE_MIN });

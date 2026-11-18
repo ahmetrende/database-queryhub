@@ -1623,9 +1623,10 @@ function App() {
     // when running it now would not. Ask inside the popup the user is looking
     // at rather than closing it and flashing a field behind their back.
     if (needWhySched && !why.trim()) { setWhyErr(true); return; }
-    setSchedOpen(false);
+    // Check the time BEFORE the popup closes, so a past time keeps the field.
     const iso = qhScheduleToISO(when);
-    if (!iso) { pushToast('Unknown schedule preset.'); return; }
+    if (!iso) { pushToast('Select a date and time in the future.'); return; }
+    setSchedOpen(false);
     submitToServer(activeId, iso);
     // The scheduled query now lives in `requests`; pull it into the panel once
     // the submit has landed.

@@ -2593,6 +2593,9 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
     : peekMode === 'hex' ? qhHexDump(qhCellBytes(peek.value))
     : peek.value;
 
+  // Column types for the NULL marker, built once per render, not per cell.
+  const cellTypes = isTable ? colTypeMap() : {};
+  const capNote = qhResCapNote(baseResult);
   return (
     <div className="qh-resultsview" tabIndex={0} ref={viewRef} role="grid"
          aria-label="Query result" aria-rowcount={total}>
@@ -2631,6 +2634,9 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
         {filterText && !tools.loading && !tools.error && (
           <span className="qh-res-tools-note">{tools.shown.toLocaleString()} of {tools.total.toLocaleString()} rows</span>
         )}
+        {/* Read from `baseResult`: a sorted or filtered view says
+            truncated: false, and the cap is still true. */}
+        {capNote && <span className="qh-res-tools-note is-warn qh-res-capped" role="status">{capNote}</span>}
       </div>
       <div className="qh-table-scroll" ref={scrollRef}>
         {/* Explicit total width: `table-layout: fixed` is only honoured when
@@ -2699,11 +2705,14 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
                 {cols.map((c, ci) => {
                   const pii = piiSet.has(c);
                   const seld = sel.has(keyOf(ri, ci)) || colSel.has(ci);
+                  // SQL NULL shows as a styled `NULL`. Only the screen
+                  // changes: copy and export still read dispVal ('').
+                  const isNull = qhResIsNull(r[c], cellTypes[c]);
                   return (
                     <td key={c} data-cell={ri + ':' + ci} aria-selected={seld || undefined}
                       className={(seld ? 'qh-td-sel ' : '')
                         + (cursor && cursor.r === ri && cursor.c === ci ? 'qh-td-cursor ' : '')
-                        + (pii && !unmasked ? 'qh-td-masked' : (typeof r[c] === 'number' ? 'qh-td-num' : ''))}
+                        + (isNull ? 'qh-td-null' : pii && !unmasked ? 'qh-td-masked' : (typeof r[c] === 'number' ? 'qh-td-num' : ''))}
                       title={dispVal(r, c)}
                       onMouseDown={(e) => cellDown(ri, ci, e)} onMouseEnter={() => cellEnter(ri, ci)}
                       onContextMenu={(e) => gridContextMenu(ri, ci, e)}
@@ -2718,7 +2727,7 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
                           top: Math.min(b.bottom + 6, window.innerHeight - 260),
                           left: Math.min(b.left, window.innerWidth - 420) });
                       }}>
-                      {markCell(dispVal(r, c), c)}
+                      {isNull ? 'NULL' : markCell(dispVal(r, c), c)}
                     </td>
                   );
                 })}

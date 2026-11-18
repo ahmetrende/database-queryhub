@@ -3968,13 +3968,20 @@ function qhTimeAgo(iso) {
   return Math.floor(s / 86400) + ' d ago';
 }
 
-function qhScheduleToISO(when) {
-  const d = new Date();
-  if (when === 'In 1 hour') d.setHours(d.getHours() + 1);
-  else if (when === 'Tonight 02:00') { d.setDate(d.getDate() + 1); d.setHours(2, 0, 0, 0); }
-  else if (when === 'Tomorrow 09:00') { d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); }
-  else return null;
-  return d.toISOString();
+// Same rule as qh-api.jsx: a preset, or a local "YYYY-MM-DD HH:MM" in the future.
+function qhScheduleToISO(when, now) {
+  const d = now == null ? new Date() : new Date(now);
+  if (when === 'In 1 hour') { d.setHours(d.getHours() + 1); return d.toISOString(); }
+  if (when === 'Tonight 02:00') { d.setDate(d.getDate() + 1); d.setHours(2, 0, 0, 0); return d.toISOString(); }
+  if (when === 'Tomorrow 09:00') { d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); return d.toISOString(); }
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/.exec(String(when == null ? '' : when).trim());
+  if (!m) return null;
+  const [y, mo, da, h, mi] = m.slice(1).map(Number);
+  const t = new Date(y, mo - 1, da, h, mi, 0, 0);
+  if (t.getFullYear() !== y || t.getMonth() !== mo - 1 || t.getDate() !== da
+      || t.getHours() !== h || t.getMinutes() !== mi) return null;
+  if (t.getTime() <= d.getTime()) return null;
+  return t.toISOString();
 }
 
 // MOCK of qh-api.jsx's `qh:connections-changed` (CODE 2026-09-23 §2): fired after
