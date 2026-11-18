@@ -1486,6 +1486,12 @@ def maybe_send_bundle_summary(client: WebClient, bundle_id: int) -> None:
         items = bundles_mod.list_items(cur, bundle_id)
     if not items:
         return
+    # A bundle answers on the channel it came from, like a single request:
+    # a web or IdP bundle gets this DM only when its requester chose Slack
+    # too (or the global default is on). Every item carries the same values.
+    from .. import executor as executor_mod  # lazy: executor imports this module
+    if not executor_mod._deliver_result_to_requester(items[0]):
+        return
 
     requester = bundle["requester_slack_id"]
     completed = sum(1 for it in items if it["status"] == "completed")

@@ -658,16 +658,19 @@ def _deliver_result_to_requester(request: dict) -> bool:
 
     A request is answered on the channel it came from: web-origin requests
     read their result in the web UI, so by default the CSV/summary is NOT
-    also DM'd to the requester in Slack. `bot_config web_result_to_slack`
-    flips that back on (deliver to both). Slack-origin requests always
-    deliver — Slack is their channel. Admin-facing messages (approval-card
-    updates) are unaffected by this gate."""
+    also DM'd to the requester in Slack. The requester can choose Slack too
+    for one request (`requests.result_to_slack`). `bot_config
+    web_result_to_slack` is the global default: on delivers every
+    non-Slack result to both. Slack-origin requests always deliver — Slack is
+    their channel. Admin-facing messages (approval-card updates) are
+    unaffected by this gate."""
     if not cfg.ENV.slack_enabled:
         return False  # vanilla profile: results are read in the web UI
     if not origins.is_slack(request.get("origin")):
-        # Any non-Slack surface reads its result there. `web` keeps its own
-        # opt-in; anything newer defaults to the same answer rather than to a
-        # Slack DM nobody asked for.
+        # Any non-Slack surface reads its result there, unless the requester
+        # chose Slack for this request or the global default is on.
+        if request.get("result_to_slack"):
+            return True
         return cfg.get_bool("web_result_to_slack", False)
     return True
 

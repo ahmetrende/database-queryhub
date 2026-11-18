@@ -398,6 +398,7 @@ def create_app() -> FastAPI:
         name = claims.get("name") or claims["sub"]
         initials = "".join(w[0].upper() for w in str(name).split()[:2]) or "?"
         from . import admin as admin_mod
+        from .routes_queries import slack_result_available
         block = admin_mod.admin_block(claims["sub"])
         out = {"user": {
             "slackId": claims["sub"],
@@ -423,6 +424,8 @@ def create_app() -> FastAPI:
             # change before anything else. Slack/other providers: always false.
             "provider": claims.get("provider"),
             "mustChangePassword": _must_change_password(claims),
+            # The UI shows "Also send the result to Slack" only when true.
+            "slackResultAvailable": slack_result_available(claims),
         }}
         # Fleet-wide display timezone (DB stores UTC; the client formats every
         # shown timestamp in this zone). Storage is always UTC; this is display

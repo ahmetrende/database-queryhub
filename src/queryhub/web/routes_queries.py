@@ -34,7 +34,8 @@ from pydantic import BaseModel, Field
 
 from .. import people
 from .. import admins, audit as audit_mod
-from .. import (ai, cancellation, core_submit, db, engines, origins, pending_expiry, pii,
+from .. import (ai, cancellation, core_submit, db, engines, local_users, origins,
+               pending_expiry, pii,
                pre_flight, profile_sync, query_safety, requesters, result_export,
                sql_audit_comment)
 from .. import config as cfg
@@ -95,6 +96,9 @@ class QueryIn(BaseModel):
     # The SQL came from the AI assistant of the editor. A mark for the
     # approver, kept only while the assistant is on. No rule reads it.
     aiAssisted: bool = False
+    # Also send the result to the requester in Slack. Kept only when Slack is
+    # on and the person has a Slack id. The default is the web channel only.
+    resultToSlack: bool = False
 
 
 class BatchItemIn(BaseModel):
@@ -119,6 +123,8 @@ class BatchIn(BaseModel):
     # 'stop'; left out, the tier decides (RO continues, RW/DDL stops).
     fleet: bool = False
     onFailure: str | None = None
+    # Same choice as on a single query. Every item carries it.
+    resultToSlack: bool = False
 
 
 _FLEET_NAMED_MAX = 20
@@ -155,6 +161,19 @@ def _employment_gate(uid: str, what: str) -> None:
         raise deps._error(503, "server_error",
                           "Slack could not confirm your account just now. "
                           "QueryHub did not send the write. Try again in a minute.")
+
+
+def slack_result_available(claims: dict) -> bool:
+    """Can a result reach this person in Slack? Slack must be on, and the
+    principal must be a Slack user id. A local account has no Slack id."""
+    if not cfg.ENV.slack_enabled:
+        return False
+    return not local_users.is_local_identity(str(claims.get("sub") or ""))
+
+
+def _result_to_slack(claims: dict, asked: bool) -> bool:
+    """Store the per-request Slack choice only when it can work."""
+    return bool(asked) and slack_result_available(claims)
 
 
 def _origin_for(claims: dict) -> str:
@@ -351,6 +370,7 @@ def submit_query(body: QueryIn, request: Request,
         run_on=body.runOn,
         replica_id=body.replicaId if body.runOn == "replica" else None,
         ai_assisted=body.aiAssisted and ai.is_enabled_for(uid),
+        result_to_slack=_result_to_slack(claims, body.resultToSlack),
     )
     if isinstance(prep, core_submit.Rejection):
         _record_refusal(claims, "web", t.id, body.databaseId, body.sql, prep)
@@ -697,6 +717,7 @@ def submit_batch(body: BatchIn, request: Request,
             cur, requester_slack_id=uid, requester_name=name,
             justification=body.justification, scheduled_for=sched_for,
             items=items, origin=_origin_for(claims),
+            result_to_slack=_result_to_slack(claims, body.resultToSlack),
             kind="fleet" if fleet else "batch", on_failure=on_failure)
         for p, row, grant in zip(preps, result["item_rows"], aa_grants):
             auto = grant is not None or super_auto

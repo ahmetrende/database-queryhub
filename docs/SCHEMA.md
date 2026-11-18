@@ -614,6 +614,7 @@ Every `/sql` submission, regardless of outcome. The audit trail.
 | `executed_at`, `completed_at` | Execution timing. |
 | `executed_target_id` | The read replica that ran this request, when it did not run on `target_server_id` (migration 131). NULL = ran on its own target. The cancel path signals `backend_pid` on this server. |
 | `run_on` | Where a super-admin asked this request to run (migration 137): NULL = auto (replicas.py decides), `'primary'`, or `'replica:<target_servers.id>'`. A CHECK admits only those shapes. Intent only, like `unmasked`: the executor re-checks super-admin standing at run time, and runs as auto when the standing is gone. An honoured choice writes an `execution_run_on_forced` audit row. If a chosen replica cannot run the query, the request fails instead of running on the primary. See OPERATIONS.md §26. |
+| `result_to_slack` | The requester also wants the result in Slack (migration 214). It applies only to a non-Slack origin: a Slack request always gets its result in Slack. The web route stores `true` only when Slack is on and the principal is a Slack user, so a `local:` account always stores `false`. The global key `web_result_to_slack` still delivers every non-Slack result. A bundle stamps the same value on each item. |
 | `row_count`, `truncated` | Result stats. |
 | `error_message` | Filled when status=`failed`. |
 | `csv_file_path` | Local CSV path (under `/var/lib/queryhub/results/`). Cleanup sets it to NULL. |
