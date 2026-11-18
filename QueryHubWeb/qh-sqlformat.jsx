@@ -131,4 +131,22 @@ function qhFormatSql(sql, engineId, opts) {
   }
 }
 
-Object.assign(window, { qhFormatSql, QH_FMT_KEY, QH_FMT_CHOICES, QH_FMT_DEFAULTS, qhFmtOptionsClean, qhFmtOptionsLoad, qhFmtOptionsSave, qhFmtLibOptions, QH_FMT_PROFILES, qhFmtProfileOptions, qhFmtProfileOf });
+// Formats a selected part of the text. The formatter trims its input, so the
+// white space before and after the selection is put back. A selected line
+// ends in its line break (triple-click, line select). Without it, the next
+// line joins the last formatted line, and after a `--` comment the next line
+// becomes part of the comment. A selection of only white space stays as it is.
+// Returns { text, bodyEnd }: bodyEnd is where the formatted part ends, before
+// the kept trailing white space. Returns null when qhFormatSql does.
+function qhFormatSelection(src, engineId, opts) {
+  if (typeof src !== 'string') return null;
+  if (!src.trim()) return { text: src, bodyEnd: src.length };
+  const out = qhFormatSql(src, engineId, opts);
+  if (out == null) return null;
+  const lead = src.match(/^\s*/)[0];
+  const trail = src.match(/\s*$/)[0];
+  const body = lead + out.trim();
+  return { text: body + trail, bodyEnd: body.length };
+}
+
+Object.assign(window, { qhFormatSql, qhFormatSelection, QH_FMT_KEY, QH_FMT_CHOICES, QH_FMT_DEFAULTS, qhFmtOptionsClean, qhFmtOptionsLoad, qhFmtOptionsSave, qhFmtLibOptions, QH_FMT_PROFILES, qhFmtProfileOptions, qhFmtProfileOf });

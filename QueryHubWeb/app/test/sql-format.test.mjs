@@ -194,6 +194,61 @@ test('text that is already formatted adds no history entry', dom, () => {
   assert.equal(ed.text, 'select\n  a\nfrom\n  t');
 });
 
+// A selection keeps its white space before and after. A selected line ends in
+// its line break (triple-click, line select): before this fix the next line
+// joined the last formatted line, and after a `--` comment it became part of
+// the comment.
+test('qhFormatSelection puts back the white space before and after', () => {
+  const w = real();
+  assert.deepEqual(w.qhFormatSelection('  select a from t\n\n', 'postgres'),
+    { text: '  select\n  a\nfrom\n  t\n\n', bodyEnd: '  select\n  a\nfrom\n  t'.length });
+  assert.deepEqual(w.qhFormatSelection(' \n ', 'postgres'), { text: ' \n ', bodyEnd: 3 }, 'only white space stays as it is');
+  assert.equal(fmtWindow().qhFormatSelection('select 1\n', 'postgres'), null, 'no formatter: null');
+});
+
+test('a selected line with its line break: the next line stays on its own line; one undo', dom, () => {
+  const ed = mount('select a from t\nwhere x = 1', { format });
+  ed.caret(0, 16);
+  assert.equal(ed.text.slice(0, 16), 'select a from t\n');
+  ed.format();
+  assert.equal(ed.text, 'select\n  a\nfrom\n  t\nwhere x = 1');
+  const end = 'select\n  a\nfrom\n  t'.length;
+  assert.deepEqual(ed.sel, [end, end], 'the caret stops before the kept line break');
+  ed.undo();
+  assert.equal(ed.text, 'select a from t\nwhere x = 1');
+});
+
+test('a selected line that ends in a -- comment: the next statement is not commented out', dom, () => {
+  const ed = mount('select 1 -- note\nselect 2;', { format });
+  ed.caret(0, 17);
+  ed.format();
+  assert.equal(ed.text, 'select\n  1 -- note\nselect 2;');
+});
+
+test('a selected DELETE line with a comment keeps the WHERE of the next line', dom, () => {
+  const first = 'delete from orders -- old rows only\n';
+  const ed = mount(first + 'where created_at < now();', { format });
+  ed.caret(0, first.length);
+  ed.format();
+  assert.ok(ed.text.endsWith('\nwhere created_at < now();'), ed.text);
+  for (const line of ed.text.split('\n')) {
+    if (line.includes('--')) assert.ok(!line.includes('where'), `the WHERE went into the comment: ${line}`);
+  }
+});
+
+test('an indented selected line keeps its indent; a white-space selection changes nothing', dom, () => {
+  const ed = mount('x\n  select a from t\ny', { format });
+  ed.caret(2, 20);
+  ed.format();
+  assert.equal(ed.text, 'x\n  select\n  a\nfrom\n  t\ny');
+  const blank = mount('select 1\n\n\nselect 2', { format });
+  blank.caret(8, 11);
+  blank.format();
+  assert.equal(blank.text, 'select 1\n\n\nselect 2');
+  blank.undo();
+  assert.equal(blank.text, 'select 1\n\n\nselect 2', 'no history entry');
+});
+
 // ---------------------------------------------------------------------------
 // The Format button in the tab bar: it bumps a signal, the editor formats
 // ---------------------------------------------------------------------------
