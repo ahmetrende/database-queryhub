@@ -467,14 +467,26 @@ function qhTimeAgo(iso) {
   return Math.floor(s / 86400) + ' d ago';
 }
 
-// Schedule presets → ISO run-at (UTC).
-function qhScheduleToISO(when) {
-  const d = new Date();
-  if (when === 'In 1 hour') d.setHours(d.getHours() + 1);
-  else if (when === 'Tonight 02:00') { d.setDate(d.getDate() + 1); d.setHours(2, 0, 0, 0); }
-  else if (when === 'Tomorrow 09:00') { d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); }
-  else return null;
-  return d.toISOString();
+// Schedule choice → ISO run-at (UTC), the `schedule.runAt` of POST /queries.
+// A preset name, or the custom field's local "YYYY-MM-DD HH:MM" (the
+// datetime-local value; a 'T' between date and time is accepted too). The
+// custom time is the person's own time zone. Before 2026-11-18 only the presets
+// were known, so "Custom date & time" always failed. null for a value that is
+// not a real time or is not in the future. `now` is for tests.
+function qhScheduleToISO(when, now) {
+  const d = now == null ? new Date() : new Date(now);
+  if (when === 'In 1 hour') { d.setHours(d.getHours() + 1); return d.toISOString(); }
+  if (when === 'Tonight 02:00') { d.setDate(d.getDate() + 1); d.setHours(2, 0, 0, 0); return d.toISOString(); }
+  if (when === 'Tomorrow 09:00') { d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); return d.toISOString(); }
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/.exec(String(when == null ? '' : when).trim());
+  if (!m) return null;
+  const [y, mo, da, h, mi] = m.slice(1).map(Number);
+  const t = new Date(y, mo - 1, da, h, mi, 0, 0);
+  // new Date() rolls an impossible value over (Feb 30 → Mar 2). Refuse it.
+  if (t.getFullYear() !== y || t.getMonth() !== mo - 1 || t.getDate() !== da
+      || t.getHours() !== h || t.getMinutes() !== mi) return null;
+  if (t.getTime() <= d.getTime()) return null;
+  return t.toISOString();
 }
 
 Object.assign(window, { qhApi, qhRevokeBody, qhSignInWithSlack, qhTimeAgo, qhScheduleToISO, API_BASE });

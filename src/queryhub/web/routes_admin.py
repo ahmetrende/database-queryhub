@@ -5893,14 +5893,12 @@ def _write_role(cur, uid: str, actor_name: str | None, body: RoleIn,
     # real guarantee and covers the race between two of these; this
     # lookup exists to answer with a sentence naming the row rather than
     # a unique-violation traceback.
-    cur.execute(
-        "SELECT id, max_tier, mirrored_from FROM role_assignment "
-        " WHERE principal_id = %s AND role = %s "
-        "   AND scope_team_id IS NOT DISTINCT FROM %s "
-        "   AND scope_target_id IS NOT DISTINCT FROM %s "
-        "   AND revoked_at IS NULL AND NOT is_deleted",
-        (pid, body.role, body.scopeTeamId, body.scopeTargetId))
+    cur.execute(_ROLE_SCOPE_LOOKUP,
+                (pid, body.role, body.scopeTeamId, body.scopeTargetId))
     dup = cur.fetchone()
+    if dup is not None and _retire_expired_role(cur, uid, actor_name, dup,
+                                                body.subject, body.role):
+        dup = None
     if dup is not None:
         where = ("mirrors the admins table and"
                  if dup["mirrored_from"] else "already exists and")
@@ -5935,6 +5933,56 @@ def _write_role(cur, uid: str, actor_name: str | None, body: RoleIn,
                   "scope_target_id": body.scopeTargetId,
                   "max_tier": tier, "reason": body.reason})
     return rid
+
+
+# The row that holds a (person, role, scope) slot in `role_assignment_live_uq`.
+# That index ignores revoked rows but not expired ones: an index cannot read
+# NOW(). `expired` uses the same test as GET /roles, on the DB clock.
+_ROLE_SCOPE_LOOKUP = (
+    "SELECT id, max_tier, mirrored_from, source, valid_until, "
+    "       (valid_until IS NOT NULL AND valid_until <= NOW()) AS expired "
+    "  FROM role_assignment "
+    " WHERE principal_id = %s AND role = %s "
+    "   AND scope_team_id IS NOT DISTINCT FROM %s "
+    "   AND scope_target_id IS NOT DISTINCT FROM %s "
+    "   AND revoked_at IS NULL AND NOT is_deleted")
+
+
+def _retire_expired_role(cur, uid: str, actor_name: str | None, dup: dict,
+                         subject: str | None, role: str) -> bool:
+    """Revoke an expired role that still holds the slot a new role needs.
+
+    An expired role grants nothing and GET /roles does not show it. But it
+    is not revoked, so it still counts in `role_assignment_live_uq`. No job
+    revokes it, so without this step it blocked the same role with a 409
+    that the admin could not see the cause of.
+
+    This revokes only a direct row. A row that mirrors the admins table or
+    that a sync maintains would come back on its next run, so it keeps the
+    409. The revoke and its audit row go on the caller's cursor, in the same
+    transaction as the insert. Returns True if the slot is now free.
+    """
+    if not dup.get("expired") or dup.get("mirrored_from") or dup.get("source"):
+        return False
+    cur.execute("UPDATE role_assignment SET revoked_at = NOW(), "
+                "       revoked_by = (SELECT p.id FROM principal p "
+                "         JOIN principal_identity i ON i.principal_id = p.id "
+                "        WHERE i.provider = 'slack' AND i.external_id = %s "
+                "          AND NOT i.is_deleted LIMIT 1) "
+                " WHERE id = %s AND revoked_at IS NULL "
+                "RETURNING id", (uid, dup["id"]))
+    if cur.fetchone() is None:
+        # A concurrent request revoked it first. Its insert may now hold the
+        # slot, so stop with a sentence and not a unique-violation traceback.
+        raise deps._error(
+            409, "conflict",
+            f"Role {dup['id']} changed while this request ran. Reload the "
+            "roles and try again.", roleId=dup["id"])
+    audit.log_in(cur, None, uid, actor_name, "role_revoked",
+                 {"subject": subject, "role": role, "role_id": dup["id"],
+                  "cause": "expired",
+                  "expired_on": mapping.iso(dup.get("valid_until"))})
+    return True
 
 
 @router.delete("/roles/{role_id}", status_code=204)
@@ -6082,14 +6130,11 @@ def admin_update_role(role_id: int, body: RolePatch,
                     "        WHERE i.provider = 'slack' AND i.external_id = %s "
                     "          AND NOT i.is_deleted LIMIT 1) "
                     " WHERE id = %s", (uid, role_id))
-        cur.execute(
-            "SELECT id FROM role_assignment "
-            " WHERE principal_id = %s AND role = %s "
-            "   AND scope_team_id IS NOT DISTINCT FROM %s "
-            "   AND scope_target_id IS NOT DISTINCT FROM %s "
-            "   AND revoked_at IS NULL AND NOT is_deleted",
-            (old["principal_id"], role, team, target))
+        cur.execute(_ROLE_SCOPE_LOOKUP, (old["principal_id"], role, team, target))
         dup = cur.fetchone()
+        if dup is not None and _retire_expired_role(cur, uid, claims.get("name"), dup,
+                                                    old["external_id"], role):
+            dup = None
         if dup is not None:
             raise deps._error(
                 409, "conflict",

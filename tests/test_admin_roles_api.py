@@ -489,3 +489,107 @@ def test_moving_a_role_to_someone_else_is_refused(edit):
     with pytest.raises(HTTPException) as e:
         ra.admin_update_role(901, ra.RolePatch(subject="U0EXAMPLE999"), claims={"sub": "x"})
     assert e.value.detail["code"] == "subject_immutable"
+
+
+# --- an expired role does not block the same role again -----------------------
+#
+# `role_assignment_live_uq` ignores revoked rows but cannot read NOW(), so an
+# expired row that nobody revoked kept its slot. GET /roles hides it and no job
+# revokes it, so the admin got a 409 for a row they could not see.
+
+
+class _SlotCur(_Cur):
+    """Answers the person lookup, the scope lookup with `dup`, and the revoke
+    of an expired row with its id (or with nothing, for a lost race)."""
+
+    def __init__(self, old, dup, retired=True):
+        super().__init__(old)
+        self.dup, self.retired = dup, retired
+
+    def execute(self, sql, params=None):
+        super().execute(sql, params)
+        if sql.startswith("SELECT p.id FROM principal"):
+            self.rows = [{"id": 5}]
+        elif sql.startswith("SELECT id, max_tier"):
+            self.rows = [self.dup] if self.dup else []
+        elif sql.startswith("UPDATE role_assignment") and "RETURNING id" in sql:
+            self.rows = [{"id": params[1]}] if self.retired else []
+
+
+def _dup(**kw):
+    from datetime import datetime, timezone
+    base = {"id": 950, "max_tier": "ro", "mirrored_from": None, "source": None,
+            "valid_until": datetime(2026, 11, 1, tzinfo=timezone.utc), "expired": True}
+    base.update(kw)
+    return base
+
+
+def _create_body(ra):
+    return ra.RoleIn(subject="U0EXAMPLE002", role="approver", scopeTeamId=7,
+                     scopeTargetId=53, maxTier="RO")
+
+
+def test_re_adding_a_role_whose_old_row_expired_works_and_is_audited(edit):
+    ra = edit["ra"]
+    cur = edit["cur"] = _SlotCur(None, _dup())
+    out = ra.admin_create_role(_create_body(ra), claims={"sub": "x"})
+    assert out == {"id": 902}
+    assert [a for a, _ in edit["audit"]] == ["role_revoked", "role_granted"]
+    details = edit["audit"][0][1]
+    assert details["role_id"] == 950 and details["cause"] == "expired"
+    assert details["expired_on"] == "2026-11-01T00:00:00+00:00"
+    i_rev = next(i for i, q in enumerate(cur.sql) if q.startswith("UPDATE role_assignment"))
+    i_ins = next(i for i, q in enumerate(cur.sql) if q.startswith("INSERT INTO role_assignment"))
+    assert i_rev < i_ins, "the slot must be free before the insert"
+
+
+@pytest.mark.parametrize("dup", [
+    _dup(expired=False, valid_until=None),          # live, no end
+    _dup(expired=True, mirrored_from="admins"),     # the mirror would restore it
+    _dup(expired=True, source="pod-sync"),          # the sync would restore it
+])
+def test_a_live_or_foreign_duplicate_is_still_refused(edit, dup):
+    from fastapi import HTTPException
+    ra = edit["ra"]
+    cur = edit["cur"] = _SlotCur(None, dup)
+    with pytest.raises(HTTPException) as e:
+        ra.admin_create_role(_create_body(ra), claims={"sub": "x"})
+    assert e.value.status_code == 409 and e.value.detail["roleId"] == 950
+    assert edit["audit"] == []
+    assert not any(q.startswith(("UPDATE", "INSERT")) for q in cur.sql)
+
+
+def test_a_lost_race_on_the_expired_row_is_a_409_not_a_traceback(edit):
+    from fastapi import HTTPException
+    ra = edit["ra"]
+    cur = edit["cur"] = _SlotCur(None, _dup(), retired=False)
+    with pytest.raises(HTTPException) as e:
+        ra.admin_create_role(_create_body(ra), claims={"sub": "x"})
+    assert e.value.status_code == 409
+    assert edit["audit"] == []
+    assert not any(q.startswith("INSERT") for q in cur.sql)
+
+
+def test_patch_to_a_scope_held_by_an_expired_row_works(edit):
+    ra = edit["ra"]
+    edit["cur"] = _SlotCur(_old(), _dup())
+    out = ra.admin_update_role(901, ra.RolePatch(scopeTeamId=8), claims={"sub": "x"})
+    assert out["id"] == 902 and out["replaced"] == 901
+    assert [a for a, _ in edit["audit"]] == ["role_revoked", "role_changed"]
+    assert edit["audit"][0][1]["role_id"] == 950
+
+
+def test_patch_to_a_scope_held_by_a_live_row_is_still_refused(edit):
+    from fastapi import HTTPException
+    ra = edit["ra"]
+    edit["cur"] = _SlotCur(_old(), _dup(expired=False, valid_until=None))
+    with pytest.raises(HTTPException) as e:
+        ra.admin_update_role(901, ra.RolePatch(scopeTeamId=8), claims={"sub": "x"})
+    assert e.value.status_code == 409 and e.value.detail["roleId"] == 950
+    assert edit["audit"] == []
+
+
+def test_the_expired_test_matches_the_listing():
+    """The slot is freed for exactly the rows GET /roles stops showing."""
+    assert "valid_until <= NOW()" in CREATE
+    assert "_retire_expired_role(" in EDIT
