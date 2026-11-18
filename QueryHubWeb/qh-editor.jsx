@@ -5097,16 +5097,18 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
   // selection if there is one, else the whole text. One undo step. A missing
   // formatter, a failure or an unchanged text changes nothing. The textarea keeps
   // its selection when it loses focus, so a click on the button still formats
-  // the part that you selected.
+  // the part that you selected. A selection keeps its white space before and
+  // after (qhFormatSelection), so a selected line keeps its line break.
   const formatNow = () => {
     const ta = taRef.current;
     if (!ta) return;
     const s = ta.selectionStart, en = ta.selectionEnd, part = s !== en;
     const src = part ? value.slice(s, en) : value;
-    const out = typeof qhFormatSql === 'function' ? qhFormatSql(src, engineId) : null;
+    const r = !part ? null : typeof qhFormatSelection === 'function' ? qhFormatSelection(src, engineId) : null;
+    const out = part ? (r ? r.text : null) : typeof qhFormatSql === 'function' ? qhFormatSql(src, engineId) : null;
     if (out == null || out === src) return;
     const next = part ? value.slice(0, s) + out + value.slice(en) : out;
-    const end = part ? s + out.length : out.length;
+    const end = part ? s + r.bodyEnd : out.length;
     restoreSel.current = { text: next, sel: [end, end] };
     commit(next, 'format', [s, en], [end, end]);
   };
