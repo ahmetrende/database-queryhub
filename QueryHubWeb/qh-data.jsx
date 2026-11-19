@@ -793,6 +793,29 @@ function qhAffectedInfo(result) {
 // at in Results, so Messages opens: it holds what the run said.
 function qhTabAfterResult(res) { return res && res.kind === 'affected' ? 'messages' : 'results'; }
 
+// Request status poll (ported from the IdP app). The delay before the next
+// poll of one request:
+//   - after a failed poll, 1.5 s doubled per failure in a row, at most 30 s;
+//   - a request that waits for a DBA polls every 10 s after the first 15 s of
+//     polling, or at once when the request is older than 60 s;
+//   - otherwise 1.5 s.
+// A hidden tab does not poll at all: the caller checks document.visibilityState.
+const QH_POLL_FAST_MS = 1500;
+const QH_POLL_SLOW_MS = 10000;
+const QH_POLL_FAST_WINDOW_MS = 15000;
+const QH_POLL_REQUEST_FAST_WINDOW_MS = 60000;
+const QH_POLL_MAX_BACKOFF_MS = 30000;
+function qhPollDelay(st, now) {
+  const s = st || {};
+  const t = now == null ? Date.now() : now;
+  if (s.failures > 0) return Math.min(QH_POLL_FAST_MS * Math.pow(2, s.failures - 1), QH_POLL_MAX_BACKOFF_MS);
+  if (s.status === 'pending') {
+    const age = t - Date.parse(s.createdAt || '');
+    if (t - (s.startedAt || t) >= QH_POLL_FAST_WINDOW_MS || age >= QH_POLL_REQUEST_FAST_WINDOW_MS) return QH_POLL_SLOW_MS;
+  }
+  return QH_POLL_FAST_MS;
+}
+
 // Whether the auto-approve form can offer "Reads and writes", and the reason when
 // it cannot. `tiers` is the answer of GET /auto-approve-requests: ["RO"], or
 // ["RO", "RW"] while the server switch `auto_approve_rw_requests` is on. A server
@@ -1458,6 +1481,20 @@ function qhHistoryRow(h) {
   };
 }
 
+// The tab that a History row opens: the request itself, with its status, so
+// the tab tracks it and shows its result (pure). `s` is the status read and
+// wins over the row. The row fills what the read lacks.
+function qhHistoryRunTab(h, s) {
+  const r = h || {}, st = s || {};
+  const qid = String(r.id);
+  const sql = st.sql || r.sql || '';
+  const conn = st.connectionId || r.conn || null;
+  const db = st.databaseId || r.db || null;
+  return { name: sql.slice(0, 24) || ('Request ' + qid), autoName: false, sql, conn, db, connState: r.state || null,
+    qid, reqId: qid, status: st.status || r.status || null, submittedAt: st.submittedAt || st.createdAt || r.createdAt || null,
+    ranSql: sql || null, ranDb: db, ranConn: conn };
+}
+
 // How long a run took, short: '850 ms', '1.2 s', '2 min 5 s'. Null gives ''.
 function qhDurationLabel(ms) {
   if (typeof ms !== 'number' || !isFinite(ms) || ms < 0) return '';
@@ -1898,7 +1935,7 @@ function qhBundleTitle(kind, id) {
   return (kind === 'fleet' ? 'Fleet run' : kind === 'batch' ? 'Batch' : 'Bundle') + ' B#' + id;
 }
 
-Object.assign(window, { qhTreeObject,
+Object.assign(window, { qhHistoryRunTab, qhPollDelay, QH_POLL_FAST_MS, QH_POLL_SLOW_MS, QH_POLL_MAX_BACKOFF_MS, qhTreeObject,
   qhFleetGlob, qhFleetPairs, qhFleetFilter, qhFleetTierRank, qhFleetCovers, qhFleetDefaultOnFailure,
   QH_FLEET_STATES, QH_FLEET_STATE_INFO, qhFleetStateOf, qhFleetStateInfo, qhFleetSummary, qhBundleTitle,
   qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhSelectionLines, qhPrimaryLabel, qhJudgedText, qhShiftRanges, qhConfirmReasons, qhSplitReasons,

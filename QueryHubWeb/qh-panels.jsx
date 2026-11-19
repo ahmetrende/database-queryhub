@@ -935,7 +935,7 @@ function qhTreeTableId(connId, dbId, branch, schema, table) {
   return connId + '/' + dbId + branch + '/' + schema + '.' + table;
 }
 
-function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, onReloadCatalog, hiddenDbs, onToggleHiddenDb, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onInsertSaved, onDeleteSaved, snippets, canDeleteShared, onSaveSnippet, onDeleteSnippet, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, pending, onOpenPending, onResubmit, histFocus, onOpenBundle, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
+function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, onReloadCatalog, hiddenDbs, onToggleHiddenDb, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onInsertSaved, onDeleteSaved, snippets, canDeleteShared, onSaveSnippet, onDeleteSnippet, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, onCopyHistory, pending, onOpenPending, onResubmit, histFocus, onOpenBundle, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
   const [open, setOpen] = React.useState(() => ({ 'prod-main': true, 'prod-replica': true }));
   // History (2026-10-24): which group the chips show, and the row that a bell
   // item points at. `histFocus` is { id, n }: the parent bumps `n` for each ask.
@@ -1346,7 +1346,8 @@ function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSea
           const cs = qhConnState(h.state);
           return (
           <div key={h.id} className={'qh-hist-item' + (hflash === String(h.id) ? ' is-flash' : '')} data-hist-id={h.id}>
-            <button className="qh-hist" onClick={() => onLoadHistory(h)}>
+            <div className={'qh-hist-main' + (onCopyHistory && h.outcome !== 'changes_requested' ? ' has-copy' : '')}>
+            <button className="qh-hist" onClick={() => onLoadHistory(h)} title="Open this request with its result. Nothing runs again.">
               <div className="qh-hist-top">
                 <TierBadge tier={h.tier} sm />
                 <StatusPill status={h.status} awaitingDba={h.awaitingDba} outcome={h.outcome} />
@@ -1357,6 +1358,13 @@ function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSea
               <div className="qh-hist-sql">{h.sql}</div>
               <div className="qh-hist-meta">{h.conn} · {h.db}{h.approver ? ' · ' + qhPersonName(h.approver) : ''}{h.durationMs != null ? ' · ' + qhDurationLabel(h.durationMs) : ''}{cs &&<span className="qh-conn-state" title={cs.why + ' The query still opens.'}>{cs.word}</span>}</div>
             </button>
+            {onCopyHistory && h.outcome !== 'changes_requested' && (
+              <button className="qh-row-ins qh-hist-copy" onClick={(e) => { e.stopPropagation(); onCopyHistory(h); }}
+                title="New tab with this SQL and this target. Nothing runs." aria-label="New tab with this SQL">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 11v6M9 14h6"/></svg>
+              </button>
+            )}
+            </div>
             {h.outcome === 'changes_requested' && onResubmit && (
               <button className="qh-btn qh-btn-ghost qh-btn-sm qh-hist-resub" onClick={() => onResubmit(h)} title="Open a new tab with this SQL and this target">Edit and resubmit</button>
             )}
@@ -1407,6 +1415,18 @@ const QH_REQ_REASON_MIN = 5;
 // and located every database for every person on the whitelist, so for the
 // default install `GET /requestable` answers `listed: false` and this form opens
 // straight on the free-text route, with no way back to a list that is not there.
+// The outcome of an access request, for the dialog (pure). The server's own
+// 503 means it SAVED the request but no admin can review it: a second send
+// would make a duplicate, so it shows as a saved state with a warning. A 503
+// with no message comes from a proxy in front of a stopped server: nothing
+// was saved, so it is an error and the form stays.
+function qhReqSentState(r) { return { id: (r && r.id) || null }; }
+function qhReqFailState(e) {
+  // qhFetch says 'Request failed (NNN)' when the body has no message.
+  const said = e && e.message && !/^Request failed \(/.test(e.message) ? e.message : null;
+  if (e && e.status === 503 && said) return { warn: said };
+  return { err: said || 'The request was not sent. Try again.' };
+}
 function RequestAccessModal({ onClose, onSubmit, load }) {
   const [rows, setRows] = React.useState(null);      // null = still loading
   const [loadErr, setLoadErr] = React.useState(null);
@@ -1468,12 +1488,48 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
   };
   const lockWhy = (v) => (free || !pick ? '' : qhTierLockWhy(pick, v));
   const reasonOk = reason.trim().length >= QH_REQ_REASON_MIN;
-  const valid = (free ? (server.trim() && database.trim()) : (pick && database.trim())) && reasonOk && !lockWhy(tier);
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState(null);
+  // The outcome stays in the dialog: { id } after a send, { warn } when the
+  // server saved the request but nobody can review it (503).
+  const [done, setDone] = React.useState(null);
+  const valid = (free ? (server.trim() && database.trim()) : (pick && database.trim())) && reasonOk && !lockWhy(tier) && !busy;
   const send = () => {
     if (!valid) return;
-    onSubmit({ connectionId: free ? null : pick.connectionId, server: free ? server.trim() : pick.name,
-      database: database.trim(), tier, reason });
+    setBusy(true); setErr(null);
+    Promise.resolve(onSubmit({ connectionId: free ? null : pick.connectionId, server: free ? server.trim() : pick.name,
+      database: database.trim(), tier, reason }))
+      .then(r => { setBusy(false); setDone(qhReqSentState(r)); })
+      .catch(e => {
+        setBusy(false);
+        const s = qhReqFailState(e);
+        if (s.warn) setDone(s); else setErr(s.err);
+      });
   };
+
+  if (done) {
+    return (
+      <QhModal onClose={onClose} panelClass="qh-req-modal">
+        <div className="qh-modal-head">
+          <div className="qh-modal-title">{done.warn ? 'Request saved' : 'Request sent'}</div>
+          <button className="qh-icon-btn" onClick={onClose} aria-label="Close">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+        <div className="qh-modal-body">
+          {done.warn
+            ? <div className="qh-req-warn" role="alert">{done.warn}</div>
+            : <div className="qh-req-ok" role="status">
+                {done.id ? <>You sent request <span className="qh-req-id">{done.id}</span>. </> : 'You sent the request. '}
+                You get a DM when a DBA decides.
+              </div>}
+        </div>
+        <div className="qh-modal-foot">
+          <button className="qh-btn qh-btn-primary" onClick={onClose}>Close</button>
+        </div>
+      </QhModal>
+    );
+  }
 
   return (
     <QhModal onClose={onClose} panelClass="qh-req-modal">
@@ -1594,13 +1650,14 @@ function RequestAccessModal({ onClose, onSubmit, load }) {
             <span className="qh-req-note">Say why you need it. A DBA reads this.</span>
           </label>
         )}
+        {err && <div className="qh-req-warn" role="alert">{err}</div>}
       </div>
       <div className="qh-modal-foot">
         <button className="qh-btn qh-btn-ghost" onClick={onClose}>Cancel</button>
         <button className="qh-btn qh-btn-primary is-approval" disabled={!valid} onClick={send}
           title={!valid && (free || pick) && !reasonOk ? 'Write at least ' + QH_REQ_REASON_MIN + ' characters in the reason.' : undefined}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>
-          Send request
+          {busy ? 'Sending…' : 'Send request'}
         </button>
       </div>
     </QhModal>
@@ -3007,4 +3064,4 @@ function qhGripKeyWidth(key, width, startWidth) {
   return null;
 }
 
-Object.assign(window, { qhColumnKind, qhIsNumCell, qhFitColWidth, qhGripKeyWidth, qhClampColW, Sidebar, qhTreeTableId, SnippetsPanel, qhSnippetGroups, QH_SNIP_ENGINES, MessagesView, ProblemsView, QH_PROBLEM_LEVEL, StepsList, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });
+Object.assign(window, { qhReqSentState, qhReqFailState, qhColumnKind, qhIsNumCell, qhFitColWidth, qhGripKeyWidth, qhClampColW, Sidebar, qhTreeTableId, SnippetsPanel, qhSnippetGroups, QH_SNIP_ENGINES, MessagesView, ProblemsView, QH_PROBLEM_LEVEL, StepsList, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });

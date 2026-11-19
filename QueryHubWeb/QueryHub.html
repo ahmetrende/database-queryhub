@@ -965,6 +965,8 @@
   .qh-reqpicked b { font-weight: 600; color: var(--fg-primary); }
   .qh-reqpicked .qh-reqalt { margin-left: auto; }
   .qh-req-note { font-size: 11.5px; line-height: 1.45; color: var(--fg-tertiary); text-wrap: pretty; }
+  .qh-req-ok { padding: 9px 12px; border-radius: var(--r-sm); font-size: 12.5px; line-height: 1.45; color: var(--fg-primary); background: var(--brand-adaptive-light); }
+  .qh-req-id { font-family: var(--qh-mono); font-weight: 600; }
   .qh-req-warn { padding: 9px 12px; border-radius: var(--r-sm); font-size: 12.5px; line-height: 1.45; color: var(--fg-warning); background: var(--warning-adaptive-light); }
   /* The free-text route is kept and demoted to a text button, sitting under the
      list it is the alternative to — that is where someone is looking when their
@@ -3175,6 +3177,14 @@
   .qh-hfilter:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
   .qh-hist-item.is-flash .qh-hist { background: var(--brand-adaptive-light); border-color: var(--brand-adaptive-strong); }
   .qh-hist-resub { margin: 0 0 6px 10px; }
+  /* "New tab with this SQL" on a History row: the row action of Saved
+     (qh-row-ins), at the right end of the meta line. The meta line keeps the
+     room at all times, so nothing moves on hover. Hover and keyboard focus
+     show the button. */
+  .qh-hist-main { position: relative; }
+  .qh-hist-main.has-copy .qh-hist-meta { padding-right: 26px; }
+  .qh-hist-main .qh-hist-copy { top: auto; right: 6px; bottom: 9px; }
+  .qh-hist-main:hover .qh-hist-copy, .qh-hist-main:focus-within .qh-hist-copy { opacity: 1; }
   /* Welcome: what runs at once and what goes to a DBA first. */
   .qh-access-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 18px; }
   .qh-access-card .qh-home-card-body { padding-bottom: 6px; }
