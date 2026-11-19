@@ -279,6 +279,8 @@ function App() {
   const [tabs, setTabs] = useState(wsInit.current.tabs);
   const [activeId, setActiveId] = useState(wsInit.current.activeId);
   const [dlModal, setDlModal] = useState(null);   // .sql download modal: { id, name }
+  const [delAsk, setDelAsk] = useState(null);     // delete confirm: { kind: 'saved' | 'session', id, name, server }
+  const [delBusy, setDelBusy] = useState(false);
   const [sideMode, setSideMode] = useState('conns');
   const [resTab, setResTab] = useState('results');
   const [resH, setResH] = useState(280);
@@ -1164,10 +1166,12 @@ function App() {
     });
   const deleteEditorSnippet = (id) => qhApi.deleteEditorSnippet(id)
     .then(() => setUserSnippets(list => list.filter(x => x.id !== id)));
+  // A delete asks first (2026-11-19). A server delete waits for the answer: a
+  // refused delete keeps the row and says so, so the row does not come back
+  // after a reload.
   const deleteSaved = (id) => {
     const s = savedList.find(x => x.id === id);
-    if (s && s.dest === 'server') qhApi.deleteSnippet(id).catch(() => {});
-    setSavedList(list => list.filter(x => x.id !== id));
+    if (s) setDelAsk({ kind: 'saved', id, name: s.name, server: s.dest === 'server' });
   };
   const saveNamedSession = (name, dest) => {
     const nm = (name || '').trim(); if (!nm) return;
@@ -1193,8 +1197,18 @@ function App() {
   };
   const deleteSession = (id) => {
     const s = sessions.find(x => x.id === id);
-    if (s && s.dest === 'server') qhApi.deleteSessionSrv(id).catch(() => {});
-    setSessions(list => list.filter(x => x.id !== id));
+    if (s) setDelAsk({ kind: 'session', id, name: s.name, server: s.dest === 'server' });
+  };
+  const confirmDelete = () => {
+    const ask = delAsk;
+    if (!ask || delBusy) return;
+    const drop = () => (ask.kind === 'saved' ? setSavedList : setSessions)(list => list.filter(x => x.id !== ask.id));
+    if (!ask.server) { drop(); setDelAsk(null); return; }
+    setDelBusy(true);
+    (ask.kind === 'saved' ? qhApi.deleteSnippet(ask.id) : qhApi.deleteSessionSrv(ask.id))
+      .then(() => { drop(); setDelBusy(false); setDelAsk(null); })
+      .catch(e => { setDelBusy(false); setDelAsk(null);
+        pushToast(((e && e.message) || 'QueryHub could not delete it.') + ' “' + ask.name + '” is still saved.', 'err'); });
   };
   const duplicateTab = (id) => {
     const src = tabs.find(x => x.id === id);
@@ -2049,6 +2063,7 @@ function App() {
       {autoReqOpen && <RequestAutoApproveModal conns={conns} onClose={() => setAutoReqOpen(false)} onSubmit={submitAutoRequest} load={() => qhApi.autoApproveRequests()} />}
       {feedbackOpen && <FeedbackModal user={user} view={view} onClose={() => setFeedbackOpen(false)} onSubmit={submitFeedback} />}
       {dlModal && <DownloadSqlModal defaultName={dlModal.name} onConfirm={performDownloadSql} onCancel={() => setDlModal(null)} />}
+      {delAsk && <DeleteConfirmModal ask={delAsk} busy={delBusy} onConfirm={confirmDelete} onCancel={() => { if (!delBusy) setDelAsk(null); }} />}
       {confirmRun && <ConfirmRunModal reasons={confirmRun.reasons} target={confirmRun.target} env={confirmRun.env}
         tier={confirmRun.tier} scheduled={confirmRun.scheduled} sql={confirmRun.sql} conn={confirmRun.conn}
         onConfirm={confirmRunGo} onCancel={confirmRunCancel} />}
@@ -2970,6 +2985,26 @@ function SessionSaveModal({ defaultName, onSave, onCancel }) {
   );
 }
 
+// ---------- Delete a saved query or a saved workspace ----------
+function DeleteConfirmModal({ ask, busy, onConfirm, onCancel }) {
+  const what = ask.kind === 'saved' ? 'saved query' : 'workspace';
+  return (
+    <QhModal onClose={onCancel}>
+      <div className="qh-modal-head">
+        <div>
+          <div className="qh-modal-title">Delete the {what}?</div>
+          <div className="qh-modal-sub">QueryHub deletes “{ask.name}”{ask.server ? ' from the server' : ' from this browser'}. You cannot undo this.</div>
+        </div>
+        <button className="qh-icon-btn" onClick={onCancel} aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </div>
+      <div className="qh-modal-foot">
+        <button className="qh-btn qh-btn-ghost" disabled={busy} onClick={onCancel}>Keep</button>
+        <button className="qh-btn qh-btn-danger" autoFocus disabled={busy} onClick={onConfirm}>{busy ? 'Deleting…' : 'Delete'}</button>
+      </div>
+    </QhModal>
+  );
+}
+
 // ---------- Download a tab's SQL as a .sql file ----------
 function DownloadSqlModal({ defaultName, onConfirm, onCancel }) {
   const [name, setName] = useState(defaultName || 'query.sql');
@@ -3457,7 +3492,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-Object.assign(window, { App, ErrorBoundary, FleetRunPage });
+Object.assign(window, { App, ErrorBoundary, FleetRunPage, DeleteConfirmModal });
 ReactDOM.createRoot(document.getElementById('root')).render(
   <ErrorBoundary><App /></ErrorBoundary>
 );

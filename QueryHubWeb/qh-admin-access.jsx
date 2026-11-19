@@ -1648,6 +1648,9 @@ function autoToggleSay(a, on) {
   if (!on) return 'Pause this auto-approve rule? A DBA then reviews the queries of ' + who + ' on ' + where + '. QueryHub keeps the rule, its reason and its run count. QueryHub does not revoke the rule. You can resume it here.';
   return 'Resume this auto-approve rule? The queries of ' + who + ' on ' + where + ' then run without a DBA again, up to ' + a.tier + (a.expiresAt ? ', until ' + qhFmt(a.expiresAt) : ', with no end date') + '.';
 }
+function autoRevokeSay(a) {
+  return 'Revoke this auto-approve rule? A DBA then reviews the ' + a.tier + ' queries of ' + qhPersonName(a.userName || a.user) + ' on ' + autoScopeLabel(a) + '. You cannot undo this. To stop the rule for a short time, use Pause.';
+}
 function AutoForm({ init, actor, st, onDone }) {
   // An edit writes a NEW rule, and a rule needs an end, at most `maxDays` from
   // now (2026-10-24). A good end can be kept. A rule with no end, or one past
@@ -1729,13 +1732,16 @@ function AutoView({ st, user }) {
   const subjects = autoSubjects(rows, st.people);
   const [busyId, setBusyId] = useAcc(null);
   const [rowErr, setRowErr] = useAcc(null);
-  const [askId, setAskId] = useAcc(null);   // the rule whose inline confirm is open
+  const [askId, setAskId] = useAcc(null);   // the rule whose pause/resume confirm is open
+  const [revokeId, setRevokeId] = useAcc(null);   // the rule whose revoke confirm is open
 
   // Pause and resume (PATCH /admin/auto-grants/{id}, 2026-10-23). A paused rule
   // approves nothing and stays on this list with its reason and run count. An
   // ended rule gets no switch: the server answers 409 for it. Edit is off on a
   // paused rule, because an edit writes a NEW rule, and a new rule is on.
-  const toggle = (a) => { setAskId(x => (x === a.id ? null : a.id)); setRowErr(null); };
+  const toggle = (a) => { setAskId(x => (x === a.id ? null : a.id)); setRevokeId(null); setRowErr(null); };
+  // Revoke asks first (2026-11-19), like every other destructive admin action.
+  const askRevoke = (a) => { setRevokeId(x => (x === a.id ? null : a.id)); setAskId(null); setRowErr(null); };
   const doToggle = (a) => {
     const on = a.enabled === false;
     setAskId(null);
@@ -1750,7 +1756,7 @@ function AutoView({ st, user }) {
       <div className="qh-rowacts">
         {st8 !== 'ended' && <button className="qh-rowbtn" disabled={busyId === a.id} onClick={() => toggle(a)}>{st8 === 'paused' ? 'Resume' : 'Pause'}</button>}
         <span title={st8 === 'paused' ? 'Resume the rule first. An edit writes a new rule, and a new rule is on.' : undefined}><button className="qh-rowbtn" disabled={st8 === 'paused'} onClick={() => { setEditId(a.id); setAdding(null); }}><AIcon.edit />Edit</button></span>
-        <button className="qh-revoke" onClick={() => st.revokeAutoGrant(a.id, actor)}>Revoke</button>
+        <button className="qh-revoke" onClick={() => askRevoke(a)}>Revoke</button>
       </div>
     );
   };
@@ -1759,6 +1765,8 @@ function AutoView({ st, user }) {
       {askId === a.id && (() => { const resume = a.enabled === false; return (
         <InlineConfirm say={autoToggleSay(a, resume)} cancelLabel={resume ? 'Keep paused' : 'Keep running'} confirmLabel={resume ? 'Resume rule' : 'Pause rule'}
           busy={busyId === a.id} onCancel={() => setAskId(null)} onConfirm={() => doToggle(a)} />); })()}
+      {revokeId === a.id && <InlineConfirm say={autoRevokeSay(a)} cancelLabel="Keep rule" confirmLabel="Revoke rule" danger
+          onCancel={() => setRevokeId(null)} onConfirm={() => { setRevokeId(null); st.revokeAutoGrant(a.id, actor); }} />}
       {rowErr && rowErr.id === a.id ? <div className="qh-roleform-err qh-autosub-err">{rowErr.msg}</div> : null}
     </>
   );
@@ -2160,6 +2168,7 @@ function ScopesView({ st, user }) {
   const [editId, setEditId] = useAcc(null);
   const [q, setQ] = useAcc('');
   const [group, setGroup] = useAcc('none');
+  const [removeId, setRemoveId] = useAcc(null);   // the scope whose remove confirm is open
   const blank = { admin: '', role: 'dba', canApprove: ['RO'], connections: '*' };
 
   const rows = st.scopes.filter(s => {
@@ -2175,14 +2184,21 @@ function ScopesView({ st, user }) {
       <tr key={s.id} className="qh-editrow"><td colSpan={6}><ScopeForm init={{ id: s.id, admin: s.admin, role: s.role, canApprove: s.canApprove, connections: s.connections.join(', '), expiresAt: s.expiresAt || null }} actor={actor} st={st} onDone={() => setEditId(null)} /></td></tr>
     );
     return (
-      <tr key={s.id} className={qhEndState(s.expiresAt).state === 'ended' ? 'is-ended' : undefined}>
+      <React.Fragment key={s.id}>
+      <tr className={qhEndState(s.expiresAt).state === 'ended' ? 'is-ended' : undefined}>
         <td><b>{s.admin}</b></td>
         <td><span className={'qh-rolechip ' + s.role}>{s.role === 'super' ? 'super-admin' : 'DBA'}</span></td>
         <td><div className="qh-tierrow">{s.canApprove.map(t => <TierBadge key={t} tier={t} sm />)}</div></td>
         <td className="qh-mono">{s.connections.join(', ')}</td>
         <td><EndChip iso={s.expiresAt} none="Permanent" /></td>
-        <td className="qh-tright"><div className="qh-rowacts"><button className="qh-rowbtn" onClick={() => { setEditId(s.id); setAdding(false); }}><AIcon.edit />Edit</button>{st.scopes.length > 1 && <button className="qh-revoke" onClick={() => st.removeScope(s.id, actor)}>Remove</button>}</div></td>
+        <td className="qh-tright"><div className="qh-rowacts"><button className="qh-rowbtn" onClick={() => { setEditId(s.id); setAdding(false); }}><AIcon.edit />Edit</button>{st.scopes.length > 1 && <button className="qh-revoke" onClick={() => setRemoveId(x => (x === s.id ? null : s.id))}>Remove</button>}</div></td>
       </tr>
+      {removeId === s.id && <tr className="qh-editrow qh-revokerow"><td colSpan={6}>
+        <InlineConfirm say={'Remove the admin scope of ' + s.admin + '? ' + s.admin + ' then cannot approve queries on ' + s.connections.join(', ') + '. You cannot undo this.'}
+          cancelLabel="Keep scope" confirmLabel="Remove scope" danger
+          onCancel={() => setRemoveId(null)} onConfirm={() => { setRemoveId(null); st.removeScope(s.id, actor); }} />
+      </td></tr>}
+      </React.Fragment>
     );
   };
 
