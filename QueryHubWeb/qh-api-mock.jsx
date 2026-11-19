@@ -1809,6 +1809,15 @@ function mockSeedLifecycle() {
       justification: null, unmasked: false, runOn: null, replicaId: null, scheduledFor: null, rejected: false, handToDba: null,
       t0: Date.now() - sd.ageMin * 60000, seed: sd };
   });
+  // The rows of the mock History are requests too, as on a server: GET
+  // /queries/{id} knows them, so a click on a row opens the run with its result.
+  // Only the ends that the plain path can give: done, and refused.
+  (window.QH_HISTORY || []).forEach(h => {
+    if (MOCK.requests[h.id] || (h.status !== 'done' && h.status !== 'rejected')) return;
+    MOCK.requests[h.id] = { id: h.id, sql: h.sql, conn: h.conn, db: h.db, tier: h.tier, auto: true, bundleId: null,
+      justification: null, unmasked: false, runOn: null, replicaId: null, scheduledFor: null,
+      rejected: h.status === 'rejected', handToDba: null, t0: Date.now() - 3600 * 1000 };
+  });
 }
 // The status of a seeded request. A pending one stays pending until it is withdrawn.
 function seededStatus(rec) {
@@ -2695,9 +2704,11 @@ const qhApi = {
         return mockFail('There is no database “' + b.database + '” on ' + c.name + '.', 400, 'unknown_database');
       }
     }
-    ADMIN.endpointReqs = [{ id: mockId('er'), connectionId: b.connectionId || null, server: b.server, database: b.database, tier: b.tier,
+    const id = mockId('er');
+    ADMIN.endpointReqs = [{ id, connectionId: b.connectionId || null, server: b.server, database: b.database, tier: b.tier,
       reason: b.reason, requester: (mockUser() || {}).handle || 'you', requestedAt: isoNow(), status: 'submitted' }, ...ADMIN.endpointReqs];
-    return { ok: true };
+    // Same shape as the server: POST /endpoint-requests answers 201 { id, status }.
+    return { id, status: 'submitted' };
   }, 300),
   feedback: (b) => mockDelay(() => {
     ADMIN.feedback = [{ id: mockId('f'), user: (mockUser() || {}).handle || 'you', score: null,

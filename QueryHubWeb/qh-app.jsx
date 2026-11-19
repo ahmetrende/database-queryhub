@@ -966,9 +966,27 @@ function App() {
     if (tab.kind || view !== 'dev') { loadSaved(s); return; }
     setInsSig(x => ({ text: s.sql || '', n: (x ? x.n : 0) + 1 }));
   };
+  // "New tab with this SQL" on a History row: a new draft tab with the SQL and
+  // the target, and a new request id. Nothing runs.
   const loadHistory = (h) => {
     const f = freshTab({ name: h.sql.slice(0, 24), autoName: true, sql: h.sql, conn: h.conn, db: h.db, connState: h.state });
     setTabs(ts => [...ts, f]); setActiveId(f.id); reserveFor(f.id);  };
+  // A click on a History row opens that run with its result (ported from the
+  // IdP app). The tab reads the status and the result of the request, so an old
+  // result shows without a second run on the server. A tab that already holds
+  // the request is selected instead. Same path as openBundleItem.
+  const openHistoryRun = (h) => {
+    if (!h || h.id == null) return;
+    setView('dev');
+    const qid = String(h.id);
+    const own = tabs.find(x => !x.kind && x.qid && String(x.qid) === qid);
+    if (own) { setActiveId(own.id); return; }
+    Promise.resolve().then(() => qhApi.status(qid)).then(s => {
+      const f = freshTab(qhHistoryRunTab(h, s));
+      setTabs(ts => [...ts, f]); setActiveId(f.id); setResTab('results');
+      track(f.id, qid);
+    }, e => pushToast((e && e.message) || 'Could not open this request.'));
+  };
 
   // ---- requests that wait, and requests that a DBA sent back (2026-10-24) ----
   // Waiting group of the History list: the open tabs that wait, then the pending
@@ -1240,7 +1258,7 @@ function App() {
   // ----- run / submit flow -----
   const audit = (id, actor, event) => setTabs(ts => ts.map(x => x.id === id ? { ...x, audit: [...x.audit, { actor, event, time: nowTime() }] } : x));
 
-  const POLL_MS = 1500;
+  // One tracker per tab: a WebSocket, a poll loop (qhPollDelay), or both in turn.
   const trackers = useRef({});
   // Long-run notice: the request ids that this page saw before they ended.
   // Only those raise a notice, so a reload or an old request raises none.
@@ -1250,11 +1268,26 @@ function App() {
   const stopTrack = (id) => {
     const tr = trackers.current[id];
     if (!tr) return;
-    if (tr.interval) clearInterval(tr.interval);
+    tr.polling = false;
+    if (tr.timer) clearTimeout(tr.timer);
     if (tr.ws) { try { tr.ws.close(); } catch (e) {} }
     delete trackers.current[id];
   };
   useEffect(() => () => Object.keys(trackers.current).forEach(stopTrack), []);
+  // A hidden browser tab does not poll. When it shows again, every poll loop
+  // that stopped for that reason polls at once and goes on.
+  useEffect(() => {
+    const onShow = () => {
+      if (document.visibilityState === 'hidden') return;
+      Object.keys(trackers.current).forEach(id => {
+        const tr = trackers.current[id];
+        // `tick` is the loop's own function, so the closure is the one that started it.
+        if (tr && tr.polling && !tr.timer && !tr.inFlight && tr.tick) tr.tick();
+      });
+    };
+    document.addEventListener('visibilitychange', onShow);
+    return () => document.removeEventListener('visibilitychange', onShow);
+  }, []);
 
   // One mapper for both reads (`qhHistoryRow` in qh-data.jsx), so a field that the
   // list needs (`outcome`, `createdAt`) cannot reach one path and miss the other.
@@ -1336,14 +1369,42 @@ function App() {
     return false;
   };
 
+  // One status read. The tracker keeps what the poll delay needs: the failures
+  // in a row and the last status. 401, 403 and 404 end the tracking: a signed-
+  // out session, or a request this person cannot see or that is gone.
   const refreshOnce = async (id, qid) => {
-    try { if (await applyStatus(id, qid, await qhApi.status(qid))) stopTrack(id); }
-    catch (e) { if (e.status === 401) stopTrack(id); }
+    let sres;
+    try { sres = await qhApi.status(qid); }
+    catch (e) {
+      if (e.status === 401 || e.status === 403 || e.status === 404) { stopTrack(id); return; }
+      const tr = trackers.current[id];
+      if (tr) tr.failures = Math.min((tr.failures || 0) + 1, 6);
+      return;
+    }
+    const tr = trackers.current[id];
+    if (tr) { tr.failures = 0; tr.status = sres.status; tr.createdAt = sres.createdAt || sres.submittedAt || null; }
+    try { if (await applyStatus(id, qid, sres)) stopTrack(id); } catch (e) { /* the next poll reads it again */ }
+  };
+  // The poll loop: one read, then a timer with the delay that qhPollDelay
+  // gives. The loop ends when the tracker goes (stopTrack, or a new track()),
+  // and pauses while the browser tab is hidden.
+  const pollTick = async (id, qid) => {
+    const tr = trackers.current[id];
+    if (!tr || !tr.polling) return;
+    tr.timer = null;
+    if (document.visibilityState === 'hidden') return;
+    tr.inFlight = true;
+    await refreshOnce(id, qid);
+    tr.inFlight = false;
+    if (trackers.current[id] !== tr || !tr.polling || document.visibilityState === 'hidden') return;
+    tr.timer = setTimeout(() => pollTick(id, qid), qhPollDelay(tr));
   };
   const startPolling = (id, qid) => {
-    if (trackers.current[id] && trackers.current[id].interval) return;
-    trackers.current[id] = { ...(trackers.current[id] || {}),
-                             interval: setInterval(() => refreshOnce(id, qid), POLL_MS) };
+    const tr = trackers.current[id] || (trackers.current[id] = {});
+    if (tr.polling) return;
+    Object.assign(tr, { polling: true, startedAt: Date.now(), failures: tr.failures || 0, timer: null, inFlight: false,
+                        tick: () => pollTick(id, qid) });
+    tr.timer = setTimeout(() => pollTick(id, qid), qhPollDelay(tr));
   };
   const track = (id, qid) => {
     stopTrack(id);
@@ -1357,7 +1418,7 @@ function App() {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       ws = new WebSocket(proto + '://' + location.host + API_BASE + '/queries/' + qid + '/stream');
     } catch (e) { startPolling(id, qid); return; }
-    trackers.current[id] = { ...(trackers.current[id] || {}), ws };
+    (trackers.current[id] || (trackers.current[id] = {})).ws = ws;
     const fallback = setTimeout(() => { if (!opened) { try { ws.close(); } catch (e) {} startPolling(id, qid); } }, 3000);
     ws.onopen = () => { opened = true; };
     ws.onmessage = () => { refreshOnce(id, qid); };
@@ -1897,7 +1958,7 @@ function App() {
       snippets={userSnippets} canDeleteShared={canDelShared} onSaveSnippet={saveEditorSnippet} onDeleteSnippet={deleteEditorSnippet}
       sessions={sessions} onSaveSession={() => setSessionModal(true)} onRestoreSession={restoreSession} onDeleteSession={deleteSession}
       scheduled={scheduled} onOpenScheduled={openScheduled} onCancelScheduled={cancelScheduled}
-      history={history} onLoadHistory={loadHistory} pending={pendingReqs} onOpenPending={openPending} onResubmit={resubmitFrom} histFocus={histFocus}
+      history={history} onLoadHistory={openHistoryRun} onCopyHistory={loadHistory} pending={pendingReqs} onOpenPending={openPending} onResubmit={resubmitFrom} histFocus={histFocus}
       onOpenBundle={(id) => openBundle(id)}
       width={sideWidth} onResizerDown={onResizerDown} onResizerFit={fitSidebar}
       onRequestEndpoint={() => setReqOpen(true)} onRequestAuto={() => setAutoReqOpen(true)} onOpenTable={openTable} onScriptCreate={scriptCreate} revealTable={treeReveal} onNewQuery={newQueryOn} onNewTab={newTab}
@@ -1911,19 +1972,17 @@ function App() {
     pushToast('Requested ' + req.tier + ' auto-approve on ' + req.connectionId + '/' + req.databaseId + ' for ' + (label || (req.days ? req.days + (req.days === 1 ? ' day' : ' days') : Math.round((req.windowMinutes || 0) / 60) + 'h')) + '. You will get a DM when a DBA decides.');
   });
 
-  const submitRequest = async (req) => {
-    setReqOpen(false);
-    try {
-      // `connectionId` is the picked row, and the server treats it as
-      // AUTHORITATIVE (CODE brief 2026-08-22 §2): unknown or disabled → 404, a
-      // database not on it → 400 `unknown_database`, and no fallback to the free
-      // text — falling back is what produced requests nobody could resolve.
-      // `server` is still sent on both routes: it stays required, so every
-      // client keeps one field to display.
-      await qhApi.requestEndpoint({ connectionId: req.connectionId || null, server: req.server, database: req.database, tier: req.tier, reason: req.reason });
-      pushToast(req.tier + ' access to ' + req.server + '/' + (req.database || '(any db)') + ' requested — sent to DBA in Slack.');
-    } catch (e) { pushToast(e.message || 'Request failed.'); }
-  };
+  // The dialog stays open and shows the outcome: the request id, the server's
+  // warning, or the error under the form with the typed reason kept. So this
+  // RETURNS the promise, like submitAutoRequest, and closes nothing.
+  //
+  // `connectionId` is the picked row, and the server treats it as
+  // AUTHORITATIVE (CODE brief 2026-08-22 §2): unknown or disabled → 404, a
+  // database not on it → 400 `unknown_database`, and no fallback to the free
+  // text — falling back is what produced requests nobody could resolve.
+  // `server` is still sent on both routes: it stays required, so every
+  // client keeps one field to display.
+  const submitRequest = (req) => qhApi.requestEndpoint({ connectionId: req.connectionId || null, server: req.server, database: req.database, tier: req.tier, reason: req.reason });
   const submitFeedback = (fb) => {
     // Backend (live): POST /api/feedback { type, subject, details, severity } (context — view, user,
     // browser/app version — attached server-side from the session). Records to the audit log + DMs admins.
@@ -1933,6 +1992,10 @@ function App() {
       .catch((e) => pushToast((e && e.message) || 'Could not send feedback — please try again.'));
   };
 
+  // Until /me answers, the session state is not known. A signed-in person must
+  // not see the sign-in card for that moment, so show a loader on the same
+  // background instead.
+  if (!authChecked) return <div className="qh-login" role="status"><span className="qh-spin dark" /><span className="qh-sr-only">Loading QueryHub</span></div>;
   if (!user) return <LoginScreen onSignedIn={signIn} brand={t.brand} />;
   // A local account flagged must_change_pw is blocked until it sets a new
   // one (server also rejects submits with 403 password_change_required).
@@ -1988,7 +2051,7 @@ function App() {
               onSaveSession={() => setSessionModal(true)}
               sessions={sessions} onRestoreSession={restoreSession} onDeleteSession={deleteSession}
               scheduled={scheduled} onOpenScheduled={openScheduled} onCancelScheduled={cancelScheduled}
-              history={history} onLoadHistory={loadHistory}
+              history={history} onLoadHistory={openHistoryRun}
               saved={savedList} onLoadSaved={loadSaved} onDeleteSaved={deleteSaved}
               conns={conns} connsLoading={connsLoading} isSuper={isSuper}
               onBrowse={browseConnections} onWhatsNew={openWhatsNew} unseenNews={unseenNews} />
