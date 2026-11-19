@@ -54,10 +54,9 @@ function qhLoadWorkspace() {
     const fresh = w.tabs.filter(t => !t.touchedAt || (now - t.touchedAt) < QH_WS_TTL);
     if (!fresh.length) return null;
     let maxN = 0;
-    const tabs = fresh.map(t => { const n = parseInt(String(t.id).replace(/\D/g, '')) || 0; if (n > maxN) maxN = n; return { id: t.id, kind: t.kind, bundleId: t.bundleId || undefined, name: t.name, sql: t.sql, conn: t.conn, db: t.db, reqId: t.reqId, qid: t.qid, touchedAt: t.touchedAt || now, dirty: false, result: null, status: null, runMs: null, messages: [], audit: [],
-      // 2026-11-09: a tab saved without the flag gets it from qhNameTabs (legacy rule).
-      autoName: (t.autoName === true || t.autoName === false) ? t.autoName : undefined,
-      unpicked: t.unpicked === true ? true : undefined }; });
+    // qhWsHydrate (qh-data.jsx) also builds the tabs that the merge takes from
+    // another browser tab, so both paths give a tab the same defaults.
+    const tabs = fresh.map(t => { const n = parseInt(String(t.id).replace(/\D/g, '')) || 0; if (n > maxN) maxN = n; return qhWsHydrate(t, now); });
     TAB_SEQ = Math.max(TAB_SEQ, maxN + 1);
     return { tabs, activeId: fresh.some(t => t.id === w.activeId) ? w.activeId : tabs[0].id };
   } catch (e) { return null; }
@@ -262,7 +261,15 @@ function App() {
   };
 
   const wsInit = useRef();
+  // What this browser tab last wrote to or read from qh.workspace.v1: the raw
+  // text and the parsed record. It is the base of the three-way merge with
+  // what another browser tab wrote (qhMergeWorkspace).
+  const wsBaseRef = useRef(null);
   if (!wsInit.current) {
+    try {
+      const raw = localStorage.getItem(QH_WS_KEY);
+      wsBaseRef.current = { raw, rec: qhParseWorkspace(raw) || { activeId: '', tabs: [] } };
+    } catch (e) { wsBaseRef.current = { raw: null, rec: { activeId: '', tabs: [] } }; }
     const loaded = qhLoadWorkspace();
     if (loaded) {
       const tabs = loaded.tabs.some(x => x.kind === 'welcome') ? loaded.tabs : [welcomeTab(), ...loaded.tabs];
@@ -474,16 +481,87 @@ function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+  // Two browser tabs share qh.workspace.v1. Before a write, read what is there:
+  // when another browser tab wrote since our last write or read, merge with it
+  // (qhMergeWorkspace) and write the merged tabs, so neither side loses SQL.
+  const wsTabsRef = useRef(tabs);
+  const wsActiveRef = useRef(activeId);
+  wsTabsRef.current = tabs;
+  wsActiveRef.current = activeId;
+  const wsNewId = () => 't' + (TAB_SEQ++);
+  // Tabs taken from the other browser tab keep their ids. Keep freshTab past them.
+  const wsBumpSeq = (list) => list.forEach(t => {
+    const n = parseInt(String(t.id).replace(/\D/g, ''), 10) || 0;
+    if (n >= TAB_SEQ) TAB_SEQ = n + 1;
+  });
+  const wsWrite = (list, active) => {
+    const raw = JSON.stringify(qhWorkspaceSlim(list, active));
+    localStorage.setItem(QH_WS_KEY, raw);
+    wsBaseRef.current = { raw, rec: qhParseWorkspace(raw) };
+  };
+  // The tabs (the array itself) and the active tab that storage already holds
+  // after a merge. The next run of the write effect skips them. A write-back of
+  // what the other browser tab just wrote can land after its next keystroke, and
+  // the other tab then reads it as a change and drops that keystroke (2026-11-19,
+  // headless: 1 of 5 fast-typing runs lost a character).
+  const wsStoredRef = useRef(null);
   useEffect(() => {
+    const stored = wsStoredRef.current;
+    wsStoredRef.current = null;
+    if (stored && stored.tabs === tabs && stored.activeId === activeId) return;
     try {
-      const slim = { activeId, savedAt: Date.now(), tabs: tabs.map(t => ({ id: t.id, kind: t.kind, bundleId: t.bundleId || undefined, name: t.name, sql: t.sql, conn: t.conn, db: t.db, // reqId is persisted so a reload does not change the number a tab has
-        // been showing. Without it every reload would reserve a new id.
-        reqId: t.reqId, qid: t.qid, touchedAt: t.touchedAt || Date.now(),
-        // 2026-11-09: an auto-named tab and a tab with no target yet stay so after a reload.
-        autoName: t.autoName, unpicked: t.unpicked === true ? true : undefined })) };
-      localStorage.setItem(QH_WS_KEY, JSON.stringify(slim));
+      let list = tabs, active = activeId;
+      const raw = localStorage.getItem(QH_WS_KEY);
+      const base = wsBaseRef.current;
+      if (base && raw !== base.raw) {
+        const theirs = qhParseWorkspace(raw);
+        if (theirs) {
+          const merged = qhMergeWorkspace(base.rec, { tabs, activeId }, theirs, wsNewId);
+          if (merged.changed) {
+            wsBumpSeq(merged.tabs);
+            list = merged.tabs; active = merged.activeId;
+            setTabs(merged.tabs);
+            if (merged.activeId !== activeId) setActiveId(merged.activeId);
+            wsStoredRef.current = { tabs: merged.tabs, activeId: merged.activeId };
+          }
+        }
+      }
+      wsWrite(list, active);
     } catch (e) {}
   }, [tabs, activeId]);
+  // Another browser tab wrote qh.workspace.v1: take its changes into this tab now.
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key !== QH_WS_KEY && e.key !== null) return;
+      try {
+        const raw = localStorage.getItem(QH_WS_KEY);
+        const base = wsBaseRef.current;
+        if (!base || raw === base.raw) return;
+        const theirs = qhParseWorkspace(raw);
+        if (!theirs) return;
+        const mineTabs = wsTabsRef.current, mineActive = wsActiveRef.current;
+        const merged = qhMergeWorkspace(base.rec, { tabs: mineTabs, activeId: mineActive }, theirs, wsNewId);
+        // We have now read their record: it is the new base.
+        wsBaseRef.current = { raw, rec: theirs };
+        // Write back only when the tab contents differ from theirs. Order and the
+        // active tab stay per browser tab, so neither starts a write loop.
+        const rows = (list) => list.map(t => t.id + '\u0000' + qhWsTabRow(t)).sort().join('\u0001');
+        const same = rows(merged.tabs) === rows(theirs.tabs);
+        if (merged.changed) {
+          wsBumpSeq(merged.tabs);
+          wsTabsRef.current = merged.tabs;
+          wsActiveRef.current = merged.activeId;
+          setTabs(merged.tabs);
+          if (merged.activeId !== mineActive) setActiveId(merged.activeId);
+          // Storage already holds these tabs: the write effect does not echo them.
+          // When they differ from theirs, the write effect writes the merge.
+          if (same) wsStoredRef.current = { tabs: merged.tabs, activeId: merged.activeId };
+        } else if (!same) wsWrite(merged.tabs, merged.activeId);
+      } catch (err) {}
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   // Tabs restored from a workspace saved before this feature (or from a session
   // where the reservation failed) carry no request id. Give each one a number,

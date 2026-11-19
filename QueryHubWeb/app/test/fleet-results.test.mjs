@@ -7,6 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { page, sliceFunction, web, jsdomOpts as opts } from './_mount.mjs';
+import { bareWindow, loadInto } from './_load.mjs';
 
 const ITEM = (n, state, over = {}) => ({
   queryId: String(100 + n), position: n, connectionId: 'example-' + n, databaseId: 'db' + n,
@@ -148,7 +149,13 @@ test('the app opens a bundle tab after a fleet submit, and from History', () => 
   assert.match(src, /isBundle \? \(\s*<FleetRunPage key=\{tab\.bundleId\} bundleId=\{tab\.bundleId\} onOpenItem=\{openBundleItem\}/);
   assert.match(src, /onOpenBundle=\{\(id\) => openBundle\(id\)\}/);
   // The workspace keeps the bundle id, so a reload reopens the same page.
-  assert.equal((src.match(/bundleId: t\.bundleId \|\| undefined/g) || []).length, 2);
+  // qhWorkspaceSlim writes it, qhWsHydrate reads it, and the reload uses qhWsHydrate.
+  const data = loadInto(bareWindow(), 'qh-data.jsx');
+  const stored = data.qhWorkspaceSlim([{ id: 't3', kind: 'bundle', bundleId: 77, name: 'Fleet run B#77' }], 't3');
+  assert.equal(stored.tabs[0].bundleId, 77);
+  assert.equal(data.qhWsHydrate(stored.tabs[0]).bundleId, 77);
+  assert.equal(data.qhWsHydrate({ id: 't4', kind: 'query', bundleId: 0 }).bundleId, undefined);
+  assert.match(src, /return qhWsHydrate\(t, now\); \}\);/);
   const panels = web('qh-panels.jsx');
   assert.match(panels, /h\.bundleId && onOpenBundle && \(/);
 });

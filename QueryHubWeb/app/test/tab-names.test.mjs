@@ -111,8 +111,13 @@ test('kinds keep their names', () => {
 
 test('the app saves the flag in the workspace and in a session', () => {
   const app = web('qh-app.jsx');
-  assert.match(app, /const slim = [\s\S]*?autoName: t\.autoName/, 'the workspace saves it');
-  assert.match(app, /autoName: \(t\.autoName === true \|\| t\.autoName === false\) \? t\.autoName : undefined/, 'the workspace loads it');
+  // qhWorkspaceSlim writes the record. qhWsHydrate reads it back on a reload.
+  const saved = H.qhWorkspaceSlim([{ id: 't1', autoName: false }, { id: 't2', autoName: true }, { id: 't3' }], 't1').tabs;
+  assert.deepEqual(saved.map(t => t.autoName), [false, true, undefined], 'the workspace saves it');
+  assert.deepEqual(saved.map(t => H.qhWsHydrate(t).autoName), [false, true, undefined], 'the workspace loads it');
+  assert.equal(H.qhWsHydrate({ id: 't4', autoName: 'yes' }).autoName, undefined, 'only a boolean is a flag');
+  assert.match(app, /JSON\.stringify\(qhWorkspaceSlim\(list, active\)\)/, 'the app writes the slim record');
+  assert.match(app, /return qhWsHydrate\(t, now\); \}\);/, 'the reload uses the same hydrate');
   assert.match(app, /connectionId: t\.conn, databaseId: t\.db, autoName: t\.autoName/, 'a server session sends it');
   assert.match(app, /setTabs\(ts => qhNameTabs\(ts, conns\)\)/, 'the app names the tabs');
 });
