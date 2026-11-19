@@ -250,6 +250,12 @@
   .qh-side-resizer::after { content: ''; position: absolute; top: 0; right: 3px; width: 2px; height: 100%; background: transparent; transition: background var(--d-fast-02) var(--ease-standard); }
   .side-right .qh-side-resizer::after { right: auto; left: 3px; }
   .qh-side-resizer:hover::after { background: var(--brand-green); }
+  /* Keyboard focus on the separator: the ring plus the hover line. */
+  .qh-side-resizer:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-side-resizer:focus-visible::after { background: var(--brand-green); }
+  /* Keyboard focus on a tree row and on an editor tab. Border width never changes. */
+  .qh-tr:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-tab:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
   .qh-side-switch { display: flex; padding: 8px 8px 0; gap: 3px; min-width: 0; }
   .qh-side-tab { flex: 0 0 auto; min-width: 0; position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; min-height: 52px; padding: 8px 11px;
     background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer; color: var(--fg-tertiary);
@@ -818,6 +824,9 @@
     align-items: center; justify-content: center; border-top: 1px solid var(--stroke-medium); }
   .qh-res-grip span { width: 38px; height: 3px; border-radius: 999px; background: var(--stroke-strong); }
   .qh-res-grip:hover span { background: var(--brand-green); }
+  /* Keyboard focus on the grip: the ring plus the hover colour. */
+  .qh-res-grip:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-res-grip:focus-visible span { background: var(--brand-green); }
 
   /* ---------- results panel ---------- */
   .qh-results { height: 100%; display: flex; flex-direction: column; background: var(--bg-white); }

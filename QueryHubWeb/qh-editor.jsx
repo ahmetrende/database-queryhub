@@ -6172,7 +6172,64 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
   const cancelledRef = React.useRef(false);
   const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current statement'], ['⇧ + F8', 'Run from the top to the current statement'], ['⇧ + ⌥ / Alt + S', 'Select current statement'], ['⌥ / Alt + PgUp / PgDn', 'Previous / next statement'], ['⇧ + F12 · ⌘/Ctrl + ⇧ + \\', 'Go to the matching bracket, CASE/END or BEGIN/END'], ['⌥ / Alt + ↑ / ↓', 'Move line up / down'], ['Tab · ⇧ + Tab', 'Indent / outdent the selected lines'], ['⌘ / Ctrl + /', 'Comment or uncomment the lines'], ['⇧ + ⌥ / Alt + ;', 'Add missing semicolons'], ['⇧ + ⌥ / Alt + E', 'Expand every * of the text or selection'], ['⇧ + F6', 'Rename the alias at the caret'], ['⌘ / Ctrl + B · ⌘ / Ctrl + click', 'Go to the definition: alias, CTE, or the object in the tree'], ['⇧ + ⌥ / Alt + D', 'CREATE script of the object at the caret'], ['⇧ + ⌥ / Alt + Q', 'Qualify table and column names'], ['Ctrl + Space after GROUP BY', 'The non-aggregated SELECT columns'], ['PgUp / PgDn in the list', 'Move 8 rows; drag the corner to resize'], ['Select, then ( \' " [', 'Wrap the selection'], ['( \' " [ with no selection', 'The closing mark goes in too. Backspace removes an empty pair'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Ctrl + Space', 'Suggestions; in a SELECT, all columns'], ['Ctrl + Space in the column list', 'Check a column; Enter inserts the checked ones'], ['Tab after INSERT INTO t, UPDATE t, EXEC p, CALL p', 'Statement template'], ['Tab / ⇧ + Tab in a template or snippet', 'Next / previous field'], ['Ctrl + ⇧ + Space', 'Parameter info of the function at the caret'], ['ssf + Tab', 'Snippet: type a key, pick it (list below)'],['⌥ / Alt + Z', 'Toggle word wrap'], ['⇧ + ⌥ / Alt + F', 'Format SQL'], ['⌥ / Alt + ← →', 'Previous / next result'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
   const beginRename = (t) => { if (t.kind) return; setMenu(null); setEditId(t.id); setDraft(t.name); };
-  const openMenu = (e, id) => { e.preventDefault(); e.stopPropagation(); setKb(false); setMenu({ x: Math.min(e.clientX, window.innerWidth - 200), y: e.clientY, id }); };
+  // A keyboard context menu (Shift+F10 or the menu key) has no pointer
+  // position: clientX and clientY are both 0. Then open the menu under the tab.
+  const openMenu = (e, id) => {
+    e.preventDefault(); e.stopPropagation(); setKb(false);
+    let x = e.clientX, y = e.clientY;
+    if (!x && !y && e.currentTarget && e.currentTarget.getBoundingClientRect) {
+      const r = e.currentTarget.getBoundingClientRect();
+      x = r.left; y = r.bottom;
+    }
+    setMenu({ x: Math.min(x, window.innerWidth - 200), y, id });
+  };
+  // The tab strip is a tablist with a roving tabindex: only the active tab is
+  // in the Tab order. The arrow keys, Home and End select a tab and move focus
+  // to it. Delete closes the focused tab, F2 renames it, Enter and Space select it.
+  const tabRefs = React.useRef({});
+  const focusTab = (id) => { const el = tabRefs.current[id]; if (el) el.focus(); };
+  // After Delete closes a tab, focus goes to the tab that is active then.
+  // The id stays until the closed tab is gone, so a close that waits for a
+  // confirm still works, and a cancelled close moves no focus.
+  const closedByKeyRef = React.useRef(null);
+  React.useEffect(() => {
+    const closed = closedByKeyRef.current;
+    if (!closed) return;
+    closedByKeyRef.current = null;
+    if (tabs.some(x => x.id === closed)) return;
+    const now = document.activeElement;
+    if (now && now !== document.body && !(barRef.current && barRef.current.contains(now))) return;
+    focusTab(activeId);
+  }, [tabs, activeId]);
+  const onTabKey = (e, t) => {
+    // Keys typed in the rename input or on the close button are not for the strip.
+    if (e.target !== e.currentTarget) return;
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const i = tabs.findIndex(x => x.id === t.id);
+    if (i < 0) return;
+    const n = tabs.length;
+    let to = null;
+    if (e.key === 'ArrowRight') to = tabs[(i + 1) % n];
+    else if (e.key === 'ArrowLeft') to = tabs[(i - 1 + n) % n];
+    else if (e.key === 'Home') to = tabs[0];
+    else if (e.key === 'End') to = tabs[n - 1];
+    if (to) { e.preventDefault(); onSelect(to.id); focusTab(to.id); return; }
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(t.id); return; }
+    if (e.key === 'Delete') {
+      // The same rule as the close button: a tab can close unless it is in rename.
+      if (editId === t.id) return;
+      e.preventDefault();
+      closedByKeyRef.current = t.id;
+      onClose(t.id);
+      return;
+    }
+    if (e.key === 'F2') {
+      // Rename the FOCUSED tab. Stop the event here, or the window F2 handler
+      // below also starts a rename, of the active tab.
+      e.preventDefault(); e.stopPropagation();
+      beginRename(t);
+    }
+  };
   React.useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'F2' && !editId) { const t = tabs.find(x => x.id === activeId); if (t) { e.preventDefault(); beginRename(t); } }
@@ -6183,9 +6240,13 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
   }, [tabs, activeId, editId, menu]);
   return (
     <div className="qh-tabbar">
-      <div className="qh-tabs" ref={barRef}>
+      <div className="qh-tabs" ref={barRef} role="tablist" aria-label="Open tabs">
       {tabs.map(t => (
         <div key={t.id} className={'qh-tab' + (t.id === activeId ? ' is-active' : '') + (qhTabIsProd(t) ? ' is-prod' : '') + (overId === t.id ? ' is-drop' : '') + (dragId === t.id ? ' is-dragging' : '')} onClick={() => onSelect(t.id)}
+          ref={(el) => { if (el) tabRefs.current[t.id] = el; else delete tabRefs.current[t.id]; }}
+          id={'qh-tab-' + t.id} role="tab" aria-selected={t.id === activeId} tabIndex={t.id === activeId ? 0 : -1}
+          aria-keyshortcuts={[editId !== t.id ? 'Delete' : null, !t.kind ? 'F2' : null].filter(Boolean).join(' ') || undefined}
+          onKeyDown={(e) => onTabKey(e, t)}
           // 2026-11-09: the request id is no longer in the strip. Every tab, the
           // active one too, has the full name and the request id on hover,
           // because a narrow tab cuts its name. A PROD tab adds "PROD".

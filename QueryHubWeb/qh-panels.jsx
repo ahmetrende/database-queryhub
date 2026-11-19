@@ -120,8 +120,97 @@ function qhConnIdentity(c) {
   );
 }
 
+// ----- tree keyboard (WAI-ARIA tree pattern) -----
+// What one key does on a focused tree row. `levels[i]` is the aria-level of
+// row i. `openFlags[i]` is true (open), false (closed) or undefined (the row
+// cannot expand). Returns { focus: index } to move focus, { toggle: true } to
+// open or close the row itself, or null when the key is not a tree key.
+function qhTreeKeyTarget(levels, index, key, openFlags) {
+  const n = levels ? levels.length : 0;
+  if (!n || index < 0 || index >= n) return null;
+  const flags = openFlags || [];
+  if (key === 'ArrowDown') return { focus: Math.min(index + 1, n - 1) };
+  if (key === 'ArrowUp') return { focus: Math.max(index - 1, 0) };
+  if (key === 'Home') return { focus: 0 };
+  if (key === 'End') return { focus: n - 1 };
+  if (key === 'ArrowRight') {
+    if (flags[index] === false) return { toggle: true };
+    if (flags[index] === true && index + 1 < n && levels[index + 1] > levels[index]) return { focus: index + 1 };
+    return { focus: index };
+  }
+  if (key === 'ArrowLeft') {
+    if (flags[index] === true) return { toggle: true };
+    for (let j = index - 1; j >= 0; j--) {
+      if (levels[j] < levels[index]) return { focus: j };
+    }
+    return { focus: index };
+  }
+  return null;
+}
+
+// Roving tabindex: exactly one row of the tree is in the Tab order. It is the
+// row that has focus, else the active row, else the first row.
+function qhTreeRovingFix(tree) {
+  if (!tree || !tree.querySelectorAll) return;
+  const rows = Array.from(tree.querySelectorAll('.qh-tr'));
+  if (!rows.length) return;
+  const doc = tree.ownerDocument;
+  const act = doc ? doc.activeElement : null;
+  let pick = act ? rows.find(r => r === act) : null;
+  if (!pick) pick = rows.find(r => r.classList.contains('is-active')) || rows[0];
+  rows.forEach(r => {
+    const v = r === pick ? 0 : -1;
+    if (r.tabIndex !== v) r.tabIndex = v;
+  });
+}
+
+// Runs the roving fix after every render of the tree. It is a child so that
+// the fix needs no hook in SchemaTree itself.
+function QhTreeRoving({ treeRef }) {
+  React.useEffect(() => { qhTreeRovingFix(treeRef && treeRef.current); });
+  return null;
+}
+
+// Where a context menu opens. Shift+F10 and the Menu key fire `contextmenu`
+// with clientX = clientY = 0, so the menu opens at the row's bottom-left
+// corner instead of the top-left corner of the window.
+function qhMenuPoint(e) {
+  const x = e && typeof e.clientX === 'number' ? e.clientX : 0;
+  const y = e && typeof e.clientY === 'number' ? e.clientY : 0;
+  const el = e ? e.currentTarget : null;
+  if (x === 0 && y === 0 && el && typeof el.getBoundingClientRect === 'function') {
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.left), y: Math.round(r.bottom) };
+  }
+  return { x, y };
+}
+
 function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, right, active, muted, strong, pii, drag, connDrag, dbDrag, onClick, onCtx, onDbl, title, nodeId }) {
   const handle = onClick || (expandable ? onToggle : undefined);
+  // Keys on a focused row. Keys typed in a child (a rename box) pass through.
+  const onKeyDown = (e) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      if (handle) { e.preventDefault(); handle(e); }
+      return;
+    }
+    const tree = e.currentTarget.closest('.qh-tree');
+    if (!tree) return;
+    const rows = Array.from(tree.querySelectorAll('.qh-tr'));
+    const levels = rows.map(r => parseInt(r.getAttribute('aria-level'), 10) || 1);
+    const flags = rows.map(r => {
+      const a = r.getAttribute('aria-expanded');
+      return a === 'true' ? true : (a === 'false' ? false : undefined);
+    });
+    const move = qhTreeKeyTarget(levels, rows.indexOf(e.currentTarget), e.key, flags);
+    if (!move) return;
+    e.preventDefault();
+    if (move.toggle) { if (onToggle) onToggle(); return; }
+    const to = rows[move.focus];
+    if (to && to !== e.currentTarget) to.focus();
+  };
+  const onFocus = (e) => { if (e.target === e.currentTarget) qhTreeRovingFix(e.currentTarget.closest('.qh-tree')); };
   // Names ellipsize in a narrow sidebar, so every row hovers its own full name —
   // rows with something more to say (a db's server/host, a server's engine/env)
   // pass an explicit title that already opens with the name.
@@ -143,6 +232,8 @@ function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, ri
   return (
     <div data-tip={rowTitle} data-node={nodeId} className={'qh-tr' + (active ? ' is-active' : '') + (muted ? ' is-muted' : '') + (strong ? ' is-strong' : '') + (pii ? ' is-pii' : '') + (drag ? ' is-drag' : '') + (connDrag ? ' is-conn-drag' : '') + (sub ? ' is-two' : '')}
       style={{ paddingLeft: (6 + depth * 14) + 'px' }} onClick={handle} onContextMenu={onCtx} onDoubleClick={onDbl}
+      role="treeitem" aria-level={(depth || 0) + 1} aria-expanded={expandable ? !!open : undefined} aria-selected={!!active}
+      tabIndex={active ? 0 : -1} onKeyDown={onKeyDown} onFocus={onFocus}
       draggable={draggable}
       onDragStart={onDragStart}>
       <span className="qh-tr-caret" onClick={expandable ? (e => { e.stopPropagation(); onToggle(); }) : undefined}>
@@ -170,7 +261,7 @@ function SchemaTree({ onScriptCreate, bindOnClick, conns: allConns, schemaCache,
   const tog = (id) => setOpen(o => ({ ...o, [id]: !o[id] }));
   const isOpen = (id) => !!open[id];
   const [menu, setMenu] = React.useState(null);
-  const openMenu = (e, c, db, table) => { e.preventDefault(); hideTip(); setMenu({ x: Math.min(e.clientX, window.innerWidth - 224), y: Math.min(e.clientY, window.innerHeight - 220), c, db, table }); };
+  const openMenu = (e, c, db, table) => { e.preventDefault(); hideTip(); const p = qhMenuPoint(e); setMenu({ x: Math.min(p.x, window.innerWidth - 224), y: Math.min(p.y, window.innerHeight - 220), c, db, table }); };
   const newQ = (c, db) => { if (onNewQuery) onNewQuery(c, db); };
 
   // ----- the tree's own hover label -----
@@ -250,7 +341,7 @@ function SchemaTree({ onScriptCreate, bindOnClick, conns: allConns, schemaCache,
   const deleteFolder = (id) => setOrg(o => ({ ...o, folders: o.folders.filter(f => f.id !== id) }));
   const gOpen = (k) => open[k] !== false;
   const gTog = (k) => setOpen(o => ({ ...o, [k]: !(o[k] !== false) }));
-  const openConnMenu = (e, c) => { e.preventDefault(); hideTip(); setMenu({ x: Math.min(e.clientX, window.innerWidth - 236), y: Math.min(e.clientY, window.innerHeight - 320), conn: c }); };
+  const openConnMenu = (e, c) => { e.preventDefault(); hideTip(); const p = qhMenuPoint(e); setMenu({ x: Math.min(p.x, window.innerWidth - 236), y: Math.min(p.y, window.innerHeight - 320), conn: c }); };
   const onDropZone = (zone, id) => { if (zone === 'fav') { if (!isFav(id)) toggleFav(id); } else if (zone === 'all') { moveToFolder(id, null); if (isFav(id)) toggleFav(id); } else { moveToFolder(id, zone); } };
   // The database view files DATABASES, not servers — same gestures, own keys
   // (`connId/dbId`), so favouriting `analytics` on prod-main does not drag
@@ -509,7 +600,9 @@ function SchemaTree({ onScriptCreate, bindOnClick, conns: allConns, schemaCache,
   };
 
   return (
-    <div className={'qh-tree' + (narrow ? ' is-narrow' : '')} ref={treeRef} onMouseOver={overTip} onMouseLeave={hideTip} onDragStart={hideTip}>
+    <div className={'qh-tree' + (narrow ? ' is-narrow' : '')} ref={treeRef} onMouseOver={overTip} onMouseLeave={hideTip} onDragStart={hideTip}
+      role="tree" aria-label="Connections">
+      <QhTreeRoving treeRef={treeRef} />
       <div className="qh-treeview" role="group" aria-label="Browse by">
         <button className={treeView === 'servers' ? 'is-on' : ''} onClick={() => setTreeView('servers')} aria-label="Server view">
           {TICN.server()}<span>Server view</span>
@@ -935,7 +1028,7 @@ function qhTreeTableId(connId, dbId, branch, schema, table) {
   return connId + '/' + dbId + branch + '/' + schema + '.' + table;
 }
 
-function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, onReloadCatalog, hiddenDbs, onToggleHiddenDb, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onInsertSaved, onDeleteSaved, snippets, canDeleteShared, onSaveSnippet, onDeleteSnippet, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, onCopyHistory, pending, onOpenPending, onResubmit, histFocus, onOpenBundle, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit }) {
+function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSearch, onRequestAuto, onToast, mode, setMode, conns, connsLoading, schemaCache, onLoadSchema, canRefresh, onRefreshSchema, onReloadCatalog, hiddenDbs, onToggleHiddenDb, rolesCache, onLoadRoles, active, onPick, saved, onLoadSaved, onInsertSaved, onDeleteSaved, snippets, canDeleteShared, onSaveSnippet, onDeleteSnippet, sessions, onSaveSession, onRestoreSession, onDeleteSession, scheduled, onOpenScheduled, onCancelScheduled, history, onLoadHistory, onCopyHistory, pending, onOpenPending, onResubmit, histFocus, onOpenBundle, collapsed, onRequestEndpoint, onOpenTable, onNewQuery, onNewTab, onOpenSqlFile, onDownloadSql, canDownloadSql, isSuper, width, onResizerDown, onResizerFit, onResizerKey }) {
   const [open, setOpen] = React.useState(() => ({ 'prod-main': true, 'prod-replica': true }));
   // History (2026-10-24): which group the chips show, and the row that a bell
   // item points at. `histFocus` is { id, n }: the parent bumps `n` for each ask.
@@ -1139,7 +1232,10 @@ function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSea
 
   return (
     <div className={'qh-side' + (collapsed ? ' is-collapsed' : '')} style={width ? { width: width + 'px' } : undefined}>
-      {onResizerDown && <div className="qh-side-resizer" onMouseDown={onResizerDown} onDoubleClick={onResizerFit} title="Drag to resize · double-click to fit the widest name" />}
+      {onResizerDown && <div className="qh-side-resizer" onMouseDown={onResizerDown} onDoubleClick={onResizerFit} onKeyDown={onResizerKey}
+        role="separator" aria-orientation="vertical" aria-label="Resize the sidebar"
+        aria-valuenow={width || 264} aria-valuemin={224} aria-valuemax={560} tabIndex={0}
+        title="Drag to resize · double-click to fit the widest name" />}
       {modeEntry}
       <div className="qh-side-switch">
         {modes.map(([m, Icon]) => (
@@ -3064,4 +3160,4 @@ function qhGripKeyWidth(key, width, startWidth) {
   return null;
 }
 
-Object.assign(window, { qhReqSentState, qhReqFailState, qhColumnKind, qhIsNumCell, qhFitColWidth, qhGripKeyWidth, qhClampColW, Sidebar, qhTreeTableId, SnippetsPanel, qhSnippetGroups, QH_SNIP_ENGINES, MessagesView, ProblemsView, QH_PROBLEM_LEVEL, StepsList, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });
+Object.assign(window, { qhTreeKeyTarget, qhMenuPoint, qhTreeRovingFix, qhReqSentState,qhReqFailState, qhColumnKind, qhIsNumCell, qhFitColWidth, qhGripKeyWidth, qhClampColW, Sidebar, qhTreeTableId, SnippetsPanel, qhSnippetGroups, QH_SNIP_ENGINES, MessagesView, ProblemsView, QH_PROBLEM_LEVEL, StepsList, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });

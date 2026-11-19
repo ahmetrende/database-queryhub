@@ -131,6 +131,45 @@ const QH_CLASSIFY_DEBOUNCE_MS = 400;
 // is cleared on sign-out with the rest.
 const QH_REASON_KEY = 'qh.reason.v1';
 const QH_REASON_MAX = 5;
+// The results panel height survives a reload (qh.resheight.v1). It is a
+// chrome preference like qh.sidewidth.v1, so sign-out does not clear it.
+// A stored value counts only when it is a whole number in 80..1600. It is
+// then capped so the editor keeps room in a window shorter than before.
+const QH_RES_H_DEFAULT = 280;
+function qhLoadResHeight(raw, innerHeight) {
+  const s = raw == null ? '' : String(raw).trim();
+  if (!/^\d+$/.test(s)) return QH_RES_H_DEFAULT;
+  const n = parseInt(s, 10);
+  if (n < 80 || n > 1600) return QH_RES_H_DEFAULT;
+  const cap = Math.max(160, (Number(innerHeight) || 0) - 320);
+  return Math.min(n, cap);
+}
+
+// One key press on the results grip. ArrowUp makes the results 24px taller,
+// ArrowDown 24px shorter, Home resets them. Returns null for any other key.
+function qhResHeightKey(h, key, maxH) {
+  let next = null;
+  if (key === 'ArrowUp') next = h + 24;
+  else if (key === 'ArrowDown') next = h - 24;
+  else if (key === 'Home') next = QH_RES_H_DEFAULT;
+  if (next == null) return null;
+  return Math.max(80, Math.min(Math.max(80, maxH), next));
+}
+
+// One key press on the sidebar separator. The arrows move the separator 16px
+// in their own direction, so with the sidebar on the right ArrowLeft makes it
+// wider. Home resets the width. Returns null for any other key.
+function qhSideWidthKey(w, key, side) {
+  let next = null;
+  if (key === 'ArrowLeft' || key === 'ArrowRight') {
+    const toRight = key === 'ArrowRight';
+    const grow = side === 'right' ? !toRight : toRight;
+    next = w + (grow ? 16 : -16);
+  } else if (key === 'Home') next = 264;
+  if (next == null) return null;
+  return Math.max(224, Math.min(560, next));
+}
+
 function qhLoadReasons() {
   try { const a = JSON.parse(localStorage.getItem(QH_REASON_KEY)); return Array.isArray(a) ? a.filter(x => typeof x === 'string' && x.trim()).slice(0, QH_REASON_MAX) : []; }
   catch (e) { return []; }
@@ -290,7 +329,8 @@ function App() {
   const [delBusy, setDelBusy] = useState(false);
   const [sideMode, setSideMode] = useState('conns');
   const [resTab, setResTab] = useState('results');
-  const [resH, setResH] = useState(280);
+  const [resH, setResH] = useState(() => { try { return qhLoadResHeight(localStorage.getItem('qh.resheight.v1'), window.innerHeight); } catch (e) { return QH_RES_H_DEFAULT; } });
+  useEffect(() => { try { localStorage.setItem('qh.resheight.v1', String(resH)); } catch (e) {} }, [resH]);
   const [schedOpen, setSchedOpen] = useState(false);
   const [whyErr, setWhyErr] = useState(false);
   const [reasons, setReasons] = useState(qhLoadReasons);
@@ -1875,17 +1915,30 @@ function App() {
 
   // resize results panel
   const drag = useRef(null);
-  const onDragStart = (e) => {
-    const container = e.currentTarget.parentElement;
+  // The tallest the results may get: the grip's parent minus the action bar,
+  // the grip and a strip of editor. The drag and the keyboard share it.
+  const resMaxFor = (grip) => {
+    const container = grip ? grip.parentElement : null;
     const ab = container ? container.querySelector('.qh-actionbar') : null;
     const abH = ab ? ab.offsetHeight : 0;
-    const gripH = e.currentTarget.offsetHeight || 10;
-    const maxH = Math.max(160, (container ? container.clientHeight : 800) - abH - gripH - 52);
+    const gripH = (grip && grip.offsetHeight) || 10;
+    return Math.max(160, (container ? container.clientHeight : 800) - abH - gripH - 52);
+  };
+  const onDragStart = (e) => {
+    const maxH = resMaxFor(e.currentTarget);
     drag.current = { y: e.clientY, h: resH, maxH };
     document.body.style.cursor = 'row-resize'; window.addEventListener('mousemove', onDragMove); window.addEventListener('mouseup', onDragEnd);
   };
   const onDragMove = (e) => { if (drag.current) setResH(Math.max(80, Math.min(drag.current.maxH, drag.current.h - (e.clientY - drag.current.y)))); };
   const onDragEnd = () => { drag.current = null; document.body.style.cursor = ''; window.removeEventListener('mousemove', onDragMove); window.removeEventListener('mouseup', onDragEnd); };
+  // The grip is a keyboard separator too (WAI-ARIA window splitter).
+  const onGripKey = (e) => {
+    const next = qhResHeightKey(resH, e.key, resMaxFor(e.currentTarget));
+    if (next == null) return;
+    e.preventDefault();
+    setResH(next);
+  };
+  const resMaxGuess = Math.max(resH, 160, (typeof window !== 'undefined' ? window.innerHeight : 800) - 320);
 
   // The CREATE script of one object in a new tab (2026-11-12, Devart B5).
   // `c` and `db` are the rows of the connection and the database. The server
@@ -1925,7 +1978,14 @@ function App() {
     const f = freshTab({ name: nm, autoName: false, sql: qhSelectSql(c, db, table, o), conn: c.id, db: db.id });
     setTabs(ts => [...ts, f]); setActiveId(f.id); focusEditor();  };
 
-  const [sideWidth, setSideWidth] = useState(() => { const n = parseInt(localStorage.getItem('qh.sidewidth.v1'), 10); return (n >= 224 && n <= 560) ? n : 264; });
+  const [sideWidth, setSideWidth] = useState(() => { try { const n = parseInt(localStorage.getItem('qh.sidewidth.v1'), 10); return (n >= 224 && n <= 560) ? n : 264; } catch (e) { return 264; } });
+  // The separator is a keyboard control too (WAI-ARIA window splitter).
+  const onResizerKey = (e) => {
+    const next = qhSideWidthKey(sideWidth, e.key, t.sidebarSide);
+    if (next == null) return;
+    e.preventDefault();
+    setSideWidth(next);
+  };
   useEffect(() => { try { localStorage.setItem('qh.sidewidth.v1', String(sideWidth)); } catch (e) {} }, [sideWidth]);
   // Double-click the resizer: size the sidebar to the widest row it is
   // showing. With 25-character server names and 65 databases, "the name does
@@ -2038,7 +2098,7 @@ function App() {
       scheduled={scheduled} onOpenScheduled={openScheduled} onCancelScheduled={cancelScheduled}
       history={history} onLoadHistory={openHistoryRun} onCopyHistory={loadHistory} pending={pendingReqs} onOpenPending={openPending} onResubmit={resubmitFrom} histFocus={histFocus}
       onOpenBundle={(id) => openBundle(id)}
-      width={sideWidth} onResizerDown={onResizerDown} onResizerFit={fitSidebar}
+      width={sideWidth} onResizerDown={onResizerDown} onResizerFit={fitSidebar} onResizerKey={onResizerKey}
       onRequestEndpoint={() => setReqOpen(true)} onRequestAuto={() => setAutoReqOpen(true)} onOpenTable={openTable} onScriptCreate={scriptCreate} revealTable={treeReveal} onNewQuery={newQueryOn} onNewTab={newTab}
       onOpenSqlFile={openSqlFile} onDownloadSql={() => requestDownloadSql(activeId)} canDownloadSql={activeHasSql} isSuper={isSuper} />
   );
@@ -2172,7 +2232,10 @@ function App() {
                 <SqlEditor value={tab.sql} onChange={onCode} docId={tab.id} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} onSelectionChange={setSel} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} formatSignal={fmtSig} insertSignal={insSig} issues={blockerRanges} revealSignal={issueSig} lints={lintRanges} onNotice={pushToast} onScriptCreate={scriptCreateHere} onRevealObject={revealObjectHere} />
               </div>
 
-              <div className="qh-res-grip" onMouseDown={onDragStart}><span /></div>
+              <div className="qh-res-grip" onMouseDown={onDragStart} onDoubleClick={() => setResH(QH_RES_H_DEFAULT)} onKeyDown={onGripKey}
+                role="separator" aria-orientation="horizontal" aria-label="Resize the results panel"
+                aria-valuenow={resH} aria-valuemin={80} aria-valuemax={resMaxGuess} tabIndex={0}
+                title="Drag to resize. Double-click to reset."><span /></div>
               <div style={{ height: resH, flexShrink: 0 }}>
                 <ResultsPanel colMeta={colMeta} tab={resTab} setTab={setResTab} result={tab.result} messages={tab.messages}
                   audit={tab.audit} status={tab.status} awaitingDba={tab.awaitingDba} runMs={tab.runMs} onExport={exportResult} plan={tab.plan} onToast={pushToast} reqId={tab.reqId}
@@ -3633,7 +3696,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-Object.assign(window, { App, ErrorBoundary, FleetRunPage, DeleteConfirmModal });
+Object.assign(window, { App, ErrorBoundary, FleetRunPage, DeleteConfirmModal, qhLoadResHeight, qhResHeightKey, qhSideWidthKey, QH_RES_H_DEFAULT });
 ReactDOM.createRoot(document.getElementById('root')).render(
   <ErrorBoundary><App /></ErrorBoundary>
 );
