@@ -968,6 +968,14 @@
   .qh-req-ok { padding: 9px 12px; border-radius: var(--r-sm); font-size: 12.5px; line-height: 1.45; color: var(--fg-primary); background: var(--brand-adaptive-light); }
   .qh-req-id { font-family: var(--qh-mono); font-weight: 600; }
   .qh-req-warn { padding: 9px 12px; border-radius: var(--r-sm); font-size: 12.5px; line-height: 1.45; color: var(--fg-warning); background: var(--warning-adaptive-light); }
+  /* People tab (Teams > People): a disabled person reads as muted, and the
+     shared-address panel lists each address with its accounts. */
+  .qh-ppl-row.is-off td, .qh-ppl-row.is-off td b { color: var(--fg-tertiary); }
+  .qh-ppl-role, .qh-ppl-status { white-space: nowrap; }
+  .qh-dupaddr { margin-bottom: 12px; }
+  .qh-dupaddr-title { font-weight: 700; margin-bottom: 2px; }
+  .qh-dupaddr-list { margin: 6px 0 0; padding-left: 18px; }
+  .qh-dupaddr-list ul { margin: 2px 0 6px; padding-left: 18px; list-style: disc; }
   /* The free-text route is kept and demoted to a text button, sitting under the
      list it is the alternative to — that is where someone is looking when their
      server is not in it. */
