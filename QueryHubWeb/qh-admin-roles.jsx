@@ -176,8 +176,12 @@ function RoleForm({ st, onDone, init }) {
   // placeholder, and Save waits for a pick.
   const tierBad = tierOn && ROL_APPROVER_TIERS.indexOf(f.maxTier) < 0;
   const bad = !f.subject.trim() || expBad(f) || tierBad;
+  // The form has no ceiling field for an admin. An edit that keeps a row an
+  // admin keeps its stored ceiling, so updateRole sends no tier field. Before
+  // this, every such edit (a new end date, a new reason) cleared the ceiling.
+  const tierNext = tierOn ? (f.maxTier || null) : (editing && fleetWide && init.role === 'admin' ? (init.maxTier || null) : null);
   const nextRow = { role: f.role, scopeTeamId: fleetWide ? null : (f.scopeTeamId || null), scopeTargetId: fleetWide ? null : (f.scopeTargetId || null),
-    maxTier: tierOn ? (f.maxTier || null) : null, validUntil: expIso(f), reason: f.reason.trim() || null };
+    maxTier: tierNext, validUntil: expIso(f), reason: f.reason.trim() || null };
   const changes = editing ? rolChanges(init, nextRow, teams, conns) : [];
   const widens = changes.some(c => c[3]);
 
@@ -186,9 +190,9 @@ function RoleForm({ st, onDone, init }) {
     role: f.role,
     scopeTeamName: fleetWide ? null : (teams.find(t => t.id === f.scopeTeamId) || {}).name || null,
     scopeTargetName: fleetWide ? null : (conns.find(c => c.id === f.scopeTargetId) || {}).name || null,
-    maxTier: tierOn ? (f.maxTier || null) : null,
+    maxTier: tierNext,
     allTeams: fleetWide || !f.scopeTeamId, allTargets: fleetWide || !f.scopeTargetId,
-    anyTier: !tierOn || !f.maxTier,
+    anyTier: !tierNext,
     validUntil: expIso(f), reason: f.reason, source: 'direct',
   };
 
