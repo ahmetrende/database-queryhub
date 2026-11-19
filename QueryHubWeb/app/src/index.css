@@ -2992,6 +2992,8 @@
   .qh-notechip:hover { background: var(--adaptive-bold); color: var(--fg-primary); }
   .qh-notechip:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
   .qh-notebox-n { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--fg-tertiary); white-space: nowrap; }
+  /* Row 11: one retype input per DDL target, then the optional note. */
+  .qh-approvestep-row { margin-bottom: 12px; }
   .qh-notebox-n.is-ok { color: var(--fg-secondary); }
   .qh-eff-pick-k { margin-top: 10px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-tertiary); }
   .qh-eff-teamlink.is-plain { cursor: default; }
