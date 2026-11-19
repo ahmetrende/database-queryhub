@@ -154,9 +154,14 @@ def _write(cur, request_id: int, decision: str, *, by_id: str,
         row = cur.fetchone()
         if row is None:
             return None
-        audit.log_in(cur, request_id, by_id, by_name, "approved",
-                     {"scheduled_for": str(sched) if sched else None,
-                      "deferred": deferred, **(extra or {})})
+        details = {"scheduled_for": str(sched) if sched else None,
+                   "deferred": deferred, **(extra or {})}
+        # An approve can carry an optional note (the web asks for one on a
+        # schema change). It goes to the audit row only. decision_reason stays
+        # empty, because readers take it as a reject or failure reason.
+        if isinstance(reason, str) and reason.strip():
+            details["note"] = reason.strip()
+        audit.log_in(cur, request_id, by_id, by_name, "approved", details)
         return Outcome(row=row, decision="approve", deferred=deferred)
 
     status = "rejected" if decision == "reject" else "changes_requested"

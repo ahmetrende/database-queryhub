@@ -181,6 +181,25 @@ def test_plain_approve_has_no_schedule_and_is_not_deferred(wired):
     assert wired["audit"][0][3] == {"scheduled_for": None, "deferred": False}
 
 
+def test_approve_note_goes_to_the_audit_details(wired):
+    out = core_decide.decide(7, "approve", by_id="U0DBA", by_name="dba",
+                             reason="  Checked the WHERE clause.  ")
+    assert out is not None and out.decision == "approve"
+    assert wired["audit"][0][3] == {"scheduled_for": None, "deferred": False,
+                                    "note": "Checked the WHERE clause."}
+    # The note never goes to decision_reason: the approve UPDATE has no slot.
+    sql, params = wired["cur"].executed[0]
+    assert "decision_reason" not in sql
+    assert "Checked the WHERE clause." not in [str(p).strip() for p in params]
+
+
+@pytest.mark.parametrize("reason", [None, "", "   "])
+def test_approve_without_a_note_keeps_the_key_out(wired, reason):
+    core_decide.decide(7, "approve", by_id="U0DBA", by_name="dba",
+                       reason=reason)
+    assert "note" not in wired["audit"][0][3]
+
+
 def test_decider_identity_is_written_to_the_row(wired):
     """The audit trail's actor. Both surfaces pass their own id/name here, and
     a decision with no attributable actor is worse than none."""

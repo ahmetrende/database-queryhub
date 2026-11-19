@@ -522,17 +522,55 @@ function ApprovalsView({ st, user, role }) {
   // A note belongs to one request. A different card closes it, so a note
   // written for one submitter never goes to the next.
   const curId = cur ? cur.id : null;
-  React.useEffect(() => { setNoteMode(null); setNote(''); }, [curId]);
-  
+  // The approve step of a schema change: { for, bundleId, targets, typed, note }.
+  // `for` is the card it belongs to. A different card drops it, so typed
+  // values never carry over. A step opened for the new card stays.
+  const [aStep, setAStep] = useAdm(null);
+  React.useEffect(() => {
+    setNoteMode(null); setNote('');
+    setAStep(s => (s && s.for === curId ? s : null));
+  }, [curId]);
+  const isSchema = qhQueueIsDdl(cur);
+  const openStep = (rows, bundleId, forId) => {
+    const targets = qhDdlTargets(rows);
+    setNoteMode(null); setNote('');
+    setAStep({ for: forId, bundleId: bundleId || null, targets, typed: targets.map(() => ''), note: '' });
+  };
+  const stepOk = !!(aStep && qhDdlTargetsTyped(aStep.targets, aStep.typed));
+  const stepWhy = aStep ? qhDdlTypeWhy(aStep.targets, aStep.typed) : null;
+  const stepOne = !!(aStep && aStep.for === curId && !aStep.bundleId);
+
   const act = (decision) => {
     if (decision === 'approve' && killOn) return;
-    if ((decision === 'reject' || decision === 'changes') && noteMode !== decision) { setNoteMode(decision); return; }
-    st.decide(cur.id, decision, actor, note.trim() || undefined);
-    setNote(''); setNoteMode(null);
+    // A schema change is never one click: the first Approve opens the step,
+    // and the approve goes out only when every target is typed.
+    if (decision === 'approve' && isSchema && !stepOne) { openStep([cur], null, cur.id); return; }
+    if (decision === 'approve' && isSchema && !stepOk) return;
+    if ((decision === 'reject' || decision === 'changes') && noteMode !== decision) { setAStep(null); setNoteMode(decision); return; }
+    const sendNote = decision === 'approve' ? (stepOne ? aStep.note : '') : note;
+    st.decide(cur.id, decision, actor, String(sendNote || '').trim() || undefined);
+    setNote(''); setNoteMode(null); setAStep(null);
     const rest = items.filter(x => x.id !== cur.id);
     setDecided(d => d.concat([cur.id]));   // hide it now, not when the reload lands
     setSel(rest[0] ? rest[0].id : null);
   };
+
+  // A bundle with a schema change in it gets the same step, one input per
+  // distinct DDL target. The step shows on the card `forId`. A bundle with no
+  // schema change approves in one click, as before. This path sends no note:
+  // the batch approve carries none.
+  const approveBundleStep = (bundleId, forId) => {
+    if (killOn) return;
+    const rows = items.filter(x => x.bundleId === bundleId);
+    if (!rows.some(qhQueueIsDdl)) { st.approveBundle(bundleId, actor); return; }
+    if (aStep && aStep.bundleId === bundleId && aStep.for === forId) {
+      if (stepOk) { st.approveBundle(bundleId, actor); setAStep(null); }
+      return;
+    }
+    if (forId !== curId) setSel(forId);
+    openStep(rows, bundleId, forId);
+  };
+  const stepBundle = !!(aStep && aStep.bundleId && cur && aStep.for === curId && aStep.bundleId === cur.bundleId);
 
   // The queue arrives after the first render on a slow load. Nothing is
   // selected then, so the first request opens at once (2026-10-24). A decided
@@ -641,7 +679,7 @@ function ApprovalsView({ st, user, role }) {
                       letting "5 queries" sit above three rows. */}
                   {g.rows.length !== g.size && <span className="qh-qbundle-part">{g.rows.length} still waiting</span>}
                   <div className="qh-flex1" />
-                  <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={killOn} title={killSay} onClick={() => st.approveBundle(g.bundleId, actor)}>Approve all</button>
+                  <button className="qh-btn qh-btn-ghost qh-btn-sm" disabled={killOn} title={killSay} onClick={() => approveBundleStep(g.bundleId, cur && cur.bundleId === g.bundleId ? cur.id : g.rows[0].id)}>Approve all</button>
                 </div>
                 {g.rows.map(it => <QueueCard key={it.id} it={it} selected={cur && cur.id === it.id} onSelect={setSel} checked={live.includes(it.id)} onCheck={toggleCheck} />)}
               </div>
@@ -732,20 +770,28 @@ function ApprovalsView({ st, user, role }) {
               <div className="qh-bundle-note">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
                 Part of bundle <b>{cur.bundleId}</b> ({cur.bundleSize || items.filter(x => x.bundleId === cur.bundleId).length} queries) — one approval round.
-                <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={killOn} title={killSay} onClick={() => st.approveBundle(cur.bundleId, actor)}>Approve whole bundle</button>
+                <button className="qh-btn qh-btn-primary qh-btn-sm" disabled={killOn || (stepBundle && !stepOk)}
+                        title={killOn ? killSay : stepBundle ? stepWhy : null}
+                        onClick={() => approveBundleStep(cur.bundleId, cur.id)}>{stepBundle ? 'Confirm whole bundle' : 'Approve whole bundle'}</button>
               </div>
             )}
 
             {noteMode && <NoteBox mode={noteMode} value={note} onChange={setNote} onCancel={() => setNoteMode(null)} />}
+            {aStep && aStep.for === curId && (
+              <ApproveStep step={aStep} bundle={!!aStep.bundleId}
+                           onChange={(p) => setAStep(s => (s ? { ...s, ...p } : s))}
+                           onCancel={() => setAStep(null)} />
+            )}
 
             {/* Approve leads, in its own colour — it is the action taken on
                 the overwhelming majority of requests, so it sits where the
                 eye lands first. Deny / Request changes follow beside it;
                 the escalation tag stays right-aligned. */}
             <div className="qh-adetail-actions">
-              <button className="qh-btn qh-btn-primary" disabled={killOn} title={killSay} onClick={() => act('approve')}>
+              <button className="qh-btn qh-btn-primary" disabled={killOn || (stepOne && !stepOk)}
+                      title={killOn ? killSay : stepOne ? stepWhy : null} onClick={() => act('approve')}>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-                {cur.escalate || cur.tier === 'DDL' ? 'Approve schema change' : 'Approve and run'}
+                {stepOne ? 'Confirm schema change' : isSchema ? 'Approve schema change' : 'Approve and run'}
               </button>
               <button className="qh-btn qh-btn-danger" disabled={noteMode === 'reject' && !noteChk.ok}
                       title={noteMode === 'reject' ? noteChk.why : null} onClick={() => act('reject')}>{noteMode === 'reject' ? 'Confirm deny' : 'Deny'}</button>
@@ -944,4 +990,63 @@ function NoteBox({ mode, value, onChange, onCancel }) {
   );
 }
 
-Object.assign(window, { AdminPanel, AdminIcons, qhApprovalsHistoryRows, QhApprovalsHistory, qhQueueIsDdl, qhQueueBatchIds, qhQueuePrune, qhQueueBatchNote, qhExpiresIn, qhRequesterHolds, qhFailingConnCount, qhAdminLevel, qhAdminCanOpen, qhAdminLockReason, qhKillLasted, qhKillCancelSay, qhKillWho, KillHistory, qhNoteCheck, qhNoteAdd, QH_NOTE_MIN });
+// ---------- The retype step on a schema-change approve ----------
+// The targets an approver types: one per distinct connection among the
+// schema-change rows, in the order given.
+function qhDdlTargets(rows) {
+  const out = [];
+  (rows || []).forEach(r => {
+    if (!qhQueueIsDdl(r)) return;
+    const t = String(r.connectionId || r.databaseId || r.id || '').trim();
+    if (t && out.indexOf(t) < 0) out.push(t);
+  });
+  return out;
+}
+// True when every target is typed. `typed[i]` belongs to `targets[i]`. The
+// match ignores case and outer spaces. No target means nothing to confirm,
+// and that is never a match.
+function qhDdlTargetsTyped(targets, typed) {
+  const t = targets || [], v = typed || [];
+  if (!t.length) return false;
+  return t.every((x, i) => String(v[i] == null ? '' : v[i]).trim().toLowerCase() === String(x).trim().toLowerCase());
+}
+// The title of the disabled confirm button: the targets still to type.
+function qhDdlTypeWhy(targets, typed) {
+  const v = typed || [];
+  const miss = (targets || []).filter((x, i) => !qhDdlTargetsTyped([x], [v[i]]));
+  if (!miss.length) return null;
+  return 'Type ' + miss.map(x => '"' + x + '"').join(', ') + ' to confirm.';
+}
+function ApproveStep({ step, bundle, onChange, onCancel }) {
+  const esc = (e) => { if (e.key === 'Escape') onCancel(); };
+  return (
+    <div className="qh-notebox qh-approvestep" role="group" aria-label="Confirm schema change">
+      <div className="qh-notebox-l qh-approvestep-warn" role="note">This approves schema-changing statements. Read them, then retype each target to confirm.</div>
+      {step.targets.map((t, i) => {
+        const id = 'qh-retype-' + i;
+        return (
+          <div key={t} className="qh-approvestep-row">
+            <label className="qh-notebox-l" htmlFor={id}>Type "{t}" to confirm</label>
+            <input id={id} className="qh-input qh-approvestep-in" autoFocus={i === 0} autoComplete="off" spellCheck={false}
+                   placeholder={t} value={step.typed[i] || ''} onKeyDown={esc}
+                   onChange={(e) => { const v = e.target.value; onChange({ typed: step.typed.map((x, j) => (j === i ? v : x)) }); }} />
+          </div>
+        );
+      })}
+      {!bundle && (
+        <>
+          <label className="qh-notebox-l" htmlFor="qh-approve-note">Note for the record (optional)</label>
+          <textarea id="qh-approve-note" className="qh-input qh-notebox-in" rows={2} value={step.note || ''}
+                    placeholder="For example: Checked the WHERE clause against INC-2291."
+                    onKeyDown={esc} onChange={(e) => onChange({ note: e.target.value })} />
+        </>
+      )}
+      <div className="qh-notebox-foot">
+        <div className="qh-flex1" />
+        <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { qhDdlTargets, qhDdlTargetsTyped, qhDdlTypeWhy, ApproveStep, AdminPanel, AdminIcons, qhApprovalsHistoryRows, QhApprovalsHistory, qhQueueIsDdl, qhQueueBatchIds, qhQueuePrune, qhQueueBatchNote, qhExpiresIn, qhRequesterHolds, qhFailingConnCount, qhAdminLevel, qhAdminCanOpen, qhAdminLockReason, qhKillLasted, qhKillCancelSay, qhKillWho, KillHistory, qhNoteCheck, qhNoteAdd, QH_NOTE_MIN });
