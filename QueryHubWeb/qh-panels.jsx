@@ -2078,6 +2078,7 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
   const colAnchorRef = React.useRef(null);
   const dragRef = React.useRef(null);
   const resizeRef = React.useRef(null);
+  const gripStartRef = React.useRef(null);
   const scrollRef = React.useRef(null);
 
   const isTable = result && result.kind === 'table';
@@ -2134,16 +2135,19 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
   // grip appeared to do nothing. Fixed layout means every column needs a
   // width, so derive a sensible one from the header and a sample of the
   // rows instead of letting the browser split the table evenly.
+  // The widths come from the FIRST page of a new result and stay fixed while
+  // the person pages, sorts or filters. They depend on `baseResult` only.
   const defW = React.useMemo(() => {
     const w = {};
-    const sample = rows.slice(0, 30);
-    cols.forEach(c => {
+    const src = baseResult && baseResult.kind === 'table' && typeof baseResult.slice === 'function' ? baseResult : null;
+    const first = src ? src.slice(0, 30) : [];
+    ((src && src.cols) || []).forEach(c => {
       let n = String(c).length;
-      for (const r of sample) { const l = dispVal(r, c).length; if (l > n) n = l; }
+      for (const r of first) { const l = dispVal(r, c).length; if (l > n) n = l; }
       w[c] = Math.max(96, Math.min(420, Math.round(n * 7.6) + 28));
     });
     return w;
-  }, [cols, rows]);
+  }, [baseResult]);
   const widthOf = (c) => colW[c] || defW[c] || 160;
 
   // Find in results (2026-11-11, Devart J1). `find` is the filter's matcher
@@ -2557,6 +2561,19 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
     const th = e.currentTarget.closest('th');
     resizeRef.current = { col: c, startX: e.clientX, startW: th ? th.getBoundingClientRect().width : 120 };
   };
+  // Fit a column to the header and to the cells of the loaded page.
+  const fitCol = (c) => {
+    const w = qhFitColWidth(c, rows.map(r => dispVal(r, c)));
+    setColW(prev => ({ ...prev, [c]: w }));
+  };
+  // Keyboard on the resize edge: arrows step the width, Escape restores the
+  // width the edge had when it got focus.
+  const gripKey = (c, e) => {
+    const next = qhGripKeyWidth(e.key, widthOf(c), gripStartRef.current && gripStartRef.current.col === c ? gripStartRef.current.w : null);
+    if (next == null) return;
+    e.preventDefault(); e.stopPropagation();
+    setColW(prev => ({ ...prev, [c]: next }));
+  };
   const allSelected = colSel.size === cols.length && cols.length > 0;
   const from = total === 0 ? 0 : offset + 1;
   const to = Math.min(offset + rows.length, total);
@@ -2684,7 +2701,13 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
                         </button>
                       );
                     })()}
-                    <span className="qh-col-grip" onMouseDown={(e) => startGrip(c, e)} />
+                    <span className="qh-col-grip" role="separator" aria-orientation="vertical"
+                      aria-label={'Resize column ' + c} aria-valuenow={widthOf(c)} aria-valuemin={QH_COL_MIN} aria-valuemax={QH_COL_MAX} tabIndex={0}
+                      title="Drag to resize. Double-click to fit. Arrow keys change the width."
+                      onMouseDown={(e) => startGrip(c, e)}
+                      onDoubleClick={(e) => { e.stopPropagation(); fitCol(c); }}
+                      onFocus={() => { gripStartRef.current = { col: c, w: widthOf(c) }; }}
+                      onKeyDown={(e) => gripKey(c, e)} />
                   </th>
                 );
               })}
@@ -2712,7 +2735,7 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
                     <td key={c} data-cell={ri + ':' + ci} aria-selected={seld || undefined}
                       className={(seld ? 'qh-td-sel ' : '')
                         + (cursor && cursor.r === ri && cursor.c === ci ? 'qh-td-cursor ' : '')
-                        + (isNull ? 'qh-td-null' : pii && !unmasked ? 'qh-td-masked' : (typeof r[c] === 'number' ? 'qh-td-num' : ''))}
+                        + (isNull ? 'qh-td-null' : pii && !unmasked ? 'qh-td-masked' : (qhIsNumCell(cellTypes[c], r[c]) ? 'qh-td-num' : ''))}
                       title={dispVal(r, c)}
                       onMouseDown={(e) => cellDown(ri, ci, e)} onMouseEnter={() => cellEnter(ri, ci)}
                       onContextMenu={(e) => gridContextMenu(ri, ci, e)}
@@ -2954,4 +2977,34 @@ const DBIcons = {
   calendar: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>,
 };
 
-Object.assign(window, { Sidebar, qhTreeTableId, SnippetsPanel, qhSnippetGroups, QH_SNIP_ENGINES, MessagesView, ProblemsView, QH_PROBLEM_LEVEL, StepsList, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });
+// Result grid layout helpers (pure). A numeric column aligns right by its
+// reported type. An unknown type falls back to the value check.
+const QH_NUM_TYPE = /^(u?int\d*|float\d*|numeric|decimal|number|double|real|smallint|mediumint|bigint|integer|tinyint|money|smallmoney|serial|smallserial|bigserial)\b/i;
+function qhColumnKind(type) {
+  let t = String(type == null ? '' : type).trim();
+  for (let m = /^(nullable|lowcardinality)\((.*)\)$/i.exec(t); m; m = /^(nullable|lowcardinality)\((.*)\)$/i.exec(t)) t = m[2].trim();
+  if (!t || t.charAt(0) === '_' || t.indexOf('[') >= 0 || /^array\(/i.test(t)) return 'other';
+  return QH_NUM_TYPE.test(t) ? 'number' : 'other';
+}
+function qhIsNumCell(type, value) {
+  return qhColumnKind(type) === 'number' || typeof value === 'number';
+}
+const QH_COL_MIN = 48;
+const QH_COL_MAX = 1200;
+const QH_COL_STEP = 16;
+function qhClampColW(w) { return Math.max(QH_COL_MIN, Math.min(QH_COL_MAX, Math.round(w))); }
+// Width that fits the header and the given cell texts. Monospace estimate.
+function qhFitColWidth(name, texts) {
+  let n = String(name).length + 3;
+  for (const t of texts) { const l = String(t == null ? '' : t).length; if (l > n) n = l; }
+  return Math.max(56, Math.min(600, Math.round(n * 7.6) + 28));
+}
+// New width for a key on the resize edge, or null when the key is not ours.
+function qhGripKeyWidth(key, width, startWidth) {
+  if (key === 'ArrowLeft') return qhClampColW(width - QH_COL_STEP);
+  if (key === 'ArrowRight') return qhClampColW(width + QH_COL_STEP);
+  if (key === 'Escape' && startWidth != null) return qhClampColW(startWidth);
+  return null;
+}
+
+Object.assign(window, { qhColumnKind, qhIsNumCell, qhFitColWidth, qhGripKeyWidth, qhClampColW, Sidebar, qhTreeTableId, SnippetsPanel, qhSnippetGroups, QH_SNIP_ENGINES, MessagesView, ProblemsView, QH_PROBLEM_LEVEL, StepsList, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });

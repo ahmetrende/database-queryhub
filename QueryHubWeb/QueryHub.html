@@ -2863,12 +2863,19 @@
   .qh-col-grip:hover { background: var(--brand-green); opacity: 0.5; }
   .qh-table-grid td { cursor: cell; }
   .qh-table-grid .qh-td-idx, .qh-table-grid .qh-th-idx { cursor: pointer; }
+  /* Row-number column stays visible on horizontal scroll. The opaque background hides the cells under it. */
+  .qh-table-grid td.qh-td-idx { position: sticky; left: 0; z-index: 2; background: var(--bg-white); box-shadow: 1px 0 0 var(--stroke-medium); }
+  .qh-table-grid tr:hover td.qh-td-idx { background: linear-gradient(var(--adaptive-light), var(--adaptive-light)), var(--bg-white); }
+  .qh-table-grid th.qh-th-idx { position: sticky; left: 0; top: 0; z-index: 5; box-shadow: 1px 0 0 var(--stroke-medium); }
+  /* Focus ring per the design guide. Inset, because the th clips anything outside it. */
+  .qh-col-grip:focus-visible { outline: none; background: var(--brand-green); opacity: 0.5; box-shadow: inset 0 0 0 2px var(--brand-adaptive-medium); }
   .qh-td-sel { background: var(--brand-adaptive-medium) !important; color: var(--fg-primary); }
   /* Keyboard cursor cell. Drawn with an inset ring rather than an outline so it
      does not shift the table layout, and visible on top of a selected cell. */
   .qh-td-cursor { box-shadow: inset 0 0 0 2px var(--stroke-accent); }
   .qh-resultsview:focus-visible { outline: 2px solid var(--stroke-accent); outline-offset: -2px; }
-  .qh-table-grid th.is-sel { background: var(--brand-adaptive-medium); color: var(--fg-accent); }
+  /* The header is sticky, so the tint sits on an opaque base: rows that scroll under it stay hidden. */
+  .qh-table-grid th.is-sel { background: linear-gradient(var(--brand-adaptive-medium), var(--brand-adaptive-medium)), var(--bg-medium); color: var(--fg-accent); }
 
   /* ---------- results pager (DataGrip-style) ---------- */
   .qh-pager { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 38px; padding: 0 12px; border-top: 1px solid var(--stroke-medium); background: var(--bg-light); font-size: 12px; color: var(--fg-tertiary); }
