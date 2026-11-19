@@ -1935,9 +1935,127 @@ function qhBundleTitle(kind, id) {
   return (kind === 'fleet' ? 'Fleet run' : kind === 'batch' ? 'Batch' : 'Bundle') + ' B#' + id;
 }
 
+// ----- Open tabs shared by two browser tabs (qh.workspace.v1) -----
+// Each browser tab writes its open tabs to the same localStorage key. Without a
+// merge the last writer wins, and the other browser tab loses its unsaved SQL
+// on the next reload. The rules follow the IdP workspace autosave.
+
+// The record as it is stored. An older page reads this shape, so keep it.
+function qhWorkspaceSlim(tabs, activeId, now) {
+  const at = now || Date.now();
+  return { activeId, savedAt: at, tabs: (tabs || []).map(t => ({ id: t.id, kind: t.kind, bundleId: t.bundleId || undefined, name: t.name, sql: t.sql, conn: t.conn, db: t.db,
+    // reqId is persisted so a reload does not change the number a tab has been showing.
+    reqId: t.reqId, qid: t.qid, touchedAt: t.touchedAt || at,
+    // An auto-named tab and a tab with no target yet stay so after a reload.
+    autoName: t.autoName, unpicked: t.unpicked === true ? true : undefined })) };
+}
+
+// A parsed record, or null when the text is not a workspace.
+function qhParseWorkspace(raw) {
+  try {
+    const w = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!w || !Array.isArray(w.tabs)) return null;
+    return { activeId: w.activeId, tabs: w.tabs.filter(t => t && t.id != null) };
+  } catch (e) { return null; }
+}
+
+// The stored fields that the merge compares. touchedAt is left out: it is a
+// clock, not content, and a tab without one gets a new value on every write.
+const QH_WS_FIELDS = ['kind', 'bundleId', 'name', 'sql', 'conn', 'db', 'reqId', 'qid', 'autoName', 'unpicked'];
+function qhWsTabRow(t) {
+  const row = {};
+  QH_WS_FIELDS.forEach(k => {
+    let v = t[k];
+    if (k === 'unpicked') v = v === true ? true : undefined;
+    else if (k === 'autoName') v = (v === true || v === false) ? v : undefined;
+    else if (v == null || v === '') v = (k === 'sql' || k === 'name') ? (v || '') : undefined;
+    row[k] = v;
+  });
+  return JSON.stringify(row);
+}
+
+// A stored tab as a live tab. A reload (qhLoadWorkspace) and the merge both use it.
+// A tab saved without the autoName flag gets it from qhNameTabs (legacy rule).
+function qhWsHydrate(t, now) {
+  return { id: t.id, kind: t.kind, bundleId: t.bundleId || undefined, name: t.name, sql: t.sql, conn: t.conn, db: t.db, reqId: t.reqId, qid: t.qid,
+    touchedAt: t.touchedAt || now || Date.now(), dirty: false, result: null, status: null, runMs: null, messages: [], audit: [],
+    autoName: (t.autoName === true || t.autoName === false) ? t.autoName : undefined,
+    unpicked: t.unpicked === true ? true : undefined };
+}
+
+const QH_WS_COPY_SUFFIX = ' (other browser tab)';
+
+// Three-way merge of the open tabs. base = the record this browser tab last
+// wrote or read. mine = this browser tab's live tabs. theirs = the record in
+// storage now. Each is { tabs, activeId }. newId() gives a free tab id for a
+// conflict copy. Returns { tabs, activeId, changed }. When nothing changes,
+// tabs is mine.tabs itself.
+function qhMergeWorkspace(base, mine, theirs, newId) {
+  const b = (base && base.tabs) || [];
+  const m = (mine && mine.tabs) || [];
+  const th = (theirs && theirs.tabs) || [];
+  const baseById = new Map(b.map(t => [t.id, t]));
+  const mineById = new Map(m.map(t => [t.id, t]));
+  const theirById = new Map(th.map(t => [t.id, t]));
+  const ids = new Set([...mineById.keys(), ...theirById.keys()]);
+  let seq = 0;
+  ids.forEach(id => { const n = parseInt(String(id).replace(/\D/g, ''), 10) || 0; if (n > seq) seq = n; });
+  const nextId = () => {
+    let id = typeof newId === 'function' ? newId() : 't' + (++seq);
+    while (ids.has(id)) id = typeof newId === 'function' ? newId() : 't' + (++seq);
+    ids.add(id);
+    return id;
+  };
+  const out = [];
+  let touched = false;
+  for (const mt of m) {
+    const tt = theirById.get(mt.id);
+    const bt = baseById.get(mt.id);
+    const mineRow = qhWsTabRow(mt);
+    const baseRow = bt ? qhWsTabRow(bt) : null;
+    if (!tt) {
+      // Closed there: it goes when it is unchanged here, it stays when it was edited or added here.
+      if (mineRow !== baseRow) out.push(mt); else touched = true;
+      continue;
+    }
+    const theirRow = qhWsTabRow(tt);
+    if (mineRow === theirRow) out.push(mt);
+    else if (mineRow === baseRow) {
+      // Changed only there: take their stored fields, keep the live ones (result, dirty) here.
+      const h = qhWsHydrate(tt);
+      out.push({ ...mt, kind: h.kind, bundleId: h.bundleId, name: h.name, sql: h.sql, conn: h.conn, db: h.db,
+        reqId: h.reqId, qid: h.qid, autoName: h.autoName, unpicked: h.unpicked, touchedAt: h.touchedAt });
+      touched = true;
+    } else if (theirRow === baseRow || mt.sql === tt.sql) out.push(mt);
+    else {
+      // Changed on both sides with different SQL: keep mine, add theirs as a copy right after it.
+      // The copy is a new draft, so it takes no reserved number from the original.
+      const copy = { ...qhWsHydrate(tt), id: nextId(), name: (tt.name || 'Untitled query') + QH_WS_COPY_SUFFIX,
+        autoName: false, dirty: true, reqId: undefined, qid: undefined };
+      out.push(mt, copy);
+      touched = true;
+    }
+  }
+  for (const tt of th) {
+    if (mineById.has(tt.id)) continue;
+    const bt = baseById.get(tt.id);
+    // Added there, or edited there after it was closed here: keep it. Closed here and unchanged there: it goes.
+    if (!bt || qhWsTabRow(tt) !== qhWsTabRow(bt)) { out.push(qhWsHydrate(tt)); touched = true; }
+  }
+  const mineActive = mine && mine.activeId;
+  const at = m.findIndex(t => t.id === mineActive);
+  const surviving = new Set(out.map(t => t.id));
+  const neighbour = m.slice(at + 1).find(t => surviving.has(t.id))
+    || m.slice(0, Math.max(at, 0)).reverse().find(t => surviving.has(t.id));
+  const activeId = surviving.has(mineActive) ? mineActive : ((neighbour || out[0] || {}).id || '');
+  const changed = touched || activeId !== mineActive;
+  return { tabs: touched ? out : m, activeId, changed };
+}
+
 Object.assign(window, { qhHistoryRunTab, qhPollDelay, QH_POLL_FAST_MS, QH_POLL_SLOW_MS, QH_POLL_MAX_BACKOFF_MS, qhTreeObject,
   qhFleetGlob, qhFleetPairs, qhFleetFilter, qhFleetTierRank, qhFleetCovers, qhFleetDefaultOnFailure,
   QH_FLEET_STATES, QH_FLEET_STATE_INFO, qhFleetStateOf, qhFleetStateInfo, qhFleetSummary, qhBundleTitle,
+  qhWorkspaceSlim, qhParseWorkspace, qhWsTabRow, qhWsHydrate, qhMergeWorkspace, QH_WS_COPY_SUFFIX,
   qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhSelectionLines, qhPrimaryLabel, qhJudgedText, qhShiftRanges, qhConfirmReasons, qhSplitReasons,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,
