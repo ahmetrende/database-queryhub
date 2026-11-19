@@ -132,6 +132,53 @@ function audSummary(r) {
   });
   return parts.length ? { kind: 'facts', text: parts.slice(0, 4).join(' · ') } : null;
 }
+// ---------- CSV download (the rows on screen) ----------
+// Reuses qhCsvCell (qh-data.jsx): RFC 4180 quoting plus the formula guard.
+const QH_AUDIT_CSV_COLS = ['time', 'actor', 'action', 'target', 'details'];
+function qhAuditCsvActor(a) {
+  if (!a) return '';
+  if (a.kind === 'auto') return 'Auto-approver';
+  return a.name || a.handle || '';
+}
+function qhAuditCsvTarget(r) {
+  const q = r.request;
+  if (q && q.connection && q.connection !== '—') return q.connection + (q.database && q.database !== '—' ? '/' + q.database : '');
+  return r.target || '';
+}
+// The details as one text field: the error, the SQL, or the payload as JSON.
+function qhAuditCsvDetails(r) {
+  const q = r.request, d = r.detail || {};
+  if (r.outcome === 'failed') {
+    const e = (q && q.error) || d.error;
+    if (e) return String(e);
+  }
+  if (q && q.sql) return String(q.sql);
+  return Object.keys(d).length ? JSON.stringify(d) : '';
+}
+// BOM + header + one line per row. The BOM makes a spreadsheet read UTF-8.
+function qhAuditCsv(rows) {
+  const lines = [QH_AUDIT_CSV_COLS.join(',')];
+  (rows || []).forEach(r => {
+    if (!r) return;
+    lines.push([r.time ? new Date(r.time).toISOString() : '', qhAuditCsvActor(r.actor),
+      r.actionLabel || r.action, qhAuditCsvTarget(r), qhAuditCsvDetails(r)].map(qhCsvCell).join(','));
+  });
+  return '﻿' + lines.join('\r\n') + '\r\n';
+}
+// queryhub-audit-YYYY-MM-DD.csv (local date).
+function qhAuditCsvName(date) {
+  const d = date instanceof Date ? date : new Date();
+  const two = n => String(n).padStart(2, '0');
+  return 'queryhub-audit-' + d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) + '.csv';
+}
+function qhAuditDownload(rows) {
+  const url = URL.createObjectURL(new Blob([qhAuditCsv(rows)], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = qhAuditCsvName();
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function audTime(iso) { return new Date(iso).toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
 
 // The actor, in three shapes. Rendering a person for a machine action states
@@ -440,10 +487,15 @@ function AuditView({ st }) {
       <div className="qh-aview-head">
         <div><div className="qh-aview-title">Audit log</div>
           <div className="qh-aview-sub">Every action the system recorded, immutable and attributed.</div></div>
-        <div className="qh-seg qh-seg-sm qh-audrange" role="group" aria-label="Time range">
-          {[[0, 'All time'], [7, '7 days'], [30, '30 days'], [90, '90 days']].map(([v, l]) => (
-            <button key={v} className={'qh-seg-opt' + (days === v ? ' is-active' : '')} onClick={() => setDays(v)}>{l}</button>
-          ))}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button className="qh-btn qh-btn-ghost qh-btn-sm qh-audcsv" disabled={!rows.length}
+                  title="Downloads the rows on screen, with your filters."
+                  onClick={() => qhAuditDownload(rows)}>Download CSV</button>
+          <div className="qh-seg qh-seg-sm qh-audrange" role="group" aria-label="Time range">
+            {[[0, 'All time'], [7, '7 days'], [30, '30 days'], [90, '90 days']].map(([v, l]) => (
+              <button key={v} className={'qh-seg-opt' + (days === v ? ' is-active' : '')} onClick={() => setDays(v)}>{l}</button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -675,4 +727,4 @@ function AuditView({ st }) {
   );
 }
 
-Object.assign(window, { AuditView, AudDetail, AuditInsight, audInsightLine,QH_AUD_CATS, QH_AUD_EFFECTS, QH_AUD_ACTORS, QH_AUD_OUTCOMES });
+Object.assign(window, { qhAuditCsv, qhAuditCsvName, qhAuditDownload, AuditView, AudDetail, AuditInsight, audInsightLine,QH_AUD_CATS, QH_AUD_EFFECTS, QH_AUD_ACTORS, QH_AUD_OUTCOMES });

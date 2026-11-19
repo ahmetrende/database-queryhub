@@ -392,6 +392,60 @@ function qhRequesterHolds(it, grants, now) {
   return best.tier + ' on ' + (best.databases && best.databases.indexOf('*') < 0 ? it.databaseId : 'every database on ' + it.connectionId);
 }
 
+// The History tab: the 50 newest decisions on requests. QueryHub keeps no
+// separate decision list, so it reads the audit trail (requests, decided).
+// An existing call only: qhApi.adminAuditSearch. No server change.
+const QH_APPROVALS_HISTORY_LIMIT = 50;
+function qhApprovalsHistoryRows(rows) {
+  return (rows || []).slice()
+    .sort((a, b) => Date.parse(b.time) - Date.parse(a.time))
+    .slice(0, QH_APPROVALS_HISTORY_LIMIT);
+}
+function qhApprovalsDecider(a) {
+  if (!a) return '';
+  if (a.kind === 'auto') return 'Auto-approver';
+  return a.name ? qhPersonName(a.name) : (a.handle || '');
+}
+function QhApprovalsHistory() {
+  const [rows, setRows] = useAdm(null);
+  const [failed, setFailed] = useAdm(false);
+  React.useEffect(() => {
+    let live = true;
+    window.qhApi.adminAuditSearch({ categories: ['requests'], effects: ['decided'], limit: QH_APPROVALS_HISTORY_LIMIT })
+      .then(r => { if (live) setRows(qhApprovalsHistoryRows(r && r.rows)); })
+      .catch(() => { if (live) { setFailed(true); setRows([]); } });
+    return () => { live = false; };
+  }, []);
+  if (rows === null) return <div className="qh-aempty"><div>Loading…</div></div>;
+  if (failed) return <div className="qh-aempty"><div>Could not load the decisions.</div></div>;
+  if (!rows.length) return <div className="qh-aempty"><div>No decisions yet.</div></div>;
+  return (
+    <div className="qh-qhistory">
+      {rows.map(r => {
+        const q = r.request || {};
+        const note = q.decisionNote;
+        return (
+          <div key={r.id} className="qh-qcard qh-qhistory-row">
+            <div className="qh-qcard-main">
+              <div className="qh-qcard-top">
+                <span className="qh-qname">{r.actionLabel || r.action}</span>
+                {q.tier && <TierBadge tier={q.tier} sm />}
+                <span className="qh-aview-sub">{qhAgo(r.time)}</span>
+              </div>
+              <div className="qh-aview-sub">
+                By {qhApprovalsDecider(r.actor)}
+                {q.requester ? ' · Requester ' + qhPersonName(q.requester) : ''}
+                {q.connection ? ' · ' + q.connection + (q.database ? '/' + q.database : '') : (r.target ? ' · ' + r.target : '')}
+              </div>
+              {note && <div className="qh-aview-sub">Note: {note}</div>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function ApprovalsView({ st, user, role }) {
   // Decisions are optimistic: st.decide() reloads the queue, but that round
   // trip lands AFTER this render. Without hiding the decided row the detail
@@ -407,7 +461,9 @@ function ApprovalsView({ st, user, role }) {
   const [onlyDdl, setOnlyDdl] = useAdm(false);
   const isDdl = qhQueueIsDdl;
   const ddlCount = items.filter(isDdl).length;
-  const shown = onlyDdl ? items.filter(isDdl) : items;
+  const [showHist, setShowHist] = useAdm(false);
+  // On History nothing is shown to batch, so the batch bar and Select all stay off.
+  const shown = showHist ? [] : onlyDdl ? items.filter(isDdl) : items;
   const [sel, setSel] = useAdm(items[0] ? items[0].id : null);
   const [checked, setChecked] = useAdm([]);
   const [note, setNote] = useAdm('');
@@ -492,6 +548,8 @@ function ApprovalsView({ st, user, role }) {
   const order = groups.reduce((a, g) => a.concat(g.solo ? [g.solo] : g.rows), []);
   const keyRef = React.useRef(null);
   keyRef.current = (e) => {
+    // History lists decided requests: no key may decide the pending one behind it.
+    if (showHist) return;
     if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
     const t = e.target || {};
     const tag = String(t.tagName || '').toUpperCase();
@@ -530,14 +588,13 @@ function ApprovalsView({ st, user, role }) {
             <div className="qh-aview-sub">{items.length} pending · you approve as {role === 'super' ? 'super-admin' : 'DBA'}</div>
           </div>
         </div>
-        {ddlCount > 0 && (
-          <div className="qh-qfilter">
-            <div className="qh-seg qh-seg-sm">
-              <button className={'qh-seg-opt' + (!onlyDdl ? ' is-active' : '')} onClick={() => setOnlyDdl(false)}>All · {items.length}</button>
-              <button className={'qh-seg-opt qh-seg-ddl' + (onlyDdl ? ' is-active' : '')} onClick={() => setOnlyDdl(true)}><AdminIcons.ddl />DDL · {ddlCount}</button>
-            </div>
+        <div className="qh-qfilter">
+          <div className="qh-seg qh-seg-sm">
+            <button className={'qh-seg-opt' + (!onlyDdl && !showHist ? ' is-active' : '')} onClick={() => { setOnlyDdl(false); setShowHist(false); }}>All · {items.length}</button>
+            {ddlCount > 0 && <button className={'qh-seg-opt qh-seg-ddl' + (onlyDdl && !showHist ? ' is-active' : '')} onClick={() => { setOnlyDdl(true); setShowHist(false); }}><AdminIcons.ddl />DDL · {ddlCount}</button>}
+            <button className={'qh-seg-opt' + (showHist ? ' is-active' : '')} onClick={() => setShowHist(true)}>History</button>
           </div>
-        )}
+        </div>
         {shown.length > 0 && (
           <>
             <div className={'qh-batchbar' + (live.length ? ' is-armed' : '')}>
@@ -560,12 +617,13 @@ function ApprovalsView({ st, user, role }) {
           </>
         )}
         <div className="qh-qcards">
-          <ManualRunsBlock st={st} />
+          {showHist && <QhApprovalsHistory />}
+          {!showHist && <ManualRunsBlock st={st} />}
           {/* An empty queue is the most likely place to be looking for a
               request that has already been decided, so the sentence naming
               where it went is also the way there. `#admin/audit` is picked up
               by the hashchange listener in AdminPanel — no prop drilling. */}
-          {items.length === 0 && <div className="qh-aempty"><AdminIcons.approvals /><div>Queue is clear.</div><div className="qh-aempty-hint">Nothing waiting. Approved and denied queries move to the <a className="qh-aempty-link" href="#admin/audit">audit log</a>.</div></div>}
+          {!showHist && items.length === 0 && <div className="qh-aempty"><AdminIcons.approvals /><div>Queue is clear.</div><div className="qh-aempty-hint">Nothing waiting. Approved and denied queries move to the <a className="qh-aempty-link" href="#admin/audit">audit log</a>.</div></div>}
           {groups.map(g => {
             if (g.solo) return <QueueCard key={g.solo.id} it={g.solo} selected={cur && cur.id === g.solo.id} onSelect={setSel} checked={live.includes(g.solo.id)} onCheck={toggleCheck} />;
             // The batch head selects its rows that can go in a batch: no DDL.
@@ -593,7 +651,8 @@ function ApprovalsView({ st, user, role }) {
       </div>
 
       <div className="qh-adetail">
-        {!cur ? <div className="qh-aempty big"><AdminIcons.approvals /><div>Nothing to review.</div></div> : (
+        {showHist ? <div className="qh-aempty big"><AdminIcons.approvals /><div>History shows decided requests. Open All to decide.</div></div>
+        : !cur ? <div className="qh-aempty big"><AdminIcons.approvals /><div>Nothing to review.</div></div> : (
           <>
             <div className="qh-adetail-head">
               <div className="qh-adetail-who">
@@ -885,4 +944,4 @@ function NoteBox({ mode, value, onChange, onCancel }) {
   );
 }
 
-Object.assign(window, { AdminPanel, AdminIcons, qhQueueIsDdl, qhQueueBatchIds, qhQueuePrune, qhQueueBatchNote, qhExpiresIn, qhRequesterHolds, qhFailingConnCount, qhAdminLevel, qhAdminCanOpen, qhAdminLockReason, qhKillLasted, qhKillCancelSay, qhKillWho, KillHistory, qhNoteCheck, qhNoteAdd, QH_NOTE_MIN });
+Object.assign(window, { AdminPanel, AdminIcons, qhApprovalsHistoryRows, QhApprovalsHistory, qhQueueIsDdl, qhQueueBatchIds, qhQueuePrune, qhQueueBatchNote, qhExpiresIn, qhRequesterHolds, qhFailingConnCount, qhAdminLevel, qhAdminCanOpen, qhAdminLockReason, qhKillLasted, qhKillCancelSay, qhKillWho, KillHistory, qhNoteCheck, qhNoteAdd, QH_NOTE_MIN });
