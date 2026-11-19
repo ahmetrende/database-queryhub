@@ -1411,6 +1411,110 @@ function qhMoveLines(value, a, b, dir) {
   return { value: v.slice(0, s) + below + '\n' + block + v.slice(ne), sel: [a + below.length + 1, b + below.length + 1] };
 }
 
+// The lines that the caret or the selection [a, b] touches, as a list of
+// { start, end } offsets. A selection that ends at the start of a line does
+// not touch that line (the same rule as qhMoveLines).
+function qhTouchedLines(v, a, b) {
+  const lo = Math.min(a, b), hi0 = Math.max(a, b);
+  const hi = (hi0 > lo && v[hi0 - 1] === '\n') ? hi0 - 1 : hi0;
+  const first = lo > 0 ? v.lastIndexOf('\n', lo - 1) + 1 : 0;
+  const out = [];
+  let s = first;
+  for (;;) {
+    let e = v.indexOf('\n', s);
+    if (e < 0) e = v.length;
+    out.push({ start: s, end: e });
+    if (e >= hi || e >= v.length) break;
+    s = e + 1;
+  }
+  return out;
+}
+
+// Apply line edits { at, del, ins } (sorted, not overlapping) to v and move
+// the selection with the text. An insert at the selection start does not
+// push a real selection start forward, so a whole-line selection keeps the
+// whole line. A position inside deleted text goes to the start of the cut.
+function qhApplyLineEdits(v, a, b, edits) {
+  const map = (x, stick) => {
+    let shift = 0;
+    for (const ed of edits) {
+      if (x < ed.at || (x === ed.at && ed.del === 0 && stick)) break;
+      if (x < ed.at + ed.del) return ed.at + shift;
+      shift += ed.ins.length - ed.del;
+    }
+    return x + shift;
+  };
+  let text = '', pos = 0;
+  for (const ed of edits) { text += v.slice(pos, ed.at) + ed.ins; pos = ed.at + ed.del; }
+  text += v.slice(pos);
+  const lo = Math.min(a, b), hi = Math.max(a, b);
+  const nlo = map(lo, lo !== hi), nhi = map(hi, false);
+  return a <= b ? { text, selStart: nlo, selEnd: nhi } : { text, selStart: nhi, selEnd: nlo };
+}
+
+// True when Tab on the selection [a, b] indents lines: the selection spans
+// more than one line, or it covers one whole line.
+function qhSelectionIsBlock(value, a, b) {
+  const v = String(value == null ? '' : value);
+  const lo = Math.min(a, b), hi = Math.max(a, b);
+  if (lo === hi) return false;
+  if (v.slice(lo, hi).indexOf('\n') >= 0) return true;
+  const ls = lo > 0 ? v.lastIndexOf('\n', lo - 1) + 1 : 0;
+  let le = v.indexOf('\n', lo);
+  if (le < 0) le = v.length;
+  return lo === ls && hi === le;
+}
+
+// Tab on a block selection: two spaces at the start of every touched line.
+// Empty lines stay empty when more than one line is touched. Returns
+// { text, selStart, selEnd }.
+function qhIndentLines(value, a, b) {
+  const v = String(value == null ? '' : value);
+  const lines = qhTouchedLines(v, a, b);
+  const edits = lines.filter(l => lines.length === 1 || l.end > l.start).map(l => ({ at: l.start, del: 0, ins: '  ' }));
+  return qhApplyLineEdits(v, a, b, edits);
+}
+
+// Shift+Tab: remove one indent from every touched line. One indent is a
+// leading tab, or up to two leading spaces. Other text is never removed.
+// Returns { text, selStart, selEnd }; the text is the same when nothing moved.
+function qhOutdentLines(value, a, b) {
+  const v = String(value == null ? '' : value);
+  const edits = [];
+  qhTouchedLines(v, a, b).forEach(l => {
+    let del = 0;
+    if (v[l.start] === '\t') del = 1;
+    else while (del < 2 && l.start + del < l.end && v[l.start + del] === ' ') del++;
+    if (del) edits.push({ at: l.start, del, ins: '' });
+  });
+  return qhApplyLineEdits(v, a, b, edits);
+}
+
+// Ctrl+/ (Cmd+/ on macOS): toggle a `-- ` line comment on every touched line.
+// When every non-blank line starts with `--` after its indent, the `--` and
+// one space after it go. Otherwise `-- ` goes in at the smallest indent of
+// the non-blank lines. Blank lines stay as they are. Returns
+// { text, selStart, selEnd }.
+function qhToggleLineComment(value, a, b) {
+  const v = String(value == null ? '' : value);
+  const lines = qhTouchedLines(v, a, b).map(l => {
+    const body = v.slice(l.start, l.end);
+    const ind = body.length - body.replace(/^[ \t]+/, '').length;
+    return { ...l, ind, blank: body.trim() === '', body };
+  });
+  const full = lines.filter(l => !l.blank);
+  if (!full.length) return { text: v, selStart: a, selEnd: b };
+  const remove = full.every(l => l.body.slice(l.ind, l.ind + 2) === '--');
+  let edits;
+  if (remove) {
+    edits = full.map(l => ({ at: l.start + l.ind, del: l.body[l.ind + 2] === ' ' ? 3 : 2, ins: '' }));
+  } else {
+    const min = Math.min(...full.map(l => l.ind));
+    edits = full.map(l => ({ at: l.start + min, del: 0, ins: '-- ' }));
+  }
+  return qhApplyLineEdits(v, a, b, edits);
+}
+
 // Type ( ' " [ or ` over a selection and the selection is wrapped, not
 // replaced (Devart F7). The selection stays on the same text, inside the new
 // pair. Returns { value, sel }, or null for another key or no selection.
@@ -5348,6 +5452,19 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
       requestAnimationFrame(() => { const t = taRef.current; if (t) reveal(t, r.sel[1]); });
       return;
     }
+    // Ctrl+/ (Cmd+/ on macOS) comments or uncomments the touched lines with
+    // `-- ` (qhToggleLineComment). The selection stays on the same lines.
+    // One undo step. A layout that types `/` with Shift (Turkish Q: Shift+7)
+    // still matches on the key. The physical US slash key matches without Shift.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === '/' || (e.code === 'Slash' && !e.shiftKey))) {
+      e.preventDefault(); setAc(null);
+      const ta = e.target, a = ta.selectionStart, b = ta.selectionEnd;
+      const r = qhToggleLineComment(value, a, b);
+      if (r.text === value) return;
+      restoreSel.current = { text: r.text, sel: [r.selStart, r.selEnd] };
+      commit(r.text, 'comment', [a, b], [r.selStart, r.selEnd]);
+      return;
+    }
     // Alt+PageUp / Alt+PageDown: the start of the previous or the next
     // statement (qhStatementJump). Statements without `;` count too.
     if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === 'PageUp' || e.key === 'PageDown')) {
@@ -5463,6 +5580,17 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     if (e.key === 'Tab') {
       e.preventDefault();
       const ta = e.target, s = ta.selectionStart, en = ta.selectionEnd;
+      // Shift+Tab outdents the touched lines. Tab on a block selection indents
+      // the lines (qhSelectionIsBlock). One undo step each. Tab with no
+      // selection or inside one line types two spaces, as before.
+      if (e.shiftKey || qhSelectionIsBlock(value, s, en)) {
+        const r = e.shiftKey ? qhOutdentLines(value, s, en) : qhIndentLines(value, s, en);
+        if (r.text === value) return;
+        setAc(null);
+        restoreSel.current = { text: r.text, sel: [r.selStart, r.selEnd] };
+        commit(r.text, e.shiftKey ? 'outdent' : 'indent', [s, en], [r.selStart, r.selEnd]);
+        return;
+      }
       commit(value.slice(0, s) + '  ' + value.slice(en), 'indent', [s, en], [s + 2, s + 2]);
       requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = s + 2; });
     } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -6042,7 +6170,7 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
   const [editId, setEditId] = React.useState(null);
   const [draft, setDraft] = React.useState('');
   const cancelledRef = React.useRef(false);
-  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current statement'], ['⇧ + F8', 'Run from the top to the current statement'], ['⇧ + ⌥ / Alt + S', 'Select current statement'], ['⌥ / Alt + PgUp / PgDn', 'Previous / next statement'], ['⇧ + F12 · ⌘/Ctrl + ⇧ + \\', 'Go to the matching bracket, CASE/END or BEGIN/END'], ['⌥ / Alt + ↑ / ↓', 'Move line up / down'], ['⇧ + ⌥ / Alt + ;', 'Add missing semicolons'], ['⇧ + ⌥ / Alt + E', 'Expand every * of the text or selection'], ['⇧ + F6', 'Rename the alias at the caret'], ['⌘ / Ctrl + B · ⌘ / Ctrl + click', 'Go to the definition: alias, CTE, or the object in the tree'], ['⇧ + ⌥ / Alt + D', 'CREATE script of the object at the caret'], ['⇧ + ⌥ / Alt + Q', 'Qualify table and column names'], ['Ctrl + Space after GROUP BY', 'The non-aggregated SELECT columns'], ['PgUp / PgDn in the list', 'Move 8 rows; drag the corner to resize'], ['Select, then ( \' " [', 'Wrap the selection'], ['( \' " [ with no selection', 'The closing mark goes in too. Backspace removes an empty pair'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Ctrl + Space', 'Suggestions; in a SELECT, all columns'], ['Ctrl + Space in the column list', 'Check a column; Enter inserts the checked ones'], ['Tab after INSERT INTO t, UPDATE t, EXEC p, CALL p', 'Statement template'], ['Tab / ⇧ + Tab in a template or snippet', 'Next / previous field'], ['Ctrl + ⇧ + Space', 'Parameter info of the function at the caret'], ['ssf + Tab', 'Snippet: type a key, pick it (list below)'], ['Tab', 'Indent'], ['⌥ / Alt + Z', 'Toggle word wrap'], ['⇧ + ⌥ / Alt + F', 'Format SQL'], ['⌥ / Alt + ← →', 'Previous / next result'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
+  const SHORTCUTS = [['F5', 'Run selection, else whole query'], ['F8', 'Run selection / current statement'], ['⇧ + F8', 'Run from the top to the current statement'], ['⇧ + ⌥ / Alt + S', 'Select current statement'], ['⌥ / Alt + PgUp / PgDn', 'Previous / next statement'], ['⇧ + F12 · ⌘/Ctrl + ⇧ + \\', 'Go to the matching bracket, CASE/END or BEGIN/END'], ['⌥ / Alt + ↑ / ↓', 'Move line up / down'], ['Tab · ⇧ + Tab', 'Indent / outdent the selected lines'], ['⌘ / Ctrl + /', 'Comment or uncomment the lines'], ['⇧ + ⌥ / Alt + ;', 'Add missing semicolons'], ['⇧ + ⌥ / Alt + E', 'Expand every * of the text or selection'], ['⇧ + F6', 'Rename the alias at the caret'], ['⌘ / Ctrl + B · ⌘ / Ctrl + click', 'Go to the definition: alias, CTE, or the object in the tree'], ['⇧ + ⌥ / Alt + D', 'CREATE script of the object at the caret'], ['⇧ + ⌥ / Alt + Q', 'Qualify table and column names'], ['Ctrl + Space after GROUP BY', 'The non-aggregated SELECT columns'], ['PgUp / PgDn in the list', 'Move 8 rows; drag the corner to resize'], ['Select, then ( \' " [', 'Wrap the selection'], ['( \' " [ with no selection', 'The closing mark goes in too. Backspace removes an empty pair'], ['⌘ / Ctrl + ↵', 'Run'], ['F2', 'Rename tab'], ['⌘/Ctrl+⇧+T', 'Reopen closed tab'], ['Ctrl + Space', 'Suggestions; in a SELECT, all columns'], ['Ctrl + Space in the column list', 'Check a column; Enter inserts the checked ones'], ['Tab after INSERT INTO t, UPDATE t, EXEC p, CALL p', 'Statement template'], ['Tab / ⇧ + Tab in a template or snippet', 'Next / previous field'], ['Ctrl + ⇧ + Space', 'Parameter info of the function at the caret'], ['ssf + Tab', 'Snippet: type a key, pick it (list below)'],['⌥ / Alt + Z', 'Toggle word wrap'], ['⇧ + ⌥ / Alt + F', 'Format SQL'], ['⌥ / Alt + ← →', 'Previous / next result'], ['Drag tab', 'Reorder tabs'], ['Middle-click', 'Close tab'], ['Drag', 'Drop tree object into editor'], ['*', 'SELECT → expand columns'], ['Right-click', 'Tab options']];
   const beginRename = (t) => { if (t.kind) return; setMenu(null); setEditId(t.id); setDraft(t.name); };
   const openMenu = (e, id) => { e.preventDefault(); e.stopPropagation(); setKb(false); setMenu({ x: Math.min(e.clientX, window.innerWidth - 200), y: e.clientY, id }); };
   React.useEffect(() => {
@@ -6226,6 +6354,6 @@ Object.assign(window, { SqlEditor, EditorTabs, FormatOptions, QH_FMT_ROWS, QH_FM
   QH_ALIAS_KEY, qhAliasOptsClean, qhAliasOptsLoad, qhAliasOptsSave, qhAliasRules, qhAliasBase, qhAutoAlias,
   qhNameInitials, qhExpandAllStars, qhApplyEdits, qhGroupByFill, qhGroupByItem, qhAcPage, QH_AC_MAX, QH_AC_PAGE, qhAcSizeLoad, QH_AC_SIZE_KEY,
   qhStatementRanges, qhAddSemicolons, qhStatementJump, qhToCaretRange, qhPairs, qhPairAt, qhPairJump, qhOccurrences, qhCaretMarks,
-  qhMoveLines, qhWrapSelection, QH_WRAP_PAIRS, QhCaretMarks, qhScanCode, qhInStringOrComment, qhAutoPair, qhPairBackspace,
+  qhMoveLines, qhSelectionIsBlock, qhIndentLines, qhOutdentLines, qhToggleLineComment, qhWrapSelection, QH_WRAP_PAIRS, QhCaretMarks, qhScanCode, qhInStringOrComment, qhAutoPair, qhPairBackspace,
   qhHoverInfo, qhHoverLines, qhHoverOffsetAt,
   QH_FUNC_SIGS, qhSigParams, qhBuiltinSigs, qhCallAt, qhSignaturesFor, qhSigPick, qhSigActive, qhLintFindings, qhProblems });
