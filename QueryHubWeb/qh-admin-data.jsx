@@ -103,6 +103,9 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const [autoMaxDays, setAutoMaxDays] = useAdminStateHook(90);
   const [scopes, setScopes] = useAdminStateHook([]);
   const [roles, setRoles] = useAdminStateHook([]);
+  // 'loading' | 'ok' | 'error'. The People tab derives each role from `roles`,
+  // and an empty list before the load (or after a 403) is not "nobody has a role".
+  const [rolesState, setRolesState] = useAdminStateHook('loading');
   // `enforced` = the fleet's access_model_v2 switch. While it is false the DIRECT
   // rows in /admin/roles are recorded but not consulted (the old path reads the
   // legacy admins table), so the screen has to say so — a dormant approver row
@@ -154,7 +157,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const loadAudit = useAdminCb(() => qhApi.adminAudit().then(r => setAudit(r.audit || [])).catch(() => {}), []);
   const loadKill = useAdminCb(() => qhApi.adminKillGet().then(r => setKillSwitch({ enabled: !!r.enabled, message: r.message || '', by: r.by || null, at: r.at || null })).catch(() => {}), []);
   const loadScopes = useAdminCb(() => qhApi.adminScopes().then(r => setScopes(r.scopes || [])).catch(() => {}), []);
-  const loadRoles = useAdminCb(() => qhApi.adminRoles().then(r => { setRoles(r.roles || []); setRolesEnforced(r.enforced !== false); }).catch(() => {}), []);
+  const loadRoles = useAdminCb(() => qhApi.adminRoles().then(r => { setRoles(r.roles || []); setRolesEnforced(r.enforced !== false); setRolesState('ok'); }).catch(() => setRolesState('error')), []);
   const loadMask = useAdminCb(() => qhApi.adminMaskExemptions().then(r => { setMaskExemptions(r.exemptions || []); setMaskMeta({ maskingEnabled: r.maskingEnabled !== false, nameRules: r.nameRules || 0, valueDetectors: r.valueDetectors || [] }); }).catch(() => {}), []);
   const readEndpointReqs = (r) => { setEndpointReqs((r.requests || []).map(x => ({ ...x, tier: x.tier || null }))); if (r.accessDefaultDays >= 1) setAccessDefaultDays(r.accessDefaultDays); };
   const loadEndpointReqs = useAdminCb(() => qhApi.adminEndpointReqs().then(readEndpointReqs).catch(() => {}), []);
@@ -177,7 +180,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
       qhApi.adminAudit().then(r => setAudit(r.audit || [])),
       qhApi.adminKillGet().then(r => setKillSwitch({ enabled: !!r.enabled, message: r.message || '', by: r.by || null, at: r.at || null })),
       qhApi.adminScopes().then(r => setScopes(r.scopes || [])),
-      qhApi.adminRoles().then(r => { setRoles(r.roles || []); setRolesEnforced(r.enforced !== false); }),
+      qhApi.adminRoles().then(r => { setRoles(r.roles || []); setRolesEnforced(r.enforced !== false); setRolesState('ok'); }, e => { setRolesState('error'); throw e; }),
       qhApi.adminMaskExemptions().then(r => { setMaskExemptions(r.exemptions || []); setMaskMeta({ maskingEnabled: r.maskingEnabled !== false, nameRules: r.nameRules || 0, valueDetectors: r.valueDetectors || [] }); }),
       qhApi.adminEndpointReqs().then(readEndpointReqs),
       qhApi.adminFeedback().then(r => setFeedback(r.feedback || [])),
@@ -636,7 +639,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
   // the one screen that manages it.
   const primaries = (connections || []).filter(c => !c.replicaOf);
   return {
-    queue, manualRuns, grants, grantsState, autoGrants, autoMaxDays, autoRequests, scopes, roles, rolesEnforced, maskExemptions, maskMeta, people, teams, endpointReqs, accessDefaultDays, feedback, audit, metrics, connections: primaries, connectionRows: connections, killSwitch, config, pushToast,
+    queue, manualRuns, grants, grantsState, autoGrants, autoMaxDays, autoRequests, scopes, roles, rolesState, rolesEnforced, maskExemptions, maskMeta, people, teams, endpointReqs, accessDefaultDays, feedback, audit, metrics, connections: primaries, connectionRows: connections, killSwitch, config, pushToast,
     loadError, loading, reload: reloadAll,
     decide, batchApprove, approveBundle, toggleKill, killHistory,
     addGrant, updateGrant, revokeGrant, setSubjectGrants, extendGrant, setAutoGrantEnabled,

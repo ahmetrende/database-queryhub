@@ -3421,6 +3421,20 @@ const qhApi = {
     ADMIN.auto.forEach(a => extra(String(a.user || '').indexOf(' (team)') >= 0 ? null : a.user, 'grant_only'));
     return { people: rows.sort((a, b) => (a.enabled === b.enabled ? 0 : a.enabled ? -1 : 1)) };
   }, 160),
+  // GET /admin/people/duplicate-addresses: addresses that two or more people
+  // share. Super-admin only, as on the server. The mock returns one pair from
+  // the mock people, so the prototype shows the warning panel.
+  adminDuplicateAddresses: () => mockDelay(() => {
+    const me = mockUser();
+    if (!me || me.role !== 'super') return mockFail('Super-admin only.', 403, 'forbidden');
+    const pair = ADMIN.people.slice(0, 2);
+    if (pair.length < 2) return { duplicates: [], total: 0 };
+    const email = mockEmail(pair[0].handle);
+    return { duplicates: [{ email, accounts: [
+      { table: 'requesters', principal: pair[0].handle, name: pair[0].name || '', enabled: pair[0].enabled !== false },
+      { table: 'admins', principal: pair[1].handle, name: pair[1].name || '', enabled: false },
+    ] }], total: 1 };
+  }, 160),
 
   // GET /admin/people/resolve?principal=… (CODE brief 2026-08-22 §3). Three
   // answers, and the combo says a different sentence for each: a person QueryHub

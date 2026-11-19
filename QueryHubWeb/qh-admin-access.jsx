@@ -2293,6 +2293,127 @@ function TeamForm({ people, init, onSave, onCancel }) {
   );
 }
 
+// ---------- People tab: role, status, no-team filter, shared addresses ----------
+// Ported from the IdP app (qhRoles.ts and DuplicateAddresses.tsx, 2026-11-19).
+
+// Lowest to highest. A person shows the highest role of their enabled rows.
+const QH_PEOPLE_ROLE_RANK = ['developer', 'granter', 'scoped', 'limited', 'dba', 'super'];
+
+// The role word of one GET /admin/roles row.
+// super = enabled admin over every team and target, any tier, no end date.
+// dba = the same with a tier ceiling. limited = any other admin row.
+// scoped = approver. granter = granter. Any other role (the removed importer
+// role included) is no authority this screen knows, so it reads as developer.
+// The server sends allTeams / allTargets / anyTier as booleans. An older row
+// without them falls back to a null scope id, as RoleSentence does.
+function qhRoleOfRow(r) {
+  if (!r) return 'developer';
+  if (r.role === 'admin') {
+    const allTeams = r.allTeams != null ? !!r.allTeams : !r.scopeTeamId;
+    const allTargets = r.allTargets != null ? !!r.allTargets : !r.scopeTargetId;
+    const anyTier = r.anyTier != null ? !!r.anyTier : !r.maxTier;
+    if (r.enabled !== false && allTeams && allTargets && !r.validUntil) return anyTier ? 'super' : 'dba';
+    return 'limited';
+  }
+  if (r.role === 'approver') return 'scoped';
+  if (r.role === 'granter') return 'granter';
+  return 'developer';
+}
+
+// A person's highest role. `subject` on a role row is the Slack id, which is
+// the person's `handle` (and `id`, the only key a DBA gets). A row with
+// `enabled === false` is skipped. The server always sends `enabled`, so a
+// missing value is not read as disabled.
+function qhRoleOf(person, roles) {
+  const keys = [person && person.handle, person && person.id, person && person.slackId].filter(Boolean);
+  let best = 'developer';
+  for (const r of roles || []) {
+    if (!r || r.enabled === false || keys.indexOf(r.subject) < 0) continue;
+    const mine = qhRoleOfRow(r);
+    if (QH_PEOPLE_ROLE_RANK.indexOf(mine) > QH_PEOPLE_ROLE_RANK.indexOf(best)) best = mine;
+  }
+  return best;
+}
+
+// Labels: the classic words of QH_ROLE_DEFS (qh-admin-roles.jsx) where one
+// exists. It has one word for every admin row, so super, dba and limited take
+// the words of the scopes screen and the IdP app.
+function qhRoleLabel(role) {
+  const defs = window.QH_ROLE_DEFS || {};
+  if (role === 'scoped') return (defs.approver && defs.approver.label) || 'Approver';
+  if (role === 'granter') return (defs.granter && defs.granter.label) || 'Granter';
+  return { super: 'Super-admin', dba: 'DBA', limited: 'Limited admin' }[role] || 'Developer';
+}
+
+// The Role cell text. '—' while the roles are not loaded (or the read failed),
+// because an empty list then does not mean that nobody holds a role.
+function qhPersonRoleCell(person, roles, rolesState) {
+  return rolesState === 'ok' ? qhRoleLabel(qhRoleOf(person, roles)) : '—';
+}
+
+// The Status cell text. A DBA who is not a super-admin gets no `enabled`
+// field, so the cell is empty rather than a guess.
+function qhPersonStatus(person) {
+  if (!person || typeof person.enabled !== 'boolean') return null;
+  return person.enabled ? 'Active' : 'Disabled';
+}
+
+// True when no team lists the person as a member.
+function qhHasNoTeam(handle, teams) {
+  return !(teams || []).some(t => (t.members || []).indexOf(handle) >= 0);
+}
+
+// The People rows: the text filter (name, handle, team names), then the
+// no-team toggle.
+function qhPeopleRows(people, teams, q, noTeam) {
+  const s = String(q || '').trim().toLowerCase();
+  return (people || []).filter(p => {
+    if (noTeam && !qhHasNoTeam(p.handle, teams)) return false;
+    if (!s) return true;
+    const names = (teams || []).filter(t => (t.members || []).indexOf(p.handle) >= 0).map(t => t.name).join(' ');
+    return (p.name + ' ' + p.handle + ' ' + names).toLowerCase().includes(s);
+  });
+}
+
+// The shared-address list to show. Only a body with total > 0 shows the panel.
+// A failure (a 403 for an admin who is not a super-admin, or any other error)
+// shows nothing: the list is a hint, and the screen does not depend on it.
+function qhDupAddrList(body) {
+  return body && body.total > 0 && Array.isArray(body.duplicates) ? body.duplicates : [];
+}
+
+function DupAddressPanel() {
+  const [dups, setDups] = useAcc([]);
+  React.useEffect(() => {
+    let live = true;
+    const call = window.qhApi && window.qhApi.adminDuplicateAddresses;
+    if (!call) return undefined;
+    Promise.resolve().then(() => call()).then(b => { if (live) setDups(qhDupAddrList(b)); }, () => { if (live) setDups([]); });
+    return () => { live = false; };
+  }, []);
+  if (!dups.length) return null;
+  return (
+    <div className="qh-req-warn qh-dupaddr" role="status">
+      <div className="qh-dupaddr-title">Shared sign-in addresses</div>
+      <div>Two or more people use the same address. QueryHub refuses a sign-in with that address.</div>
+      <ul className="qh-dupaddr-list">
+        {dups.map(d => (
+          <li key={d.email}>
+            <span className="qh-mono">{d.email}</span>
+            <ul>
+              {(d.accounts || []).map(a => (
+                <li key={a.table + ':' + a.principal}>
+                  {a.table} · <span className="qh-mono">{a.principal}</span> · {a.name ? qhPersonName(a.name) : '—'} · {a.enabled ? 'Enabled' : 'Disabled'}
+                </li>
+              ))}
+            </ul>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function TeamsView({ st, user }) {
   const actor = 'dba.' + user.name.split(' ')[0].toLowerCase();
   const [tab, setTab] = useAcc('teams');
@@ -2303,6 +2424,7 @@ function TeamsView({ st, user }) {
   const [delId, setDelId] = useAcc(null);   // the team whose inline delete confirm is open
   const [editPerson, setEditPerson] = useAcc(null);
   const [pdraft, setPdraft] = useAcc([]);
+  const [noTeam, setNoTeam] = useAcc(false);   // People tab: only people with no team
 
   const teams = st.teams, people = st.people;
   const personBy = (h) => people.find(p => p.handle === h) || {};
@@ -2310,10 +2432,12 @@ function TeamsView({ st, user }) {
   const teamsOf = (h) => teams.filter(t => t.members.includes(h));
   const memberOf = (id) => teams.filter(t => (t.subteams || []).includes(id));
   const grantsOf = (name) => st.grants.filter(g => g.subjectType === 'team' && g.subject === name);
-  const unassigned = people.filter(p => teamsOf(p.handle).length === 0);
+  const unassigned = people.filter(p => qhHasNoTeam(p.handle, teams));
 
   const tRows = teams.filter(t => { const s = q.trim().toLowerCase(); if (!s) return true; return (t.name + ' ' + (t.desc || '') + ' ' + t.members.join(' ')).toLowerCase().includes(s); });
-  const pRows = people.filter(p => { const s = q.trim().toLowerCase(); if (!s) return true; return (p.name + ' ' + p.handle + ' ' + teamsOf(p.handle).map(t => t.name).join(' ')).toLowerCase().includes(s); });
+  // The toggle filters only while somebody has no team. Without that, a pressed
+  // chip that has gone away could hide every row.
+  const pRows = qhPeopleRows(people, teams, q, noTeam && unassigned.length > 0);
 
   const startEditPerson = (p) => { setEditPerson(p.handle); setPdraft(teamsOf(p.handle).map(t => t.id)); };
   const togglePdraft = (id) => setPdraft(d => d.includes(id) ? d.filter(x => x !== id) : [...d, id]);
@@ -2333,7 +2457,8 @@ function TeamsView({ st, user }) {
           <button className={'qh-seg-opt' + (tab === 'people' ? ' is-active' : '')} onClick={() => { setTab('people'); clearEdits(); }}>People · {people.length}</button>
         </div>
         <AccSearch q={q} setQ={setQ} placeholder={tab === 'teams' ? 'Filter teams…' : 'Filter people…'} />
-        {tab === 'people' && unassigned.length > 0 && <span className="qh-team-note">{unassigned.length} without a team</span>}
+        {tab === 'people' && unassigned.length > 0 && <button type="button" className={'qh-hfilter' + (noTeam ? ' is-on' : '')} aria-pressed={noTeam}
+          title={noTeam ? 'Show everyone' : 'Show only people with no team'} onClick={() => setNoTeam(v => !v)}>{unassigned.length} without a team</button>}
       </div>
 
       {tab === 'teams' ? (
@@ -2387,12 +2512,15 @@ function TeamsView({ st, user }) {
           </div>
         </>
       ) : (
+        <>
+        <DupAddressPanel />
         <div className="qh-tablewrap">
-        <table className="qh-atable qh-acttable">
-          <thead><tr><th>Person</th><th>Handle</th><th>Teams</th><th></th></tr></thead>
+        <table className="qh-atable qh-acttable qh-ppltable">
+          <thead><tr><th>Person</th><th>Handle</th><th>Role</th><th>Status</th><th>Teams</th><th></th></tr></thead>
           <tbody>
+            {pRows.length === 0 && <tr><td colSpan={6} className="qh-team-none">No people match your filter.</td></tr>}
             {pRows.map(p => editPerson === p.handle ? (
-              <tr key={p.handle} className="qh-editrow"><td colSpan={4}>
+              <tr key={p.handle} className="qh-editrow"><td colSpan={6}>
                 <div className="qh-personedit">
                   <div className="qh-personedit-top"><span className="qh-mini-avatar">{p.initials}</span><b>{qhPersonName(p.name)}</b><span className="qh-muted">— assign to teams (none, one, or several)</span></div>
                   <div className="qh-memberpick">
@@ -2402,9 +2530,11 @@ function TeamsView({ st, user }) {
                 </div>
               </td></tr>
             ) : (
-              <tr key={p.handle}>
+              <tr key={p.handle} className={'qh-ppl-row' + (p.enabled === false ? ' is-off' : '')}>
                 <td><div className="qh-person-cell"><span className="qh-mini-avatar">{p.initials}</span><b>{qhPersonName(p.name)}</b></div></td>
                 <td className="qh-mono">{p.handle}</td>
+                <td className="qh-ppl-role">{qhPersonRoleCell(p, st.roles, st.rolesState)}</td>
+                <td className="qh-ppl-status">{qhPersonStatus(p)}</td>
                 <td><div className="qh-person-teams">{teamsOf(p.handle).length === 0 ? <span className="qh-team-none">No team</span> : teamsOf(p.handle).map(t => <span key={t.id} className="qh-teamtag">{t.name}</span>)}</div></td>
                 <td className="qh-tright"><button className="qh-rowbtn" onClick={() => startEditPerson(p)}><AIcon.edit />Edit teams</button></td>
               </tr>
@@ -2412,6 +2542,7 @@ function TeamsView({ st, user }) {
           </tbody>
         </table>
         </div>
+        </>
       )}
     </div>
   );
@@ -3676,6 +3807,6 @@ function AddPersonDialog({ st, onClose, onAdded }) {
 // segmented control would be a second grouping idiom on one page.
 // `QH_TIER_WORD` / `qhTierWord` too (2026-10-21): the Roles screen and the
 // access editor say Read, Write and Schema from one table.
-Object.assign(window, { InlineConfirm, AddPersonDialog, TeamMultiPick, AddpSeg, AddpDbPick, GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, FleetGrantsBlock, connHealthState, connBannerSay, scopeConnList, ScopeForm, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, EndChip, EndPick, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord,
+Object.assign(window, { InlineConfirm, qhRoleOfRow, qhRoleOf, qhRoleLabel, qhPersonRoleCell, qhPersonStatus, qhHasNoTeam, qhPeopleRows, qhDupAddrList, DupAddressPanel, QH_PEOPLE_ROLE_RANK, AddPersonDialog, TeamMultiPick, AddpSeg, AddpDbPick, GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, FleetGrantsBlock, connHealthState, connBannerSay, scopeConnList, ScopeForm, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, EndChip, EndPick, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord,
   // The end of an auto-approve rule (2026-10-24).
   AUTO_TIER_SAY, autoMaxOf, endPicks, endDefault, endKeepable, expMaxDay, autoEndWhy, autoEndInit });

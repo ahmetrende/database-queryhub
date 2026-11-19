@@ -418,6 +418,9 @@ const qhApi = {
   adminDecideEndpoint:(id, approve, note, end) => qhFetch('/admin/endpoint-requests/' + encodeURIComponent(String(id).replace(/^er_/, '')) + '/decision', { method: 'POST', body: JSON.stringify({ approve: !!approve, note: note || null, ...(end && end.noEnd ? { noEnd: true } : {}), ...(end && end.expiresAt ? { expiresAt: end.expiresAt } : {}) }) }),
   // Teams + people directory (super-admin).
   adminPeople:     ()     => qhFetch('/admin/people'),
+  // Addresses that two or more people share. QueryHub refuses a sign-in with one.
+  // Super-admin only: any other admin gets a 403.
+  adminDuplicateAddresses: () => qhFetch('/admin/people/duplicate-addresses'),
   adminTeams:      ()     => qhFetch('/admin/teams'),
   adminSaveTeam:   (t)    => t.id
     ? qhFetch('/admin/teams/' + encodeURIComponent(t.id), { method: 'PUT', body: JSON.stringify(t) })
