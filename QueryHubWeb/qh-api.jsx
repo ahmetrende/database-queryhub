@@ -442,6 +442,11 @@ const qhApi = {
     ? qhFetch('/admin/teams/' + encodeURIComponent(t.id), { method: 'PUT', body: JSON.stringify(t) })
     : qhFetch('/admin/teams', { method: 'POST', body: JSON.stringify(t) }),
   adminDelTeam:    (id)   => qhFetch('/admin/teams/' + encodeURIComponent(id), { method: 'DELETE' }),
+  // Company-SSO groups of one team (2026-11-20). Both answer
+  // { enabled, groups: [{ provider, group, createdAt, createdBy }] }. The PUT
+  // replaces the whole list. `enabled` is bot_config idp_group_sync_enabled.
+  adminTeamIdpGroups:(teamId) => qhFetch('/admin/teams/' + encodeURIComponent(teamId) + '/idp-groups'),
+  adminSetTeamIdpGroups:(teamId, groups) => qhFetch('/admin/teams/' + encodeURIComponent(teamId) + '/idp-groups', { method: 'PUT', body: JSON.stringify({ groups: (groups || []).map(g => ({ provider: g.provider, group: g.group })) }) }),
   adminSetPersonTeams:(slackId, teamIds) => qhFetch('/admin/people/' + encodeURIComponent(slackId) + '/teams', { method: 'PUT', body: JSON.stringify({ teams: teamIds }) }),
   adminAudit:      (qs)   => qhFetch('/admin/audit' + (qs || '')),
   // The rebuilt Audit trail (design 2026-09-09 (b)) reads ONE search endpoint

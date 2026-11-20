@@ -2985,14 +2985,22 @@ def _teams_payload() -> list[dict]:
             "SELECT t.id, t.name, t.display_name, t.description, t.source "
             "  FROM team t WHERE NOT t.is_deleted ORDER BY lower(t.name)")
         members = db.fetch_all(
-            "SELECT m.team_id, i.external_id AS slack_user_id "
+            "SELECT m.team_id, i.external_id AS slack_user_id, "
+            "       m.source, m.idp_group "
             "  FROM team_member m "
             "  JOIN principal_identity i ON i.principal_id = m.principal_id "
             "   AND i.provider = 'slack' AND NOT i.is_deleted "
             " WHERE NOT m.is_deleted")
         by_team: dict[int, list[str]] = {}
+        # Who added each member: "manual" or "idp" (company-SSO group sync,
+        # migration 222). `members` stays a list of handles for old readers.
+        rows_by_team: dict[int, list[dict]] = {}
         for m in members:
             by_team.setdefault(m["team_id"], []).append(m["slack_user_id"])
+            rows_by_team.setdefault(m["team_id"], []).append(
+                {"handle": m["slack_user_id"],
+                 "source": m.get("source") or "manual",
+                 "idpGroup": m.get("idp_group")})
         lead_rows = db.fetch_all(
             "SELECT m.team_id, i.external_id AS handle, p.display_name AS name "
             "  FROM team_member m "
@@ -3011,6 +3019,7 @@ def _teams_payload() -> list[dict]:
             "desc": t["description"] or "",
             "leads": leads_by_team.get(t["id"], []),
             "members": by_team.get(t["id"], []), "subteams": [],
+            "memberRows": rows_by_team.get(t["id"], []),
             "syncedFrom": t["source"] if t["source"] != "manual" else None,
         } for t in rows]
 
@@ -3247,6 +3256,121 @@ def admin_delete_team(team_id: int, claims: dict = Depends(deps.current_user)):
         audit.log_in(cur, None, uid, claims.get("name"), "team_deleted",
                      {"team": team["name"], "team_id": team_id})
     return
+
+
+# ---- team <-> company-SSO groups (idp_group_sync.py, migration 222) --------
+
+_IDP_PROVIDER_RE = re.compile(r"^[a-z0-9_]+$")
+_IDP_GROUPS_MAX = 50
+_IDP_GROUP_MAX_LEN = 200
+
+
+class IdpGroupIn(BaseModel):
+    provider: str
+    group: str
+
+
+class TeamIdpGroupsIn(BaseModel):
+    groups: list[IdpGroupIn] = []
+
+
+def _idp_group_out(r: dict) -> dict:
+    return {"provider": r["provider"], "group": r["group_name"],
+            "createdAt": mapping.iso(r.get("created_at")),
+            "createdBy": r.get("created_by")}
+
+
+_IDP_GROUPS_SQL = (
+    "SELECT provider, group_name, created_at, created_by FROM team_idp_groups "
+    " WHERE team_id = %s ORDER BY provider, group_name")
+
+
+def _valid_idp_groups(groups: list[IdpGroupIn]) -> list[tuple[str, str]]:
+    """Checked, de-duplicated (provider, group) pairs, or a 400."""
+    from . import auth_providers
+    configured = set(auth_providers.oidc_ids())
+    out: list[tuple[str, str]] = []
+    for g in groups:
+        provider = (g.provider or "").strip()
+        group = g.group or ""
+        if (not _IDP_PROVIDER_RE.match(provider)
+                or provider in {"slack", "local"}
+                or (configured and provider not in configured)):
+            raise deps._error(400, "bad_request",
+                              f"'{provider}' is not a configured SSO provider.")
+        if not group.strip() or len(group) > _IDP_GROUP_MAX_LEN:
+            raise deps._error(400, "bad_request",
+                              f"Enter a group name of 1 to {_IDP_GROUP_MAX_LEN} characters.")
+        if group != group.strip():
+            raise deps._error(400, "bad_request",
+                              "Remove the spaces at the start and end of the group name.")
+        if (provider, group) not in out:
+            out.append((provider, group))
+    if len(out) > _IDP_GROUPS_MAX:
+        raise deps._error(400, "bad_request",
+                          f"A team can have at most {_IDP_GROUPS_MAX} SSO groups.")
+    return out
+
+
+@router.get("/teams/{team_id}/idp-groups")
+def admin_get_team_idp_groups(team_id: int,
+                              claims: dict = Depends(deps.current_user)):
+    """The SSO groups mapped to one team, and whether the sync is on."""
+    admin.require_admin(claims, "access")
+    from .. import idp_group_sync
+    if _team_for_write(team_id) is None:
+        raise deps._error(404, "not_found", "No such team.")
+    rows = db.fetch_all(_IDP_GROUPS_SQL, (team_id,))
+    return {"enabled": idp_group_sync.enabled(),
+            "groups": [_idp_group_out(r) for r in rows]}
+
+
+@router.put("/teams/{team_id}/idp-groups")
+def admin_set_team_idp_groups(team_id: int,
+                              claims: dict = Depends(deps.current_user),
+                              body: TeamIdpGroupsIn | None = None):
+    """Replace the SSO groups mapped to one team.
+
+    The change applies at each member's next login, and only while
+    `idp_group_sync_enabled` is on. Rows that stay keep their `created_at`."""
+    uid = admin.require_admin(claims, "access")
+    from .. import idp_group_sync
+    team = _team_for_write(team_id)
+    if team is None:
+        raise deps._error(404, "not_found", "No such team.")
+    _refuse_synced_team(team)
+    if body is None:
+        raise deps._error(400, "bad_request", "Send a list of groups.")
+    desired = _valid_idp_groups(body.groups)
+    with db.transaction() as cur:
+        cur.execute(
+            "SELECT provider, group_name FROM team_idp_groups "
+            " WHERE team_id = %s ORDER BY provider, group_name FOR UPDATE",
+            (team_id,))
+        before = [(r["provider"], r["group_name"]) for r in cur.fetchall()]
+        to_remove = [p for p in before if p not in desired]
+        to_add = [p for p in desired if p not in before]
+        for provider, group in to_remove:
+            cur.execute(
+                "DELETE FROM team_idp_groups "
+                " WHERE team_id = %s AND provider = %s AND group_name = %s",
+                (team_id, provider, group))
+        for provider, group in to_add:
+            cur.execute(
+                "INSERT INTO team_idp_groups (team_id, provider, group_name, created_by) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                (team_id, provider, group, uid))
+        if to_remove or to_add:
+            audit.log_in(cur, None, uid, claims.get("name"),
+                         "team_idp_groups_changed",
+                         {"team": team["name"], "team_id": team_id,
+                          "before": [{"provider": p, "group": g} for p, g in before],
+                          "after": [{"provider": p, "group": g}
+                                    for p, g in sorted(desired)]})
+        cur.execute(_IDP_GROUPS_SQL, (team_id,))
+        rows = cur.fetchall()
+    return {"enabled": idp_group_sync.enabled(),
+            "groups": [_idp_group_out(r) for r in rows]}
 
 
 class PersonTeamsIn(BaseModel):

@@ -1365,6 +1365,17 @@
   .qh-team-badge { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 6px; border-radius: var(--r-2xs); background: var(--sup-blue-light); color: #15688C; flex-shrink: 0; }
   .qh-team-empty, .qh-team-none { font-size: 12px; color: var(--fg-tertiary); font-style: italic; }
   .qh-memberpill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 3px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-full); font-size: 12px; color: var(--fg-secondary); }
+  /* Team <-> company-SSO groups (2026-11-20). */
+  .qh-memberpill-idp { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 5px; border-radius: var(--r-2xs); background: var(--brand-adaptive-light); color: var(--fg-accent); cursor: help; }
+  .qh-idpg { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--stroke-light); display: flex; flex-direction: column; gap: 8px; }
+  .qh-idpg-title { font-size: 12px; font-weight: 600; color: var(--fg-primary); }
+  .qh-idpg-off { font-size: 12px; color: var(--fg-tertiary); }
+  .qh-idpg-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .qh-idpg-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 10px; background: var(--bg-light); border: 1px solid var(--stroke-light); border-radius: var(--r-full); font-size: 12px; color: var(--fg-secondary); }
+  .qh-idpg-chip button { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: var(--r-full); background: none; color: var(--fg-tertiary); cursor: pointer; }
+  .qh-idpg-chip button:hover { color: var(--fg-primary); }
+  .qh-idpg-add { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .qh-idpg-err { font-size: 12px; color: var(--fg-danger); }
   .qh-mini-avatar { width: 22px; height: 22px; border-radius: 999px; background: var(--brand-green); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 9.5px; font-weight: 700; flex-shrink: 0; }
   .qh-mini-avatar.sm { width: 20px; height: 20px; font-size: 9px; }
   .qh-teamtag { display: inline-block; padding: 3px 9px; background: var(--brand-adaptive-light); color: var(--fg-accent); border-radius: var(--r-full); font-size: 12px; font-weight: 500; }

@@ -187,6 +187,11 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
 - **221_user_workspaces** — `user_workspaces`: one row per person and kind
   (`workspace` or `prefs`) with a jsonb document and a version. New
   `bot_config`: `workspace_sync_enabled` (on) and `workspace_max_kb` (512).
+- **222_idp_group_team_sync** — `team_idp_groups`: which SSO groups of
+  which OIDC provider map to a team. New columns `source` (`manual` or
+  `idp`, default `manual`) and `idp_group` on `team_member` and
+  `team_members`. New `bot_config`: `idp_group_sync_enabled` (off). See
+  AUTH.md §1.1, "Team sync from company-SSO groups".
 
 ---
 
@@ -506,8 +511,25 @@ Many-to-many: which Slack users belong to which teams.
 | `team_id` | FK to `teams(id)`, ON DELETE CASCADE. |
 | `slack_user_id` | A CHECK pattern enforces the format. |
 | `added_at` | Audit. |
+| `source` | `manual` (default) or `idp`. `idp` = the company-SSO group sync added the row at login. The sync removes only `idp` rows. Migration 222. The v2 table `team_member` has the same column. |
+| `idp_group` | The SSO group that made the sync add the row. NULL for `manual` rows. Migration 222. The v2 table `team_member` has the same column. |
 
 PK is `(team_id, slack_user_id)`. A user can be in multiple teams.
+
+### `team_idp_groups`
+
+Which SSO groups of which OIDC provider map to a team. The login sync
+(`idp_group_sync.py`) reads it while `idp_group_sync_enabled` is on. See
+AUTH.md §1.1, "Team sync from company-SSO groups".
+
+| Column | Notes |
+|--------|-------|
+| `team_id` | The team id in the live model: `team.id` while `access_model_v2` is on, `teams.id` while it is off. No foreign key, because the two tables use different id sequences. The sync joins the live team table, so a mapping for a deleted team does nothing. |
+| `provider` | The OIDC provider id, for example `corp`. CHECK `^[a-z0-9_]+$`. |
+| `group_name` | The group name as the provider sends it in the `groups` claim. 1 to 200 characters. The match is exact. |
+| `created_at`, `created_by` | Audit. `created_by` is the admin's principal id. |
+
+PK is `(team_id, provider, group_name)`. Index on `(provider, group_name)`.
 
 ### `team_target_grants`
 

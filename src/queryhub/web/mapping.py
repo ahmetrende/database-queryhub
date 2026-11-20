@@ -661,6 +661,8 @@ AUDIT_FAILED = frozenset({
 #: Connection and config work therefore lands in `scope`, which is where the
 #: screen already puts anything it does not recognise.
 _KIND_RULES = (
+    ("team_member_idp", "grant"),
+    ("team_idp_groups", "grant"),
     ("auto_approve", "auto"),
     ("pii", "grant"),
     ("grant", "grant"),
