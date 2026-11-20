@@ -10,7 +10,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { bareWindow, loadInto } from './_load.mjs';
-import { page, jsdomOpts } from './_mount.mjs';
+import { page, web, jsdomOpts } from './_mount.mjs';
 
 const W = loadInto(bareWindow(), 'qh-data.jsx', 'qh-editor.jsx');
 const at = (sql, caret) => W.qhStatementAt(sql, caret);
@@ -163,4 +163,72 @@ test('the shortcut list names both keys', () => {
   const src = W.EditorTabs.toString();
   assert.match(src, /Run selection \/ current statement/);
   assert.match(src, /Select current statement/);
+});
+
+// ---------- a blank line ends the statement (2026-11-20, the F8 setting) ----------
+
+const atB = (sql, caret) => W.qhStatementAtBlank(sql, caret);
+
+test('blank line: two blocks with no ; are two statements', () => {
+  const sql = 'select 1\nfrom a\n\nselect 2\nfrom b';
+  assert.deepEqual(atB(sql, 3), range(sql, 'select 1\nfrom a'));
+  assert.deepEqual(atB(sql, sql.indexOf('from b') + 2), range(sql, 'select 2\nfrom b'));
+  // The setting off: qhStatementAt reads it all as one statement.
+  assert.deepEqual(at(sql, 3), { start: 0, end: sql.length });
+});
+
+test('blank line: the caret on the blank line right under a block gives that block', () => {
+  const sql = 'select 1\n\n\nselect 2';
+  assert.deepEqual(atB(sql, sql.indexOf('\n') + 1), range(sql, 'select 1'), 'first blank line');
+  assert.equal(atB(sql, sql.indexOf('\n') + 2), null, 'second blank line');
+  assert.deepEqual(atB(sql, 8), range(sql, 'select 1'), 'the end of the block line');
+});
+
+test('blank line: the indent of the next block gives the next block', () => {
+  const sql = 'select 1\n\n  select 2';
+  assert.deepEqual(atB(sql, sql.indexOf('  select') + 1), range(sql, 'select 2'));
+});
+
+test('blank line: a ; still splits inside a block', () => {
+  const sql = 'select 1; select 2\n\nselect 3';
+  assert.deepEqual(atB(sql, sql.indexOf('select 2') + 1), range(sql, 'select 2'));
+  assert.deepEqual(atB(sql, 2), range(sql, 'select 1'));
+});
+
+test('blank line: a blank line inside a string, a comment, a $$ body or ( ) is data', () => {
+  const s = "select 'a\n\nb' as x\n\nselect 2";
+  assert.deepEqual(atB(s, 2), range(s, "select 'a\n\nb' as x"));
+  const c = 'select 1 /* a\n\nb */ + 1\n\nselect 2';
+  assert.deepEqual(atB(c, 2), range(c, 'select 1 /* a\n\nb */ + 1'));
+  const d = 'create function f() returns int as $$\nselect 1;\n\nselect 2;\n$$ language sql;\n\nselect 3';
+  assert.deepEqual(atB(d, 5), range(d, 'create function f() returns int as $$\nselect 1;\n\nselect 2;\n$$ language sql'));
+  const p = 'select *\nfrom t\nwhere a in (\n  1,\n\n  2)\n\nselect 2';
+  assert.deepEqual(atB(p, 2), range(p, 'select *\nfrom t\nwhere a in (\n  1,\n\n  2)'));
+});
+
+test('blank line: a comment line before the blank line stays with its block', () => {
+  const sql = 'select 1\n-- note\n\nselect 2';
+  assert.deepEqual(atB(sql, 2), range(sql, 'select 1\n-- note'));
+});
+
+test('blank line: blank lines at the top and the end are not cuts', () => {
+  assert.deepEqual(W.qhBlankLineCuts('\n\nselect 1\n\n'), []);
+  assert.deepEqual(W.qhBlankLineCuts('select 1\n \t\nselect 2'), [{ s: 8, e: 12 }]);
+  const sql = '\n\nselect 1\n\n';
+  assert.deepEqual(atB(sql, 4), range(sql, 'select 1'));
+  assert.equal(atB('', 0), null);
+});
+
+test('F8 and Shift+Alt+S pick the function from the setting, and the tab bar offers it', () => {
+  const src = web('qh-editor.jsx');
+  assert.equal((src.match(/\(blankStop \? qhStatementAtBlank : qhStatementAt\)\(ta\.value, ta\.selectionStart\)/g) || []).length, 2);
+  assert.match(src, /function SqlEditor\(\{ value, onChange, fontSize, wrap, blankStop,/);
+  assert.match(src, /A blank line ends the statement \(F8, ⇧ \+ ⌥ \/ Alt \+ S\)/);
+  const app = web('qh-app.jsx');
+  assert.match(app, /localStorage\.getItem\('qh\.f8blank\.v1'\) === '1'/);
+  assert.match(app, /blankStop=\{blankStop\} onToggleBlankStop=\{\(\) => setBlankStop\(v => !v\)\}/);
+  assert.match(app, /wrap=\{wrap\} blankStop=\{blankStop\} onRun=\{primary\}/);
+  // A preference: sign-out does not clear it.
+  const signOut = app.slice(app.indexOf('const signOut = () => {'), app.indexOf('qhUndoForget();'));
+  assert.ok(!signOut.includes('f8blank'));
 });

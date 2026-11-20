@@ -1903,7 +1903,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
 }
 
 // ---------- Bottom results panel ----------
-function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement, ranOn, pending, onWithdraw, outcome, endNote, onResubmit, slackEnabled, timeline, sourceSql, pkOf, problems, onProblem, lintOn }) {
+function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement, ranOn, pending, onWithdraw, outcome, endNote, onResubmit, slackEnabled, timeline, sourceSql, pkOf, problems, onProblem, lintOn, onFixAi }) {
   const [exp, setExp] = React.useState(false);
   // The Export menu is long. The panel sits at the bottom of the window, so the
   // menu measures the room below and above the button when it opens, and goes
@@ -2046,6 +2046,15 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
           )}
           {reqId && <span className="qh-res-req" title="Request id — reserved when this tab opened">#{reqId}</span>}
           {status && <StatusPill status={status} awaitingDba={awaitingDba} outcome={outcome} />}
+          {/* A failed run, with the AI assistant on: send the SQL and the
+              error to the assistant's Fix mode (qh-app.jsx fixWithAi). */}
+          {status === 'failed' && onFixAi && (
+            <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-res-fixai" onClick={onFixAi}
+              title="Send the SQL that ran and the error to the AI assistant">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/></svg>
+              Fix with AI
+            </button>
+          )}
           {runMs != null && <span className="qh-res-time">{runMs} ms</span>}
           {total != null && <span className="qh-res-rows">{total.toLocaleString()} rows</span>}
           {result && result.kind === 'table' && (
