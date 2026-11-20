@@ -57,6 +57,9 @@ import './qh-admin-config.jsx';
 // The AI assistant (M13): the editor panel and the admin form. After
 // qh-admin-access.jsx (InlineConfirm), before qh-admin.jsx and qh-app.jsx.
 import './qh-ai.jsx';
+// Sessions and locks (2026-11-20). Before qh-admin.jsx, which routes to
+// AdminSessions. It needs the app/src symlink beside it, like every file here.
+import './qh-admin-sessions.jsx';
 import './qh-admin.jsx';
 import './qh-whatsnew.jsx';
 import './qh-app.jsx';

@@ -20,9 +20,10 @@ const AdminIcons = {
   effective: () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/><path d="M8.5 11l1.8 1.8L14 9"/></svg>,
   ai: () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>,
   config: () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h7M15 18h5"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="13" cy="18" r="2"/></svg>,
+  sessions: () => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 8-6-16-3 8H2"/></svg>,
 };
 
-const QH_ADMIN_SECTIONS = ['approvals', 'kill', 'effective', 'grants', 'auto', 'scopes', 'teams', 'roles', 'mask', 'conns', 'audit', 'metrics', 'feedback', 'config', 'ai'];
+const QH_ADMIN_SECTIONS = ['approvals', 'kill', 'effective', 'grants', 'auto', 'scopes', 'teams', 'roles', 'mask', 'conns', 'audit', 'metrics', 'feedback', 'config', 'ai', 'sessions'];
 // Deep-link support: the admin section lives in the URL as #admin/<section>.
 // Which door a request came through. Two values existed when this was written
 // and the chip coerced everything to them — `web`, or else Slack — so a third
@@ -42,7 +43,7 @@ function qhOriginWhere(o) {
 // no end date on every connection. 'super' is a super-admin only. A section not
 // listed opens for every admin. The server enforces the same levels. The nav
 // only stops a click that the server would refuse.
-const QH_ADMIN_NEED = { effective: 'dba', conns: 'dba', grants: 'super', auto: 'super', scopes: 'super', teams: 'super', mask: 'super', config: 'super', ai: 'super' };
+const QH_ADMIN_NEED = { effective: 'dba', conns: 'dba', grants: 'super', auto: 'super', scopes: 'super', teams: 'super', mask: 'super', config: 'super', ai: 'super', sessions: 'super' };
 // 'super' | 'dba' | 'admin'. `isDba` is false when /me does not send it, so an
 // older server gives a DBA the same nav as before, never a wider one.
 function qhAdminLevel(user) {
@@ -72,7 +73,9 @@ function navFromAdminHash() {
 // Opens in the caller's REAL role (CODE 2026-09-23 (j) §1): the "Viewing as"
 // DBA / Super-admin switch was never used, and the server enforces the scope
 // whatever it said. `user.role` from GET /me is 'super' or 'dba' here.
-function AdminPanel({ st, user, modeEntry }) {
+// `onOpenSql({ conn, db, sql })` opens a new editor tab. Only Sessions uses it.
+// Without it, Sessions copies the statement instead.
+function AdminPanel({ st, user, modeEntry, onOpenSql }) {
   const [nav, setNav] = useAdm(() => navFromAdminHash() || 'approvals');
   // A hand-off waiting on a DBA is the most stuck work in the system — approved,
   // and nothing will move until someone runs it — so it counts on the badge.
@@ -108,6 +111,8 @@ function AdminPanel({ st, user, modeEntry }) {
       ['audit', 'Audit log', AdminIcons.audit, null],
       ['metrics', 'Metrics', AdminIcons.metrics, null],
       ['feedback', 'Feedback', AdminIcons.feedback, null],
+      // Super-admin only: the screen shows the query text of every session.
+      ['sessions', 'Sessions', AdminIcons.sessions, null],
     ]},
     { label: 'System', items: [
       ['config', 'System configuration', AdminIcons.config, null],
@@ -215,6 +220,7 @@ function AdminPanel({ st, user, modeEntry }) {
         {curNav === 'feedback' && <FeedbackView st={st} />}
         {curNav === 'config' && <SystemConfigView st={st} user={user} />}
         {curNav === 'ai' && <AiAdminView st={st} />}
+        {curNav === 'sessions' && <AdminSessions st={st} onOpenSql={onOpenSql} />}
       </div>
     </div>
   );

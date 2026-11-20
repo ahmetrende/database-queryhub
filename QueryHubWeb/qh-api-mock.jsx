@@ -3985,6 +3985,39 @@ const qhApi = {
                  { name: 'data', requests: w7 ? 50 : 210, p50Sec: 70.0, p90Sec: 900.0 }],
       } };
   }, 380),
+  // Sessions and locks (2026-11-20). Four sessions: 4211 waits on 4187, and the
+  // query of 4350 is hidden from the monitoring role. Three locks, one not granted.
+  // An engine other than Postgres or SQL Server gets the server's 400.
+  adminSessions: (conn, db) => {
+    const c = connRegistry().find(x => x.id === conn);
+    if (!c) return mockFail('Unknown connection.', 404, 'not_found');
+    if (c.engineId !== 'postgres' && c.engineId !== 'mssql') return mockFail('This engine has no session view.', 400, 'bad_request');
+    const pg = c.engineId === 'postgres';
+    const d = db || c.defaultDatabase;
+    return mockDelay(() => ({
+      engine: c.engineId, database: d, fetchedAt: isoNow(),
+      sessions: [
+        { id: pg ? 4211 : 61, user: 'app_rw', app: 'orders-api', client: '10.0.4.21', state: 'active',
+          wait: pg ? 'Lock: transactionid' : 'LCK_M_U', started: isoAgo(3600000), queryStarted: isoAgo(125000),
+          blockedBy: [pg ? 4187 : 58], blocking: [], database: d, query: "UPDATE orders SET status = 'paid' WHERE id = 81723;", queryHidden: false },
+        { id: pg ? 4187 : 58, user: 'etl', app: 'nightly-load', client: '10.0.7.3', state: pg ? 'idle in transaction' : 'sleeping',
+          wait: null, started: isoAgo(7200000), queryStarted: isoAgo(640000),
+          blockedBy: [], blocking: [pg ? 4211 : 61], database: d, query: "UPDATE orders SET region = 'eu' WHERE created_at < now() - interval '1 day';", queryHidden: false },
+        { id: pg ? 4302 : 72, user: 'reporting', app: 'metabase', client: '10.0.9.14', state: 'active',
+          wait: pg ? 'IO: DataFileRead' : 'PAGEIOLATCH_SH', started: isoAgo(900000), queryStarted: isoAgo(8000),
+          blockedBy: [], blocking: [], database: d, query: 'SELECT region, count(*) FROM orders GROUP BY region;', queryHidden: false },
+        { id: pg ? 4350 : 80, user: 'rds_monitor', app: '', client: null, state: 'idle',
+          wait: null, started: isoAgo(86400000), queryStarted: null,
+          blockedBy: [], blocking: [], database: d, query: null, queryHidden: true },
+      ],
+      locks: [
+        { id: pg ? 4187 : 58, type: 'relation', mode: pg ? 'RowExclusiveLock' : 'IX', granted: true, relation: 'public.orders' },
+        { id: pg ? 4211 : 61, type: pg ? 'transactionid' : 'KEY', mode: pg ? 'ShareLock' : 'U', granted: false, relation: pg ? null : 'dbo.orders' },
+        { id: pg ? 4187 : 58, type: pg ? 'transactionid' : 'KEY', mode: pg ? 'ExclusiveLock' : 'X', granted: true, relation: pg ? null : 'dbo.orders' },
+      ],
+      notes: ['The query text of another role is hidden. The monitoring role cannot read it.'],
+    }), 260);
+  },
   adminFeedback: () => mockDelay(() => ({ feedback: ADMIN.feedback.slice() }), 180),
   // The AI assistant. Invented providers, and a canned answer with one SQL
   // block so the panel shows Insert.

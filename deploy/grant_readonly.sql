@@ -80,6 +80,9 @@ SELECT format('GRANT CONNECT ON DATABASE %I TO queryhub_ro', current_database())
 --     running this must be a member of pg_read_all_stats WITH ADMIN OPTION —
 --     rds_superuser is. The text in pg_stat_statements is normalized (literals
 --     become $1/$2), so this exposes query shapes, not data values.
+--     The admin session viewer also needs it: without it pg_stat_activity
+--     shows '<insufficient privilege>' for the query text of other roles.
+--     That text is NOT normalized, so the viewer masks it with the PII scan.
 SELECT 'GRANT pg_read_all_stats TO queryhub_ro'
 WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pg_read_all_stats')\gexec
 
