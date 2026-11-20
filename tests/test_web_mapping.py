@@ -216,10 +216,39 @@ def test_run_ms():
 def test_parse_index_unique_and_cols():
     i = mapping.parse_index({"name": "access_codes_pkey",
         "def": "CREATE UNIQUE INDEX access_codes_pkey ON s.access_codes USING btree (id)"})
-    assert i == {"name": "access_codes_pkey", "cols": ["id"], "unique": True, "pk": True}
+    assert i == {"name": "access_codes_pkey", "cols": ["id"], "unique": True, "pk": True, "include": []}
     i2 = mapping.parse_index({"name": "idx_ac_session",
         "def": "CREATE INDEX idx_ac_session ON s.access_codes USING btree (session_id, code)"})
     assert i2["cols"] == ["session_id", "code"] and i2["unique"] is False and i2["pk"] is False
+
+
+def _ix(name, d):
+    i = mapping.parse_index({"name": name, "def": d})
+    return (i["cols"], i["include"], i["unique"], i["pk"])
+
+
+def test_parse_index_postgres_include_where_and_expressions():
+    assert _ix("ix_cover", "CREATE UNIQUE INDEX ix_cover ON s.orders USING btree (customer_id) INCLUDE (total, status)") \
+        == (["customer_id"], ["total", "status"], True, False)
+    assert _ix("ix_open", "CREATE INDEX ix_open ON s.orders USING btree (created_at DESC) WHERE (status = 'open'::text)") \
+        == (["created_at DESC"], [], False, False), "the WHERE part is no column"
+    assert _ix("ix_both", "CREATE INDEX ix_both ON s.orders USING btree (a) INCLUDE (b) WHERE (c > 0)") \
+        == (["a"], ["b"], False, False)
+    assert _ix("ix_expr", "CREATE INDEX ix_expr ON s.users USING btree (lower((email)::text), coalesce(a, b))") \
+        == (["lower((email)::text)", "coalesce(a, b)"], [], False, False), "an expression stays one column"
+    assert _ix("My Ix", 'CREATE INDEX "My Ix" ON public."My T" USING gin ("Col A", "x"",y")') \
+        == (["Col A", 'x",y'], [], False, False)
+    assert _ix("t_pkey", "CREATE UNIQUE INDEX t_pkey ON ONLY s.t USING btree (id)") == (["id"], [], True, True)
+
+
+def test_parse_index_sql_server_forms():
+    assert _ix("PK_orders", "(id) UNIQUE PRIMARY KEY") == (["id"], [], True, True)
+    assert _ix("IX_cust", "(customer_id, created_at)") == (["customer_id", "created_at"], [], False, False)
+    assert _ix("IX_cover", "(customer_id, created_at) INCLUDE (total, status) UNIQUE") \
+        == (["customer_id", "created_at"], ["total", "status"], True, False)
+    assert _ix("IX_inc", "(a) INCLUDE (it's)") == (["a"], ["it's"], False, False), "no quoting in this form"
+    assert _ix("IX_bad", "(a) INCLUDE (b") == ([], [], False, False)
+    assert _ix("IX_none", "") == ([], [], False, False)
 
 
 def test_fk_map():

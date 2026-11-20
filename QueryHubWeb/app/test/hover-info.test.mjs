@@ -90,7 +90,7 @@ test('a table in FROM shows its rows, primary key, indexes and foreign keys', ()
   assert.equal(info.columns, 3);
   assert.deepEqual(info.pk, ['id']);
   assert.deepEqual(info.indexes.find((x) => x.name === 'orders_user_idx'),
-    { name: 'orders_user_idx', cols: ['user_id'], unique: false });
+    { name: 'orders_user_idx', cols: ['user_id'], unique: false, include: [] });
   assert.deepEqual(info.fks, [{ col: 'user_id', ref: 'users.id' }]);
   const lines = H.qhHoverLines(info);
   assert.equal(lines[0], 'public.orders');

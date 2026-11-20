@@ -1127,8 +1127,14 @@ inside `would_disable`. Rows are written only when a run exceeds
 
 Hourly snapshot of every reachable target schema. It serves `/sql tables`,
 `/sql schema`, `/sql findcol` and the web schema browser. It is a cache, not a
-source of truth. The sync rewrites it wholesale, so it can lag a DDL change by
-up to an hour.
+source of truth. The sync rewrites it wholesale.
+
+A DDL request that completes also refreshes the snapshot of its own target
+and database (`schema_catalog.refresh_after_ddl`). The refresh runs in a
+background thread with the RO credential, after the executor marks the request
+completed, and it never changes the outcome of the run. The bot_config key
+`catalog_refresh_after_ddl` (default on) turns it off. With it off, or for a
+DDL that QueryHub did not run, the snapshot can lag by up to an hour.
 
 ### `user_row_limit_overrides`
 

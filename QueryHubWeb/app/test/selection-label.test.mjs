@@ -51,6 +51,8 @@ function mountBar(extra) {
   const ui = page(FILES);
   const w = ui.win;
   w.useRef = ui.React.useRef; w.useState = ui.React.useState; w.useEffect = ui.React.useEffect;
+  // The bar measures its fit steps after each render (qhFitActionBar).
+  sliceFunction('qh-app.jsx', 'qhActionBarOverflows', w); sliceFunction('qh-app.jsx', 'qhFitActionBar', w);
   w.QH_KBD = { run: 'Ctrl Enter', newq: '', wrap: '', stmt: '' };
   // A super-admin's bar also draws the mask switch, a separate component.
   w.MaskToggle = w.MaskToggle || (() => null);

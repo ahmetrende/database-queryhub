@@ -209,6 +209,70 @@ def test_athena_builds_a_table_and_decodes_a_view(monkeypatch):
     assert athena_exec.object_ddl({}, "shop", "bad") is None
 
 
+def test_postgres_partitioned_table_lists_partitions_indexes_comments_and_grants():
+    cur = _Cur([
+        [(1, "p", "s", "events", False)],
+        [("id", "integer", True, None, "", "", None),
+         ("at", "date", True, None, "", "", "When it's due")],
+        [("events_pkey", "PRIMARY KEY (id, at)", True)],
+        [("RANGE (at)",)],
+        [("s", "events_2025", "s", "events", "FOR VALUES FROM ('2025-01-01') TO ('2026-01-01')", "LIST (region)", 3),
+         ("s", "events_2025_eu", "s", "events_2025", "FOR VALUES IN ('eu')", None, 3),
+         ("s", "events_2026", "s", "events", "FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')", None, 3)],
+        [("CREATE INDEX events_at ON ONLY s.events USING btree (at)",)],
+        [("Event log",)],
+        [(True, None, "SELECT", False), (False, "app_rw", "INSERT", False),
+         (False, "app_rw", "SELECT", False), (False, "Report Team", "SELECT", True)],
+    ])
+    kind, script, built = pg_ddl.object_ddl(cur, "s", "events")
+    assert (kind, built) == ("table", True)
+    assert script == (
+        "CREATE TABLE s.events (\n"
+        "    id integer NOT NULL,\n"
+        "    at date NOT NULL,\n"
+        "    CONSTRAINT events_pkey PRIMARY KEY (id, at)\n"
+        ") PARTITION BY RANGE (at);\n"
+        "CREATE TABLE s.events_2025 PARTITION OF s.events"
+        " FOR VALUES FROM ('2025-01-01') TO ('2026-01-01') PARTITION BY LIST (region);\n"
+        "CREATE TABLE s.events_2025_eu PARTITION OF s.events_2025 FOR VALUES IN ('eu');\n"
+        "CREATE TABLE s.events_2026 PARTITION OF s.events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');\n"
+        "CREATE INDEX events_at ON s.events USING btree (at);\n"
+        "COMMENT ON TABLE s.events IS 'Event log';\n"
+        "COMMENT ON COLUMN s.events.at IS 'When it''s due';\n"
+        "GRANT SELECT ON TABLE s.events TO PUBLIC;\n"
+        'GRANT SELECT ON TABLE s.events TO "Report Team" WITH GRANT OPTION;\n'
+        "GRANT SELECT, INSERT ON TABLE s.events TO app_rw;")
+    assert cur.answers == [], "every query ran once"
+
+
+def test_postgres_partition_list_stops_at_the_cap():
+    rows = [("s", f"p{i:03d}", "s", "big", f"FOR VALUES IN ({i})", None, 250) for i in range(pg_ddl.PARTITION_CAP)]
+    cur = _Cur([[(1, "p", "s", "big", False)], [("id", "integer", True, None, "", "", None)], [],
+                [("LIST (id)",)], rows, [], [(None,)], []])
+    _k, script, _b = pg_ddl.object_ddl(cur, "s", "big")
+    assert script.count("PARTITION OF s.big") == 100
+    assert script.endswith("CREATE TABLE s.p099 PARTITION OF s.big FOR VALUES IN (99);\n"
+                           "-- 150 more partitions are not shown.")
+
+
+def test_postgres_a_partition_shows_its_parent_and_bound():
+    cur = _Cur([
+        [(5, "r", "s", "events_2026", True)],
+        [("id", "integer", True, None, "", "", None)],
+        [("events_2026_pkey", "PRIMARY KEY (id, at)", False), ("ck_2026", "CHECK (id > 0)", True)],
+        [("s", "events", "FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')")],
+        [],
+        [(None,)],
+        [],
+    ])
+    _k, script, _b = pg_ddl.object_ddl(cur, "s", "events_2026")
+    assert script == ("CREATE TABLE s.events_2026 PARTITION OF s.events (\n"
+                      "    CONSTRAINT ck_2026 CHECK (id > 0)\n"
+                      ") FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');"), \
+        "the inherited key and the columns come from the parent"
+    assert pg_ddl.quote_literal("it's") == "'it''s'"
+
+
 def test_postgres_names_fold_like_the_server():
     assert pg_ddl.name_parts("Film") == ["film"]
     assert pg_ddl.name_parts('public."My T"') == ["public", "My T"]

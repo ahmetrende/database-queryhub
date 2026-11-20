@@ -587,7 +587,7 @@
   /* min-content, not 0: the parts that must stay readable are flex-shrink: 0, so
      a 0 floor did not ellipsise the database name as the rule below says — it
      clipped the NAME, leaving only the env tag. What gives way instead is the
-     three secondary buttons' labels (`.is-tight`, measured): an icon with a
+     three secondary buttons' labels (fit step 1, measured): an icon with a
      tooltip still says which action it is; half a server name does not. */
   .qh-target { display: flex; align-items: center; gap: 7px; font-size: 13px; white-space: nowrap; flex-shrink: 1; min-width: min-content; overflow: hidden; }
   .qh-target-conn { font-weight: 600; color: var(--fg-primary); flex-shrink: 0; }
@@ -603,11 +603,21 @@
   .qh-target-db { font-weight: 500; color: var(--fg-secondary); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .qh-target-tier { display: inline-flex; align-items: center; flex-shrink: 0; }
   .qh-ab-spacer { flex: 1 1 8px; min-width: 8px; }
-  /* Under 1120px of bar the secondary actions are icons. They keep their titles,
-     and the Run button never loses its word — it is the one whose label changes
-     with state (“Submit for DBA approval”, “Awaiting DBA approval…”). */
-  .qh-actionbar.is-tight .qh-ab-blabel { display: none; }
-  .qh-actionbar.is-tight .qh-ab-actions .qh-btn { padding: 0 9px; }
+  /* 2026-11-20 · Fit steps, measured in ActionBar (qhFitActionBar), smallest
+     change first. `data-fit` lists the steps in force, so `~="2"` also holds at
+     step 3. Every hidden word stays in a title. The Run button never loses its
+     word — it is the one whose label changes with state (“Submit for DBA
+     approval”, “Awaiting DBA approval…”).
+       1  the secondary buttons are icons, Runs on drops its key word
+       2  short chips: the tier code, the masked count, no line count
+       3  the bar wraps onto a second row, so nothing paints over the AI panel */
+  .qh-actionbar[data-fit~="1"] .qh-ab-blabel { display: none; }
+  .qh-actionbar[data-fit~="1"] .qh-ab-actions .qh-btn { padding: 0 9px; }
+  .qh-actionbar[data-fit~="1"] .qh-runon-k, .qh-actionbar[data-fit~="1"] .qh-runon-warn { display: none; }
+  .qh-ab-short { display: none; }
+  .qh-actionbar[data-fit~="2"] .qh-ab-short { display: inline; }
+  .qh-actionbar[data-fit~="2"] .qh-ab-long, .qh-actionbar[data-fit~="2"] .qh-sec-label, .qh-actionbar[data-fit~="2"] .qh-sel-count { display: none; }
+  .qh-actionbar[data-fit~="3"] { flex-wrap: wrap; height: auto; min-height: 52px; padding-top: 8px; padding-bottom: 8px; row-gap: 8px; }
 
   .qh-sec { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .qh-sec-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 8px; border-radius: var(--r-full); white-space: nowrap; flex-shrink: 0;
@@ -646,7 +656,8 @@
   .qh-runon-toggle:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
   .qh-runon-k { font-weight: 500; color: var(--fg-tertiary); }
   .qh-runon-v { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
-  .qh-actionbar.is-tight .qh-runon-v { max-width: 120px; }
+  .qh-actionbar[data-fit~="1"] .qh-runon-v { max-width: 120px; }
+  .qh-actionbar[data-fit~="2"] .qh-runon-v { max-width: 80px; }
   .qh-runon-toggle.is-forced { color: var(--fg-accent); background: var(--brand-adaptive-light); box-shadow: inset 0 0 0 1px var(--brand-adaptive-strong); }
   .qh-runon-toggle.is-forced .qh-runon-k { color: var(--fg-accent); font-weight: 500; }
   .qh-runon-toggle.is-conflict, .qh-runon-toggle.is-conflict .qh-runon-k { color: var(--fg-warning); background: var(--warning-adaptive-light); box-shadow: inset 0 0 0 1px var(--warning-solid-light); }

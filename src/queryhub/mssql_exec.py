@@ -523,9 +523,13 @@ SELECT s.name         AS schema_name,
  ORDER BY s.name, o.name, c.column_id
 """
 
-# Per-table index list -> [{name, def}] (def = "(cols) UNIQUE PRIMARY KEY"),
-# matching the Postgres reader's jsonb shape. FOR XML PATH concatenates the key
-# columns; TYPE + .value() keeps special characters intact.
+# Per-table index list -> [{name, def}], matching the Postgres reader's jsonb
+# shape. def = "(keys)[ INCLUDE (cols)][ UNIQUE][ PRIMARY KEY]", for example
+# "(customer_id, created_at) INCLUDE (total, status) UNIQUE".
+# web/mapping.parse_index reads it. A def without INCLUDE (written before
+# 2026-11-20) has the same form. FOR XML PATH concatenates the columns;
+# TYPE + .value() keeps special characters intact. With no included column
+# the INCLUDE subquery is NULL, so ISNULL gives ''.
 _CATALOG_INDEXES_SQL = """
 SELECT s.name AS schema_name, o.name AS table_name, i.name AS name,
        '(' + STUFF((SELECT ', ' + c2.name
@@ -537,7 +541,17 @@ SELECT s.name AS schema_name, o.name AS table_name, i.name AS name,
                        AND ic2.is_included_column = 0
                      ORDER BY ic2.key_ordinal
                        FOR XML PATH(''), TYPE).value('.', 'nvarchar(max)'), 1, 2, '')
-       + ')' + CASE WHEN i.is_unique = 1 THEN ' UNIQUE' ELSE '' END
+       + ')'
+       + ISNULL(' INCLUDE (' + STUFF((SELECT ', ' + c3.name
+                      FROM sys.index_columns ic3
+                      JOIN sys.columns c3 ON c3.object_id = ic3.object_id
+                                         AND c3.column_id = ic3.column_id
+                     WHERE ic3.object_id = i.object_id
+                       AND ic3.index_id = i.index_id
+                       AND ic3.is_included_column = 1
+                     ORDER BY ic3.index_column_id
+                       FOR XML PATH(''), TYPE).value('.', 'nvarchar(max)'), 1, 2, '') + ')', '')
+       + CASE WHEN i.is_unique = 1 THEN ' UNIQUE' ELSE '' END
              + CASE WHEN i.is_primary_key = 1 THEN ' PRIMARY KEY' ELSE '' END AS def
   FROM sys.indexes i
   JOIN sys.objects o ON o.object_id = i.object_id

@@ -461,7 +461,7 @@ function SchemaTree({ onScriptCreate, bindOnClick, conns: allConns, schemaCache,
                   <TreeRow depth={base + 3} expandable open={isOpen(tid + '/i')} onToggle={() => tog(tid + '/i')} muted icon={TICN.folder(isOpen(tid + '/i'))} label="Indexes" right={<span className="qh-tr-count">{loaded ? idxs.length : '…'}</span>} />
                   {isOpen(tid + '/i') && idxs.map(ix => (
                     <TreeRow key={ix.name} depth={base + 4} muted drag={qhQuoteIdent(ix.name)} icon={TICN.index(ix.unique)} label={ix.name}
-                      right={<span className="qh-col-type">{(ix.cols || []).join(', ')}{ix.unique ? ' ·uniq' : ''}</span>} />
+                      right={<span className="qh-col-type">{(ix.cols || []).join(', ')}{ix.include && ix.include.length ? ' include (' + ix.include.join(', ') + ')' : ''}{ix.unique ? ' ·uniq' : ''}</span>} />
                   ))}
                 </>
               )}

@@ -3356,7 +3356,8 @@ function qhHoverTableCard(tok, hit) {
     columns: hit.meta.length,
     pk: hit.meta.filter(c => c && c.pk).map(c => String(c.name)),
     indexes: idx.filter(Boolean).map(ix => ({ name: String(ix.name || ''),
-      cols: Array.isArray(ix.cols) ? ix.cols.map(String) : [], unique: !!ix.unique })),
+      cols: Array.isArray(ix.cols) ? ix.cols.map(String) : [], unique: !!ix.unique,
+      include: Array.isArray(ix.include) ? ix.include.map(String) : [] })),
     fks: hit.meta.filter(c => c && c.fk).map(c => ({ col: String(c.name), ref: String(c.fk) })),
   };
 }
@@ -3502,7 +3503,10 @@ function qhHoverLines(info) {
     if (info.approxRows != null) out.push('~' + num(info.approxRows) + ' rows');
     out.push(info.columns + (info.columns === 1 ? ' column' : ' columns'));
     if (info.pk.length) out.push('PK: ' + info.pk.join(', '));
-    info.indexes.slice(0, 4).forEach(ix => out.push(ix.name + ' (' + ix.cols.join(', ') + ')' + (ix.unique ? ' unique' : '')));
+    // The INCLUDE columns (P1.5) follow the key columns: "ix (a) include (b)".
+    info.indexes.slice(0, 4).forEach(ix => out.push(ix.name + ' (' + ix.cols.join(', ') + ')'
+      + (ix.include && ix.include.length ? ' include (' + ix.include.join(', ') + ')' : '')
+      + (ix.unique ? ' unique' : '')));
     info.fks.slice(0, 4).forEach(f => out.push('fk ' + f.col + ' → ' + f.ref));
     return out;
   }
