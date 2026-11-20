@@ -94,6 +94,54 @@ two reasons:
 - `users.info` stays the "still an employee?" oracle at every refresh
   (§4).
 
+#### Team sync from company-SSO groups
+
+QueryHub can set team membership from the groups that the company SSO
+sends at login. The feature is **off by default**. Turn it on with the
+`bot_config` key `idp_group_sync_enabled = on`.
+
+1. An admin maps a team to one or more SSO groups. Use
+   `PUT /api/admin/teams/{team_id}/idp-groups` with a body like
+   `{"groups": [{"provider": "corp", "group": "dba-team"}]}`. The mapping
+   is in the `team_idp_groups` table.
+2. A person signs in through the OIDC provider `corp`.
+3. QueryHub reads the `groups` claim from the verified `id_token`.
+4. QueryHub adds the person to each mapped team whose group is in the
+   claim. The new row has `source = 'idp'`.
+5. QueryHub removes each `source = 'idp'` row whose group is no longer in
+   the claim, or whose mapping an admin deleted.
+
+Rules:
+
+- A `source = 'manual'` membership is never added, changed or removed by
+  the sync. If a manual row exists for a mapped team, the sync does not
+  add a second row.
+- A group that no team maps is ignored.
+- The group name must match exactly, with the same case.
+- A Slack or local login does not sync.
+- If the `groups` claim is absent, the sync does nothing. An empty list is
+  a real answer: the sync removes all `idp` rows of the person.
+- A row that a mapping of another provider explains stays until a login
+  through that provider.
+- A sync error is logged. The login continues.
+- The sync runs only after every login gate passed.
+
+The `groups` claim must be in the `id_token`. Some providers send it only
+for a requested scope. Then add that scope to `OIDC_<ID>_SCOPES`, for
+example `OIDC_CORP_SCOPES=openid email profile groups`. Look at the
+provider's documentation for the scope name.
+
+All changes of one login commit in one transaction with their audit rows:
+
+| Action | When | `details` |
+| --- | --- | --- |
+| `team_member_idp_added` | The sync added a person to a team. | `team_id`, `provider`, `group`, `principal` |
+| `team_member_idp_removed` | The sync removed an `idp` membership. | `team_id`, `provider`, `group`, `principal` |
+| `team_idp_groups_changed` | An admin changed the groups of a team. | `team`, `team_id`, `before`, `after` |
+
+The membership change sends the same direct message as a manual change,
+where the auth-event triggers cover the table.
+
 ---
 
 ### 1.2 Identity assertions from a trusted portal (service to service)

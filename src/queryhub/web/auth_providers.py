@@ -71,6 +71,9 @@ class Identity:
     name: str | None
     provider: str
     avatar: str | None = None
+    # The `groups` claim of an external OIDC provider (idp_group_sync.py).
+    # None = the provider sent no such claim. Slack and local never set it.
+    groups: list[str] | None = None
 
 
 class AuthError(Exception):
@@ -541,6 +544,7 @@ class OIDCProvider:
             # to the company and simply have no QueryHub standing.
             raise AuthError("not_onboarded",
                             "no QueryHub account is registered to that address")
+        from .. import idp_group_sync
         return Identity(
             principal_id=row["slack_user_id"],
             email=email,
@@ -548,6 +552,7 @@ class OIDCProvider:
                   or row.get("name")),
             provider=self.name,
             avatar=claims.get("picture"),
+            groups=idp_group_sync.groups_from_claims(claims),
         )
 
 

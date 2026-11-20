@@ -2198,6 +2198,8 @@ function connTagsOf(id) {
 // ---------- The mock client ----------
 // The AI assistant of the prototype: on, with one invented provider that has a
 // key. Nothing here is a real key.
+// Team id -> [{ provider, group, createdAt, createdBy }] (adminTeamIdpGroups).
+const MOCK_TEAM_IDP_GROUPS = {};
 const MOCK_AI = {
   settings: { enabled: true, defaultProvider: 1, defaultModel: '', userModelChoice: false, effort: '',
     instructions: '', maxCallsPerHour: 30, timeoutSec: 180, schemaMaxTables: 200 },
@@ -3835,6 +3837,22 @@ const qhApi = {
     ADMIN.teams = ADMIN.teams.filter(x => x.id !== id);
     if (t) { ADMIN.grants = ADMIN.grants.filter(g => !(g.subjectType === 'team' && g.subject === t.name)); mockAudit('Deleted team', t.name, 'reject'); }
     return null;
+  }, 240),
+  // Company-SSO groups per team, in memory. The sync is off in the mock, as it
+  // is by default on the server.
+  adminTeamIdpGroups: (teamId) => mockDelay(() => ({ enabled: false, groups: (MOCK_TEAM_IDP_GROUPS[teamId] || []).slice() }), 160),
+  adminSetTeamIdpGroups: (teamId, groups) => mockDelay(() => {
+    const out = [];
+    for (const g of groups || []) {
+      const provider = String((g && g.provider) || '').trim(), group = String((g && g.group) || '');
+      if (!/^[a-z0-9_]+$/.test(provider) || provider === 'slack' || provider === 'local') return mockFail("'" + provider + "' is not a configured SSO provider.", 400, 'bad_request');
+      if (!group.trim() || group.length > 200) return mockFail('Enter a group name of 1 to 200 characters.', 400, 'bad_request');
+      if (!out.some(x => x.provider === provider && x.group === group)) out.push({ provider, group, createdAt: new Date().toISOString(), createdBy: (mockUser() || {}).handle || null });
+    }
+    if (out.length > 50) return mockFail('A team can have at most 50 SSO groups.', 400, 'bad_request');
+    MOCK_TEAM_IDP_GROUPS[teamId] = out;
+    mockAudit('Updated team SSO groups', String(teamId) + ' · ' + out.length + ' groups', 'scope');
+    return { enabled: false, groups: out.slice() };
   }, 240),
   adminSetPersonTeams: (handle, teamIds) => mockDelay(() => {
     ADMIN.teams = ADMIN.teams.map(t => {

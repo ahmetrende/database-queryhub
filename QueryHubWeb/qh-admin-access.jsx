@@ -2293,6 +2293,127 @@ function TeamForm({ people, init, onSave, onCancel }) {
   );
 }
 
+// ---------- Team <-> company-SSO groups (2026-11-20) ----------
+// A team can list groups of the company SSO. When bot_config
+// idp_group_sync_enabled is on, a sign-in adds the person to every team whose
+// group they are in, and removes the members that the sync added once they
+// leave the group. Manual members never change. The switch is a server
+// setting: this screen shows its state and never offers to change it.
+
+// The sync detail of one member, or null for a manual member. `members` stays a
+// list of handles. The detail comes from `memberRows` [{ handle, source,
+// idpGroup }] or from a member sent as an object. No `source` means manual, so
+// an older server shows no chip.
+function qhTeamMemberIdp(team, handle) {
+  if (!team || !handle) return null;
+  const rows = [].concat(Array.isArray(team.memberRows) ? team.memberRows : [],
+    (team.members || []).filter(m => m && typeof m === 'object'));
+  const r = rows.find(m => m && (m.handle === handle || m.slackId === handle || m.id === handle));
+  return r && r.source === 'idp' ? { group: r.idpGroup ? String(r.idpGroup) : '' } : null;
+}
+
+function qhIdpChipTitle(group) {
+  return 'Added by the company SSO group ' + (group || '(unknown)') + '. The next sign-in removes it if the person leaves the group.';
+}
+
+// The SSO provider ids that a team group can name: every login provider except
+// Slack and local accounts. GET /auth/providers sends { providers: [{ id, kind }] }.
+function qhIdpProviderIds(body) {
+  return ((body && body.providers) || [])
+    .filter(p => p && p.id && p.id !== 'slack' && p.id !== 'local' && p.kind !== 'password')
+    .map(p => String(p.id));
+}
+
+// The list after one add, or null when the pair is empty, a duplicate, or the
+// list is full (the server takes at most 50).
+function qhIdpGroupAdd(groups, provider, group) {
+  const p = String(provider || '').trim(), g = String(group || '').trim();
+  if (!p || !g || g.length > 200) return null;
+  const list = groups || [];
+  if (list.length >= 50 || list.some(x => x.provider === p && x.group === g)) return null;
+  return [...list, { provider: p, group: g }];
+}
+
+function TeamIdpGroups({ teamId }) {
+  const [state, setState] = useAcc('loading');   // loading | ok | error
+  const [enabled, setEnabled] = useAcc(false);
+  const [groups, setGroups] = useAcc([]);
+  const [providers, setProviders] = useAcc([]);
+  const [prov, setProv] = useAcc('');
+  const [grp, setGrp] = useAcc('');
+  const [dirty, setDirty] = useAcc(false);
+  const [busy, setBusy] = useAcc(false);
+  const [err, setErr] = useAcc('');
+  const [saved, setSaved] = useAcc(false);
+
+  const take = (b) => {
+    setEnabled(!!(b && b.enabled));
+    setGroups(((b && b.groups) || []).map(g => ({ provider: g.provider, group: g.group })));
+  };
+  React.useEffect(() => {
+    let live = true;
+    const api = window.qhApi || {};
+    Promise.resolve().then(() => api.adminTeamIdpGroups(teamId))
+      .then(b => { if (live) { take(b); setState('ok'); } }, () => { if (live) setState('error'); });
+    if (api.providers) {
+      Promise.resolve().then(() => api.providers()).then(b => {
+        if (!live) return;
+        const ids = qhIdpProviderIds(b);
+        setProviders(ids);
+        if (ids.length) setProv(p => p || ids[0]);
+      }, () => {});
+    }
+    return () => { live = false; };
+  }, [teamId]);
+
+  const add = () => {
+    const next = qhIdpGroupAdd(groups, prov, grp);
+    if (!next) return;
+    setGroups(next); setGrp(''); setDirty(true); setSaved(false); setErr('');
+  };
+  const remove = (i) => { setGroups(gs => gs.filter((_, k) => k !== i)); setDirty(true); setSaved(false); setErr(''); };
+  const save = () => {
+    setBusy(true); setErr('');
+    Promise.resolve().then(() => window.qhApi.adminSetTeamIdpGroups(teamId, groups))
+      .then(b => { take(b); setDirty(false); setSaved(true); },
+            e => setErr((e && e.message) || 'Could not save the IdP groups.'))
+      .then(() => setBusy(false));
+  };
+
+  return (
+    <div className="qh-idpg">
+      <div className="qh-idpg-title">IdP groups</div>
+      {state === 'loading' && <span className="qh-team-none">Loading…</span>}
+      {state === 'error' && <span className="qh-team-err">Couldn't load this team's IdP groups. Nothing changed.</span>}
+      {state === 'ok' && <>
+        {!enabled && <div className="qh-idpg-off" role="note">Sync is off (<code>idp_group_sync_enabled</code>). Mappings are kept and used when it is turned on.</div>}
+        <div className="qh-idpg-list">
+          {groups.length === 0
+            ? <span className="qh-team-none">No groups. Only manual members.</span>
+            : groups.map((g, i) => (
+              <span key={g.provider + '/' + g.group} className="qh-idpg-chip">
+                <span className="qh-mono">{g.provider} / {g.group}</span>
+                <button type="button" aria-label={'Remove ' + g.provider + ' / ' + g.group} title="Remove this group" onClick={() => remove(i)}><AIcon.x /></button>
+              </span>))}
+        </div>
+        <div className="qh-idpg-add">
+          {providers.length > 0
+            ? <select className="qh-input qh-input-sm" aria-label="SSO provider" value={prov} onChange={e => setProv(e.target.value)}>
+                {providers.map(id => <option key={id} value={id}>{id}</option>)}
+              </select>
+            : <input className="qh-input qh-input-sm" style={{ width: 130 }} aria-label="SSO provider" placeholder="Provider id" value={prov} onChange={e => setProv(e.target.value)} />}
+          <input className="qh-input qh-input-sm qh-flex1" aria-label="Group name" placeholder="Group name, as the SSO sends it" maxLength={200}
+            value={grp} onChange={e => setGrp(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
+          <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={add} disabled={!qhIdpGroupAdd(groups, prov, grp)}>Add</button>
+          <button type="button" className="qh-btn qh-btn-primary qh-btn-sm" onClick={save} disabled={!dirty || busy}>{busy ? 'Saving…' : 'Save groups'}</button>
+        </div>
+        {err && <div className="qh-idpg-err" role="alert">{err}</div>}
+        {saved && !dirty && <span className="qh-team-none">Saved.</span>}
+      </>}
+    </div>
+  );
+}
+
 // ---------- People tab: role, status, no-team filter, shared addresses ----------
 // Ported from the IdP app (qhRoles.ts and DuplicateAddresses.tsx, 2026-11-19).
 
@@ -2466,7 +2587,9 @@ function TeamsView({ st, user }) {
           {adding && <TeamForm people={people} init={{ members: [] }} onSave={(t) => { st.addTeam(t, actor); setAdding(false); }} onCancel={() => setAdding(false)} />}
           <div className="qh-teamlist">
             {tRows.map(t => {
-              if (editId === t.id) return <div key={t.id} className="qh-teamcard is-editing"><TeamForm people={people} init={t} onSave={(x) => { st.updateTeam(x, actor); setEditId(null); }} onCancel={() => setEditId(null)} /></div>;
+              // The SSO groups save on their own (a separate PUT), so Cancel on
+              // the team form does not undo a saved group list.
+              if (editId === t.id) return <div key={t.id} className="qh-teamcard is-editing"><TeamForm people={people} init={t} onSave={(x) => { st.updateTeam(x, actor); setEditId(null); }} onCancel={() => setEditId(null)} /><TeamIdpGroups teamId={t.id} /></div>;
               // The editor names the team itself ("Access for team X"), so the
               // card adds no label of its own: one subject, said once.
               if (accessId === t.id) return <div key={t.id} className="qh-teamcard is-editing"><SubjectAccessEditor st={st} actor={actor} subjectType0="team" subject0={t.name} lockSubject onDone={() => setAccessId(null)} /></div>;
@@ -2478,7 +2601,7 @@ function TeamsView({ st, user }) {
                     {t.desc && <div className="qh-teamcard-desc">{t.desc}</div>}
                     <div className="qh-teamcard-members">
                       {t.members.length === 0 && subs.length === 0 ? <span className="qh-team-empty">No members yet</span> : (<>
-                        {t.members.map(h => <span key={h} className="qh-memberpill"><span className="qh-mini-avatar sm">{personBy(h).initials || '?'}</span>{personBy(h).name || h}</span>)}
+                        {t.members.map(h => { const idp = qhTeamMemberIdp(t, h); return <span key={h} className="qh-memberpill"><span className="qh-mini-avatar sm">{personBy(h).initials || '?'}</span>{personBy(h).name || h}{idp && <span className="qh-memberpill-idp" title={qhIdpChipTitle(idp.group)}>IdP</span>}</span>; })}
                         {subs.map(id => { const s = teamById(id); return s ? <span key={id} className="qh-subteampill"><span className="qh-team-badge">team</span>{s.name}</span> : null; })}
                       </>)}
                     </div>
@@ -3855,4 +3978,6 @@ function AddPersonDialog({ st, onClose, onAdded }) {
 // access editor say Read, Write and Schema from one table.
 Object.assign(window, { InlineConfirm, qhRoleOfRow, qhRoleOf, qhRoleLabel, qhPersonRoleCell, qhPersonStatus, qhHasNoTeam, qhPeopleRows, qhDupAddrList, DupAddressPanel, QH_PEOPLE_ROLE_RANK, AddPersonDialog, TeamMultiPick, AddpSeg, AddpDbPick, GrantsView, AutoView, ScopesView, TeamsView, ConnectionsView, FleetGrantsBlock, connHealthState, connBannerSay, scopeConnList, ScopeForm, SubjectAccessEditor, subjLabel, grantName, PersonPick, ExpiryPick, ExpiryNote, EndChip, EndPick, expIso, expBad, expForm, DbMultiPick, TierSelect, connLabel, AccGroupBy, qhAutoReach, QH_TIER_WORD, qhTierWord,
   // The end of an auto-approve rule (2026-10-24).
-  AUTO_TIER_SAY, autoMaxOf, endPicks, endDefault, endKeepable, expMaxDay, autoEndWhy, autoEndInit });
+  AUTO_TIER_SAY, autoMaxOf, endPicks, endDefault, endKeepable, expMaxDay, autoEndWhy, autoEndInit,
+  // Team <-> company-SSO groups (2026-11-20).
+  TeamIdpGroups, qhTeamMemberIdp, qhIdpChipTitle, qhIdpProviderIds, qhIdpGroupAdd });

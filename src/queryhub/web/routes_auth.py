@@ -282,6 +282,14 @@ def auth_callback(provider: str, request: Request,
                         ident.principal_id)
             return RedirectResponse(f"{base_url()}/?auth_error=slack_unavailable", 302)
 
+    # Team membership from company-SSO groups. Off by default
+    # (`idp_group_sync_enabled`). It runs only after every gate above passed,
+    # skips Slack and a missing `groups` claim, and never raises: a failed
+    # sync is logged and the login goes on.
+    from .. import idp_group_sync
+    idp_group_sync.sync_on_login(ident.principal_id, ident.provider,
+                                 ident.groups)
+
     sid, refresh = sessions.create_session(
         ident.principal_id, provider=ident.provider,
         user_agent=request.headers.get("user-agent"),
