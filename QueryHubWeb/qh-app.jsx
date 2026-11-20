@@ -285,6 +285,9 @@ function App() {
        QH_DBHIDE_KEY].forEach(
         (k) => localStorage.removeItem(k));
     } catch (e) { /* private mode / storage disabled — nothing to clear */ }
+    // The last server copy of the open tabs holds SQL too. The server copy
+    // itself stays: the next sign-in on any device restores it.
+    try { localStorage.removeItem(QH_WS_SERVER_KEY); } catch (e) {}
     // The hidden-database list names the previous user's databases. Called
     // from a click, after the render that declared it.
     setHiddenDbs([]);
@@ -607,6 +610,281 @@ function App() {
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, []);
+
+  // ----- Open tabs and preferences on the server (2026-11-20) -----
+  // One GET at start, after the local workspace is loaded and the person is
+  // known. Server tabs enter the editor only there and after a 409. A change
+  // goes out 3 s after the last edit (PUT with the version that we read).
+  // Nothing from the server is applied on a timer, in the storage listener or
+  // while the person types (PR 389: an echo drops keystrokes). The payload is
+  // exactly qhWorkspaceSlim, the record that localStorage already holds.
+  const wsUserKey = user ? String(user.slackId || user.id || user.email || 'me') : '';
+  const wsSync = useRef({ state: 'idle', version: 0, base: null, sentKey: null, timer: null, inFlight: false, again: false, conflicts: 0 });
+  const [wsSyncOn, setWsSyncOn] = useState(false);
+  const wsSyncOff = (why) => {
+    const s = wsSync.current;
+    if (s.timer) clearTimeout(s.timer);
+    s.timer = null;
+    if (s.state === 'on' && why) console.info('QueryHub: open tabs are not saved on the server on this page (' + why + ').');
+    s.state = 'off';
+    setWsSyncOn(false);
+  };
+  // The server copy that we last read or wrote: the merge base of the next 409
+  // and of the next page start.
+  const wsKeepBase = (version, rec) => {
+    const s = wsSync.current;
+    s.version = version;
+    s.base = rec;
+    try { localStorage.setItem(QH_WS_SERVER_KEY, JSON.stringify({ version, data: rec })); } catch (e) {}
+  };
+  // Server tabs into the editor. Called at start and after a 409 only.
+  // mergeOf(prevTabs, activeId) returns { tabs, activeId, changed }. It runs
+  // inside the state update, on the newest tabs, so a keystroke that came after
+  // the server answer is merged and never thrown away. A tab whose stored fields
+  // did not change keeps its object, and the active tab keeps its object while
+  // its SQL is the same, so the editor keeps the caret.
+  const wsApplyServer = (mergeOf) => {
+    setTabs(prev => {
+      const active = wsActiveRef.current;
+      const merged = mergeOf(prev, active);
+      if (!merged || !merged.changed) return prev;
+      wsBumpSeq(merged.tabs);
+      const next = qhWsKeepLive(prev, merged.tabs, active);
+      wsTabsRef.current = next;
+      if (merged.activeId !== active) {
+        wsActiveRef.current = merged.activeId;
+        setActiveId(merged.activeId);
+      }
+      return next;
+    });
+  };
+  const wsPushRef = useRef(null);
+  const wsSchedule = () => {
+    const s = wsSync.current;
+    if (s.state !== 'on') return;
+    if (s.timer) clearTimeout(s.timer);
+    s.timer = setTimeout(() => { s.timer = null; if (wsPushRef.current) wsPushRef.current(false); }, QH_WS_SYNC_DEBOUNCE_MS);
+  };
+  const wsPush = (keepalive) => {
+    const s = wsSync.current;
+    if (s.state !== 'on') return;
+    if (s.timer) { clearTimeout(s.timer); s.timer = null; }
+    const list = wsTabsRef.current, active = wsActiveRef.current;
+    const key = qhWsSyncKey(list, active);
+    if (key === s.sentKey) return;
+    const data = qhWorkspaceSlim(list, active);
+    if (keepalive) {
+      // The page closes: send the last change and do not wait for the answer.
+      qhApi.workspacePut('workspace', data, s.version, { keepalive: true }).catch(() => {});
+      return;
+    }
+    if (s.inFlight) { s.again = true; return; }
+    s.inFlight = true;
+    s.again = false;
+    qhApi.workspacePut('workspace', data, s.version)
+      .then(r => {
+        s.inFlight = false;
+        if (s.state !== 'on') return;
+        s.conflicts = 0;
+        s.sentKey = key;
+        wsKeepBase(Number(r && r.version) || s.version + 1, qhParseWorkspace(data));
+        setLastSync(Date.now());
+        if (s.again || qhWsSyncKey(wsTabsRef.current, wsActiveRef.current) !== key) wsSchedule();
+      })
+      .catch(e => {
+        s.inFlight = false;
+        if (s.state !== 'on') return;
+        if (qhWsSyncStops(e)) { wsSyncOff('HTTP ' + e.status); return; }
+        const c = qhWsConflictOf(e);
+        // A network or server error: the next edit tries again.
+        if (!c) { if (s.again) wsSchedule(); return; }
+        const theirs = qhParseWorkspace(c.data) || { activeId: '', tabs: [] };
+        let local = null;
+        try { local = wsBaseRef.current && wsBaseRef.current.rec; } catch (err) {}
+        const plan = qhWs409Plan({
+          sent: qhParseWorkspace(data),
+          live: { tabs: wsTabsRef.current, activeId: wsActiveRef.current },
+          theirs, base: s.base, local,
+        });
+        if (plan.kind === 'adopt') {
+          // Another browser tab of this browser sent the same tabs first. The
+          // server holds them: take its version and leave the tabs alone.
+          s.conflicts = 0;
+          s.sentKey = key;
+          wsKeepBase(c.version, theirs);
+          setLastSync(Date.now());
+          if (s.again || qhWsSyncKey(wsTabsRef.current, wsActiveRef.current) !== key) wsSchedule();
+          return;
+        }
+        if (s.conflicts >= 1) { wsSyncOff('the server copy changed again'); return; }
+        s.conflicts += 1;
+        wsKeepBase(c.version, theirs);
+        s.sentKey = null;
+        if (plan.kind === 'retry') { wsPush(false); return; }
+        // Another device wrote first. Merge its copy into the newest tabs on the
+        // plan's base. The PUT waits for the next render, so it sends the merge.
+        wsApplyServer((prev, prevActive) => qhMergeWorkspace(plan.base, { tabs: prev, activeId: prevActive }, theirs, wsNewId));
+        wsSchedule();
+      });
+  };
+  wsPushRef.current = wsPush;
+  useEffect(() => {
+    if (!wsUserKey || !qhApi.workspaceGet) return undefined;
+    let alive = true;
+    const s = wsSync.current;
+    let stored = null;
+    try { stored = qhWsServerBase(localStorage.getItem(QH_WS_SERVER_KEY)); } catch (e) {}
+    qhApi.workspaceGet('workspace')
+      .then(r => {
+        if (!alive) return;
+        const plan = qhWsSyncStart({ tabs: wsTabsRef.current, activeId: wsActiveRef.current }, r, stored && stored.rec, wsNewId);
+        if (plan.action === 'off') { s.state = 'off'; return; }
+        s.state = 'on';
+        s.conflicts = 0;
+        s.version = plan.version;
+        // 'push' keeps base null: a 409 before the first PUT then merges on the
+        // tabs that agree with the local record (qhWs409Plan), not on nothing.
+        s.base = null;
+        s.sentKey = null;
+        if (plan.action === 'take') {
+          const now = Date.now();
+          let list = plan.rec.tabs.map(x => qhWsHydrate(x, now));
+          if (!list.some(x => x.kind === 'welcome')) list = [welcomeTab(), ...list];
+          const active = list.some(x => x.id === plan.rec.activeId) ? plan.rec.activeId : list[0].id;
+          // "Blank" is decided on the newest tabs. When the person typed while the
+          // GET was out, merge instead (no base: a tab that differs gets a copy).
+          wsApplyServer((prev, prevActive) => (qhWsIsBlank(prev)
+            ? { tabs: list, activeId: active, changed: true }
+            : qhMergeWorkspace(null, { tabs: prev, activeId: prevActive }, plan.rec, wsNewId)));
+          wsKeepBase(plan.version, plan.rec);
+          s.sentKey = qhWsSyncKey(list, active);
+        } else if (plan.action === 'merge') {
+          // plan.merged was computed on the tabs at GET time: merge again on the newest tabs.
+          const startBase = (stored && stored.rec) || null;
+          wsApplyServer((prev, prevActive) => qhMergeWorkspace(startBase, { tabs: prev, activeId: prevActive }, plan.rec, wsNewId));
+          wsKeepBase(plan.version, plan.rec);
+          s.sentKey = qhWsSyncKey(plan.rec.tabs, plan.rec.activeId);
+        }
+        setWsSyncOn(true);
+        wsSchedule();
+      })
+      .catch(e => {
+        if (!alive) return;
+        s.state = 'off';
+        if (e && e.status !== 401) console.info('QueryHub: open tabs are not saved on the server on this page (start failed).');
+      });
+    return () => {
+      alive = false;
+      if (s.timer) clearTimeout(s.timer);
+      s.timer = null;
+      s.state = 'idle';
+      setWsSyncOn(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wsUserKey]);
+  // A change to the tabs restarts the 3 s wait. wsPush compares the content key.
+  useEffect(() => {
+    if (wsSyncOn && wsSync.current.state === 'on') wsSchedule();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs, activeId, wsSyncOn]);
+
+  // Preferences: a whitelist of UI keys (QH_PREFS_SYNC_KEYS). A key that this
+  // browser did not have when the page started takes the server value. Some
+  // screens write their default at mount, so the check uses the keys from the
+  // first render, before any effect. A value taken from the server shows after
+  // the next reload, except the tweaks (theme, density, font size), which apply
+  // at once. After that, this browser's changes go out every 5 s at most.
+  const prefsAtBoot = useRef(null);
+  if (!prefsAtBoot.current) { try { prefsAtBoot.current = qhPrefsSnapshot(localStorage); } catch (e) { prefsAtBoot.current = {}; } }
+  const prefsSync = useRef({ state: 'idle', version: 0, sentJson: null, inFlight: false, conflicts: 0 });
+  const prefsPushRef = useRef(null);
+  const prefsPush = (keepalive) => {
+    const p = prefsSync.current;
+    if (p.state !== 'on') return;
+    let snap;
+    try { snap = qhPrefsSnapshot(localStorage); } catch (e) { return; }
+    const json = JSON.stringify(snap);
+    if (json === p.sentJson) return;
+    if (keepalive) { qhApi.workspacePut('prefs', snap, p.version, { keepalive: true }).catch(() => {}); return; }
+    if (p.inFlight) return;
+    p.inFlight = true;
+    qhApi.workspacePut('prefs', snap, p.version)
+      .then(r => {
+        p.inFlight = false;
+        if (p.state !== 'on') return;
+        p.version = Number(r && r.version) || p.version + 1;
+        p.sentJson = json;
+        p.conflicts = 0;
+      })
+      .catch(e => {
+        p.inFlight = false;
+        if (p.state !== 'on') return;
+        if (qhWsSyncStops(e)) { p.state = 'off'; console.info('QueryHub: preferences are not saved on the server on this page (HTTP ' + e.status + ').'); return; }
+        const c = qhWsConflictOf(e);
+        if (!c) return;
+        if (p.conflicts >= 1) { p.state = 'off'; console.info('QueryHub: preferences are not saved on the server on this page (the server copy changed again).'); return; }
+        // This browser's preferences are the last ones that the person set. Send them again once.
+        p.conflicts += 1;
+        p.version = c.version;
+        prefsPush(false);
+      });
+  };
+  prefsPushRef.current = prefsPush;
+  useEffect(() => {
+    if (!wsUserKey || !qhApi.workspaceGet) return undefined;
+    let alive = true;
+    let poll = null;
+    const p = prefsSync.current;
+    qhApi.workspaceGet('prefs')
+      .then(r => {
+        if (!alive || !r || r.enabled !== true) return;
+        const server = (r.data && typeof r.data === 'object' && !Array.isArray(r.data)) ? r.data : {};
+        const boot = prefsAtBoot.current || {};
+        const missing = {};
+        Object.keys(server).forEach(k => { if (!(k in boot)) missing[k] = server[k]; });
+        let written = [];
+        try { written = qhPrefsApply(localStorage, missing, false); } catch (e) {}
+        if (written.indexOf('qh.prefs.v1') !== -1) {
+          let tw = {};
+          try { tw = qhPrefsTweaks(localStorage.getItem('qh.prefs.v1'), TWEAK_DEFAULTS); } catch (e) {}
+          if (Object.keys(tw).length) setTweak(tw);
+        }
+        p.state = 'on';
+        p.version = Number(r.version) || 0;
+        p.conflicts = 0;
+        p.sentJson = JSON.stringify(qhPrefsSnapshot({ getItem: (k) => (typeof server[k] === 'string' ? server[k] : null) }));
+        prefsPush(false);
+        poll = setInterval(() => { if (prefsPushRef.current) prefsPushRef.current(false); }, QH_PREFS_POLL_MS);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      if (poll) clearInterval(poll);
+      p.state = 'idle';
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wsUserKey]);
+
+  // The page closes: send the last unsent change of each, with keepalive.
+  useEffect(() => {
+    const onHide = () => {
+      if (wsPushRef.current) wsPushRef.current(true);
+      if (prefsPushRef.current) prefsPushRef.current(true);
+    };
+    window.addEventListener('pagehide', onHide);
+    return () => window.removeEventListener('pagehide', onHide);
+  }, []);
+
+  // User menu: remove both server copies. This page then stops sending them,
+  // and the next page load sends this browser's copy again.
+  const forgetServerWorkspace = () => {
+    wsSyncOff(null);
+    prefsSync.current.state = 'off';
+    try { localStorage.removeItem(QH_WS_SERVER_KEY); } catch (e) {}
+    Promise.all([qhApi.workspaceDelete('workspace'), qhApi.workspaceDelete('prefs')])
+      .then(() => pushToast('Your open tabs and preferences are removed from the server. This page stops saving them there until you reload it.'))
+      .catch(() => pushToast('Could not remove your open tabs and preferences from the server. Try again.'));
+  };
 
   // Tabs restored from a workspace saved before this feature (or from a session
   // where the reservation failed) carry no request id. Give each one a number,
@@ -2249,7 +2527,7 @@ function App() {
   return (
     <div className="qh-root">
       {pwOpen && <ChangePasswordScreen onCancel={() => setPwOpen(false)} />}
-      <TopChrome resolvedDark={resolvedDark} theme={t.theme} setTheme={(v) => setTweak('theme', v)} user={user} onSignOut={signOut}
+      <TopChrome resolvedDark={resolvedDark} theme={t.theme} setTheme={(v) => setTweak('theme', v)} user={user} onSignOut={signOut} onForgetWorkspace={wsSyncOn ? forgetServerWorkspace : null}
         onChangePassword={() => setPwOpen(true)} slackEnabled={slackOn}
         view={view} onGoHome={goHome} role={(user && user.role) || 'developer'} lastSync={lastSync} onFeedback={() => setFeedbackOpen(true)} onWhatsNew={openWhatsNew} unseenNews={unseenNews} onDismissNews={markNewsSeen} onOpenSubject={openSubject} isAdminUser={isAdminUser} />
 
@@ -2624,7 +2902,7 @@ function ModeEntry({ where, setView, pendingCount }) {
 }
 
 // ---------- Top chrome (logo + theme toggle) ----------
-function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePassword, view, onGoHome, role, lastSync, onFeedback, onWhatsNew, unseenNews, onDismissNews, slackEnabled, onOpenSubject, isAdminUser }) {
+function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onForgetWorkspace, onChangePassword, view, onGoHome, role, lastSync, onFeedback, onWhatsNew, unseenNews, onDismissNews, slackEnabled, onOpenSubject, isAdminUser }) {
   const toggle = () => setTheme(resolvedDark ? 'light' : 'dark');
   const [menu, setMenu] = useState(false);
   return (
@@ -2687,6 +2965,13 @@ function TopChrome({ resolvedDark, theme, setTheme, user, onSignOut, onChangePas
                 <button className="qh-user-item" onMouseDown={(e) => { e.preventDefault(); onChangePassword(); }}>
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
                   Change password
+                </button>
+              )}
+              {onForgetWorkspace && (
+                <button className="qh-user-item" title="Removes your open tabs and preferences from the server. This browser keeps its copy."
+                  onMouseDown={(e) => { e.preventDefault(); onForgetWorkspace(); }}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+                  Forget my workspace on the server
                 </button>
               )}
               <button className="qh-user-signout" onMouseDown={(e) => { e.preventDefault(); onSignOut(); }}>

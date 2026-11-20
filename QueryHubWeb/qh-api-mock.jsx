@@ -2221,6 +2221,36 @@ function mockAiView() {
   };
 }
 
+// MOCK: the server copy of the open tabs and the preferences, per kind, for this
+// page only. Same contract as GET/PUT/DELETE /api/me/workspace/{kind}.
+const MOCK_WS_STORE = { workspace: null, prefs: null };
+const MOCK_WS_KINDS = ['workspace', 'prefs'];
+function mockWsGet(kind) {
+  if (MOCK_WS_KINDS.indexOf(kind) === -1) return mockFail('Unknown kind.', 400, 'bad_request');
+  const row = MOCK_WS_STORE[kind];
+  return mockDelay(() => row
+    ? { enabled: true, data: JSON.parse(JSON.stringify(row.data)), version: row.version, updatedAt: row.updatedAt }
+    : { enabled: true, data: null, version: 0 }, 80);
+}
+function mockWsPut(kind, data, baseVersion) {
+  if (MOCK_WS_KINDS.indexOf(kind) === -1) return mockFail('Unknown kind.', 400, 'bad_request');
+  const row = MOCK_WS_STORE[kind];
+  const now = row ? row.version : 0;
+  if ((Number(baseVersion) || 0) !== now) {
+    return mockFail('The server copy changed.', 409, 'version_conflict',
+      { body: { version: now, data: row ? JSON.parse(JSON.stringify(row.data)) : null, updatedAt: row ? row.updatedAt : null } });
+  }
+  if (JSON.stringify(data).length > 256 * 1024) return mockFail('Too large.', 413, 'too_large');
+  const next = { data: JSON.parse(JSON.stringify(data)), version: now + 1, updatedAt: isoNow() };
+  MOCK_WS_STORE[kind] = next;
+  return mockDelay({ version: next.version, updatedAt: next.updatedAt }, 80);
+}
+function mockWsDelete(kind) {
+  if (MOCK_WS_KINDS.indexOf(kind) === -1) return mockFail('Unknown kind.', 400, 'bad_request');
+  MOCK_WS_STORE[kind] = null;
+  return mockDelay(null, 60);
+}
+
 const qhApi = {
   // ---- auth / identity ----
   me: () => mockDelay(null, 90).then(() => {
@@ -2265,6 +2295,9 @@ const qhApi = {
     return { ok: true };
   }),
   signout: () => { mockSignOut(); return mockDelay({ ok: true }, 60); },
+  workspaceGet: (kind) => mockWsGet(kind),
+  workspacePut: (kind, data, baseVersion) => mockWsPut(kind, data, baseVersion),
+  workspaceDelete: (kind) => mockWsDelete(kind),
   changelog: () => mockDelay({ releases: MOCK_CHANGELOG }, 200),
 
   // ---- targets / schema ----
