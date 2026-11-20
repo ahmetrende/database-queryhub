@@ -351,6 +351,9 @@ function App() {
   // open. `enabled: false` hides the button and the panel.
   const [aiStatus, setAiStatus] = useState({ enabled: false });
   const [aiOpen, setAiOpen] = useState(false);
+  // "Fix with AI" on a failed run: { n, tabId, sql, error }. The AI panel takes
+  // it once and clears it, so a panel that opens again does not send it twice.
+  const [aiFix, setAiFix] = useState(null);
   const [canDelShared, setCanDelShared] = useState(false);
   const [sessions, setSessions] = useState(qhLoadSessions);
   const [sessionModal, setSessionModal] = useState(false);
@@ -1080,6 +1083,20 @@ function App() {
     setInsSig(x => ({ text: text || '', n: (x ? x.n : 0) + 1 }));
     patch(activeId, { aiAssisted: true });
   };
+  // "Fix with AI" (2026-11-20, DBeaver 26.2.0). A failed run of a query tab
+  // gets a button that opens the AI panel in Fix mode. It sends the SQL that
+  // ran and the error line of Messages. That line is the scrubbed error
+  // (errors.scrub), so it holds no row values. Only while the tab still points
+  // at the server and the database that ran, because the assistant reads the
+  // table names of the tab's database.
+  const fixError = typeof qhAiFixError === 'function' ? qhAiFixError(tab.messages) : '';
+  const canFixAi = !!(aiStatus.enabled && !tab.kind && tab.status === 'failed' && fixError
+    && (!tab.ranConn || tab.ranConn === tab.conn) && (!tab.ranDb || tab.ranDb === tab.db));
+  const fixWithAi = () => {
+    if (!canFixAi) return;
+    setAiFix({ n: Date.now(), tabId: tab.id, sql: tab.ranSql || tab.sql || '', error: fixError });
+    setAiOpen(true);
+  };
   const insertSaved = (s) => {
     if (tab.kind || view !== 'dev') { loadSaved(s); return; }
     setInsSig(x => ({ text: s.sql || '', n: (x ? x.n : 0) + 1 }));
@@ -1698,6 +1715,10 @@ function App() {
   // wrapped line costs the one-line-one-number reading of the gutter.
   const [wrap, setWrap] = useState(() => { try { return localStorage.getItem('qh.wrap.v1') === '1'; } catch (e) { return false; } });
   useEffect(() => { try { localStorage.setItem('qh.wrap.v1', wrap ? '1' : '0'); } catch (e) {} }, [wrap]);
+  // A blank line ends the statement for F8 and Shift+Alt+S (qhStatementAtBlank).
+  // Off by default. A preference, like word wrap, so sign-out keeps it.
+  const [blankStop, setBlankStop] = useState(() => { try { return localStorage.getItem('qh.f8blank.v1') === '1'; } catch (e) { return false; } });
+  useEffect(() => { try { localStorage.setItem('qh.f8blank.v1', blankStop ? '1' : '0'); } catch (e) {} }, [blankStop]);
   const [fmtSig, setFmtSig] = useState(0);   // the Format button bumps it, SqlEditor formats
 
   // Destructive-statement confirmation. The server answers a DROP / TRUNCATE /
@@ -2177,7 +2198,7 @@ function App() {
                 : <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M16.5 9l-3 3 3 3"/></svg>}
             </button>
             <EditorTabs tabs={tabsForBar} activeId={activeId} onSelect={selectTab} onClose={(id) => requestClose('one', id)} onNew={newTab}
-              wrap={wrap} onToggleWrap={() => setWrap(w => !w)} lint={lint} onToggleLint={() => setLint(v => !v)} lintCount={lintRanges.length} onFormat={() => setFmtSig(n => n + 1)} fmtEngine={editorEngine}
+              wrap={wrap} onToggleWrap={() => setWrap(w => !w)} blankStop={blankStop} onToggleBlankStop={() => setBlankStop(v => !v)} lint={lint} onToggleLint={() => setLint(v => !v)} lintCount={lintRanges.length} onFormat={() => setFmtSig(n => n + 1)} fmtEngine={editorEngine}
               onCloseOthers={(id) => requestClose('others', id)} onCloseRight={(id) => requestClose('right', id)} onCloseAll={() => requestClose('all', activeId)} onDuplicate={duplicateTab} onRename={renameTab} onCopySql={copyTabSql} onDownloadSql={requestDownloadSql} onReorder={reorderTabs}
               onAi={aiStatus.enabled && !tab.kind ? () => setAiOpen(o => !o) : null} aiOpen={aiOpen} />
           </div>
@@ -2229,7 +2250,7 @@ function App() {
                 onRequest={() => setReqOpen(true)} onDismiss={() => patch(activeId, { expired: null })} />
 
               <div className="qh-ed-host">
-                <SqlEditor value={tab.sql} onChange={onCode} docId={tab.id} fontSize={t.editorFont} wrap={wrap} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} onSelectionChange={setSel} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} formatSignal={fmtSig} insertSignal={insSig} issues={blockerRanges} revealSignal={issueSig} lints={lintRanges} onNotice={pushToast} onScriptCreate={scriptCreateHere} onRevealObject={revealObjectHere} />
+                <SqlEditor value={tab.sql} onChange={onCode} docId={tab.id} fontSize={t.editorFont} wrap={wrap} blankStop={blankStop} onRun={primary} onRunSelection={runSelection} selectionGetter={selGet} onSelectionChange={setSel} revealRange={reveal} schema={editorSchema} engineId={editorEngine} focusSignal={edFocus} formatSignal={fmtSig} insertSignal={insSig} issues={blockerRanges} revealSignal={issueSig} lints={lintRanges} onNotice={pushToast} onScriptCreate={scriptCreateHere} onRevealObject={revealObjectHere} />
               </div>
 
               <div className="qh-res-grip" onMouseDown={onDragStart} onDoubleClick={() => setResH(QH_RES_H_DEFAULT)} onKeyDown={onGripKey}
@@ -2244,7 +2265,7 @@ function App() {
                   onWithdraw={cancelRun} outcome={tab.outcome || null} endNote={qhEndNote(tab.messages, tab.outcome)} onResubmit={() => resubmitFrom(tab)} slackEnabled={slackOn} timeline={tab.timeline || null}
                   sourceSql={tab.ranSql || null}
                   pkOf={(sql) => (tab.ranConn === tab.conn && tab.ranDb === tab.db ? qhResultScriptPk(sql, editorSchema) : [])}
-                  problems={problems} lintOn={lint}
+                  problems={problems} lintOn={lint} onFixAi={canFixAi ? fixWithAi : null}
                   onProblem={(p) => { if (p && p.start != null) setReveal({ start: p.start, end: p.end, n: Date.now() }); }} />
               </div>
             </>
@@ -2254,6 +2275,7 @@ function App() {
         {aiStatus.enabled && aiOpen && !tab.kind && (
           <QhAiPanel status={aiStatus} tabId={tab.id} conn={tab.conn} db={tab.db}
             getSql={() => curSel() || tab.sql} onInsert={aiInsert}
+            fix={aiFix && aiFix.tabId === tab.id ? aiFix : null} onFixTaken={() => setAiFix(null)}
             onClose={() => setAiOpen(false)} onToast={pushToast} />
         )}
 

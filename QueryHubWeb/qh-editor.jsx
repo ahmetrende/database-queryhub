@@ -1062,6 +1062,87 @@ function qhStatementAt(sql, caret) {
 }
 
 // ---------------------------------------------------------------------------
+// A blank line ends the statement (2026-11-20, CloudBeaver 26.2.4, DBeaver)
+//
+// An editor setting, off by default. When it is on, F8 and Shift+Alt+S also
+// stop at a blank line, so a script with no `;` runs one block at a time:
+//   select 1
+//
+//   select 2
+// DBeaver uses blank lines the same way when it runs one statement.
+// Only a blank line at the top level counts. A blank line inside a string, a
+// quoted name, [brackets], a $tag$ body, a /* */ comment or ( ) is data.
+// qhBlankLineCuts returns [{ s, e }] for each blank run between two blocks:
+// `s` is the end of the code before it, `e` the start of the code after it.
+// ---------------------------------------------------------------------------
+function qhBlankLineCuts(sql) {
+  const text = String(sql == null ? '' : sql);
+  const n = text.length;
+  const cuts = [];
+  const ws = (ch) => ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f' || ch === '\v';
+  const quoted = (i, close) => {
+    let j = i + 1;
+    while (j < n) {
+      if (text[j] === close) {
+        if (text[j + 1] === close) { j += 2; continue; }
+        return j + 1;
+      }
+      j++;
+    }
+    return n;
+  };
+  let i = 0, depth = 0, seen = false;
+  while (i < n) {
+    const ch = text[i];
+    if (ws(ch)) {
+      let j = i, lines = 0;
+      while (j < n && ws(text[j])) { if (text[j] === '\n') lines++; j++; }
+      if (lines >= 2 && depth === 0 && seen && j < n) cuts.push({ s: i, e: j });
+      i = j; continue;
+    }
+    seen = true;
+    if (ch === '-' && text[i + 1] === '-') { const e = text.indexOf('\n', i); i = e < 0 ? n : e; continue; }
+    if (ch === '/' && text[i + 1] === '*') { const e = text.indexOf('*/', i + 2); i = e < 0 ? n : e + 2; continue; }
+    if (ch === "'" || ch === '"') { i = quoted(i, ch); continue; }
+    if (ch === '[') { i = quoted(i, ']'); continue; }
+    if (ch === '$' && !(i > 0 && /[A-Za-z0-9_]/.test(text[i - 1]))) {
+      const m = /^\$[A-Za-z_]*\$/.exec(text.slice(i, i + 66));
+      if (m) { const e = text.indexOf(m[0], i + m[0].length); i = e < 0 ? n : e + m[0].length; continue; }
+    }
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    i++;
+  }
+  return cuts;
+}
+
+// The statement at the caret when a blank line also ends a statement. The
+// caret picks a block (the text between two blank runs), and qhStatementAt
+// reads that block, so a `;` still splits inside it. A caret on the line where
+// a block ends, or on the blank line right under it, gives that block. A caret
+// in the indent of a block's first line gives that block. A caret on any other
+// blank line gives null.
+function qhStatementAtBlank(sql, caret) {
+  const text = String(sql == null ? '' : sql);
+  const n = text.length;
+  if (!n) return null;
+  const c = Math.max(0, Math.min(n, Number(caret) || 0));
+  let a = 0, b = n, cc = c;
+  for (const cut of qhBlankLineCuts(text)) {
+    if (c <= cut.s) { b = cut.s; break; }
+    if (c < cut.e) {
+      const under = text.slice(cut.s, c).split('\n').length - 1;
+      if (under <= 1) { b = cut.s; cc = cut.s; break; }
+      if (text.slice(c, cut.e).indexOf('\n') >= 0) return null;
+    }
+    a = cut.e;
+  }
+  if (cc < a) cc = a;
+  const r = qhStatementAt(text.slice(a, b), cc - a);
+  return r ? { start: r.start + a, end: r.end + a } : null;
+}
+
+// ---------------------------------------------------------------------------
 // Statement bounds with or without `;` (2026-11-10, Devart G2 and F6)
 //
 // qhStatementAt splits only at `;`. Many scripts have no `;` at all:
@@ -4510,7 +4591,7 @@ function QhCaretMarks({ taRef, value, show }) {
 const QH_AC_TYPE_LABEL ={ keyword: 'kw', table: 'table', cte: 'cte', column: 'col', database: 'db', system: 'system', function: 'fn', expand: 'all cols', join: 'join',
   procedure: 'proc', schema: 'schema', index: 'index', snippet: 'snip', groupby: 'group', template: 'tpl' };
 
-function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, selectionGetter, onSelectionChange, schema, engineId, focusSignal, formatSignal, insertSignal, revealRange, docId, issues, revealSignal, lints, onNotice, onScriptCreate, onRevealObject }) {
+function SqlEditor({ value, onChange, fontSize, wrap, blankStop, onRun, onRunSelection, selectionGetter, onSelectionChange, schema, engineId, focusSignal, formatSignal, insertSignal, revealRange, docId, issues, revealSignal, lints, onNotice, onScriptCreate, onRevealObject }) {
   const taRef = React.useRef(null);
   const issueRef = React.useRef(null);
   const lintRef = React.useRef(null);         // the code-analysis layer (qhLint)
@@ -5489,7 +5570,7 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     // not e.key, for the same Mac reason as Format SQL.
     if (e.shiftKey && e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyS') {
       e.preventDefault(); setAc(null);
-      const ta = e.target, r = qhStatementAt(ta.value, ta.selectionStart);
+      const ta = e.target, r = (blankStop ? qhStatementAtBlank : qhStatementAt)(ta.value, ta.selectionStart);
       if (r) ta.setSelectionRange(r.start, r.end);
       return;
     }
@@ -5507,12 +5588,13 @@ function SqlEditor({ value, onChange, fontSize, wrap, onRun, onRunSelection, sel
     }
     // F8 runs the selection. With no selection it runs the statement at the
     // caret (see qhStatementAt) and selects it first, so the person sees what
-    // runs. A caret in a part with no SQL does nothing.
+    // runs. A caret in a part with no SQL does nothing. With the blank-line
+    // setting on, a blank line also ends the statement (qhStatementAtBlank).
     if (e.key === 'F8') {
       e.preventDefault(); setAc(null);
       const ta = e.target, s = fieldSel(ta) ? '' : ta.value.slice(ta.selectionStart, ta.selectionEnd);
       if (s.trim()) { onRunSelection && onRunSelection(s); return; }
-      const r = qhStatementAt(ta.value, ta.selectionStart);
+      const r = (blankStop ? qhStatementAtBlank : qhStatementAt)(ta.value, ta.selectionStart);
       if (!r) return;
       ta.setSelectionRange(r.start, r.end);
       onRunSelection && onRunSelection(ta.value.slice(r.start, r.end));
@@ -6095,7 +6177,7 @@ function FormatOptions({ engineId, onFormat, style }) {
   );
 }
 
-function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWrap, lint, onToggleLint, lintCount, onFormat, fmtEngine, onCloseOthers, onCloseRight, onCloseAll, onDuplicate, onRename, onCopySql, onDownloadSql, onReorder, onAi, aiOpen }) {
+function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWrap, blankStop, onToggleBlankStop, lint, onToggleLint, lintCount, onFormat, fmtEngine, onCloseOthers, onCloseRight, onCloseAll, onDuplicate, onRename, onCopySql, onDownloadSql, onReorder, onAi, aiOpen }) {
   const [kb, setKb] = React.useState(false);
   const [dragId, setDragId] = React.useState(null);
   const [overId, setOverId] = React.useState(null);
@@ -6386,6 +6468,17 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
             {SHORTCUTS.map(([k, d]) => (
               <div key={k} className="qh-kb-row"><kbd className="qh-kbd">{k}</kbd><span>{d}</span></div>
             ))}
+            {/* How F8 and Shift+Alt+S find the statement at the caret. Off:
+                only `;` ends it. On: a blank line ends it too. */}
+            {onToggleBlankStop && (
+              <>
+                <div className="qh-kb-title qh-kb-sub">Run at the caret</div>
+                <label className="qh-fmt-check qh-kb-blank">
+                  <input type="checkbox" checked={!!blankStop} onChange={onToggleBlankStop} />
+                  <span>A blank line ends the statement (F8, ⇧ + ⌥ / Alt + S)</span>
+                </label>
+              </>
+            )}
             {/* The snippet keys (QH_SNIPPETS). The list in the editor shows
                 only the ones that the tab's engine gets. */}
             <div className="qh-kb-title qh-kb-sub">Snippets</div>
@@ -6409,7 +6502,7 @@ Object.assign(window, { SqlEditor, EditorTabs, FormatOptions, QH_FMT_ROWS, QH_FM
   QH_SNIPPETS, QH_SNIPPET_CURSOR, QH_DRAG_BLOCK, qhSnippetsFor, qhSnippetText, qhInsertBlock, QH_KEYWORDS, qhSnippetPreview, qhSnippetFormError, QH_SNIP_KEY_RE, qhAliasAt, qhRenameAlias, qhQualifyNames, qhObjectNameAt, qhDefinitionAt,
   qhTextDiff, qhEditKind, qhUndoDoc, qhUndoRecord, qhUndoSeal, qhUndoStep, qhUndoForget,
   qhSqlTokens, qhStarExpansion, qhBlockerRanges, qhFromIsName, qhFromUnquote, qhReadFromList, qhRefLookup,
-  qhClTokOpen, qhColumnList, qhStopsAfterEdit, qhStatementTemplate, qhTemplateItem, qhTplParams, qhCteDefs, qhCteNamesAt, qhSelectOutCols, qhRelCols, qhInsertColsSlot, qhColItem, qhOutName, qhAcStep, qhStatementAt, qhAliasColumns, qhTabIsProd,
+  qhClTokOpen, qhColumnList, qhStopsAfterEdit, qhStatementTemplate, qhTemplateItem, qhTplParams, qhCteDefs, qhCteNamesAt, qhSelectOutCols, qhRelCols, qhInsertColsSlot, qhColItem, qhOutName, qhAcStep, qhStatementAt, qhBlankLineCuts, qhStatementAtBlank, qhAliasColumns, qhTabIsProd,
   qhJoinSuggestions, qhJoinOnSuggestions, qhJoinPairs, qhJoinAlias,
   QH_KW_PHRASES, QH_KW_ENGINE, qhKeywordsFor, qhKwPhrasesFor, qhKwPhraseFits, qhEngineIdReadOnly,
   QH_ALIAS_KEY, qhAliasOptsClean, qhAliasOptsLoad, qhAliasOptsSave, qhAliasRules, qhAliasBase, qhAutoAlias,

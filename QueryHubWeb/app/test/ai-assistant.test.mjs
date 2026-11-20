@@ -330,3 +330,56 @@ test('the audience client calls hit the documented paths', async () => {
   assert.deepEqual(calls, [['/admin/ai/audience', 'POST', { kind: 'team', values: ['4', '5'] }],
     ['/admin/ai/audience/7', 'DELETE', null]]);
 });
+
+// ---------- "Fix with AI" from a failed run (2026-11-20) ----------
+
+test('the fix error is the last run error, never a decision line, and it is cut', () => {
+  const W = loadInto(bareWindow(), ...PANEL_FILES);
+  const msgs = [
+    { kind: 'info', text: 'Submitted RO query.' },
+    { kind: 'err', text: 'relation "ordrs" does not exist' },
+  ];
+  assert.equal(W.qhAiFixError(msgs), 'relation "ordrs" does not exist');
+  assert.equal(W.qhAiFixError([{ kind: 'err', text: 'Rejected by A: no' }, { kind: 'err', text: 'Cancelled.' }]), '');
+  assert.equal(W.qhAiFixError(null), '');
+  assert.equal(W.qhAiFixError([{ kind: 'err', text: 'x'.repeat(5000) }]).length, 2000);
+  assert.equal(W.qhAiFixPrompt('boom'), 'The query failed with this error:\nboom');
+});
+
+test('a fix request sends the SQL that ran and the error once, in Fix mode', jsdomOpts, async () => {
+  const calls = [], taken = [];
+  const p = page(PANEL_FILES, { prep: (win) => { win.qhApi = { aiComplete: (b) => { calls.push(b); return Promise.resolve(ANSWER); } }; } });
+  const props = {
+    status: STATUS, tabId: 't1', conn: 'srv-alpha', db: 'shop', getSql: () => 'SELECT editor_text',
+    onInsert: () => {}, onClose: () => {}, onToast: () => {}, onFixTaken: () => taken.push(1),
+    fix: { n: 7, tabId: 't1', sql: 'SELECT * FROM ordrs', error: 'relation "ordrs" does not exist' },
+  };
+  p.render(p.React.createElement(p.win.QhAiPanel, props));
+  await p.flush(); await p.flush();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], { mode: 'fix', prompt: 'The query failed with this error:\nrelation "ordrs" does not exist',
+    sql: 'SELECT * FROM ordrs', messages: [], connectionId: 'srv-alpha', databaseId: 'shop' });
+  assert.equal(taken.length, 1);
+  assert.equal(button(p, 'Fix').getAttribute('aria-pressed'), 'true');
+  assert.match(p.doc.querySelector('.qh-ai-turn.is-user .qh-ai-meta').textContent, /SQL from the failed run\./);
+  // The same request again (a re-render) sends nothing more.
+  p.render(p.React.createElement(p.win.QhAiPanel, props));
+  await p.flush();
+  assert.equal(calls.length, 1);
+  // A typed Send still reads the editor SQL.
+  await setValue(p, p.doc.querySelector('.qh-ai-prompt'), 'shorter please');
+  p.click(button(p, 'Send'));
+  await p.flush(); await p.flush();
+  assert.equal(calls[1].sql, 'SELECT editor_text');
+});
+
+test('qh-app and the results panel wire Fix with AI to failed runs only', () => {
+  const app = web('qh-app.jsx');
+  assert.match(app, /aiStatus\.enabled && !tab\.kind && tab\.status === 'failed' && fixError/);
+  assert.match(app, /\(!tab\.ranConn \|\| tab\.ranConn === tab\.conn\) && \(!tab\.ranDb \|\| tab\.ranDb === tab\.db\)/);
+  assert.match(app, /onFixAi=\{canFixAi \? fixWithAi : null\}/);
+  assert.match(app, /fix=\{aiFix && aiFix\.tabId === tab\.id \? aiFix : null\} onFixTaken=\{\(\) => setAiFix\(null\)\}/);
+  const panels = web('qh-panels.jsx');
+  assert.match(panels, /\{status === 'failed' && onFixAi && \(/);
+  assert.match(panels, /Fix with AI\n/);
+});

@@ -24,6 +24,12 @@ QueryHub. The panel keeps one conversation for each tab while the page is open.
 After an Insert, the next run of that tab sends `aiAssisted`. The approval
 queue and History show an **AI** chip.
 
+A failed run shows **Fix with AI** next to the status in the results panel.
+The button opens the panel in Fix mode and sends the SQL that ran and the
+error line of Messages. That line is the scrubbed error (`errors.scrub`), so it
+holds no row values. The button shows only while the tab still points at the
+server and the database that ran.
+
 The admin form is **Admin → System → AI assistant** (super-admin). It edits the
 settings and the providers, saves or clears an API key and runs a test call.
 It deletes a provider only after an inline confirmation.

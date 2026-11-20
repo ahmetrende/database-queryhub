@@ -20,6 +20,22 @@ const QH_AI_MODES = {
 };
 const QH_AI_MODE_ORDER = ['generate', 'explain', 'optimize', 'fix', 'chat'];
 
+// "Fix with AI" on a failed run: the error to send. It is the last `err` line
+// of the run's Messages, which the server scrubs (errors.scrub). A line about a
+// decision ("Rejected by ...", "Cancelled.") is not a run error. The text is
+// cut at QH_AI_FIX_MAX, far under the server's prompt limit.
+const QH_AI_FIX_MAX = 2000;
+function qhAiFixError(messages) {
+  const errs = (Array.isArray(messages) ? messages : [])
+    .filter(m => m && m.kind === 'err' && typeof m.text === 'string' && m.text.trim()
+      && !/^Rejected by /.test(m.text) && m.text.trim() !== 'Cancelled.');
+  const last = errs[errs.length - 1];
+  return last ? last.text.trim().slice(0, QH_AI_FIX_MAX) : '';
+}
+function qhAiFixPrompt(error) {
+  return 'The query failed with this error:\n' + String(error || '');
+}
+
 // Text -> [{ kind: 'text' | 'code', text, lang }]. Only fenced code blocks
 // become code. Everything else stays plain text, so no markup from the model
 // reaches the page.
@@ -75,7 +91,7 @@ function QhAiTurn({ turn, onInsert, onToast }) {
       <div className="qh-ai-turn is-user">
         <div className="qh-ai-turnhead">{QH_AI_MODES[turn.mode] ? QH_AI_MODES[turn.mode][0] : 'You'}</div>
         {turn.prompt && <div className="qh-ai-text">{turn.prompt}</div>}
-        {turn.sqlLines > 0 && <div className="qh-ai-meta">With {turn.sqlLines} line{turn.sqlLines === 1 ? '' : 's'} of SQL from the editor.</div>}
+        {turn.sqlLines > 0 && <div className="qh-ai-meta">With {turn.sqlLines} line{turn.sqlLines === 1 ? '' : 's'} of SQL from {turn.fromRun ? 'the failed run' : 'the editor'}.</div>}
       </div>
     );
   }
@@ -94,16 +110,16 @@ function QhAiTurn({ turn, onInsert, onToast }) {
 }
 
 // The side panel. One conversation per editor tab, kept while the page is open.
-function QhAiPanel({ status, tabId, conn, db, getSql, onInsert, onClose, onToast }) {
+function QhAiPanel({ status, tabId, conn, db, getSql, onInsert, onClose, onToast, fix, onFixTaken }) {
   const api = window.qhApi;
-  const [mode, setMode] = React.useState('generate');
+  const [modeNow, setMode] = React.useState('generate');
   const [prompt, setPrompt] = React.useState('');
   const [model, setModel] = React.useState(status.default || '');
   const [convos, setConvos] = React.useState({});
   const [busy, setBusy] = React.useState(false);
   const logRef = React.useRef(null);
   const turns = convos[tabId] || [];
-  const meta = QH_AI_MODES[mode];
+  const meta = QH_AI_MODES[modeNow];
   const ready = !!(conn && db);
 
   React.useEffect(() => {
@@ -113,10 +129,14 @@ function QhAiPanel({ status, tabId, conn, db, getSql, onInsert, onClose, onToast
 
   const add = (id, items) => setConvos(c => ({ ...c, [id]: [...(c[id] || []), ...items] }));
 
-  const send = () => {
+  // `run` is a "Fix with AI" call: { mode, prompt, sql }. It skips the compose
+  // box, so a half-written prompt stays where it is.
+  const send = (run) => {
     if (busy || !ready) return;
-    const sql = meta[2] ? String(getSql() || '') : '';
-    const text = prompt.trim();
+    const mode = run ? run.mode : modeNow;
+    const meta = QH_AI_MODES[mode];
+    const sql = run ? String(run.sql || '') : (meta[2] ? String(getSql() || '') : '');
+    const text = run ? String(run.prompt || '').trim() : prompt.trim();
     if (meta[3] && !text) { onToast && onToast('Write what you need in the prompt.'); return; }
     if (!meta[3] && !sql.trim()) { onToast && onToast('There is no SQL. Write or select SQL first.'); return; }
     // Earlier turns go back as text, so a chat can refer to them.
@@ -124,8 +144,8 @@ function QhAiPanel({ status, tabId, conn, db, getSql, onInsert, onClose, onToast
       .map(t => ({ role: t.role === 'ai' ? 'assistant' : 'user', content: t.role === 'ai' ? t.text : (t.prompt || QH_AI_MODES[t.mode][0]) }))
       .filter(t => t.content);
     const id = tabId;
-    add(id, [{ role: 'user', mode, prompt: text, sqlLines: sql.trim() ? sql.trim().split('\n').length : 0 }]);
-    setPrompt('');
+    add(id, [{ role: 'user', mode, prompt: text, sqlLines: sql.trim() ? sql.trim().split('\n').length : 0, fromRun: !!run }]);
+    if (!run) setPrompt('');
     setBusy(true);
     api.aiComplete({
       mode, prompt: text, sql, messages: history, connectionId: conn, databaseId: db,
@@ -140,6 +160,15 @@ function QhAiPanel({ status, tabId, conn, db, getSql, onInsert, onClose, onToast
   const onKey = (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); }
   };
+
+  // "Fix with AI" from a failed run: take the request once, show Fix, send it.
+  React.useEffect(() => {
+    if (!fix || !fix.n) return;
+    onFixTaken && onFixTaken();
+    setMode('fix');
+    if (busy) { onToast && onToast('The assistant is still answering. Try again when it is done.'); return; }
+    send({ mode: 'fix', prompt: qhAiFixPrompt(fix.error), sql: fix.sql });
+  }, [fix && fix.n]);
 
   const sends = ['your prompt'];
   if (meta[2]) sends.push('the selected SQL or all of it');
@@ -165,8 +194,8 @@ function QhAiPanel({ status, tabId, conn, db, getSql, onInsert, onClose, onToast
       </div>
       <div className="qh-ai-modes" role="group" aria-label="What the assistant does">
         {QH_AI_MODE_ORDER.map(k => (
-          <button key={k} type="button" className={'qh-ai-mode' + (mode === k ? ' is-active' : '')}
-            aria-pressed={mode === k} onClick={() => setMode(k)}>{QH_AI_MODES[k][0]}</button>
+          <button key={k} type="button" className={'qh-ai-mode' + (modeNow === k ? ' is-active' : '')}
+            aria-pressed={modeNow === k} onClick={() => setMode(k)}>{QH_AI_MODES[k][0]}</button>
         ))}
       </div>
       <div className="qh-ai-log" ref={logRef}>
@@ -184,7 +213,7 @@ function QhAiPanel({ status, tabId, conn, db, getSql, onInsert, onClose, onToast
           onChange={e => setPrompt(e.target.value)} onKeyDown={onKey} disabled={!ready} aria-label="Prompt" />
         <div className="qh-ai-sendrow">
           <span className="qh-ai-sends">Sends {sends.join(', ')}. Never rows or values.</span>
-          <button type="button" className="qh-btn qh-btn-primary qh-btn-sm" onClick={send} disabled={busy || !ready}
+          <button type="button" className="qh-btn qh-btn-primary qh-btn-sm" onClick={() => send()} disabled={busy || !ready}
             title="Send (Ctrl+Enter)">{busy ? 'Sending…' : 'Send'}</button>
         </div>
       </div>
@@ -508,4 +537,4 @@ function AiAdminView({ st }) {
   );
 }
 
-Object.assign(window, { QH_AI_MODES, qhAiSegments, qhAiSentLine, qhAiAudLabel, QhAiPanel, AiAdminView });
+Object.assign(window, { QH_AI_MODES, qhAiFixError, qhAiFixPrompt, qhAiSegments, qhAiSentLine, qhAiAudLabel, QhAiPanel, AiAdminView });
