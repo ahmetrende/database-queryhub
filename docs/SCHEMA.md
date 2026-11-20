@@ -184,6 +184,9 @@ NOSUPERUSER, NOCREATEDB, NOCREATEROLE, connection limit 20).
   `access_grant_default_days` (90). The days that a new grant lasts when an
   approver approves an access request and picks no other end. The approver can
   pick an end or no end. Grants that exist keep their end dates.
+- **221_user_workspaces** — `user_workspaces`: one row per person and kind
+  (`workspace` or `prefs`) with a jsonb document and a version. New
+  `bot_config`: `workspace_sync_enabled` (on) and `workspace_max_kb` (512).
 
 ---
 
@@ -1058,6 +1061,26 @@ touch.
 A tab in `tabs` can carry `autoName: true`. The client named that tab after
 its database, not a person, and renames it when the tab moves to another
 database. The stored `name` is only what the tab showed at save time.
+
+### `user_workspaces`
+
+One person's web workspace or UI preferences, kept on the server
+(migration 221). The routes are in `web/routes_workspace.py`.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `principal_id` | text | The person: the `sub` of the session, the same id that `/api/me` returns. |
+| `kind` | text | `workspace` (open tabs and their state) or `prefs` (UI preferences). CHECK. |
+| `data` | jsonb | The document that the browser sent. Always a JSON object. |
+| `version` | integer | 1 for a new row. Each write adds 1. |
+| `updated_at` | timestamptz | Time of the last write. |
+
+The primary key is `(principal_id, kind)`. A write names the version that the
+client read. The upsert updates the row only when the stored version is that
+version. Otherwise the route answers 409 with the stored copy. A person reads
+and writes only their own rows. The app writes no audit row for this table:
+it holds the person's own editor state, like browser storage.
+`workspace_sync_enabled` and `workspace_max_kb` control it (CONFIGURATION.md).
 
 ### `web_notification_reads`
 

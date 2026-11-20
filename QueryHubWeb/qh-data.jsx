@@ -2234,10 +2234,194 @@ function qhMergeWorkspace(base, mine, theirs, newId) {
   return { tabs: touched ? out : m, activeId, changed };
 }
 
+// ----- Open tabs and preferences on the server (2026-11-20) -----
+// The server keeps one copy of the open tabs and one copy of the UI preferences
+// per person (GET/PUT/DELETE /api/me/workspace/{kind}). Server data enters the
+// tabs only at page start and after a 409. It never enters on a timer or while
+// the person types: PR 389 showed that an echo of a write drops keystrokes.
+const QH_WS_SYNC_DEBOUNCE_MS = 3000;
+const QH_PREFS_POLL_MS = 5000;
+// The last server copy that this browser read or wrote: { version, data }. It is
+// the merge base at the next page start, so a tab that changed only on another
+// device is taken, not copied. It holds SQL, so sign-out clears it.
+const QH_WS_SERVER_KEY = 'qh.workspace.server.v1';
+// UI preferences only. Never the workspace, saved queries, sessions, history,
+// drafts, tokens, hidden databases or favorites. Sizes that depend on the screen
+// (qh.sidewidth.v1, qh.resheight.v1) and per-browser switches (browser
+// notifications, results to Slack) stay out too.
+const QH_PREFS_SYNC_KEYS = ['qh.prefs.v1', 'qh.wrap.v1', 'qh.f8blank.v1', 'qh.params.v1', 'qh.lint.v1',
+  'qh.alias.v1', 'qh.fmt.v1', 'qh.ac.size.v1', 'qh.treeview.v1', 'qh.snipsort.v1', 'qh.longrun.v1'];
+const QH_PREFS_MAX_CHARS = 4000;
+
+// The whitelisted preference keys that this browser has, as { key: text }.
+function qhPrefsSnapshot(storage) {
+  const out = {};
+  if (!storage) return out;
+  QH_PREFS_SYNC_KEYS.forEach(k => {
+    try {
+      const v = storage.getItem(k);
+      if (typeof v === 'string' && v.length <= QH_PREFS_MAX_CHARS) out[k] = v;
+    } catch (e) { /* storage off */ }
+  });
+  return out;
+}
+
+// Write the whitelisted keys of `data` to storage. Every other key is ignored.
+// With onlyMissing, a key that this browser has already keeps its value.
+// Returns the keys that it wrote.
+function qhPrefsApply(storage, data, onlyMissing) {
+  const written = [];
+  if (!storage || !data || typeof data !== 'object' || Array.isArray(data)) return written;
+  QH_PREFS_SYNC_KEYS.forEach(k => {
+    const v = data[k];
+    if (typeof v !== 'string' || v.length > QH_PREFS_MAX_CHARS) return;
+    try {
+      const cur = storage.getItem(k);
+      if (cur === v || (onlyMissing && cur != null)) return;
+      storage.setItem(k, v);
+      written.push(k);
+    } catch (e) { /* storage off */ }
+  });
+  return written;
+}
+
+// The tweaks (theme, density, font size) in a stored qh.prefs.v1 text. Only
+// known keys with the type of the default. `brand` stays per session.
+function qhPrefsTweaks(raw, defaults) {
+  const out = {};
+  try {
+    const saved = typeof raw === 'string' ? JSON.parse(raw) : null;
+    if (!saved || typeof saved !== 'object') return out;
+    Object.keys(defaults || {}).forEach(k => {
+      if (k === 'brand') return;
+      if (k in saved && typeof saved[k] === typeof defaults[k]) out[k] = saved[k];
+    });
+  } catch (e) { /* not JSON */ }
+  return out;
+}
+
+// The content of the open tabs without the clocks (savedAt, touchedAt). Two
+// equal keys need no PUT.
+function qhWsSyncKey(tabs, activeId) {
+  return String(activeId || '') + '\u0002' + (tabs || []).map(t => t.id + '\u0000' + qhWsTabRow(t)).join('\u0001');
+}
+
+// True when the tabs hold nothing that a person made: only the welcome and
+// What's new pages and query tabs with no SQL and no target.
+function qhWsIsBlank(tabs) {
+  return (tabs || []).every(t => t.kind === 'welcome' || t.kind === 'whatsnew'
+    || (!t.kind && !String(t.sql || '').trim() && !t.conn));
+}
+
+// The stored last server copy (QH_WS_SERVER_KEY text) as { version, rec }, or null.
+function qhWsServerBase(raw) {
+  try {
+    const w = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!w || typeof w !== 'object') return null;
+    const rec = qhParseWorkspace(w.data);
+    return rec ? { version: Number(w.version) || 0, rec } : null;
+  } catch (e) { return null; }
+}
+
+// What the first GET means for the open tabs. local = { tabs, activeId } live.
+// server = the GET answer. base = the last server copy that this browser kept
+// ({ tabs, activeId } or null). newId gives a free tab id for a conflict copy.
+//   off   sync is off or the answer is not a workspace answer.
+//   push  the server has no tabs: keep the local tabs and send them.
+//   take  this browser has no tabs of its own: take the server copy as it is.
+//   merge three-way merge (qhMergeWorkspace) of base, local and server.
+function qhWsSyncStart(local, server, base, newId) {
+  if (!server || server.enabled !== true) return { action: 'off' };
+  const version = Number(server.version) || 0;
+  const rec = server.data == null ? null : qhParseWorkspace(server.data);
+  if (!rec || !rec.tabs.length) return { action: 'push', version, rec: null };
+  if (qhWsIsBlank(local && local.tabs)) return { action: 'take', version, rec };
+  const merged = qhMergeWorkspace(base || null, local, rec, newId);
+  return { action: 'merge', version, rec, merged };
+}
+
+// The server copy that a 409 carries, as { version, data }, or null. The body
+// can sit at the top level, under `detail` or under `error`.
+function qhWsConflictOf(e) {
+  if (!e || e.status !== 409) return null;
+  const b = e.body;
+  const places = [b, b && b.detail, b && b.error, e];
+  for (const p of places) {
+    if (p && typeof p === 'object' && p.version != null && 'data' in p) return { version: Number(p.version) || 0, data: p.data };
+  }
+  return null;
+}
+
+// A 404 (sync is off) or a 413 (too large) stops the sync for this page load.
+function qhWsSyncStops(e) {
+  return !!(e && (e.status === 404 || e.status === 413));
+}
+
+// The content of the open tabs without the order, the active tab and the clocks.
+// Two browser tabs of one browser hold the same tabs in their own order and with
+// their own active tab, so a PUT from each carries an equal content key.
+function qhWsContentKey(tabs) {
+  return (tabs || []).map(t => t.id + '\u0000' + qhWsTabRow(t)).sort().join('\u0001');
+}
+
+// A merge base from the tabs of `theirs` that one of the other records holds with
+// the same content. Tab ids are not unique across devices, so a local record is
+// not a server copy: a tab counts as unchanged only where both sides hold the
+// same content. Returns null when there is no other record.
+function qhWsAgreedBase(theirs, ...others) {
+  const recs = others.filter(r => r && Array.isArray(r.tabs));
+  if (!theirs || !Array.isArray(theirs.tabs) || !recs.length) return null;
+  const rows = recs.map(r => new Map(r.tabs.map(t => [t.id, qhWsTabRow(t)])));
+  return { activeId: theirs.activeId, tabs: theirs.tabs.filter(t => {
+    const row = qhWsTabRow(t);
+    return rows.some(m => m.get(t.id) === row);
+  }) };
+}
+
+// What a 409 on the open-tabs PUT means. Each record is { tabs, activeId } or null.
+//   sent    the record that the failed PUT carried.
+//   live    the live tabs of this page now.
+//   theirs  the server copy that the 409 carries.
+//   base    the last server copy that this page read or wrote.
+//   local   the record of this browser's local storage that this page last read or wrote.
+// Returns one of:
+//   { kind: 'adopt' }        the server holds these tabs already (another browser
+//                            tab of this browser sent them first): take the version, merge nothing.
+//   { kind: 'merge', base }  a three-way merge of the live tabs and theirs on `base`.
+//   { kind: 'retry' }        no base at all: take the version and send the live tabs again.
+function qhWs409Plan({ sent, live, theirs, base, local }) {
+  const th = theirs || { activeId: '', tabs: [] };
+  const key = qhWsContentKey(th.tabs);
+  if ((sent && key === qhWsContentKey(sent.tabs)) || (live && key === qhWsContentKey(live.tabs))) return { kind: 'adopt' };
+  if (base) return { kind: 'merge', base };
+  const agreed = qhWsAgreedBase(th, local, sent);
+  return agreed ? { kind: 'merge', base: agreed } : { kind: 'retry' };
+}
+
+// The merged tabs, with the live tab object kept where the merge changed nothing
+// that the stored fields hold. The active tab also keeps its object when its SQL
+// is the same, so the editor keeps the caret. Returns prev itself when every tab
+// is the live one in the same order.
+function qhWsKeepLive(prev, next, activeId) {
+  const live = prev || [];
+  const byId = new Map(live.map(t => [t.id, t]));
+  const out = (next || []).map(t => {
+    const p = byId.get(t.id);
+    if (!p || p === t) return t;
+    if (qhWsTabRow(p) === qhWsTabRow(t)) return p;
+    if (t.id === activeId && p.sql === t.sql) return p;
+    return t;
+  });
+  return (out.length === live.length && out.every((t, i) => t === live[i])) ? live : out;
+}
+
 Object.assign(window, { qhHistoryRunTab, qhPollDelay, QH_POLL_FAST_MS, QH_POLL_SLOW_MS, QH_POLL_MAX_BACKOFF_MS, qhTreeObject,
   qhFleetGlob, qhFleetPairs, qhFleetFilter, qhFleetTierRank, qhFleetCovers, qhFleetDefaultOnFailure,
   QH_FLEET_STATES, QH_FLEET_STATE_INFO, qhFleetStateOf, qhFleetStateInfo, qhFleetSummary, qhBundleTitle,
   qhWorkspaceSlim, qhParseWorkspace, qhWsTabRow, qhWsHydrate, qhMergeWorkspace, QH_WS_COPY_SUFFIX,
+  QH_WS_SYNC_DEBOUNCE_MS, QH_PREFS_POLL_MS, QH_WS_SERVER_KEY, QH_PREFS_SYNC_KEYS, QH_PREFS_MAX_CHARS,
+  qhPrefsSnapshot, qhPrefsApply, qhPrefsTweaks, qhWsSyncKey, qhWsIsBlank, qhWsServerBase, qhWsSyncStart, qhWsConflictOf, qhWsSyncStops,
+  qhWsContentKey, qhWsAgreedBase, qhWs409Plan, qhWsKeepLive,
   qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhSelectionLines, qhPrimaryLabel, qhJudgedText, qhShiftRanges, qhConfirmReasons, qhSplitReasons,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,

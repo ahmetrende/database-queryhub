@@ -65,6 +65,9 @@ async function qhFetch(path, opts = {}, _retried = false) {
     const e = new Error(err.message);
     Object.assign(e, err);
     e.code = err.code; e.status = res.status;
+    // The whole parsed body too. A 409 on the workspace PUT carries the server
+    // copy at the top level, outside the `error` envelope (qhWsConflictOf).
+    e.body = body;
     if (res.status === 403 && err.code === 'ui_super_admin_only') qhGoToPortalNotice();
     throw e;
   }
@@ -116,6 +119,15 @@ const qhApi = {
   // Developer-facing changelog (release list derived live from git history).
   changelog:   ()      => qhFetch('/changelog'),
   signout:     ()      => qhFetch('/auth/signout', { method: 'POST' }),
+  // Open tabs and preferences on the server (2026-11-20). kind is 'workspace'
+  // or 'prefs'. GET answers { enabled, data, version, updatedAt }. A PUT sends
+  // the version it read. A 409 carries the server copy, a 404 means sync is off.
+  // `opts.keepalive` lets the last PUT finish while the page closes (pagehide).
+  workspaceGet:    (kind) => qhFetch('/me/workspace/' + encodeURIComponent(kind)),
+  workspacePut:    (kind, data, baseVersion, opts) => qhFetch('/me/workspace/' + encodeURIComponent(kind),
+                     { method: 'PUT', body: JSON.stringify({ data, baseVersion: Number(baseVersion) || 0 }),
+                       ...(opts && opts.keepalive ? { keepalive: true } : {}) }),
+  workspaceDelete: (kind) => qhFetch('/me/workspace/' + encodeURIComponent(kind), { method: 'DELETE' }),
   connections: ()      => qhFetch('/connections'),
   schema:      (conn, dbn) => qhFetch('/connections/' + encodeURIComponent(conn) +
                                       '/databases/' + encodeURIComponent(dbn) + '/schema'),

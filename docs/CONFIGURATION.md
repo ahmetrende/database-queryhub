@@ -72,6 +72,8 @@ An auto-approve rule made in the app is RO or RW, never DDL. This has no setting
 | `web_metrics_enabled` | `off` | Serve `GET /metrics` in Prometheus text format: queue depth and age, request totals, approval/execution time, fleet and grant counts, kill switch, auth-event outbox backlog. While it is `off`, the route answers **404**, not 403. A 403 tells a caller that the endpoint exists. |
 | `web_metrics_token` | `""` | Bearer token for `GET /metrics`, for scrapers that cannot hold a session cookie. Empty means that the route requires an **admin session** instead. So if you enable the endpoint and set no token, the endpoint stays unpublished. The app compares the token in constant time. |
 | `web_org_label` | `QueryHub` | Org name shown in the nav (cosmetic). |
+| `workspace_sync_enabled` | `on` | Keep each person's web workspace (open tabs) and UI preferences on the server, in `user_workspaces`. Then they follow the person to another browser. `off` = `GET /api/me/workspace/{kind}` answers `{enabled: false}` and a save answers 404 `disabled`. The browser then keeps them locally only. A person can still delete their stored copy. Migration 221 seeds it. |
+| `workspace_max_kb` | `512` | The largest workspace or preferences document that one person can store, in KB of JSON text. A larger save answers 413. Migration 221 seeds it. |
 
 ### Environment variables (not `bot_config`)
 
