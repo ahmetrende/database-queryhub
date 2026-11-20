@@ -392,6 +392,10 @@ const qhApi = {
   adminAddFleetGrant:(b)        => qhFetch('/admin/grants/fleet', { method: 'POST', body: JSON.stringify(b) }),
   adminRevokeFleetGrant:(id, o) => qhFetch('/admin/grants/fleet/' + encodeURIComponent(id), { method: 'DELETE', ...qhRevokeBody(o) }),
   adminSetSuperAdminOnly:(conn, on) => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/super-admin-only', { method: 'PUT', body: JSON.stringify({ on: !!on }) }),
+  // AI assistant and MCP clients per connection (2026-11-20). Super-admin only,
+  // like the switch above. Body: { allowed: bool }.
+  adminSetAiAllowed:(conn, allowed) => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/ai-allowed', { method: 'PUT', body: JSON.stringify({ allowed: !!allowed }) }),
+  adminSetMcpAllowed:(conn, allowed) => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/mcp-allowed', { method: 'PUT', body: JSON.stringify({ allowed: !!allowed }) }),
   adminAddConnectionOwner:(conn, teamId) => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/owners', { method: 'POST', body: JSON.stringify({ teamId }) }),
   adminRemoveConnectionOwner:(conn, teamId) => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/owners/' + encodeURIComponent(teamId), { method: 'DELETE' }),
   // Several connections, all or nothing (design 2026-09-23). A dry run writes

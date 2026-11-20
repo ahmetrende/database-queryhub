@@ -375,7 +375,10 @@ def submit_query(body: QueryIn, request: Request,
         unmasked=body.unmasked,
         run_on=body.runOn,
         replica_id=body.replicaId if body.runOn == "replica" else None,
-        ai_assisted=body.aiAssisted and ai.is_enabled_for(uid),
+        # Migration 217: a connection closed to the AI assistant never
+        # records a request as AI-assisted.
+        ai_assisted=(body.aiAssisted and bool(getattr(t, "ai_allowed", True))
+                     and ai.is_enabled_for(uid)),
         result_to_slack=_result_to_slack(claims, body.resultToSlack),
         default_schema=body.defaultSchema,
     )

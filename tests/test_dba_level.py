@@ -451,6 +451,9 @@ def _get_connections(client, uid):
 # at the end of each row. The fixture stores no check result (`health` null),
 # and replica routing is off, so the replica is not in rotation (false). A row
 # that is not a replica has `inRotation` null.
+#
+# Changed on purpose again: migration 217 added `aiAllowed` and `mcpAllowed`
+# after `superAdminOnly`. The fixture rows do not set them, so both are true.
 GOLDEN_SUPER_BODY = (
     b'{"connections":[{"id":"prod-main","name":"prod-main","engine":"PostgreSQL",'
     b'"engineId":"postgres","env":"production","enabled":true,'
@@ -459,6 +462,7 @@ GOLDEN_SUPER_BODY = (
     b'"secretsProvider":"local","tags":{"provider":"aws","service":"rds",'
     b'"account":"example-account"},"replicaOf":null,"deleted":false,'
     b'"deletedAt":null,"deletedReason":null,"superAdminOnly":false,'
+    b'"aiAllowed":true,"mcpAllowed":true,'
     b'"credentials":{"ro":{"username":"reader_ro","configured":true,'
     b'"placeholder":false},"rw":{"username":"writer_rw","configured":true,'
     b'"placeholder":false},"ddl":{"username":null,"configured":false,'
@@ -473,7 +477,8 @@ GOLDEN_SUPER_BODY = (
     b'"notes":null,"secretsProvider":"awssm","tags":{},"replicaOf":"prod-main",'
     b'"deleted":true,"deletedAt":"2026-07-14T09:30:00+00:00",'
     b'"deletedReason":"inventory reports the instance deleted",'
-    b'"superAdminOnly":true,"credentials":{"ro":{"username":"reader_ro",'
+    b'"superAdminOnly":true,"aiAllowed":true,"mcpAllowed":true,'
+    b'"credentials":{"ro":{"username":"reader_ro",'
     b'"configured":true,"placeholder":false},"rw":{"username":"writer_rw",'
     b'"configured":true,"placeholder":false},"ddl":{"username":null,'
     b'"configured":false,"placeholder":false}},"databases":[],"owners":[],'

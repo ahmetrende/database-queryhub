@@ -333,6 +333,8 @@ def connections(claims: dict = Depends(deps.current_user)):
             "env": mapping.env_of(t.alias),
             "autoApproveRO": auto_ro_any,
             "disabled": not t.enabled,
+            # Migration 217: the AI assistant may use this connection.
+            "aiAllowed": bool(getattr(t, "ai_allowed", True)),
             "databases": db_entries,
         }
         # Endpoint, to everyone this loop reaches. Never a credential and never
