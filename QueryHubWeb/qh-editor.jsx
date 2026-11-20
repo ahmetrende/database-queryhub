@@ -260,13 +260,25 @@ function qhUndoStep(h, dir) {
   return { text: t, sel: dir < 0 ? e.before : e.after };
 }
 
-// Tokenize + return highlighted HTML
-function qhHighlight(code) {
+// Tokenize + return highlighted HTML.
+// Query parameters (`:name`, `${name}`, `{{name}}`, W8) come from
+// qhFindParams and get the tk-param class. qhFindParams skips strings and
+// comments, so those keep their own colour. `engineId` is optional.
+function qhHighlight(code, engineId) {
   // master regex: comments | strings | numbers | words | other
   const re = /(--[^\n]*|\/\*[\s\S]*?\*\/)|('(?:[^']|'')*')|(\b\d+(?:\.\d+)?\b)|([A-Za-z_][A-Za-z0-9_]*)|([\s\S])/g;
+  const paramEnd = new Map();
+  qhFindParams(code, engineId || 'postgres').forEach(p => paramEnd.set(p.start, p.end));
   let out = '';
   let m;
   while ((m = re.exec(code)) !== null) {
+    // A parameter starts with ':', '$' or '{': always a one-character token.
+    if (m[5] != null && paramEnd.has(m.index)) {
+      const end = paramEnd.get(m.index);
+      out += `<span class="tk-param">${qhEscape(code.slice(m.index, end))}</span>`;
+      re.lastIndex = end;
+      continue;
+    }
     if (m[1] != null) out += `<span class="tk-com">${qhEscape(m[1])}</span>`;
     else if (m[2] != null) out += m[2] === QH_REDACTED_LIT ? `<span class="tk-str tk-redact">${qhEscape(m[2])}</span>` : `<span class="tk-str">${qhEscape(m[2])}</span>`;
     else if (m[3] != null) out += `<span class="tk-num">${qhEscape(m[3])}</span>`;
@@ -6631,7 +6643,7 @@ function FormatOptions({ engineId, onFormat, style }) {
   );
 }
 
-function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWrap, blankStop, onToggleBlankStop, lint, onToggleLint, lintCount, onFormat, fmtEngine, onCloseOthers, onCloseRight, onCloseAll, onDuplicate, onRename, onCopySql, onDownloadSql, onReorder, onAi, aiOpen }) {
+function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWrap, blankStop, onToggleBlankStop, lint, onToggleLint, lintCount, onFormat, fmtEngine, onCloseOthers, onCloseRight, onCloseAll, onDuplicate, onRename, onCopySql, onDownloadSql, onReorder, onAi, aiOpen, askParams, onToggleAskParams }) {
   const [kb, setKb] = React.useState(false);
   const [dragId, setDragId] = React.useState(null);
   const [overId, setOverId] = React.useState(null);
@@ -6930,6 +6942,17 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
                 <label className="qh-fmt-check qh-kb-blank">
                   <input type="checkbox" checked={!!blankStop} onChange={onToggleBlankStop} />
                   <span>A blank line ends the statement (F8, ⇧ + ⌥ / Alt + S)</span>
+                </label>
+              </>
+            )}
+            {/* Query parameters (W8). On: Run asks for the values of
+                :name, ${name} and {{name}} before it sends the SQL. */}
+            {onToggleAskParams && (
+              <>
+                <div className="qh-kb-title qh-kb-sub">Parameters</div>
+                <label className="qh-fmt-check qh-kb-blank">
+                  <input type="checkbox" checked={!!askParams} onChange={onToggleAskParams} />
+                  <span>{'Ask for :name, ${name} and {{name}} values at Run'}</span>
                 </label>
               </>
             )}

@@ -21,6 +21,8 @@ this page when QueryHub is the right shape.
 - **Stored procedures for super-admins** — Super-admins can run stored
   procedures on SQL Server (EXEC). System procedures like sp_help run on the
   read-only login.
+- **Query parameters in the web editor** — Run asks for the values of `:name`,
+  `${name}` and `{{name}}`. The approver sees the final SQL only.
 - **Read replicas, invisibly** — a read-only PostgreSQL query runs on a
   healthy read replica of its target, and otherwise on the primary. QueryHub
   measures the replica lag against the WAL position of the primary. If the

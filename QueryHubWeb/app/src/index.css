@@ -814,8 +814,24 @@
   .tk-kw { color: var(--tk-kw); font-weight: 600; }
   .tk-str { color: var(--tk-str); }
   .tk-num { color: var(--tk-num); }
+  /* query parameters :name ${name} {{name}} (W8) */
+  .tk-param { color: var(--tk-num); font-weight: 600; }
   .tk-fn { color: var(--tk-fn); }
   .tk-com { color: var(--tk-com); font-style: italic; }
+  /* query parameters dialog (W8): one row per name, then the final SQL */
+  .qh-params-row { display: grid; grid-template-columns: 140px 1fr auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .qh-params-modal { width: 560px; }
+  .qh-params-input { width: 100%; box-sizing: border-box; height: 34px; padding: 0 10px; background: var(--bg-light);
+    border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); font-family: var(--qh-mono); font-size: 13px; color: var(--fg-primary); outline: none; }
+  .qh-params-input:focus { border-color: var(--brand-green); }
+  .qh-params-mode { display: inline-flex; gap: 4px; }
+  .qh-params-mode-btn { height: 30px; padding: 0 10px; border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); background: var(--bg-white);
+    color: var(--fg-secondary); font-size: 12px; cursor: pointer; }
+  .qh-params-mode-btn.on { border-color: var(--brand-green); background: var(--brand-adaptive-light); color: var(--fg-accent); font-weight: 600; }
+  .qh-params-hint { color: var(--fg-secondary); }
+  .qh-params-name { font-family: var(--qh-mono); color: var(--fg-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qh-params-preview { font-family: var(--qh-mono); font-size: 12px; white-space: pre-wrap; max-height: 180px; overflow: auto;
+    background: var(--adaptive-bold); padding: 8px; border-radius: 6px; }
 
   /* editor autocomplete */
   .qh-meas { position: absolute; visibility: hidden; white-space: pre; font-family: var(--qh-mono); font-size: var(--ed-fs); pointer-events: none; top: -9999px; }
