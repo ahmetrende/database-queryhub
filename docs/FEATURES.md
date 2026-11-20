@@ -18,6 +18,9 @@ this page when QueryHub is the right shape.
   Server AG). **Amazon Athena** and **ClickHouse** are read-only. ClickHouse uses
   the native protocol, readonly=1, and default-deny table functions. You add a
   new engine as a spec, not as scattered `if`s.
+- **Stored procedures for super-admins** — Super-admins can run stored
+  procedures on SQL Server (EXEC). System procedures like sp_help run on the
+  read-only login.
 - **Read replicas, invisibly** — a read-only PostgreSQL query runs on a
   healthy read replica of its target, and otherwise on the primary. QueryHub
   measures the replica lag against the WAL position of the primary. If the

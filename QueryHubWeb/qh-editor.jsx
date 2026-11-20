@@ -739,9 +739,46 @@ function qhNameInitials(name) {
 
 const QH_KW_AFTER_TABLE = new Set(['from', 'join', 'into', 'update', 'table', 'truncate', 'describe']);
 // `opts.force` (Ctrl+Space) also answers with nothing typed: every name matches.
+// The typing list at the caret. Inside a PostgreSQL routine body it is the
+// list for the body text alone (qhCodeView), with offsets in the full text.
 function qhBuildSuggest(value, caret, schema, engineId, opts) {
+  const full = String(value == null ? '' : value);
+  const v = qhCodeView(full, caret, engineId);
+  // The variables (qhVariablesAt): on SQL Server after a typed `@`, on
+  // PostgreSQL inside a routine body only.
+  const varsOf = (engineId === 'mssql' || v.off > 0) ? () => qhVariablesAt(full, caret, engineId) : null;
+  return qhShiftList(qhSuggestInView(v.text, v.caret, schema, engineId, opts, varsOf), v.off);
+}
+
+// The global functions that SQL Server lists after `@@`.
+const QH_MSSQL_GLOBALS = ['@@ROWCOUNT', '@@ERROR', '@@IDENTITY', '@@TRANCOUNT', '@@FETCH_STATUS', '@@SPID', '@@VERSION', '@@SERVERNAME'];
+
+// qhBuildSuggest for one code view: the full text or a routine body.
+// `varsOf` (optional) gives the variables at the caret.
+function qhSuggestInView(value, caret, schema, engineId, opts, varsOf) {
   const before = value.slice(0, caret);
   if (!(opts && opts.force) && qhInStringOrComment(before, engineId)) return null;
+  // SQL Server: after `@`, `@@`, `@name` or `@@name` the list is the variables,
+  // or the global functions after `@@`. The range covers the `@` signs.
+  const vm = engineId === 'mssql' ? before.match(/(?:^|[^A-Za-z0-9_$#@])(@@?)([A-Za-z0-9_$#]*)$/) : null;
+  if (vm) {
+    if (qhInStringOrComment(before, engineId)) return null;
+    const lt = vm[2].toLowerCase();
+    const pool = vm[1] === '@@' ? QH_MSSQL_GLOBALS.map(n => ({ name: n, type: '', kind: 'system' })) : (varsOf ? varsOf() : []);
+    const found = [];
+    pool.forEach(x => {
+      const bare = x.name.replace(/^@+/, '').toLowerCase();
+      // A global matches on its start only: `@@ro` must not list @@ERROR.
+      const inner = vm[1] === '@' && lt && bare.indexOf(lt) > 0;
+      const rank = bare === lt ? 0 : bare.startsWith(lt) ? 1 : inner ? 2 : -1;
+      if (rank < 0) return;
+      const it = { text: x.name, label: x.name, type: x.kind, rank, typeRank: 0 };
+      if (x.type) it.desc = x.type;
+      found.push(it);
+    });
+    found.sort((a, b) => a.rank - b.rank);
+    return found.length ? { items: found.slice(0, QH_AC_MAX), start: caret - vm[1].length - vm[2].length, end: caret } : null;
+  }
   const m = before.match(/[A-Za-z_][A-Za-z0-9_]*$/);
   if (!m && !(opts && opts.force)) return null;
   const token = m ? m[0] : '';
@@ -912,6 +949,16 @@ function qhBuildSuggest(value, caret, schema, engineId, opts) {
   else {
     add(schema.tables, 'table', 0); add(schema.columns, 'column', 1); add(schema.functions, 'function', 2); add(schema.systemTables, 'system', 3);
     add(qhKeywordsFor(engineId), 'keyword', 4);
+    // A PostgreSQL routine body: its variables and parameters go first, as
+    // written, with the type beside them.
+    const vars = (varsOf && engineId === 'postgres') ? varsOf() : [];
+    if (vars.length) {
+      const typeOf = new Map();
+      vars.forEach(x => { if (!typeOf.has(x.name)) typeOf.set(x.name, x.type); });
+      add(vars.filter(x => x.kind === 'variable').map(x => x.name), 'variable', -0.5, (n) => n);
+      add(vars.filter(x => x.kind === 'parameter').map(x => x.name), 'parameter', -0.5, (n) => n);
+      items.forEach(it => { if ((it.type === 'variable' || it.type === 'parameter') && typeOf.get(it.label)) it.desc = typeOf.get(it.label); });
+    }
     // Phrases (QH_KW_PHRASES) match on their first word. They go just before
     // the single keywords, so `order` lists ORDER BY above ORDER.
     const tw = qhSuggestTokens(before);
@@ -1460,7 +1507,10 @@ function qhOccurrences(sql, caret) {
 // The marks of the caret layer: the two ends of a pair under the caret (kind
 // 'pair') and the occurrences of the name under it (kind 'occ'), sorted by
 // start. The two never share a token: a pair end is a bracket or a keyword.
-function qhCaretMarks(sql, caret) {
+// Inside a PostgreSQL routine body both read the body alone (qhCodeView).
+function qhCaretMarks(sql, caret, engineId) {
+  const v = qhCodeView(sql, caret, engineId);
+  if (v.off > 0) return qhCaretMarks(v.text, v.caret).map(r => ({ start: r.start + v.off, end: r.end + v.off, kind: r.kind }));
   const out = qhOccurrences(sql, caret).map(r => ({ start: r.start, end: r.end, kind: 'occ' }));
   const hit = qhPairAt(sql, caret);
   if (hit) [hit.self, hit.mate].forEach(r => out.push({ start: r.s, end: r.e, kind: 'pair' }));
@@ -1660,6 +1710,353 @@ function qhScanCode(text, engineId, onChar) {
 function qhInStringOrComment(text, engineId) {
   const st = qhScanCode(text, engineId);
   return !!st && (st.kind === 'string' || st.kind === 'comment');
+}
+
+// ---------------------------------------------------------------------------
+// Routine bodies and variables (2026-11-20, P2.3 and P2.12)
+//
+// A PostgreSQL routine body is a `$tag$` string whose code before the tag ends
+// with AS, DO or DO LANGUAGE <name>. The editor reads it as code: the typing
+// list, hover, caret marks and parameter info work inside it (qhCodeView). A
+// LANGUAGE in the same statement that is not sql or plpgsql makes the body
+// data again. Any other dollar quote stays data: `SELECT $$x$$`,
+// `format($q$ ... $q$)`, `EXECUTE $q$ ... $q$`.
+// ---------------------------------------------------------------------------
+
+// The tokens of `text`, with the scanning rules of qhScanCode: { k, s, e, v, u }.
+// k is 'word', 'qid' (a quoted name), 'str', 'num', 'p' (one character) or
+// 'dq' (a dollar quote, not on SQL Server). A 'dq' token also has `bs` and
+// `be`, the range of its body, and `closed`. Comments are dropped. On SQL
+// Server a word can start with @ or #, and [x] is a quoted name. A string or a
+// comment that does not close runs to the end of the text.
+function qhVarScan(text, engineId) {
+  const t = String(text == null ? '' : text);
+  const n = t.length;
+  const ms = engineId === 'mssql';
+  const wordRe = ms ? /[A-Za-z_@#][A-Za-z0-9_$@#]*/y : /[A-Za-z_][A-Za-z0-9_$]*/y;
+  const out = [];
+  let i = 0;
+  while (i < n) {
+    const c = t[i];
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f' || c === '\v') { i++; continue; }
+    if (c === '-' && t[i + 1] === '-') { const e = t.indexOf('\n', i + 2); i = e < 0 ? n : e + 1; continue; }
+    if (c === '/' && t[i + 1] === '*') { const e = t.indexOf('*/', i + 2); i = e < 0 ? n : e + 2; continue; }
+    const close = (c === "'" || c === '"' || c === '`') ? c : (c === '[' && ms) ? ']' : null;
+    if (close) {
+      let j = i + 1, e = n;
+      for (;;) {
+        const k = t.indexOf(close, j);
+        if (k < 0) break;
+        if (t[k + 1] === close) { j = k + 2; continue; }
+        e = k + 1; break;
+      }
+      out.push({ k: c === "'" ? 'str' : 'qid', s: i, e, v: t.slice(i, e), u: null });
+      i = e; continue;
+    }
+    if (c === '$' && !ms && !(i > 0 && /[A-Za-z0-9_]/.test(t[i - 1]))) {
+      const m = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(t.slice(i, i + 66));
+      if (m) {
+        const bs = i + m[0].length;
+        const k = t.indexOf(m[0], bs);
+        const e = k < 0 ? n : k + m[0].length;
+        out.push({ k: 'dq', s: i, e, v: m[0], u: null, bs, be: k < 0 ? n : k, closed: k >= 0 });
+        i = e; continue;
+      }
+    }
+    if (c >= '0' && c <= '9') {
+      let j = i;
+      while (j < n && /[0-9.]/.test(t[j])) j++;
+      out.push({ k: 'num', s: i, e: j, v: t.slice(i, j), u: null });
+      i = j; continue;
+    }
+    wordRe.lastIndex = i;
+    const w = wordRe.exec(t);
+    if (w) { out.push({ k: 'word', s: i, e: wordRe.lastIndex, v: w[0], u: w[0].toUpperCase() }); i = wordRe.lastIndex; continue; }
+    out.push({ k: 'p', s: i, e: i + 1, v: c, u: null });
+    i++;
+  }
+  return out;
+}
+
+// The PostgreSQL routine body whose text holds `caret`, one level only. The
+// answer is { s, e, head } or null: `s` and `e` are the body range, and `head`
+// is the tokens of the body's statement before the opening tag.
+function qhRoutineBodyAt(text, caret) {
+  const T = qhVarScan(text, 'postgres');
+  const k = T.findIndex(x => x.k === 'dq' && x.bs <= caret && caret <= x.be);
+  if (k < 0) return null;
+  const semi = (x) => x.k === 'p' && x.v === ';';
+  let a = k, b = k + 1;
+  while (a > 0 && !semi(T[a - 1])) a--;
+  while (b < T.length && !semi(T[b])) b++;
+  const head = T.slice(a, k), tail = T.slice(k + 1, b);
+  const L = head.length;
+  const W = head.map(x => x.u);
+  const nameTok = (x) => !!x && (x.k === 'word' || x.k === 'qid' || x.k === 'str');
+  const opens = L > 0 && (W[L - 1] === 'AS' || W[L - 1] === 'DO'
+    || (L >= 3 && W[L - 3] === 'DO' && W[L - 2] === 'LANGUAGE' && nameTok(head[L - 1])));
+  if (!opens) return null;
+  // LANGUAGE <name> before the tag or after the closing tag.
+  const langOf = (list) => {
+    for (let i = 0; i + 1 < list.length; i++) {
+      if (list[i].u === 'LANGUAGE' && nameTok(list[i + 1])) return list[i + 1].v.replace(/^["'`]|["'`]$/g, '').toLowerCase();
+    }
+    return null;
+  };
+  for (const lang of [langOf(head), langOf(tail)]) {
+    if (lang != null && lang !== 'sql' && lang !== 'plpgsql') return null;
+  }
+  return { s: T[k].bs, e: T[k].be, head };
+}
+
+// The code view at the caret: { text, caret, off }. Inside a PostgreSQL routine
+// body the view is the body text, and `off` is the offset of its first
+// character. A body inside a body narrows again. Elsewhere the view is the
+// full text with `off` 0. Add `off` to an offset of the view to get an offset
+// of the full text.
+function qhCodeView(text, caret, engineId) {
+  const t = String(text == null ? '' : text);
+  const c = Math.max(0, Math.min(Number(caret) || 0, t.length));
+  if (engineId !== 'postgres') return { text: t, caret: c, off: 0 };
+  const b = qhRoutineBodyAt(t, c);
+  if (!b) return { text: t, caret: c, off: 0 };
+  const v = qhCodeView(t.slice(b.s, b.e), c - b.s, engineId);
+  return { text: v.text, caret: v.caret, off: b.s + v.off };
+}
+
+const QH_VARIABLES_MAX = 200;
+// A parameter that starts with one of these words is a type with no name
+// (`character varying`, `double precision`).
+const QH_PG_TYPE_HEAD = new Set(['CHARACTER', 'CHAR', 'DOUBLE', 'BIT', 'NATIONAL', 'NCHAR', 'VARCHAR', 'TIMESTAMP', 'TIME', 'INTERVAL']);
+
+// The variables and parameters declared before the caret:
+// [{ name, type, kind: 'variable' | 'parameter', line }], at most
+// QH_VARIABLES_MAX. The first declaration of a name wins. `line` is 1-based in
+// the full text. `type` is the type as written, with whitespace collapsed.
+//   * SQL Server: the caret's batch (a GO line ends a batch). DECLARE @a type,
+//     and the parameters of CREATE or ALTER PROC, PROCEDURE or FUNCTION.
+//   * PostgreSQL: inside a routine body only. Each DECLARE section before the
+//     caret, and the named parameters of CREATE FUNCTION or PROCEDURE.
+function qhVariablesAt(text, caret, engineId) {
+  const t = String(text == null ? '' : text);
+  const c = Math.max(0, Math.min(Number(caret) || 0, t.length));
+  const out = [], seen = new Set();
+  const lineOf = (off) => {
+    let n = 1;
+    for (let i = t.indexOf('\n'); i >= 0 && i < off; i = t.indexOf('\n', i + 1)) n++;
+    return n;
+  };
+  const typeText = (src, toks) => (toks.length ? src.slice(toks[0].s, toks[toks.length - 1].e).replace(/\s+/g, ' ').trim() : '');
+  // `base` moves a token of a view to the full text. A name that touches the
+  // caret is still being typed, so it does not count.
+  const put = (tok, base, type, kind) => {
+    if (out.length >= QH_VARIABLES_MAX || base + tok.e >= c) return;
+    const key = tok.v.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ name: tok.v, type, kind, line: lineOf(base + tok.s) });
+  };
+  const isName = (x) => !!x && (x.k === 'word' || x.k === 'qid');
+  const isP = (x, v) => !!x && x.k === 'p' && x.v === v;
+
+  if (engineId === 'mssql') {
+    const all = qhVarScan(t, 'mssql');
+    let from = 0;
+    all.forEach((x, i) => { if (x.s < c && x.k === 'word' && x.u === 'GO' && qhGoLine(t, x)) from = i + 1; });
+    const T = all.slice(from).filter(x => x.s < c);
+    const isVar = (x) => !!x && x.k === 'word' && x.v[0] === '@' && x.v[1] !== '@';
+    // A type: a name, maybe qualified, then maybe one ( ... ).
+    const readType = (j) => {
+      const s = j;
+      if (!isName(T[j])) return { toks: [], j };
+      j++;
+      while (isP(T[j], '.') && isName(T[j + 1])) j += 2;
+      if (isP(T[j], '(')) {
+        let d = 0;
+        for (; j < T.length; j++) {
+          if (isP(T[j], '(')) d++;
+          else if (isP(T[j], ')') && --d === 0) { j++; break; }
+        }
+      }
+      return { toks: T.slice(s, j), j };
+    };
+    // Skip a default value: up to a top-level `,` `;` or `)`, a stop word, or
+    // a word that starts the next statement.
+    const skipExpr = (j, stop) => {
+      let d = 0;
+      for (let first = true; j < T.length; j++, first = false) {
+        const x = T[j];
+        if (isP(x, '(')) d++;
+        else if (isP(x, ')')) { if (d === 0) return j; d--; }
+        else if (d === 0 && (isP(x, ',') || isP(x, ';'))) return j;
+        else if (d === 0 && !first && x.k === 'word' && (stop.has(x.u) || QH_STMT_LEAD.has(x.u) || QH_STMT_LEAD_MSSQL.has(x.u))) return j;
+      }
+      return j;
+    };
+    const PARAM_STOP = new Set(['AS', 'OUT', 'OUTPUT', 'READONLY']);
+    for (let i = 0; i < T.length; i++) {
+      const x = T[i];
+      if (x.k !== 'word') continue;
+      if (x.u === 'DECLARE') {
+        let j = i + 1;
+        while (isVar(T[j])) {
+          const nm = T[j++];
+          if (T[j] && T[j].u === 'AS') j++;
+          let type;
+          if (T[j] && T[j].u === 'TABLE') { type = 'TABLE'; j = readType(j).j; }
+          else { const r = readType(j); type = typeText(t, r.toks); j = r.j; }
+          put(nm, 0, type, 'variable');
+          if (isP(T[j], '=')) j = skipExpr(j + 1, new Set());
+          if (!isP(T[j], ',')) break;
+          j++;
+        }
+        i = j - 1;
+        continue;
+      }
+      if (x.u === 'CREATE' || x.u === 'ALTER') {
+        let j = i + 1;
+        if (T[j] && T[j].u === 'OR' && T[j + 1] && T[j + 1].u === 'ALTER') j += 2;
+        if (!T[j] || ['PROC', 'PROCEDURE', 'FUNCTION'].indexOf(T[j].u) < 0) continue;
+        j++;
+        if (!isName(T[j])) continue;
+        j++;
+        while (isP(T[j], '.') && isName(T[j + 1])) j += 2;
+        if (isP(T[j], '(')) j++;
+        while (isVar(T[j])) {
+          const nm = T[j++];
+          if (T[j] && T[j].u === 'AS') j++;
+          const r = readType(j);
+          j = r.j;
+          if (T[j] && T[j].u === 'VARYING') j++;
+          if (isP(T[j], '=')) j = skipExpr(j + 1, PARAM_STOP);
+          while (T[j] && (T[j].u === 'OUT' || T[j].u === 'OUTPUT' || T[j].u === 'READONLY')) j++;
+          put(nm, 0, typeText(t, r.toks), 'parameter');
+          if (!isP(T[j], ',')) break;
+          j++;
+        }
+        i = j - 1;
+      }
+    }
+    return out;
+  }
+
+  if (engineId !== 'postgres') return out;
+  // The innermost routine body at the caret, and the text that holds it.
+  let base = 0, cur = t, cc = c, last = null;
+  for (let b = qhRoutineBodyAt(cur, cc); b; b = qhRoutineBodyAt(cur, cc)) {
+    last = { b, cur, base };
+    base += b.s; cur = cur.slice(b.s, b.e); cc -= b.s;
+  }
+  if (!last) return out;
+  // The named parameters of CREATE [OR REPLACE] FUNCTION | PROCEDURE name(...).
+  const H = last.b.head;
+  let j = 0;
+  if (H[j] && H[j].u === 'CREATE') {
+    j++;
+    if (H[j] && H[j].u === 'OR' && H[j + 1] && H[j + 1].u === 'REPLACE') j += 2;
+    if (H[j] && (H[j].u === 'FUNCTION' || H[j].u === 'PROCEDURE') && isName(H[j + 1])) {
+      j += 2;
+      while (isP(H[j], '.') && isName(H[j + 1])) j += 2;
+      if (isP(H[j], '(')) {
+        const params = [];
+        let d = 0, part = [];
+        for (j++; j < H.length; j++) {
+          const x = H[j];
+          if (isP(x, '(')) d++;
+          else if (isP(x, ')')) { if (d === 0) { params.push(part); break; } d--; }
+          else if (d === 0 && isP(x, ',')) { params.push(part); part = []; continue; }
+          part.push(x);
+        }
+        params.forEach(p => {
+          let q = p;
+          if (q[0] && ['IN', 'OUT', 'INOUT', 'VARIADIC'].indexOf(q[0].u) >= 0) q = q.slice(1);
+          const end = q.findIndex(x => x.u === 'DEFAULT' || isP(x, '='));
+          if (end >= 0) q = q.slice(0, end);
+          if (q.length < 2 || !isName(q[0]) || (q[0].k === 'word' && QH_PG_TYPE_HEAD.has(q[0].u))) return;
+          put(q[0], last.base, typeText(last.cur, q.slice(1)), 'parameter');
+        });
+      }
+    }
+  }
+  // Each DECLARE section of the body before the caret, up to its BEGIN:
+  // name [CONSTANT] type [COLLATE x] [NOT NULL] [DEFAULT | := | = expr];
+  // and name ALIAS FOR $n;
+  const B = qhVarScan(cur, 'postgres').filter(x => x.s < cc);
+  const TYPE_STOP = new Set(['COLLATE', 'NOT', 'DEFAULT', 'FOR', 'IS']);
+  for (let i = 0; i < B.length; i++) {
+    if (B[i].u !== 'DECLARE') continue;
+    let k = i + 1;
+    while (k < B.length && B[k].u !== 'BEGIN') {
+      let e = k, d = 0;
+      while (e < B.length && !(d === 0 && (isP(B[e], ';') || B[e].u === 'BEGIN'))) {
+        if (isP(B[e], '(')) d++;
+        else if (isP(B[e], ')')) d--;
+        e++;
+      }
+      const it = B.slice(k, e);
+      k = isP(B[e], ';') ? e + 1 : e;
+      const nm = it[0];
+      if (!isName(nm)) continue;
+      if (it[1] && it[1].u === 'ALIAS') { put(nm, base, typeText(cur, it.slice(1)), 'variable'); continue; }
+      let a = 1;
+      if (it[a] && it[a].u === 'CONSTANT') a++;
+      let z = a;
+      while (z < it.length && !TYPE_STOP.has(it[z].u) && !isP(it[z], ':') && !isP(it[z], '=')) z++;
+      put(nm, base, typeText(cur, it.slice(a, z)), 'variable');
+    }
+    i = k - 1;
+  }
+  return out;
+}
+
+// The hover card of a variable or a parameter at `offset`, or null:
+// { kind: 'variable', start, end, name, type, decl, line }. SQL Server reads
+// `@name`. PostgreSQL reads a name inside a routine body. The declaration
+// must come before the token or before the end of the token's statement.
+function qhVariableHover(text, offset, engineId) {
+  if (engineId !== 'mssql' && engineId !== 'postgres') return null;
+  let base = 0, src = text, at = offset;
+  if (engineId === 'postgres') {
+    const v = qhCodeView(text, offset, engineId);
+    if (!v.off) return null;
+    base = v.off; src = v.text; at = v.caret;
+  }
+  const T = qhVarScan(src, engineId);
+  const k = T.findIndex(x => x.s <= at && at < x.e);
+  const tok = T[k];
+  if (!tok) return null;
+  if (engineId === 'mssql' && !(tok.k === 'word' && tok.v[0] === '@' && tok.v[1] !== '@')) return null;
+  if (engineId === 'postgres' && tok.k !== 'word' && tok.k !== 'qid') return null;
+  // The end of the token's statement: the next `;`, a GO line, or the end.
+  let end = src.length;
+  for (let i = k + 1; i < T.length; i++) {
+    const x = T[i];
+    if ((x.k === 'p' && x.v === ';') || (engineId === 'mssql' && x.k === 'word' && x.u === 'GO' && qhGoLine(src, x))) { end = x.s; break; }
+  }
+  const key = tok.v.toLowerCase();
+  for (const c of [base + tok.s, base + end]) {
+    const hit = qhVariablesAt(text, c, engineId).find(x => x.name.toLowerCase() === key);
+    if (hit) return { kind: 'variable', start: base + tok.s, end: base + tok.e, name: hit.name, type: hit.type, decl: hit.kind, line: hit.line };
+  }
+  return null;
+}
+
+// A suggestion answer (or a hover card) of a code view, moved to offsets of the
+// full text: `start`, `end`, `slot`, and each item's `start` and `replaceEnd`.
+function qhShiftList(r, off) {
+  if (!r || !off) return r;
+  const out = Object.assign({}, r);
+  ['start', 'end', 'slot'].forEach(k => { if (typeof out[k] === 'number') out[k] += off; });
+  if (Array.isArray(r.items)) {
+    out.items = r.items.map(it => {
+      if (!it || (typeof it.start !== 'number' && typeof it.replaceEnd !== 'number')) return it;
+      const c = Object.assign({}, it);
+      if (typeof c.start === 'number') c.start += off;
+      if (typeof c.replaceEnd === 'number') c.replaceEnd += off;
+      return c;
+    });
+  }
+  return out;
 }
 
 // Type ( [ ' " or ` with no selection and the closing mark goes in too. The
@@ -3396,10 +3793,17 @@ function qhHoverColumnCard(tok, hit, col) {
 }
 
 function qhHoverInfo(sql, offset, schema, engineId) {
-  void engineId;                                            // the same rules for every engine today
   const text = String(sql == null ? '' : sql);
   const at = Number(offset);
   if (!text || !Number.isFinite(at)) return null;
+  // A declared variable or parameter (qhVariableHover) has its own card.
+  const vh = qhVariableHover(text, at, engineId);
+  if (vh) return vh;
+  // Inside a PostgreSQL routine body the rules read the body alone.
+  if (engineId === 'postgres') {
+    const v = qhCodeView(text, at, engineId);
+    if (v.off > 0) return qhShiftList(qhHoverInfo(v.text, v.caret, schema, engineId), v.off);
+  }
   const toks = qhSqlTokens(text);
   const k = toks.findIndex(t => t.s <= at && at < t.e);
   if (k < 0 || !qhHoverIsName(toks[k])) return null;       // a blank, a comment, a string, a keyword
@@ -3517,6 +3921,11 @@ function qhHoverInfo(sql, offset, schema, engineId) {
 // The plain-text lines of the hover card, at most about eight.
 function qhHoverLines(info) {
   if (!info) return [];
+  // A variable (P2.12): the name and its type, then where it is declared.
+  if (info.kind === 'variable') {
+    return [info.type ? info.name + '  ' + info.type : info.name,
+      (info.decl === 'parameter' ? 'Parameter' : 'Variable') + ', declared on line ' + info.line];
+  }
   const num = (n) => String(Math.round(Number(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   // The catalog comment (P2.4) is the line under the name.
   if (info.kind === 'table') {
@@ -3985,6 +4394,14 @@ function qhCallAt(sql, caret, engineId) {
   const text = String(sql == null ? '' : sql);
   const c = Number(caret);
   if (!text || !Number.isFinite(c) || c < 0 || c > text.length) return null;
+  // Inside a PostgreSQL routine body the call is read in the body alone.
+  if (engineId === 'postgres') {
+    const v = qhCodeView(text, c, engineId);
+    if (v.off > 0) {
+      const r = qhCallAt(v.text, v.caret, engineId);
+      return r ? Object.assign({}, r, { open: r.open + v.off, nameStart: r.nameStart + v.off }) : null;
+    }
+  }
   if (qhSigInText(text, c)) return null;
   const T = qhSqlTokens(text).filter(t => t.e <= c);
   // The open parentheses before the caret, innermost last, with their commas.
@@ -4570,7 +4987,7 @@ function qhAcPage(items, idx, dir, n) {
 // textarea has the focus and no selection. The caret is kept with the text it
 // was read in, so new text (undo, a tab switch) never shows old marks.
 const QH_MARKS_MAX_TEXT = 200000;
-function QhCaretMarks({ taRef, value, show }) {
+function QhCaretMarks({ taRef, value, show, engineId }) {
   const [at, setAt] = React.useState(null);   // { c, v }
   const ref = React.useRef(null);
   React.useEffect(() => {
@@ -4599,9 +5016,9 @@ function QhCaretMarks({ taRef, value, show }) {
   }, [taRef]);
   const html = React.useMemo(() => {
     if (!at || at.v !== value || value.length > QH_MARKS_MAX_TEXT) return '';
-    const list = qhCaretMarks(value, at.c);
+    const list = qhCaretMarks(value, at.c, engineId);
     return list.length ? qhMarkHtml(value, list, r => 'qh-' + r.kind) : '';
-  }, [at, value]);
+  }, [at, value, engineId]);
   const on = !!(show && html);
   React.useLayoutEffect(() => {
     const ta = taRef.current, el = ref.current;
@@ -4616,7 +5033,7 @@ function QhCaretMarks({ taRef, value, show }) {
 }
 
 const QH_AC_TYPE_LABEL ={ keyword: 'kw', table: 'table', cte: 'cte', column: 'col', database: 'db', system: 'system', function: 'fn', expand: 'all cols', join: 'join',
-  procedure: 'proc', schema: 'schema', index: 'index', snippet: 'snip', groupby: 'group', template: 'tpl' };
+  procedure: 'proc', schema: 'schema', index: 'index', snippet: 'snip', groupby: 'group', template: 'tpl', variable: 'var', parameter: 'param' };
 
 function SqlEditor({ value, onChange, fontSize, wrap, blankStop, onRun, onRunSelection, selectionGetter, onSelectionChange, schema, engineId, focusSignal, formatSignal, insertSignal, revealRange, docId, issues, revealSignal, lints, onNotice, onScriptCreate, onRevealObject }) {
   const taRef = React.useRef(null);
@@ -5057,18 +5474,26 @@ function SqlEditor({ value, onChange, fontSize, wrap, blankStop, onRun, onRunSel
   const refreshAC = (ta, afterLookup, force) => {
     const caret = ta.selectionStart;
     if (caret !== ta.selectionEnd) { setAc(null); return; }
+    // Inside a PostgreSQL routine body the helpers read the body alone
+    // (qhCodeView). `sh` moves their offsets back to the full text.
+    const cv = qhCodeView(ta.value, caret, engineId);
+    const vt = cv.text, vc = cv.caret;
+    const sh = (r) => qhShiftList(r, cv.off);
     // In a string or a comment the list stays shut while typing: the words
     // there are data. Ctrl+Space still opens it (qhInStringOrComment).
-    if (!force && qhInStringOrComment(ta.value.slice(0, caret), engineId)) { setAc(null); return; }
+    if (!force && qhInStringOrComment(vt.slice(0, vc), engineId)) { setAc(null); return; }
+    // A typed `@` on SQL Server opens the variable list of qhBuildSuggest
+    // only: no column, star or JOIN list hides it.
+    const atVar = engineId === 'mssql' && /(?:^|[^A-Za-z0-9_$#@])@@?[A-Za-z0-9_$#]*$/.test(vt.slice(0, vc));
     // A list that Ctrl+Space opened in a column position stays one while the
     // caret stays in the same slot. Typing filters it.
     const cur = acNow.current;
-    if (!force && cur && cur.cols && showColumns(ta, cur.slot, false)) return;
+    if (!force && !atVar && cur && cur.cols && showColumns(ta, cur.slot, false)) return;
     // SELECT * expansion (see qhStarExpansion). A relation the catalog does not
     // list is asked about once; if the answer arrives while the caret is still
     // on the same star, the expansion is offered then.
     const look = sch.columnLookup || null;
-    const se = qhStarExpansion(ta.value, caret, sch, engineId, look ? look.peek : null);
+    const se = atVar ? null : sh(qhStarExpansion(vt, vc, sch, engineId, look ? look.peek : null));
     if (se && se.kind === 'ready') {
       const p = posAt(ta, se.start);
       setAc({ items: [{ text: se.text, label: 'Expand * → ' + se.count + ' columns', type: 'expand' }], idx: 0, top: p.top, lineTop: p.lineTop, left: p.left, start: se.start, end: se.end });
@@ -5087,7 +5512,7 @@ function SqlEditor({ value, onChange, fontSize, wrap, blankStop, onRun, onRunSel
     // once. Anything else falls back to the normal list below.
     const peek = look ? look.peek : null;
     const known = (afterLookup && peek) ? (n) => { const c = peek(n); return c === undefined ? null : c; } : peek;
-    const al = qhAliasColumns(ta.value, caret, sch, engineId, known);
+    const al = atVar ? null : sh(qhAliasColumns(vt, vc, sch, engineId, known));
     if (al && al.kind === 'ready') {
       const p = posAt(ta, al.start);
       setAc({ items: al.items, idx: Math.max(0, al.items.findIndex(it => !it.header)), top: p.top, lineTop: p.lineTop,
@@ -5106,9 +5531,9 @@ function SqlEditor({ value, onChange, fontSize, wrap, blankStop, onRun, onRunSel
     // JOIN suggestions (qhJoinSuggestions, qhJoinOnSuggestions) come first,
     // then the normal list. They open on a typed letter or Ctrl+Space only, so
     // Enter right after `JOIN ` or `ON ` still starts a new line.
-    const typedWord = /[A-Za-z_][A-Za-z0-9_]*$/.test(ta.value.slice(0, caret));
-    const js = (typedWord || force)
-      ? (qhJoinSuggestions(ta.value, caret, sch, engineId, qhAliasRules(qhAliasOptsLoad().rules)) || qhJoinOnSuggestions(ta.value, caret, sch, engineId))
+    const typedWord = /[A-Za-z_][A-Za-z0-9_]*$/.test(vt.slice(0, vc));
+    const js = ((typedWord || force) && !atVar)
+      ? sh(qhJoinSuggestions(vt, vc, sch, engineId, qhAliasRules(qhAliasOptsLoad().rules)) || qhJoinOnSuggestions(vt, vc, sch, engineId))
       : null;
     if (js) {
       const p = posAt(ta, js.start);
@@ -5190,7 +5615,9 @@ function SqlEditor({ value, onChange, fontSize, wrap, blankStop, onRun, onRunSel
     const caret = ta.selectionStart;
     const look = sch.columnLookup || null;
     const peek = look ? look.peek : null;
-    let cl = qhColumnList(ta.value, caret, sch, engineId, peek);
+    // Inside a PostgreSQL routine body the list reads the body alone.
+    const cv = qhCodeView(ta.value, caret, engineId);
+    let cl = qhShiftList(qhColumnList(cv.text, cv.caret, sch, engineId, peek), cv.off);
     if (cl && cl.kind === 'lookup') {
       if (ask) {
         const v = ta.value;
@@ -5203,7 +5630,7 @@ function SqlEditor({ value, onChange, fontSize, wrap, blankStop, onRun, onRunSel
         return true;
       }
       // Not asked again: a relation nobody knows lists nothing.
-      cl = qhColumnList(ta.value, caret, sch, engineId, (n) => { const c = peek(n); return c === undefined ? null : c; });
+      cl = qhShiftList(qhColumnList(cv.text, cv.caret, sch, engineId, (n) => { const c = peek(n); return c === undefined ? null : c; }), cv.off);
     }
     if (!cl || cl.kind !== 'ready' || !cl.count) return false;
     if (slot != null && cl.slot !== slot) return false;
@@ -5911,7 +6338,7 @@ function SqlEditor({ value, onChange, fontSize, wrap, blankStop, onRun, onRunSel
         {/* Before the highlight layer, so the text draws on top of the tint.
             It stays while the typing list is open: a click on a name opens
             that list, and the marks are what the click was for. */}
-        <QhCaretMarks taRef={taRef} value={value} show={issuesShown} />
+        <QhCaretMarks taRef={taRef} value={value} show={issuesShown} engineId={engineId} />
         {ses && ses.list.length > 0 && (
           // The fields of a snippet or a template. The field with the caret
           // has a fill, the others a frame.
@@ -6525,7 +6952,7 @@ function EditorTabs({ tabs, activeId, onSelect, onClose, onNew, wrap, onToggleWr
 // a wrong pool looks like "autocomplete is being unhelpful", never like a bug.
 // The undo history's pieces and the * expansion reader are exported for the
 // same reason; qhUndoForget is also what sign-out calls.
-Object.assign(window, { SqlEditor, EditorTabs, FormatOptions, QH_FMT_ROWS, QH_FMT_SAMPLE, QH_EDITOR_HINT, qhLint, qhListAddsNothing, QH_LINT_RULES, qhHighlight, qhBuildSuggest, qhSuggestContext, QH_REDACTED_LIT, qhRedactedAt,
+Object.assign(window, { SqlEditor, EditorTabs, qhCodeView, qhVariablesAt, QH_AC_TYPE_LABEL, FormatOptions, QH_FMT_ROWS, QH_FMT_SAMPLE, QH_EDITOR_HINT, qhLint, qhListAddsNothing, QH_LINT_RULES, qhHighlight, qhBuildSuggest, qhSuggestContext, QH_REDACTED_LIT, qhRedactedAt,
   QH_SNIPPETS, QH_SNIPPET_CURSOR, QH_DRAG_BLOCK, qhSnippetsFor, qhSnippetText, qhInsertBlock, QH_KEYWORDS, qhSnippetPreview, qhSnippetFormError, QH_SNIP_KEY_RE, qhAliasAt, qhRenameAlias, qhQualifyNames, qhObjectNameAt, qhDefinitionAt,
   qhTextDiff, qhEditKind, qhUndoDoc, qhUndoRecord, qhUndoSeal, qhUndoStep, qhUndoForget,
   qhSqlTokens, qhStarExpansion, qhBlockerRanges, qhFromIsName, qhFromUnquote, qhReadFromList, qhRefLookup,

@@ -260,13 +260,16 @@ def bot_config(no_db_config, monkeypatch, tmp_path):
     return overrides
 
 
-def _execute(server, sql, tier, monkeypatch, *, timeout_sec=30, request=None):
+def _execute(server, sql, tier, monkeypatch, *, timeout_sec=30, request=None,
+             unrestricted=False):
     """Run `sql` the way the executor runs an approved SQL Server request.
 
     `_finalize` is the step after the transaction: it writes the metadata
     database and delivers the result. The stub keeps what it receives.
+    `unrestricted` analyzes the statement as a super-admin's, which is the
+    only way an EXEC passes.
     """
-    report = query_safety.analyze(sql, engine="mssql")
+    report = query_safety.analyze(sql, engine="mssql", unrestricted=unrestricted)
     assert not report.blocked, report.blockers
     assert report.main_tier == tier
     user, password = server.login(tier)
@@ -843,3 +846,73 @@ def test_an_output_clause_is_still_the_write_s_own_result(
         server, "UPDATE dbo.ledger SET note = note OUTPUT inserted.id WHERE id = 21",
         "rw", monkeypatch)
     assert [(r.set_no, r.has_result_set) for r in results] == [(0, True)]
+
+
+# --- a super-admin's EXEC --------------------------------------------------
+
+
+@pytest.fixture
+def exec_procs(server):
+    """Two procedures that the DDL login may run, and SHOWPLAN for the DDL and
+    RO logins, so that the server counts the statements of each EXEC.
+
+    The EXECUTE grant is test setup only. The grant script does not give it:
+    a target that wants it grants it per database.
+    """
+    ddl, ro = LOGIN_PREFIX + "ddl", LOGIN_PREFIX + "ro"
+    for sql in (
+        "CREATE TABLE dbo.w6b_items (id int PRIMARY KEY, state int NOT NULL)",
+        "INSERT INTO dbo.w6b_items VALUES (1, 0), (2, 0)",
+        # A set, a count, a set: the shape that was measured for `dbo.p2`.
+        "CREATE PROCEDURE dbo.w6b_report AS BEGIN "
+        "SELECT id FROM dbo.w6b_items ORDER BY id; "
+        "UPDATE dbo.w6b_items SET state = state + 1 WHERE id = 1; "
+        "SELECT N'done' AS note; END",
+        "CREATE PROCEDURE dbo.w6b_fail AS BEGIN "
+        "UPDATE dbo.w6b_items SET state = 99 WHERE id = 2; "
+        "THROW 50002, N'the w6b procedure failed', 1; END",
+        f"GRANT EXECUTE ON dbo.w6b_report TO [{ddl}]",
+        f"GRANT EXECUTE ON dbo.w6b_fail TO [{ddl}]",
+        f"GRANT SHOWPLAN TO [{ddl}]",
+        f"GRANT SHOWPLAN TO [{ro}]",
+    ):
+        server.execute(sql)
+    yield
+    for sql in (f"REVOKE SHOWPLAN FROM [{ro}]", f"REVOKE SHOWPLAN FROM [{ddl}]",
+                "DROP PROCEDURE dbo.w6b_fail", "DROP PROCEDURE dbo.w6b_report",
+                "DROP TABLE dbo.w6b_items"):
+        server.execute(sql)
+
+
+def test_a_super_admin_exec_gives_each_set_its_own_table(
+        server, exec_procs, monkeypatch):
+    """The server counts the EXEC as one statement, not four. The first set
+    stays result 1, the count goes to the messages, the last set is a table."""
+    results = _execute(server, "EXEC dbo.w6b_report", "ddl", monkeypatch,
+                       unrestricted=True)
+    tables = [r for r in results if r.has_result_set]
+    assert len(tables) == 2, [(r.set_no, r.rowcount) for r in results]
+    assert _csv_rows(tables[0].csv_path) == [["id"], ["1"], ["2"]]
+    assert _csv_rows(tables[1].csv_path) == [["note"], ["done"]]
+    notices = [n["text"] for r in results for n in r.notices]
+    assert "(1 row affected)" in notices
+    assert server.query("SELECT state FROM dbo.w6b_items WHERE id = 1") == [(1,)]
+    assert server.locks_held("ddl") == 0
+
+
+def test_sp_help_runs_on_the_read_only_login(server, exec_procs, monkeypatch):
+    """sp_help sends several sets. The read-only login may run it, and the
+    server's statement count passes."""
+    results = _execute(server, "EXEC sp_help 'dbo.people'", "ro", monkeypatch,
+                       unrestricted=True)
+    assert len([r for r in results if r.has_result_set]) >= 2
+
+
+def test_an_exec_that_fails_rolls_back_its_write(server, exec_procs, monkeypatch):
+    import pyodbc
+    with pytest.raises(pyodbc.Error, match="the w6b procedure failed"):
+        _execute(server, "EXEC dbo.w6b_fail", "ddl", monkeypatch,
+                 unrestricted=True)
+    assert server.query("SELECT state FROM dbo.w6b_items WITH (NOLOCK) "
+                        "WHERE id = 2") == [(0,)]
+    assert server.locks_held("ddl") == 0

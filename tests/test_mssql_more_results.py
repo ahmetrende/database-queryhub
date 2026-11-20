@@ -275,7 +275,10 @@ def test_a_later_set_gets_no_masking_exemption(monkeypatch, tmp_path):
 def test_a_sql_server_write_writes_its_first_set_with_no_exemption():
     import inspect
     src = inspect.getsource(ex._run_mssql)
-    assert src.count("exemptions=s.leading.upper() not in _MSSQL_WRITES") == 2
+    assert src.count("exemptions=s.leading.upper() not in _MSSQL_NO_EXEMPTION") == 2
+    # A super-admin's EXEC reads tables that it does not name, like a write's
+    # trigger, so its sets get no exemption either.
+    assert {"INSERT", "UPDATE", "DELETE", "MERGE", "EXEC", "EXECUTE"} <= ex._MSSQL_NO_EXEMPTION
 
 
 def test_an_error_after_the_first_result_fails_the_statement():

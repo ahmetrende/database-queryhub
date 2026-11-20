@@ -118,6 +118,12 @@ class EngineSpec:
     rw_keywords: frozenset | None = None          # classify as 'rw'
     ddl_keywords: frozenset | None = None          # classify as 'ddl'
     destructive_keywords: frozenset | None = None  # destructive-flag set
+    # Leading words that a super-admin may run although `banned_leading` or
+    # the allow-list refuses them for everyone else. Each one runs a body that
+    # no guard can inspect, so query_safety classifies it at the top tier
+    # (with one listed exception for SQL Server system procedures). Growing
+    # this set is a security decision.
+    super_admin_leading: frozenset[str] = frozenset()
     # PG `SET LOCAL <param>` tuning prelude. False => a leading SET is
     # rejected (T-SQL SET is a different construct, not needed for /sql).
     set_local_supported: bool = True
@@ -198,6 +204,7 @@ POSTGRES = EngineSpec(
     sqlglot_dialect="postgres",
     read_only=False,
     blocked_functions=frozenset(),  # PG dangerous-fn list stays in ast_safety
+    super_admin_leading=frozenset({"DO", "CALL"}),
     routines_sql=_PG_ROUTINES_SQL,
     driver="psycopg",
     default_port=5432,
@@ -224,8 +231,9 @@ _MSSQL_ALLOWED_LEADING = frozenset({
 # Leading words explicitly rejected with a specific reason. EXEC/EXECUTE
 # is the big one: it runs stored procedures and dynamic SQL (xp_cmdshell,
 # sp_configure, sp_executesql) that the tier model can't classify — so it
-# is banned outright, which also neutralizes the xp_/sp_ danger surface
-# (those are only reachable via EXEC).
+# is banned for everyone but a super-admin (`super_admin_leading`). A
+# super-admin's EXEC still passes query_safety._mssql_exec_blockers, which
+# refuses dynamic SQL and the procedures in `_MSSQL_BLOCKED`.
 _MSSQL_BANNED_LEADING = {
     "EXEC":        "EXEC / stored-procedure execution is not allowed (it can run dynamic SQL or xp_cmdshell). Submit the actual statement instead.",
     "EXECUTE":     "EXECUTE / stored-procedure execution is not allowed.",
@@ -269,9 +277,9 @@ _MSSQL_BLOCKED = frozenset({
     "openrowset", "openquery", "opendatasource", "openxml",
     # file-reading table-valued functions
     "fn_get_audit_file", "fn_trace_gettable", "fn_xe_file_target_read_file",
-    # extended / OLE-automation / mail procs (only reachable via EXEC, which
-    # is already banned — listed here as defense in depth in case a future
-    # parser surfaces them as function calls)
+    # extended / OLE-automation / mail procs. A super-admin's EXEC of one of
+    # these is refused by name (query_safety._mssql_exec_blockers). They also
+    # stay here in case a future parser surfaces them as function calls.
     "xp_cmdshell", "xp_dirtree", "xp_fileexist", "xp_subdirs",
     "xp_regread", "xp_regwrite", "xp_regdeletevalue",
     "sp_configure", "sp_executesql", "sp_oacreate", "sp_oamethod",
@@ -322,6 +330,10 @@ MSSQL = EngineSpec(
     rw_keywords=_MSSQL_RW_KEYWORDS,
     ddl_keywords=_MSSQL_DDL_KEYWORDS,
     destructive_keywords=_MSSQL_DESTRUCTIVE,
+    # A super-admin may run a stored procedure. query_safety still refuses
+    # EXECUTE AS, dynamic SQL, linked servers, other databases and the
+    # blocked procedures (`_mssql_exec_blockers`).
+    super_admin_leading=frozenset({"EXEC", "EXECUTE"}),
     set_local_supported=False,   # T-SQL SET is a different construct
     supports_explain=False,      # no PG-style EXPLAIN (FORMAT JSON)
     block_catalog_refs=True,     # no cross-database / linked-server names

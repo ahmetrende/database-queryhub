@@ -110,6 +110,48 @@ def test_a_module_and_its_body_count_as_one_statement(types):
                      engine="mssql")                       # no raise
 
 
+def _exec_plan(n_calls):
+    """A SHOWPLAN document for `n_calls` EXEC statements, in the shape SQL
+    Server 2022 gives for a procedure with SELECT, UPDATE, SELECT."""
+    body = "".join(f'<StmtSimple StatementType="{t}" />'
+                   for t in ("SELECT", "UPDATE", "SELECT"))
+    call = ('<StmtSimple StatementType="EXECUTE PROC"><StoredProc ProcName="p2">'
+            f"<Statements>{body}</Statements></StoredProc></StmtSimple>")
+    return ('<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/'
+            f'showplan"><BatchSequence><Batch><Statements>{call * n_calls}'
+            "</Statements></Batch></BatchSequence></ShowPlanXML>")
+
+
+def test_one_exec_counts_as_one_statement():
+    """The procedure body is not part of the submitted batch. Counting it
+    refused every EXEC as four statements."""
+    cur = FakeCursor(plan_docs=[_exec_plan(1)])
+    assert stmt_guard._mssql_statement_count(cur, "EXEC dbo.p2") == 1
+    stmt_guard.check(FakeCursor(plan_docs=[_exec_plan(1)]), "EXEC dbo.p2",
+                     engine="mssql")                       # no raise
+
+
+def test_two_exec_statements_are_two():
+    cur = FakeCursor(plan_docs=[_exec_plan(2)])
+    assert stmt_guard._mssql_statement_count(cur, "EXEC dbo.p2; EXEC dbo.p2") == 2
+    with pytest.raises(stmt_guard.TooManyStatements):
+        stmt_guard.check(FakeCursor(plan_docs=[_exec_plan(2)]), "EXEC dbo.p2",
+                         engine="mssql")
+
+
+def test_a_procedure_body_under_another_statement_type_is_counted():
+    """Only an EXECUTE PROC statement skips its children. A StoredProc element
+    under any other statement type is counted all the way down, as before."""
+    body = "".join(f'<StmtSimple StatementType="{t}" />' for t in ("SELECT", "DELETE"))
+    doc = ('<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/'
+           'showplan"><BatchSequence><Batch><Statements>'
+           '<StmtSimple StatementType="INSERT"><StoredProc ProcName="p">'
+           f"<Statements>{body}</Statements></StoredProc></StmtSimple>"
+           "</Statements></Batch></BatchSequence></ShowPlanXML>")
+    cur = FakeCursor(plan_docs=[doc])
+    assert stmt_guard._mssql_statement_count(cur, "INSERT INTO t EXEC dbo.p") == 3
+
+
 def test_two_plain_statements_are_still_two():
     cur = FakeCursor(plan_docs=[_plan_of("SELECT", "DELETE")])
     assert stmt_guard._mssql_statement_count(cur, "SELECT 1; DELETE t") == 2

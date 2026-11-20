@@ -8,7 +8,7 @@
 """
 import pytest
 
-from queryhub import pii, query_safety as qs
+from queryhub import engines, pii, query_safety as qs
 
 
 # ---- 1. procedural blocks ---------------------------------------------------
@@ -61,10 +61,94 @@ def test_copy_stays_refused_for_a_super_admin():
                       unrestricted=True).blocked
 
 
-def test_the_super_admin_list_is_exactly_the_procedural_pair():
-    """A guard on the constant itself: everything in it bypasses a refusal, so
-    growing it is a security decision and should not happen by accident."""
+def test_the_super_admin_lists_are_exactly_these():
+    """A guard on the per-engine lists: everything in them bypasses a refusal,
+    so growing one is a security decision and should not happen by accident."""
+    expected = {"postgres": frozenset({"DO", "CALL"}),
+                "mssql": frozenset({"EXEC", "EXECUTE"})}
+    for name, spec in engines._ENGINES.items():
+        assert spec.super_admin_leading == expected.get(name, frozenset()), name
     assert qs.SUPER_ADMIN_LEADING == frozenset({"DO", "CALL"})
+
+
+# ---- 1b. SQL Server EXEC ----------------------------------------------------
+
+LOAD_DAY = "EXEC dbo.load_day @d = '2026-01-01'"
+
+
+@pytest.mark.parametrize("sql,word", [
+    (LOAD_DAY, "EXEC"),
+    ("EXECUTE sp_help 'dbo.t'", "EXECUTE"),
+])
+def test_exec_is_refused_for_an_ordinary_user(sql, word):
+    r = qs.analyze(sql, engine="mssql")
+    assert r.blocked
+    assert engines.MSSQL.banned_leading[word] in r.blockers
+
+
+def test_a_super_admin_may_exec_a_procedure_at_the_top_tier():
+    r = qs.analyze(LOAD_DAY, engine="mssql", unrestricted=True)
+    assert not r.blocked, r.blockers
+    assert r.main_tier == "ddl"
+
+
+@pytest.mark.parametrize("sql", [
+    "EXEC @rc = dbo.load_day 1",
+    "EXEC dbo.load_day @at = 1",
+    "EXEC dbo.sp_help 'dbo.t'",
+])
+def test_other_procedure_calls_run_at_the_top_tier(sql):
+    """`dbo.sp_help` is a user procedure that borrows a system name, so only
+    a bare or `sys.` name reads as the catalog procedure."""
+    r = qs.analyze(sql, engine="mssql", unrestricted=True)
+    assert not r.blocked, r.blockers
+    assert r.main_tier == "ddl"
+
+
+@pytest.mark.parametrize("sql", [
+    "EXEC sp_help 'dbo.t'",
+    "EXECUTE sys.sp_columns 't'",
+    "EXEC SP_HELPINDEX 'dbo.t'",
+])
+def test_catalog_procedures_run_at_the_read_tier(sql):
+    r = qs.analyze(sql, engine="mssql", unrestricted=True)
+    assert not r.blocked, r.blockers
+    assert r.main_tier == "ro"
+
+
+@pytest.mark.parametrize("sql,reason", [
+    ("EXECUTE AS USER = 'x'", "EXECUTE AS is not allowed"),
+    ("EXEC AS LOGIN = 'sa'", "EXECUTE AS is not allowed"),
+    ("EXEC ('select 1')", "Dynamic SQL"),
+    ("EXEC (@sql)", "Dynamic SQL"),
+    ("EXEC sp_executesql N'select 1'", "Dynamic SQL"),
+    ("EXEC otherdb.dbo.p", "another database"),
+    ("EXEC xp_cmdshell 'dir'", "`xp_cmdshell` is not allowed"),
+    ("EXEC dbo.p AT srv", "linked server"),
+    ("EXEC dbo.p WITH RESULT SETS NONE", "cannot read this EXEC"),
+    # Found in review (measured on sqlglot 30.14): each of these passed once.
+    ("EXEC sp_MSforeachtable 'DELETE FROM ?'", "read-only system procedures"),
+    ("EXEC sp_MSforeachdb 'SELECT 1'", "read-only system procedures"),
+    ("EXEC sys.sp_rename 'a', 'b'", "read-only system procedures"),
+    ('EXEC dbo.p AT"lnk"', "linked server"),
+    ("EXEC dbo.p AT [lnk]", "linked server"),
+    ("EXEC otherdb..someproc", "another database"),
+    ("EXEC dbo.p @a=1 EXEC xp_cmdshell 'dir'", "cannot read this EXEC"),
+])
+def test_exec_refusals_hold_for_a_super_admin(sql, reason):
+    r = qs.analyze(sql, engine="mssql", unrestricted=True)
+    assert r.blocked
+    assert any(reason in b for b in r.blockers), r.blockers
+
+
+def test_call_stays_refused_on_sql_server_for_a_super_admin():
+    assert qs.analyze("CALL p(1)", engine="mssql", unrestricted=True).blocked
+
+
+def test_a_prepared_execute_stays_refused_on_postgres_for_a_super_admin():
+    r = qs.analyze("EXECUTE stmt;", engine="postgres", unrestricted=True)
+    assert r.blocked
+    assert qs.BANNED_LEADING_REASONS["EXECUTE"] in r.blockers
 
 
 # ---- 2. system catalog is not PII -------------------------------------------
@@ -105,3 +189,22 @@ def test_it_works_for_another_engine_without_a_code_change():
     assert pii.system_catalog_only("SELECT name FROM sys.objects", engine="mssql")
     assert not pii.system_catalog_only("SELECT name FROM dbo.customers",
                                        engine="mssql")
+
+
+@pytest.mark.parametrize("sql", [
+    "EXEC dbo.p @at = 1",          # a parameter named at
+    "EXEC dbo.[at]",               # a procedure named at
+    "EXEC dbo.p N'at'",            # the word in a string
+    "EXEC dbo.p /* AT srv */ 1",   # the word in a comment
+])
+def test_the_word_at_elsewhere_is_not_a_linked_server(sql):
+    r = qs.analyze(sql, engine="mssql", unrestricted=True)
+    assert not any("linked server" in b for b in r.blockers), r.blockers
+
+
+def test_insert_exec_stays_refused_for_everyone():
+    """INSERT ... EXEC does not parse, so the AST pass refuses it. The
+    stmt_guard change that skips a called procedure's body must not open it."""
+    assert qs.analyze("INSERT INTO t EXEC dbo.p", engine="mssql").blocked
+    assert qs.analyze("INSERT INTO t EXEC dbo.p", engine="mssql",
+                      unrestricted=True).blocked
