@@ -3346,11 +3346,25 @@ function qhHoverColumn(meta, tok) {
   return hits.length === 1 ? hits[0] : null;
 }
 
+// The most characters of a catalog comment that the hover card shows.
+const QH_HOVER_COMMENT_MAX = 300;
+
+// The catalog comment as one plain-text line, or null when there is none. The
+// card renders it as text, never as HTML. Line breaks become spaces, and a
+// long comment ends with an ellipsis.
+function qhHoverComment(value) {
+  if (value == null) return null;
+  const text = String(value).replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  return text.length > QH_HOVER_COMMENT_MAX
+    ? text.slice(0, QH_HOVER_COMMENT_MAX - 1).trimEnd() + '…' : text;
+}
+
 function qhHoverTableCard(tok, hit) {
   const info = hit.info || {};
   const rows = info.approxRows == null ? NaN : Number(info.approxRows);
   const idx = Array.isArray(info.indexes) ? info.indexes : [];
-  return {
+  const card = {
     kind: 'table', start: tok.s, end: tok.e, name: hit.name,
     approxRows: Number.isFinite(rows) && rows >= 0 ? rows : null,
     columns: hit.meta.length,
@@ -3360,12 +3374,15 @@ function qhHoverTableCard(tok, hit) {
       include: Array.isArray(ix.include) ? ix.include.map(String) : [] })),
     fks: hit.meta.filter(c => c && c.fk).map(c => ({ col: String(c.name), ref: String(c.fk) })),
   };
+  const comment = qhHoverComment(info.comment);
+  if (comment) card.comment = comment;
+  return card;
 }
 
 function qhHoverColumnCard(tok, hit, col) {
   const lc = String(col.name).toLowerCase();
   const idx = hit.info && Array.isArray(hit.info.indexes) ? hit.info.indexes : [];
-  return {
+  const card = {
     kind: 'column', start: tok.s, end: tok.e, table: hit.name, name: String(col.name),
     type: col.type ? String(col.type) : '',
     nullable: typeof col.nullable === 'boolean' ? col.nullable : null,
@@ -3373,6 +3390,9 @@ function qhHoverColumnCard(tok, hit, col) {
     indexes: idx.filter(ix => ix && Array.isArray(ix.cols) && ix.cols.some(c => String(c).toLowerCase() === lc))
       .map(ix => String(ix.name)),
   };
+  const comment = qhHoverComment(col.comment);
+  if (comment) card.comment = comment;
+  return card;
 }
 
 function qhHoverInfo(sql, offset, schema, engineId) {
@@ -3498,8 +3518,10 @@ function qhHoverInfo(sql, offset, schema, engineId) {
 function qhHoverLines(info) {
   if (!info) return [];
   const num = (n) => String(Math.round(Number(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  // The catalog comment (P2.4) is the line under the name.
   if (info.kind === 'table') {
     const out = [info.name];
+    if (info.comment) out.push(info.comment);
     if (info.approxRows != null) out.push('~' + num(info.approxRows) + ' rows');
     out.push(info.columns + (info.columns === 1 ? ' column' : ' columns'));
     if (info.pk.length) out.push('PK: ' + info.pk.join(', '));
@@ -3511,6 +3533,7 @@ function qhHoverLines(info) {
     return out;
   }
   const out = [info.table + '.' + info.name];
+  if (info.comment) out.push(info.comment);
   if (info.type) out.push(info.type);
   if (info.nullable === true) out.push('NULL');
   else if (info.nullable === false) out.push('NOT NULL');
@@ -6513,5 +6536,5 @@ Object.assign(window, { SqlEditor, EditorTabs, FormatOptions, QH_FMT_ROWS, QH_FM
   qhNameInitials, qhExpandAllStars, qhApplyEdits, qhGroupByFill, qhGroupByItem, qhAcPage, QH_AC_MAX, QH_AC_PAGE, qhAcSizeLoad, QH_AC_SIZE_KEY,
   qhStatementRanges, qhAddSemicolons, qhStatementJump, qhToCaretRange, qhPairs, qhPairAt, qhPairJump, qhOccurrences, qhCaretMarks,
   qhMoveLines, qhSelectionIsBlock, qhIndentLines, qhOutdentLines, qhToggleLineComment, qhWrapSelection, QH_WRAP_PAIRS, QhCaretMarks, qhScanCode, qhInStringOrComment, qhAutoPair, qhPairBackspace,
-  qhHoverInfo, qhHoverLines, qhHoverOffsetAt,
+  qhHoverInfo, qhHoverLines, qhHoverOffsetAt, qhHoverComment,
   QH_FUNC_SIGS, qhSigParams, qhBuiltinSigs, qhCallAt, qhSignaturesFor, qhSigPick, qhSigActive, qhLintFindings, qhProblems });

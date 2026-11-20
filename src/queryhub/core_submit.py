@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import admins, ast_safety, audit, auto_approve, db, db_scope, engines, pre_flight
+from . import ddl_dependents
 from . import config as cfg
 from . import (origins, profile_sync, query_safety, query_secrets, replicas, requesters,
                sql_audit_comment, targets, teams)
@@ -50,7 +51,8 @@ REQUEST_RETURNING = (
     "decided_by_slack_id, decided_by_name, decided_at, scheduled_for, "
     "requester_dm_channel_id, requester_dm_message_ts, "
     "bundle_id, position, risk_summary, origin, engine, required_tier, "
-    "unmasked, run_on, ai_assisted, result_to_slack, default_schema"
+    "unmasked, run_on, ai_assisted, result_to_slack, default_schema, "
+    "ddl_dependents"
 )
 
 
@@ -131,6 +133,10 @@ class Prepared:
     # changes search_path and nothing else: no grant, tier or mask reads it.
     # See migrations/216_request_default_schema.sql.
     default_schema: str | None = None
+    # What uses each object that a DDL request drops or alters, read at
+    # submit. None means not checked. See ddl_dependents.py and
+    # migrations/218_request_ddl_dependents.sql.
+    ddl_dependents: dict | None = None
 
 
 @dataclass
@@ -581,6 +587,12 @@ def validate_submission(
             except Exception:
                 log.exception("write-estimate failed; continuing without hint")
 
+    # A DDL request that drops or alters an object: read what uses it, so the
+    # approver sees what can break. The read never refuses a submit. Any
+    # failure gives None, which the approver sees as "not checked".
+    ddl_deps = _ddl_dependents_for(target, database, required_mode, query,
+                                   default_schema)
+
     # Optional scheduling: both date and time must be supplied together.
     # Picker values are wall-clock in the user's local timezone (from the
     # Slack profile); stored as UTC. Unknown tz falls back to UTC.
@@ -659,7 +671,30 @@ def validate_submission(
         ai_assisted=ai_assisted,
         result_to_slack=result_to_slack,
         default_schema=default_schema,
+        ddl_dependents=ddl_deps,
     )
+
+
+def _ddl_dependents_for(target, database: str, required_mode: str, query: str,
+                        default_schema: str | None) -> dict | None:
+    """What uses the objects a DDL request drops or alters, or None.
+
+    Only for the DDL tier, on PostgreSQL and SQL Server, and only while the
+    pre-flight switch is on. It never raises."""
+    engine = (getattr(target, "engine", None) or "postgres").lower()
+    if required_mode != "ddl" or engine not in ddl_dependents.ENGINES:
+        return None
+    try:
+        if not pre_flight.is_enabled():
+            return None
+        objects = ddl_dependents.targets_of(query, engine)
+        if not objects:
+            return None
+        return ddl_dependents.read(target, engine, objects, default_schema,
+                                   database=database)
+    except Exception:
+        log.exception("ddl dependents read crashed; continuing without it")
+        return None
 
 
 def normalize_default_schema(value: str | None) -> str | None:
@@ -977,6 +1012,9 @@ def create_request(
     stored_query, query_secret = query_secrets.split(prep.query)
     plan_json = (query_safety.mask_password_literals(json.dumps(prep.explain_plan))
                  if prep.explain_plan is not None else None)
+    # Only catalog names are in it, never a value from the SQL.
+    deps_json = (json.dumps(prep.ddl_dependents)
+                 if prep.ddl_dependents is not None else None)
 
     with db.transaction() as cur:
         # Serialize this requester's concurrent submissions so the rate-limit
@@ -1024,9 +1062,10 @@ def create_request(
                 f" explain_plan, risk_summary, query_fingerprint, status, "
                 f" decided_by_slack_id, decided_by_name, decided_at, decision_reason, "
                 f" origin, engine, required_tier, unmasked, query_secret, run_on, "
-                f" ai_assisted, result_to_slack, default_schema) "
+                f" ai_assisted, result_to_slack, default_schema, ddl_dependents) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, "
-                f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                f"        %s::jsonb) "
                 f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
@@ -1054,6 +1093,7 @@ def create_request(
                     prep.ai_assisted,
                     prep.result_to_slack,
                     prep.default_schema,
+                    deps_json,
                 ),
             )
             row = cur.fetchone()
@@ -1114,9 +1154,9 @@ def create_request(
                 f" query, wants_result, result_format, justification, scheduled_for, "
                 f" explain_plan, risk_summary, query_fingerprint, origin, "
                 f" engine, required_tier, unmasked, query_secret, run_on, ai_assisted, "
-                f" result_to_slack, default_schema) "
+                f" result_to_slack, default_schema, ddl_dependents) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, "
-                f"        %s, %s, %s, %s, %s, %s, %s, %s) "
+                f"        %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) "
                 f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
@@ -1140,6 +1180,7 @@ def create_request(
                     prep.ai_assisted,
                     prep.result_to_slack,
                     prep.default_schema,
+                    deps_json,
                 ),
             )
             row = cur.fetchone()

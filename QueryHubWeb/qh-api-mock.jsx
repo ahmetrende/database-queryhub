@@ -216,7 +216,16 @@ const MOCK_QUEUE = [
     // on its own, now on the queue row itself. `elevation` is the DDL standing
     // this request runs under — why it was given, when it ends, who gave it.
     // Field names are a proposal; CODE confirms them (DESIGN_TO_CODE_BRIEF).
-    elevation: { source: 'user', reason: 'Owns the anti-fraud schema for the 4.12 release.', grantedBy: 'dba.marco', grantedByName: 'Marco Young', grantedAt: isoAgo(1000 * 86400 * 5), expiresAt: isoIn(1000 * 60 * 60 * 30) } },
+    elevation: { source: 'user', reason: 'Owns the anti-fraud schema for the 4.12 release.', grantedBy: 'dba.marco', grantedByName: 'Marco Young', grantedAt: isoAgo(1000 * 86400 * 5), expiresAt: isoIn(1000 * 60 * 60 * 30) },
+    // What uses `events`, read at submit (ddl_dependents.read). Null on a
+    // request means "not checked".
+    ddlDependents: { engine: 'postgres', bodiesChecked: false, objects: [
+      { name: 'events', kind: 'table', found: true, cascade: false, more: 0, dependents: [
+        { kind: 'view', name: 'analytics.v_daily_events' },
+        { kind: 'materialized view', name: 'analytics.mv_event_funnel' },
+        { kind: 'foreign key', name: 'analytics.event_tags', detail: 'fk_event_tags_event' },
+      ] },
+    ] } },
   // The second DDL shape: the standing comes from a TEAM grant with no end date,
   // and nobody recorded who gave it. Both gaps have to render as gaps.
   { id: 'q_8eb1', submitter: { name: 'Kai Yamada', initials: 'KY', slackId: 'U0EXAMPLE008', trust: 74 },
@@ -2136,8 +2145,16 @@ function schemaPayload(connId, dbId) {
   if (!conn || !db) return { tables: [], views: [] };
   const schema = window.qhSchemaFor ? window.qhSchemaFor(conn, db) : 'public';
   const tbl = (name) => ({ name, schema, columns: window.qhColumnsFor(name), indexes: window.qhIndexesFor(name), approxRows: window.qhApproxRows(name) });
+  // MOCK: the first table of each database carries a table comment and a
+  // comment on its first column (P2.4), so the hover, the tree tip and the
+  // grid header show one. The real route sends `comment` only when it is set.
+  const withComment = (t, i) => {
+    if (i !== 0) return t;
+    const columns = (t.columns || []).map((c, j) => (j === 0 ? { ...c, comment: 'Mock column comment: the row id.' } : c));
+    return { ...t, columns, comment: 'Mock table comment: one row per record.' };
+  };
   return {
-    tables: (db.tables || []).map(tbl),
+    tables: (db.tables || []).map(tbl).map(withComment),
     views: (window.qhViewsFor ? window.qhViewsFor(db.id) : []).map(v => ({ name: v, schema, columns: window.qhColumnsFor(v), indexes: [], approxRows: window.qhApproxRows(v) })),
     ...mockSchemaStamp(db),
   };

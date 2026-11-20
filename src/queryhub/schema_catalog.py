@@ -75,7 +75,8 @@ SELECT
                                          'def', pg_get_constraintdef(con.oid))
                       ORDER BY con.conname)
        FROM pg_constraint con
-      WHERE con.conrelid = c.oid AND con.contype = 'f') AS foreign_keys
+      WHERE con.conrelid = c.oid AND con.contype = 'f') AS foreign_keys,
+    obj_description(c.oid, 'pg_class') AS comment
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind IN ('r', 'p', 'm', 'v', 'f')
@@ -98,7 +99,8 @@ SELECT
                AND a.attnum = ANY (i.indkey)) AS is_pk,
     EXISTS (SELECT 1 FROM pg_index i
              WHERE i.indrelid = c.oid
-               AND a.attnum = ANY (i.indkey)) AS in_index
+               AND a.attnum = ANY (i.indkey)) AS in_index,
+    col_description(a.attrelid, a.attnum) AS comment
 FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -117,6 +119,25 @@ ORDER BY n.nspname, c.relname, a.attnum
 # queries. See also inventory.list_databases_for_endpoint (the /sql modal
 # path), which excludes `postgres` too.
 _HIDDEN_DATABASES = ("rdsadmin", "postgres")
+
+# The longest comment that the catalog stores. A longer comment is cut and ends
+# with an ellipsis.
+COMMENT_MAX_CHARS = 1000
+
+
+def clean_comment(value) -> str | None:
+    """Return a table or column comment as the catalog stores it.
+
+    The function strips the text. It returns None for an empty comment. It cuts
+    a comment longer than COMMENT_MAX_CHARS and ends it with an ellipsis."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) > COMMENT_MAX_CHARS:
+        text = text[:COMMENT_MAX_CHARS - 1].rstrip() + "…"
+    return text
 
 # Databases worth snapshotting on an instance. `can_connect` says whether the
 # login may open each one. The listing alone does not say, and a snapshot of a
@@ -262,6 +283,8 @@ def snapshot_database(target, password: str | None,
                 id_by_key[(c["schema_name"], c["table_name"])],
                 c["ordinal"], c["column_name"], c["data_type"],
                 c["not_null"], c["default_expr"], c["is_pk"], c["in_index"],
+                # Engines without comments (ClickHouse, Athena) send no key.
+                clean_comment(c.get("comment")),
             )
             for c in columns
             if (c["schema_name"], c["table_name"]) in id_by_key
@@ -401,16 +424,20 @@ def _sync_tables(cur, target_id: int, database: str,
          t["row_estimate"], t["total_bytes"], t["partition_count"],
          t["partition_key"],
          json.dumps(t["indexes"]) if t["indexes"] is not None else None,
-         json.dumps(t["foreign_keys"]) if t["foreign_keys"] is not None else None)
+         json.dumps(t["foreign_keys"]) if t["foreign_keys"] is not None else None,
+         # Engines without comments (ClickHouse, Athena) send no key.
+         clean_comment(t.get("comment")))
         for t in tables]))
     cur.execute(
         "INSERT INTO schema_tables (target_server_id, database_name, "
         "  schema_name, table_name, relkind, row_estimate, total_bytes, "
-        "  partition_count, partition_key, indexes, foreign_keys, snapshot_at) "
-        "SELECT %s, %s, s, t, k, re, tb, pc, pk, ix::jsonb, fk::jsonb, NOW() "
+        "  partition_count, partition_key, indexes, foreign_keys, comment, "
+        "  snapshot_at) "
+        "SELECT %s, %s, s, t, k, re, tb, pc, pk, ix::jsonb, fk::jsonb, cm, NOW() "
         "  FROM unnest(%s::text[], %s::text[], %s::text[], %s::bigint[], "
         "              %s::bigint[], %s::int[], %s::text[], %s::text[], "
-        "              %s::text[]) AS u(s, t, k, re, tb, pc, pk, ix, fk) "
+        "              %s::text[], %s::text[]) "
+        "       AS u(s, t, k, re, tb, pc, pk, ix, fk, cm) "
         "ON CONFLICT (target_server_id, database_name, schema_name, table_name) "
         "DO UPDATE SET relkind = EXCLUDED.relkind, "
         "              row_estimate = EXCLUDED.row_estimate, "
@@ -419,6 +446,7 @@ def _sync_tables(cur, target_id: int, database: str,
         "              partition_key = EXCLUDED.partition_key, "
         "              indexes = EXCLUDED.indexes, "
         "              foreign_keys = EXCLUDED.foreign_keys, "
+        "              comment = EXCLUDED.comment, "
         "              snapshot_at = NOW() "
         "RETURNING id, schema_name, table_name",
         (target_id, database, *[list(c) for c in cols]))
@@ -447,22 +475,26 @@ def _sync_columns(cur, table_ids: list[int], col_rows: list[tuple]) -> None:
     c = list(zip(*col_rows))
     cur.execute(
         "INSERT INTO schema_columns (table_id, ordinal, column_name, "
-        "  data_type, not_null, default_expr, is_pk, in_index) "
-        "SELECT tid, ord, cname, dtype, nn, dflt, pk, inidx "
+        "  data_type, not_null, default_expr, is_pk, in_index, comment) "
+        "SELECT tid, ord, cname, dtype, nn, dflt, pk, inidx, cm "
         "  FROM unnest(%s::bigint[], %s::int[], %s::text[], %s::text[], "
-        "              %s::boolean[], %s::text[], %s::boolean[], %s::boolean[]) "
-        "       AS u(tid, ord, cname, dtype, nn, dflt, pk, inidx) "
+        "              %s::boolean[], %s::text[], %s::boolean[], %s::boolean[], "
+        "              %s::text[]) "
+        "       AS u(tid, ord, cname, dtype, nn, dflt, pk, inidx, cm) "
         "ON CONFLICT (table_id, column_name) DO UPDATE "
         "   SET ordinal = EXCLUDED.ordinal, data_type = EXCLUDED.data_type, "
         "       not_null = EXCLUDED.not_null, "
         "       default_expr = EXCLUDED.default_expr, "
-        "       is_pk = EXCLUDED.is_pk, in_index = EXCLUDED.in_index "
+        "       is_pk = EXCLUDED.is_pk, in_index = EXCLUDED.in_index, "
+        "       comment = EXCLUDED.comment "
         " WHERE (schema_columns.ordinal, schema_columns.data_type, "
         "        schema_columns.not_null, schema_columns.default_expr, "
-        "        schema_columns.is_pk, schema_columns.in_index) "
+        "        schema_columns.is_pk, schema_columns.in_index, "
+        "        schema_columns.comment) "
         "    IS DISTINCT FROM "
         "       (EXCLUDED.ordinal, EXCLUDED.data_type, EXCLUDED.not_null, "
-        "        EXCLUDED.default_expr, EXCLUDED.is_pk, EXCLUDED.in_index)",
+        "        EXCLUDED.default_expr, EXCLUDED.is_pk, EXCLUDED.in_index, "
+        "        EXCLUDED.comment)",
         [list(x) for x in c])
     cur.execute(
         "DELETE FROM schema_columns sc "

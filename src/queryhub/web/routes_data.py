@@ -770,11 +770,12 @@ def db_schema(conn: str, dbname: str, claims: dict = Depends(deps.current_user))
     stamp = schema_catalog.catalog_stamp(t.id, dbname)
     trows = db.fetch_all(
         "SELECT id, schema_name, table_name, relkind, row_estimate, indexes, "
-        "       foreign_keys "
+        "       foreign_keys, comment "
         "FROM schema_tables WHERE target_server_id = %s AND database_name = %s "
         "ORDER BY schema_name, table_name", (t.id, dbname))
     crows = db.fetch_all(
-        "SELECT c.table_id, c.column_name, c.data_type, c.not_null, c.is_pk "
+        "SELECT c.table_id, c.column_name, c.data_type, c.not_null, c.is_pk, "
+        "       c.comment "
         "FROM schema_columns c JOIN schema_tables st ON st.id = c.table_id "
         "WHERE st.target_server_id = %s AND st.database_name = %s "
         "ORDER BY c.table_id, c.ordinal", (t.id, dbname))
@@ -810,21 +811,29 @@ def db_schema(conn: str, dbname: str, claims: dict = Depends(deps.current_user))
                      "pii": name in pii_names}
             if name in fks:
                 entry["fk"] = fks[name]
+            # A comment goes out only when there is one: most columns have
+            # none, and the payload of a large database stays small.
+            if c.get("comment"):
+                entry["comment"] = c["comment"]
             columns.append(entry)
         if tr["relkind"] in ("view", "matview"):
             # Views carry their columns too now: the editor built its column
             # list from `tables` only, so a view's columns never reached
             # autocomplete.
-            views.append({"name": tr["table_name"], "schema": tr["schema_name"],
-                          "columns": columns})
+            rel = {"name": tr["table_name"], "schema": tr["schema_name"],
+                   "columns": columns}
+            views.append(rel)
         else:
-            tables.append({
+            rel = {
                 "name": tr["table_name"],
                 "schema": tr["schema_name"],
                 "approxRows": tr.get("row_estimate"),
                 "columns": columns,
                 "indexes": [mapping.parse_index(i) for i in (tr.get("indexes") or [])],
-            })
+            }
+            tables.append(rel)
+        if tr.get("comment"):
+            rel["comment"] = tr["comment"]
     return {"tables": tables, "views": views, **stamp}
 
 

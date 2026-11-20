@@ -2457,6 +2457,11 @@
   .qh-ddlbox-v { color: var(--fg-primary); }
   .qh-ddlbox-miss { color: var(--fg-tertiary); font-style: italic; }
   .qh-ddlbox-warn { color: var(--fg-warning); font-weight: 600; }
+  .qh-ddlbox-obj + .qh-ddlbox-obj { margin-top: 6px; }
+  .qh-ddlbox-deps { margin: 2px 0 0; padding-left: 18px; }
+  .qh-ddlbox-deps li { margin: 1px 0; }
+  .qh-ddlbox-detail { color: var(--fg-tertiary); }
+  .qh-ddlbox-note { margin-top: 6px; font-size: 12px; color: var(--fg-tertiary); }
   @media (max-width: 900px) { .qh-eff { grid-template-columns: minmax(0, 1fr); } .qh-eff-pick { max-height: 280px; border-right: 0; border-bottom: 1px solid var(--stroke-light); } .qh-autosub-row { grid-template-columns: minmax(0, 1fr) auto auto; } .qh-autosub-by { display: none; } }
 
   /* ---------- Round 2026-09-23 ---------- */

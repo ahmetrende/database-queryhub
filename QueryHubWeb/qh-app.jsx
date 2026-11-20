@@ -443,6 +443,8 @@ function App() {
       const addTbl = (t) => {
         const entry = { schema: t.schema, columns: t.columns || [],
                         indexes: t.indexes || [], approxRows: t.approxRows };
+        // The catalog comment (P2.4). The server sends it only when there is one.
+        if (t.comment) entry.comment = String(t.comment);
         if (t.schema) tables[t.schema + '.' + t.name] = entry;
         if (!tables[t.name]) tables[t.name] = entry;
       };
@@ -862,10 +864,15 @@ function App() {
       if (k.indexOf('.') === -1) return;          // skip the bare-name alias
       (sch.tables[k].columns || []).forEach(col => {
         const meta = { type: col.type, notNull: col.nullable === false };
+        if (col.comment) meta.comment = String(col.comment);
         if (!(col.name in seen)) seen[col.name] = meta;
         else if (!seen[col.name] || seen[col.name].type !== meta.type
                  || seen[col.name].notNull !== meta.notNull) {
           seen[col.name] = null;                  // ambiguous
+        } else if ((seen[col.name].comment || '') !== (meta.comment || '')) {
+          // Two tables give the name different comments. Keep the type and
+          // drop the comment: a wrong comment is worse than none.
+          seen[col.name] = { type: meta.type, notNull: meta.notNull };
         }
       });
     });
@@ -902,9 +909,10 @@ function App() {
       const cs = entry ? entry.columns.map(c => c.name) : [];
       const cm = entry ? entry.columns.map(c => ({ name: c.name, type: c.type || '',
         nullable: typeof c.nullable === 'boolean' ? c.nullable : null, pk: !!c.pk, pii: !!c.pii,
-        fk: c.fk ? String(c.fk) : null })) : [];
+        fk: c.fk ? String(c.fk) : null, comment: c.comment ? String(c.comment) : null })) : [];
       const ti = entry ? { schema: entry.schema || s || null, approxRows: entry.approxRows == null ? null : entry.approxRows,
-        indexes: Array.isArray(entry.indexes) ? entry.indexes : [] } : null;
+        indexes: Array.isArray(entry.indexes) ? entry.indexes : [],
+        comment: entry.comment ? String(entry.comment) : null } : null;
       if (entry) entry.columns.forEach(c => { if (c.pii) piiColumns.add(c.name); });
       if (!tableCols[n]) tableCols[n] = cs;
       if (!tableMeta[n]) { tableMeta[n] = cm; tableInfo[n] = ti; }

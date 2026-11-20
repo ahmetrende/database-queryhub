@@ -467,9 +467,15 @@ SELECT s.name AS schema_name,
        o.name AS table_name,
        CASE o.type WHEN 'V' THEN 'view' ELSE 'table' END AS relkind,
        sz.row_count AS row_estimate,
-       sz.total_bytes AS total_bytes
+       sz.total_bytes AS total_bytes,
+       CAST(ep.value AS nvarchar(4000)) AS comment
   FROM sys.objects o
   JOIN sys.schemas s ON s.schema_id = o.schema_id
+  LEFT JOIN sys.extended_properties ep
+         ON ep.class = 1
+        AND ep.major_id = o.object_id
+        AND ep.minor_id = 0
+        AND ep.name = 'MS_Description'
   OUTER APPLY (
       SELECT SUM(CASE WHEN p.index_id IN (0, 1) THEN p.rows END) AS row_count,
              SUM(a.used_pages) * 8 * 1024                        AS total_bytes
@@ -513,11 +519,17 @@ SELECT s.name         AS schema_name,
                             AND ki.is_primary_key = 1) THEN 1 ELSE 0 END AS is_pk,
        CASE WHEN EXISTS (SELECT 1 FROM sys.index_columns ic
                           WHERE ic.object_id = c.object_id
-                            AND ic.column_id = c.column_id) THEN 1 ELSE 0 END AS in_index
+                            AND ic.column_id = c.column_id) THEN 1 ELSE 0 END AS in_index,
+       CAST(ep.value AS nvarchar(4000))                     AS comment
   FROM sys.columns c
   JOIN sys.objects o  ON o.object_id = c.object_id
   JOIN sys.schemas s  ON s.schema_id = o.schema_id
   JOIN sys.types ty   ON ty.user_type_id = c.user_type_id
+  LEFT JOIN sys.extended_properties ep
+         ON ep.class = 1
+        AND ep.major_id = c.object_id
+        AND ep.minor_id = c.column_id
+        AND ep.name = 'MS_Description'
  WHERE o.type IN ('U', 'V')
    AND o.is_ms_shipped = 0
  ORDER BY s.name, o.name, c.column_id
@@ -856,6 +868,7 @@ def catalog_snapshot(host, port, database, user, password, *,
         "partition_key": None,
         "indexes": idx_by.get((t["schema_name"], t["table_name"])) or None,
         "foreign_keys": fk_by.get((t["schema_name"], t["table_name"])) or None,
+        "comment": t.get("comment"),
     } for t in traw]
     columns = [{
         "schema_name": c["schema_name"],
@@ -867,5 +880,6 @@ def catalog_snapshot(host, port, database, user, password, *,
         "default_expr": c["default_expr"],
         "is_pk": bool(c["is_pk"]),
         "in_index": bool(c["in_index"]),
+        "comment": c.get("comment"),
     } for c in craw]
     return tables, columns

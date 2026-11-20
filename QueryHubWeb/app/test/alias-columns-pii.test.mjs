@@ -90,7 +90,7 @@ test('the typing list marks a bare column that is PII in some table', () => {
 
 test('the app sends the PII flag to the editor', () => {
   const app = web('qh-app.jsx');
-  assert.match(app, /pk: !!c\.pk, pii: !!c\.pii,\s+fk: c\.fk \? String\(c\.fk\) : null \}\)\)/, 'tableMeta and tableMetaQ carry pii and fk');
+  assert.match(app, /pk: !!c\.pk, pii: !!c\.pii,\s+fk: c\.fk \? String\(c\.fk\) : null, comment: c\.comment \? String\(c\.comment\) : null \}\)\)/, 'tableMeta and tableMetaQ carry pii, fk and the comment');
   assert.match(app, /if \(c\.pii\) piiColumns\.add\(c\.name\)/, 'piiColumns collects flagged names');
   assert.match(app, /columnLookup, piiColumns, tableInfo, tableInfoQ, schemas, context,\n\s+snippets: userSnippets \}/, 'editorSchema returns piiColumns and the table info');
   assert.match(app, /indexes: Array\.isArray\(entry\.indexes\) \? entry\.indexes : \[\]/, 'table info carries the indexes');
