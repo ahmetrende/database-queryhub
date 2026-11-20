@@ -36,6 +36,15 @@ CREATE TABLE "Order Lines" (
 );
 CREATE INDEX lines_by_user ON "Order Lines" (user_id, created_at DESC);
 CREATE TABLE events (id int NOT NULL, at date NOT NULL) PARTITION BY RANGE (at);
+CREATE TABLE events_2026 PARTITION OF events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01') PARTITION BY LIST (id);
+CREATE TABLE events_2026_a PARTITION OF events_2026 FOR VALUES IN (1, 2);
+CREATE TABLE events_2025 PARTITION OF events (CONSTRAINT pos CHECK (id > 0)) FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+CREATE INDEX events_at ON events (at);
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'qh_ddl_reader') THEN CREATE ROLE qh_ddl_reader NOLOGIN; END IF; END $$;
+COMMENT ON TABLE users IS 'People''s accounts';
+COMMENT ON COLUMN users.email IS 'Login address';
+GRANT SELECT, INSERT ON users TO qh_ddl_reader;
+GRANT SELECT ON users TO PUBLIC;
 CREATE VIEW big_lines AS SELECT id, total FROM "Order Lines" WHERE total > 100;
 CREATE MATERIALIZED VIEW line_count AS SELECT count(*) AS n FROM "Order Lines";
 CREATE FUNCTION twice(x int) RETURNS int LANGUAGE sql AS 'SELECT x * 2';
@@ -50,7 +59,8 @@ def cur():
         c.execute(SETUP)
         c.execute("SET search_path = qh_ddl_src")
         yield c
-        c.execute("DROP SCHEMA IF EXISTS qh_ddl_src CASCADE; DROP SCHEMA IF EXISTS qh_ddl_dst CASCADE")
+        c.execute("DROP SCHEMA IF EXISTS qh_ddl_src CASCADE; DROP SCHEMA IF EXISTS qh_ddl_dst CASCADE; "
+                  "DROP ROLE IF EXISTS qh_ddl_reader")
 
 
 def _columns(c, schema, table):
@@ -84,7 +94,42 @@ def test_a_table_script_builds_the_same_table(cur):
 
 def test_a_partitioned_table_keeps_its_key(cur):
     _k, script, _b = pg_ddl.object_ddl(cur, None, "events")
-    assert script.endswith(") PARTITION BY RANGE (at);")
+    assert ") PARTITION BY RANGE (at);" in script
+
+
+def _tree(c, schema):
+    c.execute("SELECT c.relname, p.relname, pg_get_expr(c.relpartbound, c.oid) FROM pg_inherits i "
+              "JOIN pg_class c ON c.oid = i.inhrelid JOIN pg_class p ON p.oid = i.inhparent "
+              "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = %s AND c.relkind IN ('r', 'p') "
+              "ORDER BY 1", (schema,))
+    return c.fetchall()
+
+
+def test_partitions_comments_and_grants_build_the_same_objects(cur):
+    _k, events, _b = pg_ddl.object_ddl(cur, "qh_ddl_src", "events")
+    assert " ON ONLY " not in events
+    cur.execute(events.replace("qh_ddl_src.", "qh_ddl_dst."))
+    assert _tree(cur, "qh_ddl_dst") == _tree(cur, "qh_ddl_src")
+    # The parent index reaches every partition and is valid.
+    cur.execute("SELECT count(*) FILTER (WHERE NOT x.indisvalid), count(*) FROM pg_index x "
+                "JOIN pg_class t ON t.oid = x.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace "
+                "WHERE n.nspname = 'qh_ddl_dst' AND t.relname LIKE 'events%%'")
+    assert cur.fetchone() == (0, 4)
+    _k, users, _b = pg_ddl.object_ddl(cur, "qh_ddl_src", "users")
+    assert "COMMENT ON TABLE qh_ddl_src.users IS 'People''s accounts';" in users
+    assert "GRANT SELECT ON TABLE qh_ddl_src.users TO PUBLIC;" in users
+    cur.execute("DROP TABLE IF EXISTS qh_ddl_dst.users CASCADE")
+    cur.execute(users.replace("qh_ddl_src.", "qh_ddl_dst."))
+    cur.execute("SELECT obj_description('qh_ddl_dst.users'::regclass, 'pg_class'), "
+                "col_description('qh_ddl_dst.users'::regclass, 2), "
+                "has_table_privilege('qh_ddl_reader', 'qh_ddl_dst.users', 'INSERT')")
+    assert cur.fetchone() == ("People's accounts", "Login address", True)
+
+
+def test_a_partition_alone_names_its_parent_and_bound(cur):
+    _k, script, _b = pg_ddl.object_ddl(cur, "qh_ddl_src", "events_2025")
+    assert script.startswith("CREATE TABLE qh_ddl_src.events_2025 PARTITION OF qh_ddl_src.events")
+    assert script.endswith("FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');")
 
 
 def test_views_functions_and_procedures_come_from_the_server(cur):

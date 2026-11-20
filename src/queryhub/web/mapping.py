@@ -1406,7 +1406,15 @@ def timeline(row: dict, audit_rows: list[dict] | None = None,
 
 import re as _re
 
-_IDX_RE = _re.compile(r"CREATE\s+(UNIQUE\s+)?INDEX\s+\S+\s+ON\s+\S+\s+USING\s+\w+\s*\((?P<cols>.+)\)\s*$", _re.I)
+# The PostgreSQL pg_get_indexdef text up to the "(" of the key list. A name
+# part is bare or in double quotes.
+_PG_NAME = r'(?:"(?:[^"]|"")*"|[^\s"])+'
+_PG_IDX_HEAD_RE = _re.compile(
+    r"^\s*CREATE\s+(?P<unique>UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?"
+    + _PG_NAME + r"\s+ON\s+(?:ONLY\s+)?" + _PG_NAME + r"\s+USING\s+\w+\s*\(", _re.I)
+_INCLUDE_RE = _re.compile(r"\s*INCLUDE\s*\(", _re.I)
+# The flags at the end of a SQL Server def (mssql_exec._CATALOG_INDEXES_SQL).
+_MS_FLAGS_RE = _re.compile(r"^\s*(?P<unique>UNIQUE)?\s*(?P<pk>PRIMARY\s+KEY)?\s*$", _re.I)
 _FK_RE = _re.compile(r"FOREIGN KEY\s*\((?P<cols>[^)]+)\)\s*REFERENCES\s+(?P<ref>[^\s(]+)\s*\((?P<refcols>[^)]+)\)", _re.I)
 
 
@@ -1414,14 +1422,99 @@ def _split_cols(s: str) -> list[str]:
     return [c.strip().strip('"') for c in s.split(",") if c.strip()]
 
 
+def _paren_group(s: str, start: int, quotes: bool = True) -> tuple[str, int] | None:
+    """s[start] is "(". Returns (the text inside, the index after the
+    matching ")"), or None when it does not close. With `quotes`, a "(" or
+    ")" inside '...' or "..." does not count."""
+    depth, q = 0, None
+    for j in range(start, len(s)):
+        ch = s[j]
+        if q:
+            if ch == q:
+                q = None
+        elif quotes and ch in "\"'":
+            q = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return s[start + 1:j], j + 1
+    return None
+
+
+def _split_top(s: str, quotes: bool = True) -> list[str]:
+    """Splits a column list at the commas outside parentheses (and outside
+    quotes when `quotes`). An expression such as coalesce(a, b) stays one
+    item. A "quoted" name loses its quotes."""
+    items, buf, depth, q = [], [], 0, None
+    for ch in s:
+        if q:
+            if ch == q:
+                q = None
+        elif quotes and ch in "\"'":
+            q = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            items.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    items.append("".join(buf))
+    out = []
+    for item in (i.strip() for i in items):
+        if not item:
+            continue
+        if quotes and _re.fullmatch(r'"(?:[^"]|"")*"', item):
+            item = item[1:-1].replace('""', '"')
+        out.append(item)
+    return out
+
+
 def parse_index(idx: dict) -> dict:
-    """One schema_tables.indexes entry {name, def} → {name, cols, unique, pk}."""
-    d = idx.get("def") or ""
-    m = _IDX_RE.search(d)
-    cols = _split_cols(m.group("cols")) if m else []
+    """One schema_tables.indexes entry {name, def} → {name, cols, unique, pk,
+    include}. `include` holds the INCLUDE columns, [] when there are none.
+
+    It reads two def forms:
+    - PostgreSQL (pg_get_indexdef): CREATE [UNIQUE] INDEX n ON t USING m
+      (keys) [INCLUDE (cols)] [WITH ...] [WHERE ...]. `pk` is True when the
+      name ends in _pkey.
+    - SQL Server (mssql_exec): (keys)[ INCLUDE (cols)][ UNIQUE][ PRIMARY KEY].
+      `pk` comes from the PRIMARY KEY flag.
+    """
+    d = (idx.get("def") or "").strip()
     name = idx.get("name") or ""
-    return {"name": name, "cols": cols,
-            "unique": bool(m and m.group(1)), "pk": name.endswith("_pkey")}
+    out = {"name": name, "cols": [], "unique": False, "pk": name.endswith("_pkey"), "include": []}
+    m = _PG_IDX_HEAD_RE.match(d)
+    if m:
+        out["unique"] = bool(m.group("unique"))
+        g = _paren_group(d, m.end() - 1)
+        if g:
+            out["cols"] = _split_top(g[0])
+            mi = _INCLUDE_RE.match(d, g[1])
+            gi = _paren_group(d, mi.end() - 1) if mi else None
+            if gi:
+                out["include"] = _split_top(gi[0])
+        return out
+    if d.startswith("("):
+        # SQL Server names come without quotes, so a quote char is a plain char.
+        g = _paren_group(d, 0, quotes=False)
+        if not g:
+            return out
+        cols, rest, include = _split_top(g[0], quotes=False), d[g[1]:], []
+        mi = _INCLUDE_RE.match(rest)
+        if mi:
+            gi = _paren_group(rest, mi.end() - 1, quotes=False)
+            if not gi:
+                return out
+            include, rest = _split_top(gi[0], quotes=False), rest[gi[1]:]
+        mf = _MS_FLAGS_RE.match(rest)
+        if mf:
+            out.update(cols=cols, include=include, unique=bool(mf.group("unique")), pk=bool(mf.group("pk")))
+    return out
 
 
 def fk_map(foreign_keys) -> dict[str, str]:

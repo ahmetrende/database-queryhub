@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 
 import psycopg
 
@@ -269,6 +270,118 @@ def snapshot_database(target, password: str, database: str) -> tuple[int, int]:
         # it is replaced as one thing.
         _sync_routines(cur, target.id, database, routines)
     return len(tables), len(col_rows)
+
+
+# ---------------------------------------------------------------------------
+# Refresh after a DDL request
+# ---------------------------------------------------------------------------
+#
+# The hourly job is the only other writer of a snapshot. Without this, a table
+# that a DDL request creates is missing from the tree, the autocomplete and the
+# hover for up to an hour. The executor calls `refresh_after_ddl` after it
+# commits a DDL-tier request as completed. The refresh reads ONE database of ONE
+# target, with the RO credential, in a daemon thread. It never blocks the run
+# and never raises into it.
+
+# Engines that this refresh does not read. The hourly run leaves ClickHouse out:
+# a read wakes an idle service and bills compute. ClickHouse is read-only in
+# QueryHub, so a DDL request cannot reach it anyway.
+_NO_REFRESH_AFTER_DDL_ENGINES = frozenset({"clickhouse"})
+
+# (target id, database) pairs with a refresh in progress in this process.
+_refresh_lock = threading.Lock()
+_refreshing: set[tuple[int, str]] = set()
+
+
+def _start_thread(fn, name: str) -> None:
+    """Start `fn` in a daemon thread. Tests replace this to run `fn` inline."""
+    threading.Thread(target=fn, name=name, daemon=True).start()
+
+
+def _ro_password(target_id: int) -> str | None:
+    """The RO password of a target, or None when it has none. The same read as
+    scripts/refresh_schema_catalog.py, so both refreshes use one credential."""
+    from .crypto import decrypt
+
+    row = db.fetch_one(
+        "SELECT password_encrypted FROM target_servers WHERE id = %s",
+        (target_id,))
+    if not row or not row["password_encrypted"]:
+        return None
+    password = decrypt(row["password_encrypted"])
+    return None if password == "PASSWORD_NOT_SET" else password
+
+
+def refresh_after_ddl(request_id: int, tier: str | None,
+                      target_id: int | None, database: str | None,
+                      start=None) -> bool:
+    """Start a catalog refresh of one (target, database) after a DDL request.
+
+    Returns True when this call started a refresh. Returns False when the tier
+    is not DDL, the `catalog_refresh_after_ddl` switch is off, a refresh of the
+    same pair is already in progress in this process, or the input is
+    incomplete. The caller must call it only after the 'completed' row is
+    committed. It never raises."""
+    try:
+        if tier != "ddl" or not target_id or not database:
+            return False
+        if not cfg.get_bool("catalog_refresh_after_ddl", True):
+            return False
+        key = (int(target_id), database)
+        with _refresh_lock:
+            if key in _refreshing:
+                log.info("catalog refresh after DDL request %s: target %s / %s "
+                         "is already in progress, not started again",
+                         request_id, target_id, database)
+                return False
+            _refreshing.add(key)
+        try:
+            (start or _start_thread)(
+                lambda: _refresh_after_ddl_worker(request_id, key),
+                f"catalog-refresh-{target_id}")
+        except Exception:  # noqa: BLE001 — the run must not see this
+            with _refresh_lock:
+                _refreshing.discard(key)
+            raise
+        return True
+    except Exception as exc:  # noqa: BLE001 — the run must not see this
+        log.warning("catalog refresh after DDL request %s: target %s / %s not "
+                    "started: %s", request_id, target_id, database,
+                    type(exc).__name__)
+        return False
+
+
+def _refresh_after_ddl_worker(request_id: int, key: tuple[int, str]) -> None:
+    """Body of the refresh thread. Logs every failure and never raises. Logs
+    only ids, names and exception types: no SQL text and no credential."""
+    target_id, database = key
+    try:
+        from . import targets
+
+        target = targets.get(target_id)
+        # The same targets the hourly run reads: enabled, not a read replica,
+        # and not an engine that the hourly run leaves out.
+        if (target is None or not target.enabled
+                or target.replica_of is not None
+                or (target.engine or "postgres") in _NO_REFRESH_AFTER_DDL_ENGINES):
+            return
+        password = _ro_password(target_id)
+        if password is None and engines.spec(target.engine).requires_credentials:
+            log.warning("catalog refresh after DDL request %s: target %s / %s "
+                        "has no RO credential, skipped",
+                        request_id, target_id, database)
+            return
+        n_tables, n_cols = snapshot_database(target, password, database)
+        log.info("catalog refresh after DDL request %s: target %s / %s, "
+                 "%d tables / %d columns", request_id, target_id, database,
+                 n_tables, n_cols)
+    except Exception as exc:  # noqa: BLE001 — a daemon thread must not die loud
+        log.warning("catalog refresh after DDL request %s: target %s / %s "
+                    "failed: %s", request_id, target_id, database,
+                    type(exc).__name__)
+    finally:
+        with _refresh_lock:
+            _refreshing.discard(key)
 
 
 def _sync_tables(cur, target_id: int, database: str,

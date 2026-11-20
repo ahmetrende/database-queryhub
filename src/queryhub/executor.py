@@ -35,7 +35,7 @@ except ModuleNotFoundError:  # vanilla profile: the [slack] extra isn't installe
 if TYPE_CHECKING:  # only a type hint — no runtime dependency on slack_sdk
     from slack_sdk.web import WebClient
 
-from . import access, admins, audit, auto_approve, cancellation, cell_format, core_submit, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, query_secrets, ratings, replicas, requesters, row_limits, sql_audit_comment, stmt_guard, targets, teams
+from . import access, admins, audit, auto_approve, cancellation, cell_format, core_submit, db, engines, errors, origins, pg_types, pii, pii_lineage, profile_sync, query_safety, query_secrets, ratings, replicas, requesters, row_limits, schema_catalog, sql_audit_comment, stmt_guard, targets, teams
 from . import config as cfg
 from .slack_app import notifications
 
@@ -1018,6 +1018,10 @@ def _run(request: dict, client: WebClient) -> None:
                 audit.log_in(cur, request_id, requester,
                              request.get("requester_name"),
                              "execution_run_on_forced", forced)
+        # The tier that the claim just stored. The dict was read before the
+        # claim, so its copy of the column is old. The completion paths read
+        # it to decide on a catalog refresh after DDL.
+        request["executed_tier"] = mode
 
         # The session name of this request on the target: application_name on
         # PostgreSQL, program_name on SQL Server.
@@ -2379,6 +2383,7 @@ def _complete_no_result(
         audit.log_in(cur, request["id"], None, None, "completed",
                      {"row_count": rowcount, "truncated": truncated,
                       "elapsed_sec": round(elapsed, 3) if elapsed is not None else None})
+    _refresh_catalog_after_ddl(request)
 
     rc_str = _fmt_count(rowcount)
     rs = "row" if rowcount == 1 else "rows"
@@ -2424,6 +2429,20 @@ def _complete_no_result(
         )
         notifications.favorite_followup(client, request["requester_slack_id"], request["id"])
         ratings.maybe_prompt(client, request)
+
+
+def _refresh_catalog_after_ddl(request: dict) -> None:
+    """Start a schema catalog refresh of the request's target and database
+    when the request ran at the DDL tier. Call it only after the 'completed'
+    row is committed. It returns at once and never raises: the refresh runs
+    in a daemon thread, and schema_catalog.refresh_after_ddl decides."""
+    try:
+        schema_catalog.refresh_after_ddl(
+            request["id"], request.get("executed_tier"),
+            request.get("target_server_id"), request.get("database_name"))
+    except Exception:  # noqa: BLE001 — a finished request must stay finished
+        log.warning("request %s: catalog refresh after DDL not started",
+                    request.get("id"))
 
 
 def _replica_hint(replica: dict | None) -> str:
@@ -2473,6 +2492,7 @@ def _complete_with_csv(
             "elapsed_sec": round(elapsed, 3) if elapsed is not None else None,
             "pii_masked": pii_masked,
         })
+    _refresh_catalog_after_ddl(request)
 
     rc_str = _fmt_count(row_count)
     rs = "row" if row_count == 1 else "rows"
@@ -2611,6 +2631,7 @@ def _complete_with_plan(
             "delivery": "code_block+file" if csv_path else "code_block",
             "csv": str(csv_path) if csv_path is not None else None,
         })
+    _refresh_catalog_after_ddl(request)
 
     dur = f", {_fmt_duration(elapsed)}" if elapsed is not None else ""
     note = (
@@ -2718,6 +2739,7 @@ def _complete_multi(
                 for r in stmt_results
             ],
         })
+    _refresh_catalog_after_ddl(request)
 
     dur = f", {_fmt_duration(elapsed)}" if elapsed is not None else ""
     cap = row_limits.effective_caps(request["requester_slack_id"])[0]
@@ -2973,6 +2995,8 @@ def _complete_with_delivery_warning(
             return
         audit.log_in(cur, request["id"], "SYSTEM", "delivery guard",
                      "completed_delivery_failed", {"error": message})
+    # The change is applied, so a DDL changed the schema all the same.
+    _refresh_catalog_after_ddl(request)
 
     # Notifications are best-effort: the delivery failure that brought us here
     # may well be Slack itself. The row is already 'completed', so a DM error

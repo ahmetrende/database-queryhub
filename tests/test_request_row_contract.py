@@ -50,8 +50,25 @@ def _keys_read_from(path: Path, var: str) -> set[str]:
     return keys
 
 
+def _keys_written_to(path: Path, var: str) -> set[str]:
+    """Every literal key that the file itself assigns: `var["k"] = ...`. Such a
+    key does not come from the submit row, so the contract does not cover it."""
+    tree = ast.parse(path.read_text())
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if (isinstance(t, ast.Subscript)
+                        and isinstance(t.value, ast.Name) and t.value.id == var
+                        and isinstance(t.slice, ast.Constant)
+                        and isinstance(t.slice.value, str)):
+                    keys.add(t.slice.value)
+    return keys
+
+
 def test_executor_reads_only_columns_the_submit_path_returns():
-    read = _keys_read_from(SRC / "executor.py", "request")
+    path = SRC / "executor.py"
+    read = _keys_read_from(path, "request") - _keys_written_to(path, "request")
     missing = sorted(read - _returned_columns())
     assert not missing, (
         "executor.py reads these keys off the request row, but "
