@@ -2730,6 +2730,8 @@ function MaskToggle({ unmasked, pii, onUnmask }) {
   const label = unmasked ? 'Unmasked · real values'
     : n ? n + ' PII column' + (n > 1 ? 's' : '') + ' masked'
     : (pii && pii.star) ? 'PII masked' : 'Masked';
+  // What a narrow action bar shows instead (fit step 2). The title keeps the rest.
+  const short = unmasked ? 'Unmasked' : n ? n + ' masked' : 'Masked';
   return (
     <span className="qh-mask" ref={wrapRef}>
       <button className={'qh-mask-toggle' + (unmasked ? ' is-off' : '')} aria-pressed={!unmasked}
@@ -2738,7 +2740,7 @@ function MaskToggle({ unmasked, pii, onUnmask }) {
           ? 'This tab returns real values for PII' + (cols ? ' (' + cols + ')' : '') + '. Click to mask again.'
           : 'PII is masked in results' + (cols ? ' (' + cols + ')' : '') + '. Super-admins can return real values for this tab.'}>
         {unmasked ? ICN_UNMASK : ICN_MASK}
-        {label}
+        <span className="qh-ab-long">{label}</span><span className="qh-ab-short">{short}</span>
       </button>
       {ask && (
         <div className="qh-mask-pop">
@@ -2778,7 +2780,7 @@ function RunOnOpt({ on, t, s, bad, disabled, mono, onClick }) {
     </button>
   );
 }
-function RunOnToggle({ conn, runOn, tier, onRunOn, tight }) {
+function RunOnToggle({ conn, runOn, tier, onRunOn }) {
   const [open, setOpen] = React.useState(false);
   const [health, setHealth] = React.useState(null);
   const close = React.useCallback(() => setOpen(false), []);
@@ -2806,9 +2808,9 @@ function RunOnToggle({ conn, runOn, tier, onRunOn, tight }) {
           : !runOn ? 'Reads go to a healthy replica when the rules allow, otherwise the primary. Click to choose.'
           : runOn.mode === 'primary' ? 'This tab always runs on the primary.' : 'This tab runs on ' + runOn.name + ' — no automatic checks, no fallback.'}>
         {ICN_NODE}
-        {!tight && <span className="qh-runon-k">Runs on:</span>}
+        <span className="qh-runon-k">Runs on:</span>
         <span className="qh-runon-v">{label}</span>
-        {conflict && !tight && <span className="qh-runon-warn">reads only</span>}
+        {conflict && <span className="qh-runon-warn">reads only</span>}
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"/></svg>
       </button>
       {open && (
@@ -2835,6 +2837,35 @@ function RunOnToggle({ conn, runOn, tier, onRunOn, tight }) {
 }
 
 // ---------- Action bar (target context + security + actions) ----------
+// The bar steps down when its contents do not fit, smallest change first.
+// What fits depends on the chips the query brings (tier, risks, masking, Runs
+// on) and on the AI panel beside the editor, so it is measured, not a width
+// breakpoint. `data-fit` lists the steps in force ("1 2" is step 2); the CSS
+// next to `.qh-actionbar` says what each step hides.
+//   1  the secondary buttons are icons, Runs on drops its key word
+//   2  the chips are short and the selected-line count goes
+//   3  the bar wraps onto a second row
+// Nothing in the bar paints outside it. Before this, with the AI panel open,
+// Masked and Runs on covered the panel's mode buttons, and Explain and
+// Schedule sat under the panel where nobody could click them.
+function qhActionBarOverflows(el) {
+  const right = el.getBoundingClientRect().right - (parseFloat(getComputedStyle(el).paddingRight) || 0);
+  for (const c of el.children) {
+    if (c.offsetParent === null) continue;   // the schedule popover and its backdrop are fixed
+    if (c.getBoundingClientRect().right > right + 0.5) return true;
+  }
+  return false;
+}
+function qhFitActionBar(el, overflows = qhActionBarOverflows, max = 3) {
+  let level = 0;
+  delete el.dataset.fit;
+  while (level < max && overflows(el)) {
+    level += 1;
+    el.dataset.fit = Array.from({ length: level }, (_, i) => i + 1).join(' ');
+  }
+  return level;
+}
+
 function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, isAdminUser, onOpenFleet, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn, selLines, slackResult, toSlack, onToSlack }) {
   const runOnConflict = !!(runOnConn && runOn && runOn.mode === 'replica' && hasSql && !classify.empty && classify.tier !== 'RO');
   const tierLabel = qhTierProse(classify.tier);
@@ -2859,29 +2890,40 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
   // like something to click. The action bar says the state in a pale pill and
   // keeps the one action (Withdraw) as a ghost button beside it.
   const waitingForDba = busy && status === 'pending';
-  // A tight bar drops the three secondary buttons to icons (each keeps its own
-  // title), which is what buys the target strip room to keep the whole
-  // identifier instead of clipping the name down to the env tag. Measured, like
-  // `.qh-tree.is-narrow` and for the same reason: `container-type` would make
-  // this bar a containing block and take the mask popover's position with it.
+  // The fit steps (qhFitActionBar) are measured, like `.qh-tree.is-narrow` and
+  // for the same reason: `container-type` would make this bar a containing
+  // block and take the mask popover's position with it. They are set on the
+  // element, not in state, so a step change does not render the bar again.
+  // The key skips the measurement when neither the width nor the text changed:
+  // a keystroke in the editor renders the bar but changes neither.
   const barRef = useRef(null);
-  const [tight, setTight] = useState(false);
+  const fitKey = useRef('');
+  const refit = React.useCallback((force) => {
+    const el = barRef.current;
+    if (!el) return;
+    const key = el.clientWidth + '|' + el.textContent;
+    if (!force && key === fitKey.current) return;
+    fitKey.current = key;
+    qhFitActionBar(el);
+  }, []);
+  React.useLayoutEffect(() => refit(false));
   useEffect(() => {
     const el = barRef.current;
     if (!el) return;
-    const meas = () => setTight(el.clientWidth < 1120);
-    meas();   // explicit first measurement: do not rely on the observer's initial callback
+    const onSize = () => refit(false);
+    // Web fonts change every width once they load.
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => refit(true));
     if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', meas);
-      return () => window.removeEventListener('resize', meas);
+      window.addEventListener('resize', onSize);
+      return () => window.removeEventListener('resize', onSize);
     }
-    const ro = new ResizeObserver(meas);
+    const ro = new ResizeObserver(onSize);
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [refit]);
 
   return (
-    <div className={'qh-actionbar' + (tight ? ' is-tight' : '')} ref={barRef}>
+    <div className="qh-actionbar" ref={barRef}>
       {waitingForDba ? (
         <span className="qh-wait-pill" role="status" title="A DBA decides this request. You can withdraw it until then.">
           <span className="qh-pulse" />Waiting for a DBA
@@ -2897,12 +2939,12 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
         {primaryLabel}
       </button>
       )}
-      {selLines > 0 && !busy && <span className="qh-sel-lines">{selLines === 1 ? '1 line selected' : selLines + ' lines selected'}</span>}
+      {selLines > 0 && !busy && <span className="qh-sel-lines qh-sel-count">{selLines === 1 ? '1 line selected' : selLines + ' lines selected'}</span>}
       {slackResult && (
         <label className="qh-sel-lines" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
           title="You always get the result here. Tick this to get it in Slack too.">
           <input type="checkbox" checked={!!toSlack} disabled={busy} onChange={(e) => onToSlack(e.target.checked)} />
-          Also send the result to Slack
+          <span className="qh-ab-long">Also send the result to Slack</span><span className="qh-ab-short">Slack too</span>
         </label>
       )}
 
@@ -2968,7 +3010,7 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
 
       {hasSql && !classify.empty && (
         <div className="qh-sec">
-          <span className={'qh-sec-badge tier-' + classify.tier.toLowerCase()}>
+          <span className={'qh-sec-badge tier-' + classify.tier.toLowerCase()} title={tierLabel}>
             <span className="qh-sec-dot" />{classify.tier}
             <span className="qh-sec-label">{tierLabel}</span>
           </span>
@@ -2993,12 +3035,13 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
           {isSuper ? (
             <>
               <MaskToggle unmasked={unmasked} pii={pii} onUnmask={onUnmask} />
-              {runOnConn && <RunOnToggle conn={runOnConn} runOn={runOn} tier={classify.tier} onRunOn={onRunOn} tight={tight} />}
+              {runOnConn && <RunOnToggle conn={runOnConn} runOn={runOn} tier={classify.tier} onRunOn={onRunOn} />}
             </>
           ) : (pii.columns.length > 0 || pii.star) && (
             <span className="qh-pii-chip" title={pii.columns.map(c => c.label).join(', ')}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
-              {pii.star ? 'PII may be masked' : pii.columns.length + ' PII column' + (pii.columns.length > 1 ? 's' : '') + ' masked'}
+              <span className="qh-ab-long">{pii.star ? 'PII may be masked' : pii.columns.length + ' PII column' + (pii.columns.length > 1 ? 's' : '') + ' masked'}</span>
+              <span className="qh-ab-short">{pii.star ? 'PII' : pii.columns.length + ' masked'}</span>
             </span>
           )}
         </div>

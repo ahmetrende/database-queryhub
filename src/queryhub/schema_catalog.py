@@ -163,7 +163,7 @@ def list_target_databases(target, password: str) -> list[str]:
     return [name for name, can_connect in rows if can_connect]
 
 
-def _connect(target, password: str, database: str):
+def _connect(target, password: str | None, database: str):
     return psycopg.connect(
         host=target.host,
         port=target.port,
@@ -177,7 +177,7 @@ def _connect(target, password: str, database: str):
     )
 
 
-def _routines(target, password: str, database: str) -> list[dict]:
+def _routines(target, password: str | None, database: str) -> list[dict]:
     """Callable routines in one database, per the engine's own catalog query.
 
     Engine-modular by construction: the SQL lives on the EngineSpec, so an engine
@@ -205,7 +205,8 @@ def _routines(target, password: str, database: str) -> list[dict]:
         return []
 
 
-def snapshot_database(target, password: str, database: str) -> tuple[int, int]:
+def snapshot_database(target, password: str | None,
+                      database: str) -> tuple[int, int]:
     """Snapshot one target database into the bot DB. Returns
     (n_tables, n_columns). Runs in a single bot-DB transaction so readers never
     see a partial catalog.

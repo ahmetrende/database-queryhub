@@ -12,6 +12,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from .. import config as cfg, engines, origins, pre_flight
@@ -1447,7 +1448,10 @@ def _split_top(s: str, quotes: bool = True) -> list[str]:
     """Splits a column list at the commas outside parentheses (and outside
     quotes when `quotes`). An expression such as coalesce(a, b) stays one
     item. A "quoted" name loses its quotes."""
-    items, buf, depth, q = [], [], 0, None
+    items: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    q: str | None = None
     for ch in s:
         if q:
             if ch == q:
@@ -1464,7 +1468,7 @@ def _split_top(s: str, quotes: bool = True) -> list[str]:
             continue
         buf.append(ch)
     items.append("".join(buf))
-    out = []
+    out: list[str] = []
     for item in (i.strip() for i in items):
         if not item:
             continue
@@ -1487,7 +1491,8 @@ def parse_index(idx: dict) -> dict:
     """
     d = (idx.get("def") or "").strip()
     name = idx.get("name") or ""
-    out = {"name": name, "cols": [], "unique": False, "pk": name.endswith("_pkey"), "include": []}
+    out: dict[str, Any] = {"name": name, "cols": [], "unique": False,
+                           "pk": name.endswith("_pkey"), "include": []}
     m = _PG_IDX_HEAD_RE.match(d)
     if m:
         out["unique"] = bool(m.group("unique"))
