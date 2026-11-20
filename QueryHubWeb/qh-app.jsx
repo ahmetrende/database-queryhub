@@ -2077,6 +2077,13 @@ function App() {
     const nm = o.mode === 'count' ? table + ' · count' : table;
     const f = freshTab({ name: nm, autoName: false, sql: qhSelectSql(c, db, table, o), conn: c.id, db: db.id });
     setTabs(ts => [...ts, f]); setActiveId(f.id); focusEditor();  };
+  // Related rows of a result (2026-11-20, P2.9): a new tab on the active tab's
+  // connection and database with the SQL. Nothing runs until the person runs it.
+  const openSqlTab = (sql, name) => {
+    if (!sql || !tab.conn || !tab.db) return;
+    const f = freshTab({ name: String(name || 'Related rows'), autoName: false, sql: sql + '\n', conn: tab.conn, db: tab.db });
+    setTabs(ts => [...ts, f]); setActiveId(f.id); focusEditor();
+  };
 
   const [sideWidth, setSideWidth] = useState(() => { try { const n = parseInt(localStorage.getItem('qh.sidewidth.v1'), 10); return (n >= 224 && n <= 560) ? n : 264; } catch (e) { return 264; } });
   // The separator is a keyboard control too (WAI-ARIA window splitter).
@@ -2347,6 +2354,9 @@ function App() {
                   onWithdraw={cancelRun} outcome={tab.outcome || null} endNote={qhEndNote(tab.messages, tab.outcome)} onResubmit={() => resubmitFrom(tab)} slackEnabled={slackOn} timeline={tab.timeline || null}
                   sourceSql={tab.ranSql || null}
                   pkOf={(sql) => (tab.ranConn === tab.conn && tab.ranDb === tab.db ? qhResultScriptPk(sql, editorSchema) : [])}
+                  fkOf={(sql) => (tab.ranConn === tab.conn && tab.ranDb === tab.db ? qhResultFks(sql, editorSchema) : [])}
+                  refsOf={(sql) => (tab.ranConn === tab.conn && tab.ranDb === tab.db ? qhResultRefs(sql, editorSchema) : [])}
+                  onOpenSql={openSqlTab}
                   problems={problems} lintOn={lint} onFixAi={canFixAi ? fixWithAi : null}
                   onProblem={(p) => { if (p && p.start != null) setReveal({ start: p.start, end: p.end, n: Date.now() }); }} />
               </div>

@@ -1155,6 +1155,10 @@
   .qh-tr-run { width: 20px; height: 20px; flex-shrink: 0; display: none; align-items: center; justify-content: center; border: 0; background: transparent; border-radius: var(--r-2xs); color: var(--fg-tertiary); cursor: pointer; }
   .qh-tr:hover .qh-tr-run { display: inline-flex; }
   .qh-tr-run:hover { background: var(--brand-adaptive-medium); color: var(--fg-accent); }
+  /* P2.10 · A table or view in the tree's multi-selection (Ctrl/Cmd+click,
+     Shift+click). A green bar on the left keeps it apart from the active row. */
+  .qh-tr.is-multi { background: var(--brand-adaptive-medium); color: var(--fg-primary); box-shadow: inset 2px 0 0 var(--brand-green); }
+  .qh-tr.is-multi .qh-tr-ic { color: var(--fg-accent); }
 
   /* ================= ADMIN ================= */
   .qh-vs-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 4px; font-size: 10px; font-weight: 700; color: #fff; background: var(--brand-green); border-radius: 999px; }
@@ -3382,6 +3386,33 @@
   /* The Copy as row of the grid menu (Devart J3). */
   .qh-ctx-row { display: flex; gap: 4px; padding: 2px 6px 4px 18px; }
   .qh-ctxmenu .qh-ctx-row button.qh-ctx-chip { width: auto; padding: 4px 8px; border: 1px solid var(--stroke-medium); font-size: 12px; }
+  /* 2026-11-20: group the rows of a page (P2.11) and related rows (P2.9).
+     The panel sits right of the grid. The grid keeps its place in the DOM:
+     only the view switches to a two-column grid while the panel is open. */
+  .qh-resultsview.is-grouping { display: grid; grid-template-columns: minmax(0, 1fr) 300px; grid-template-rows: auto minmax(0, 1fr); }
+  .qh-resultsview.is-grouping > * { grid-column: 1 / -1; }
+  .qh-resultsview.is-grouping > .qh-table-scroll { grid-column: 1; grid-row: 2; }
+  .qh-resultsview.is-grouping > .qh-group-panel { grid-column: 2; grid-row: 2; }
+  .qh-group-toggle { font-family: inherit; font-size: 12px; }
+  .qh-group-panel { display: flex; flex-direction: column; gap: 6px; min-height: 0; overflow: auto; padding: 6px 10px; border-left: 1px solid var(--stroke-medium); background: var(--bg-light); font-size: 12px; color: var(--fg-secondary); }
+  .qh-group-head { display: flex; align-items: center; gap: 6px; color: var(--fg-primary); }
+  .qh-group-note { color: var(--fg-primary); background: var(--warning-adaptive-medium); border-radius: var(--r-xs); padding: 3px 6px; }
+  .qh-group-pick { display: flex; flex-direction: column; gap: 1px; max-height: 140px; overflow: auto; padding: 2px 0; border-top: 1px solid var(--stroke-medium); border-bottom: 1px solid var(--stroke-medium); }
+  .qh-group-col { display: flex; align-items: center; gap: 6px; padding: 1px 2px; cursor: pointer; }
+  .qh-group-col.is-off { opacity: 0.5; cursor: not-allowed; }
+  .qh-group-colname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--qh-mono); }
+  .qh-group-ord { min-width: 16px; text-align: center; border-radius: var(--r-xs); background: var(--brand-adaptive-light); color: var(--fg-accent); font-family: var(--qh-mono); font-size: 11px; }
+  .qh-group-num { display: flex; align-items: center; gap: 6px; }
+  .qh-group-num select { flex: 1; min-width: 0; height: 24px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-xs); color: var(--fg-primary); font-size: 12px; }
+  .qh-group-total { font-family: var(--qh-mono); color: var(--fg-tertiary); }
+  .qh-group-empty, .qh-group-more { color: var(--fg-tertiary); }
+  .qh-group-list { min-height: 0; }
+  .qh-group-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-family: var(--qh-mono); font-size: 11.5px; }
+  .qh-group-table th, .qh-group-table td { padding: 2px 4px; border-bottom: 1px solid var(--stroke-medium); text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qh-group-table th { color: var(--fg-primary); font-weight: 600; background: var(--bg-white); position: sticky; top: 0; }
+  .qh-group-table .qh-group-n { text-align: right; width: 64px; }
+  .qh-group-null { color: var(--fg-tertiary); font-style: italic; }
+  .qh-ctxmenu button.qh-ctx-related:disabled { opacity: 0.5; cursor: not-allowed; }
   /* 2026-11-09: Ctrl+Space column list. */
   /* A row reads: name, PK mark, type, NULL flag. Type and flag are muted mono
      in --fg-secondary. The list is wider than the normal one and stays inside

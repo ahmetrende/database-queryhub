@@ -3708,6 +3708,105 @@ function qhJoinOnSuggestions(sql, caret, schema, engineId) {
 }
 
 // ---------------------------------------------------------------------------
+// SQL for several tree objects at once (2026-11-20, P2.10)
+//
+// The tree can select more than one table or view of one database. These
+// helpers write the SQL for that selection. Nothing here runs a query.
+// ---------------------------------------------------------------------------
+
+// The catalog columns of one selected table: `schemaInfo` is the tree's
+// schemaCache entry ({ tables: { 'schema.name' | 'name': { columns } } }).
+function qhJoinScriptCols(t, schemaInfo) {
+  const tb = schemaInfo && schemaInfo.tables;
+  const td = tb ? (tb[(t.schema ? t.schema + '.' : '') + t.name] || tb[t.name]) : null;
+  if (td && Array.isArray(td.columns)) return td.columns;
+  return Array.isArray(t.columns) ? t.columns : [];
+}
+
+// One SELECT that joins the selected tables. `tables` is [{ schema, name }] in
+// selection order. The first table goes in FROM. Each other table joins a
+// table that is already in the statement: by a foreign key in either
+// direction first, else by a column with the same name and type that is not
+// a bare `id` (the same rule as qhJoinPairs). Only the first matching pair is
+// used, because two FKs to one table (created_by, updated_by) are two
+// different joins, not one. A table that joins nothing gets a comment line at
+// the top and stays out of the statement. There is no CROSS JOIN.
+function qhJoinScript(tables, schemaInfo, engineId) {
+  const eng = engineId || 'postgres';
+  const quote = (n) => qhJoinQuote(n, eng);
+  const list = (tables || []).filter(t => t && t.name);
+  if (!list.length) return '';
+  const used = new Set();
+  const items = list.map(t => {
+    const alias = qhJoinAlias(t.name, used, eng, null, t.schema ? t.schema + '.' + t.name : null);
+    used.add(alias.toLowerCase());
+    return { t, alias, cols: qhJoinScriptCols(t, schemaInfo),
+             ref: (t.schema ? quote(t.schema) + '.' : '') + quote(t.name) };
+  });
+  const joined = [items[0]];
+  const lines = ['FROM ' + items[0].ref + ' ' + items[0].alias];
+  let pending = items.slice(1);
+  // Passes until nothing more joins: a later table can link two earlier ones.
+  for (let progress = true; progress && pending.length;) {
+    progress = false;
+    const left = [];
+    pending.forEach(it => {
+      let pick = null;
+      for (const j of joined) {
+        const pairs = qhJoinPairs(it.t.name, it.cols, j.t.name, j.cols);
+        const fk = pairs.find(p => p.fk);
+        if (fk) { pick = { j, p: fk }; break; }
+        if (!pick && pairs.length) pick = { j, p: pairs[0] };
+      }
+      if (!pick) { left.push(it); return; }
+      lines.push('JOIN ' + it.ref + ' ' + it.alias + ' ON ' + it.alias + '.' + quote(pick.p.left)
+        + ' = ' + pick.j.alias + '.' + quote(pick.p.right));
+      joined.push(it);
+      progress = true;
+    });
+    pending = left;
+  }
+  const head = pending.map(it => '-- no join found for ' + it.ref);
+  const select = 'SELECT ' + joined.map(it => it.alias + '.*').join(', ');
+  return head.concat([select], lines).join('\n') + ';';
+}
+
+// One `SELECT *` of at most `limit` rows (100) per selected table, in the
+// engine's own row-limit form.
+function qhEachSelectScript(tables, engineId, limit) {
+  const eng = engineId || 'postgres';
+  const n = limit || 100;
+  const quote = (x) => qhJoinQuote(x, eng);
+  return (tables || []).filter(t => t && t.name).map(t => {
+    const ref = (t.schema ? quote(t.schema) + '.' : '') + quote(t.name);
+    if (eng === 'mssql') return 'SELECT TOP ' + n + ' * FROM ' + ref + ';';
+    if (eng === 'oracle') return 'SELECT * FROM ' + ref + ' FETCH FIRST ' + n + ' ROWS ONLY;';
+    return 'SELECT * FROM ' + ref + ' LIMIT ' + n + ';';
+  }).join('\n');
+}
+
+// The tree's multi-selection after one click. `state` is { sel, anchor }.
+// `item` is { conn, db, schema, name }. `how` is 'toggle' (Ctrl/Cmd+click) or
+// 'range' (Shift+click). `order` is the visible items of the item's database,
+// top to bottom. A click in another database starts a new selection.
+function qhTreeMultiPick(state, item, how, order) {
+  const key = (x) => x.conn + '/' + x.db + '/' + (x.schema || '') + '.' + x.name;
+  const st = state || { sel: [], anchor: null };
+  const sameDb = (x) => !!x && x.conn === item.conn && x.db === item.db;
+  const sel = (st.sel || []).filter(sameDb);
+  if (how === 'range') {
+    const list = order || [];
+    const a = sameDb(st.anchor) ? list.findIndex(x => key(x) === key(st.anchor)) : -1;
+    const b = list.findIndex(x => key(x) === key(item));
+    if (a < 0 || b < 0) return { sel: [item], anchor: item };
+    return { sel: list.slice(Math.min(a, b), Math.max(a, b) + 1), anchor: st.anchor };
+  }
+  const k = key(item);
+  const has = sel.some(x => key(x) === k);
+  return { sel: has ? sel.filter(x => key(x) !== k) : sel.concat([item]), anchor: item };
+}
+
+// ---------------------------------------------------------------------------
 // Quick info on hover (2026-11-10)
 //
 // What the catalog knows about the table or column name at `offset`. The answer
@@ -6980,7 +7079,7 @@ Object.assign(window, { SqlEditor, EditorTabs, qhCodeView, qhVariablesAt, QH_AC_
   qhTextDiff, qhEditKind, qhUndoDoc, qhUndoRecord, qhUndoSeal, qhUndoStep, qhUndoForget,
   qhSqlTokens, qhStarExpansion, qhBlockerRanges, qhFromIsName, qhFromUnquote, qhReadFromList, qhRefLookup,
   qhClTokOpen, qhColumnList, qhStopsAfterEdit, qhStatementTemplate, qhTemplateItem, qhTplParams, qhCteDefs, qhCteNamesAt, qhSelectOutCols, qhRelCols, qhInsertColsSlot, qhColItem, qhOutName, qhAcStep, qhStatementAt, qhBlankLineCuts, qhStatementAtBlank, qhAliasColumns, qhTabIsProd,
-  qhJoinSuggestions, qhJoinOnSuggestions, qhJoinPairs, qhJoinAlias,
+  qhJoinSuggestions, qhJoinOnSuggestions, qhJoinPairs, qhJoinAlias, qhJoinScript, qhEachSelectScript, qhTreeMultiPick,
   QH_KW_PHRASES, QH_KW_ENGINE, qhKeywordsFor, qhKwPhrasesFor, qhKwPhraseFits, qhEngineIdReadOnly,
   QH_ALIAS_KEY, qhAliasOptsClean, qhAliasOptsLoad, qhAliasOptsSave, qhAliasRules, qhAliasBase, qhAutoAlias,
   qhNameInitials, qhExpandAllStars, qhApplyEdits, qhGroupByFill, qhGroupByItem, qhAcPage, QH_AC_MAX, QH_AC_PAGE, qhAcSizeLoad, QH_AC_SIZE_KEY,

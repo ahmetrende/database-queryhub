@@ -23,6 +23,14 @@ this page when QueryHub is the right shape.
   read-only login.
 - **Query parameters in the web editor** — Run asks for the values of `:name`,
   `${name}` and `{{name}}`. The approver sees the final SQL only.
+- **Group the rows of a page** — The Group button in the results counts the
+  rows of the page by 1 to 3 columns, with an optional sum, min and max. It
+  runs no new query, and masked values stay masked.
+- **Related rows through foreign keys** — The menu of a result cell opens the
+  referenced row, or the rows that reference it, in a new editor tab. Nothing
+  runs until you run it.
+- **SELECT with JOINs for several tables** — Pick tables in the schema tree
+  with Ctrl+click. The menu writes one SELECT that joins them by their keys.
 - **Sessions and locks** — Super-admins see the sessions and locks of a
   database, with blockers marked. QueryHub masks the query text and audits
   each view.
