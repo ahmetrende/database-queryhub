@@ -50,6 +50,7 @@ from .. import (
     replicas,
     requesters,
     schema_catalog,
+    session_viewer,
     targets,
     teams,
 )
@@ -2594,6 +2595,43 @@ def admin_set_mcp_allowed(conn: str, body: AllowedIn,
     uid = admin.require_admin(claims, "access")
     _require_super(uid, "change who uses this connection")
     return _set_allowed_flag(conn, "mcp_allowed", body.allowed, uid, claims)
+
+
+@router.get("/connections/{conn}/sessions")
+def admin_connection_sessions(conn: str, database: str | None = None,
+                              claims: dict = Depends(deps.current_user)) -> dict:
+    """Read-only session and lock list of one database on one connection.
+
+    Super-admin only: the list shows other people's SQL text and client
+    addresses on any server. It reads with the RO login and never ends a
+    session. Each view writes one audit row, so a reader can see who looked."""
+    uid = admin.require_admin(claims, "access")
+    _require_super(uid, "view the sessions of a connection")
+    row = _require_target_row(conn)
+    target = targets.get(int(row["id"]))
+    if target is None:                     # deleted between the two reads
+        raise deps._error(404, "not_found", f"Unknown connection '{conn}'.")
+    dbname = (database or "").strip() or target.default_database
+    if not dbname:
+        raise deps._error(400, "bad_request", "Pick a database.")
+
+    try:
+        out = session_viewer.fetch(target, dbname)
+    except ValueError as e:
+        raise deps._error(400, "bad_request", str(e))
+    except LookupError as e:
+        # No RO credential on this connection: a setup gap, not an outage.
+        raise deps._error(400, "bad_request", errors.scrub(str(e)))
+    except Exception as e:  # noqa: BLE001 - an unreachable target is a 502
+        log.warning("session viewer failed on target %s: %s", target.id, e)
+        raise deps._error(502, "upstream", errors.scrub(str(e)))
+
+    with db.transaction() as cur:
+        audit.log_in(cur, None, uid, claims.get("name"), "sessions_viewed",
+                     {"target_id": target.id, "database": dbname,
+                      "sessions": len(out["sessions"]),
+                      "locks": len(out["locks"])})
+    return out
 
 
 @router.delete("/grants/{gid}", status_code=204)

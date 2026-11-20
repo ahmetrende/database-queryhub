@@ -2210,6 +2210,27 @@
   .qh-mcards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
   .qh-mcard { background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-lg); padding: 18px; }
   .qh-mcard-title { font-size: 13px; font-weight: 600; color: var(--fg-primary); margin-bottom: 16px; }
+  /* Admin > Sessions (2026-11-20). A blocked row has a warning tint. A query is
+     one line until a click opens it. */
+  .qh-asess-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .qh-asess-at { font-size: 12px; color: var(--fg-tertiary); }
+  .qh-asess-filter { width: 240px; }
+  .qh-asess-notes { font-size: 12px; color: var(--fg-tertiary); margin-bottom: 8px; }
+  .qh-asess-sum { font-size: 12.5px; color: var(--fg-secondary); margin-bottom: 12px; }
+  .qh-asess-card { margin-bottom: 14px; }
+  .qh-asess-state { padding: 14px 2px; font-size: 13px; color: var(--fg-tertiary); }
+  .qh-asess-state.is-error { color: var(--fg-danger); }
+  .qh-asess-muted, .qh-asess-hidden { color: var(--fg-tertiary); }
+  .qh-asess-hidden { font-style: italic; cursor: help; }
+  .qh-asess-table tr.is-blocked td { background: var(--warning-adaptive-light); }
+  .qh-asess-chip { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-family: inherit; font-size: 11px; font-weight: 600;
+    color: var(--fg-warning); background: var(--warning-adaptive-light); box-shadow: inset 0 0 0 1px var(--warning-solid-light); white-space: nowrap; }
+  .qh-asess-qcell { max-width: 420px; }
+  .qh-asess-query { display: block; max-width: 100%; padding: 0; border: 0; background: transparent; text-align: left; cursor: pointer;
+    font-family: var(--qh-mono); font-size: 12px; color: var(--fg-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qh-asess-query.is-open { white-space: pre-wrap; word-break: break-word; }
+  .qh-asess-no { font-weight: 600; color: var(--fg-warning); }
+  .qh-asess-term { white-space: nowrap; }
   .qh-bars { display: flex; align-items: flex-end; gap: 6px; height: 120px; }
   .qh-bar-wrap { flex: 1; height: 100%; display: flex; align-items: flex-end; }
   .qh-bar { width: 100%; background: var(--brand-green); border-radius: 3px 3px 0 0; min-height: 4px; transition: height var(--d-mod-01) var(--ease-standard); }
@@ -3564,6 +3585,7 @@
 <script type="text/babel" src="qh-admin-audit.jsx"></script>
 <script type="text/babel" src="qh-admin-config.jsx"></script>
 <script type="text/babel" src="qh-ai.jsx"></script>
+<script type="text/babel" src="qh-admin-sessions.jsx"></script>
 <script type="text/babel" src="qh-admin.jsx"></script>
 <script type="text/babel" src="qh-whatsnew.jsx"></script>
 <script type="text/babel" src="qh-home.jsx"></script>

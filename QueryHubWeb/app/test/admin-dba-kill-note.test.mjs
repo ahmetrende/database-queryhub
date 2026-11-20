@@ -160,7 +160,7 @@ test('a DBA sees locked rows with a title, and Connections opens read-only', opt
   const ui = mount(null, 'AdminPanel', () => ({ st: baseSt(), user: DBA, modeEntry: null }));
   const locked = ui.all('.qh-anav-item.is-locked');
   assert.deepEqual(locked.map(b => b.textContent.replace('Ask a super-admin', '').trim()),
-    ['Grants', 'Auto-approve', 'Admin scopes', 'Teams', 'Masking exemptions', 'System configuration', 'AI assistant']);
+    ['Grants', 'Auto-approve', 'Admin scopes', 'Teams', 'Masking exemptions', 'Sessions', 'System configuration', 'AI assistant']);
   for (const b of locked) {
     assert.equal(b.getAttribute('aria-disabled'), 'true');
     assert.equal(b.title, 'Super-admin only');

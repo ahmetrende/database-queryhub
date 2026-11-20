@@ -23,6 +23,9 @@ this page when QueryHub is the right shape.
   read-only login.
 - **Query parameters in the web editor** — Run asks for the values of `:name`,
   `${name}` and `{{name}}`. The approver sees the final SQL only.
+- **Sessions and locks** — Super-admins see the sessions and locks of a
+  database, with blockers marked. QueryHub masks the query text and audits
+  each view.
 - **Read replicas, invisibly** — a read-only PostgreSQL query runs on a
   healthy read replica of its target, and otherwise on the primary. QueryHub
   measures the replica lag against the WAL position of the primary. If the

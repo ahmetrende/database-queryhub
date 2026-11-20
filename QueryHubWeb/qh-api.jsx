@@ -445,6 +445,9 @@ const qhApi = {
   adminAuditInsight: () => qhFetch('/admin/audit/insight'),
   // `window` is '7d' or '30d' (PLA-1592 U8). Without it, every request counts.
   adminMetrics:    (window) => qhFetch('/admin/metrics' + (window ? '?window=' + encodeURIComponent(window) : '')),
+  // Sessions and locks on one connection (2026-11-20). Super-admin only and read
+  // only. The server answers 400 for an engine that has no session view.
+  adminSessions:   (conn, db) => qhFetch('/admin/connections/' + encodeURIComponent(conn) + '/sessions' + (db ? '?database=' + encodeURIComponent(db) : '')),
   adminFeedback:   ()     => qhFetch('/admin/feedback'),
   adminConfig:     ()      => qhFetch('/admin/config'),
   adminConfigSave: (changes) => qhFetch('/admin/config', { method: 'PUT', body: JSON.stringify({ changes }) }),

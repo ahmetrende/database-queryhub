@@ -49,6 +49,7 @@ you need.
 30. [A permanent auto-approve rule: manual SQL only](#30-a-permanent-auto-approve-rule-manual-sql-only)
 31. [Audit log retention](#31-audit-log-retention)
 32. [An approver never approves DDL: manual SQL only](#32-an-approver-never-approves-ddl-manual-sql-only)
+33. [Session and lock viewer](#33-session-and-lock-viewer)
 
 ---
 
@@ -2497,4 +2498,45 @@ SELECT id, principal_id, role, max_tier, any_tier, valid_until
 
 To give an approver a DDL ceiling, follow the DB change rule: show the dry run,
 apply in a transaction, write an audit row, and paste the SQL in the chat.
+
+## 33. Session and lock viewer
+
+A super-admin can list the sessions and locks of one database on a connection.
+The route is `GET /api/admin/connections/{conn}/sessions?database=<name>`. If
+you leave out `database`, the viewer uses the default database of the
+connection. Code: `src/queryhub/session_viewer.py`.
+
+What it does:
+
+- It connects with the RO credential of the connection and a 10-second
+  statement timeout. A PostgreSQL session is read-only. A SQL Server session
+  goes to the primary, not to a readable secondary.
+- PostgreSQL: it reads `pg_stat_activity` (500 rows at most) and `pg_locks` of
+  the current database (2000 rows at most).
+- SQL Server: it reads `sys.dm_exec_sessions`, `sys.dm_exec_requests`,
+  `sys.dm_exec_sql_text` and `sys.dm_tran_locks` of the current database.
+- It does not end or cancel a session.
+- Each view writes one `audit_log` row with the action `sessions_viewed`. The
+  details hold the target id, the database and the row counts.
+
+Query text of other sessions:
+
+- PostgreSQL needs `pg_read_all_stats` on the RO login.
+  `deploy/grant_readonly.sql` grants it. Without it the viewer hides the text
+  and shows a note.
+- SQL Server needs `VIEW SERVER STATE` on the RO login. The grant is a comment
+  in `deploy/grant_mssql.sql`. Without it the login sees only its own session,
+  the viewer reads no locks, and it shows a note.
+- When PII masking is on, the viewer masks the text with the value scan. If the
+  scan fails, the viewer hides the text.
+
+Find who opened the viewer:
+
+```sql
+SELECT created_at, actor_name, details
+  FROM audit_log
+ WHERE action = 'sessions_viewed'
+ ORDER BY created_at DESC
+ LIMIT 50;
+```
 

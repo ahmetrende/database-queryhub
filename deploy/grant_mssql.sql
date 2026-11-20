@@ -64,6 +64,11 @@ DENY ALTER ANY LOGIN, ALTER ANY SERVER ROLE, ALTER ANY CREDENTIAL,
      ALTER ANY LINKED SERVER
   TO queryhub_ro, queryhub_rw, queryhub_ddl;
 
+-- Optional: the admin session viewer. Without VIEW SERVER STATE the RO login
+-- sees only its own session, and it cannot read sys.dm_tran_locks. The grant
+-- also shows other sessions' SQL text, which the viewer masks with the PII scan.
+-- GRANT VIEW SERVER STATE TO queryhub_ro;
+
 /* ============================ DATABASE SCOPE (<TARGET_DB>) ================ */
 -- Run this block connected to the TARGET database.
 
