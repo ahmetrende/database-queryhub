@@ -181,10 +181,20 @@ def test_the_masking_switch_reads_the_verdict_not_the_row():
     import re
     src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "queryhub"
            / "executor.py").read_text()
-    body = src[src.index("def _execute_main_statement("):]
-    body = body[:body.index("\ndef ")]
-    assert 'request["unmasked"]' not in body and 'request.get("unmasked")' not in body, (
-        "_execute_main_statement reads the intent field directly, which bypasses "
-        "the execution-time super-admin check")
-    assert re.search(r"None if unmasked else", body), (
-        "the masking switch is gone from _execute_main_statement")
+    def body_of(name):
+        body = src[src.index(f"def {name}("):]
+        return body[:body.index("\ndef ")]
+
+    # The first result set of a statement and every later one (SQL Server)
+    # reach the writer through these, and none may read the row itself.
+    for name in ("_execute_main_statement", "_more_mssql_results",
+                 "_write_result_set"):
+        body = body_of(name)
+        assert 'request["unmasked"]' not in body and 'request.get("unmasked")' not in body, (
+            f"{name} reads the intent field directly, which bypasses "
+            "the execution-time super-admin check")
+    for name in ("_execute_main_statement", "_more_mssql_results"):
+        assert "unmasked=unmasked" in body_of(name), (
+            f"{name} does not hand the verdict to _write_result_set")
+    assert re.search(r"None if unmasked else", body_of("_write_result_set")), (
+        "the masking switch is gone from _write_result_set")

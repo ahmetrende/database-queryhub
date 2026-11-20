@@ -202,7 +202,10 @@ test('the relation parts come back unquoted for the catalog lookup', () => {
 
 test('the results panel sends the statement on screen and the key lookup to the grid', () => {
   const src = readFileSync(resolve(HERE, '..', 'src', 'qh-panels.jsx'), 'utf8');
-  assert.match(src, /const stSql = stParts\.length === stCount \? \(stParts\[stN - 1\] \|\| null\) : null;/);
+  assert.match(src, /const stSql = !\(stLab && \(stLab\.set \|\| stLab\.stmt\)\) && stParts\.length === stCount \? \(stParts\[stN - 1\] \|\| null\) : null;/);
+  // A trigger's result set, or a table after a statement that made none:
+  // the table's place does not name its statement, so no script source.
+  assert.match(src, /const stLab = .*result\.statements\.find\(s => s && s\.n === stN\)/);
   assert.match(src, /sourceSql=\{stSql\} pkOf=\{pkOf\}/);
   assert.match(src, /pkCols: \(pkOf && sourceSql\) \? pkOf\(sourceSql\) : \[\]/);
   const app = readFileSync(resolve(HERE, '..', 'src', 'qh-app.jsx'), 'utf8');

@@ -158,7 +158,7 @@ def test_loader_fails_closed_when_the_admin_lookup_raises(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("module,attr", [
-    ("queryhub.executor", "_execute_main_statement"),
+    ("queryhub.executor", "_write_result_set"),
 ])
 def test_the_executor_passes_the_requester(module, attr):
     import importlib
@@ -167,6 +167,18 @@ def test_the_executor_passes_the_requester(module, attr):
     assert "principal_id=requester_id" in src, (
         "the executor resolves exemptions without saying who is reading, so a "
         "super-admin-scoped row can never apply")
+
+
+@pytest.mark.parametrize("attr", ["_execute_main_statement", "_more_mssql_results"])
+def test_every_result_set_writer_gets_the_requester(attr):
+    """Both callers of _write_result_set hand it the reader: the first result
+    set of a statement and every later one (SQL Server)."""
+    import inspect
+
+    from queryhub import executor
+    src = inspect.getsource(getattr(executor, attr))
+    assert "_write_result_set(" in src
+    assert "requester_id=requester_id" in src
 
 
 def test_the_web_result_endpoint_passes_the_requester():

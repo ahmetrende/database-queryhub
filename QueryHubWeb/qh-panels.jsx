@@ -1949,7 +1949,11 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
   // `sourceSql` is the whole text that ran. A split that does not match the
   // server's statement count gives no statement, so the script says table_name.
   const stParts = sourceSql && typeof qhSplitStatements === 'function' ? qhSplitStatements(sourceSql) : [];
-  const stSql = stParts.length === stCount ? (stParts[stN - 1] || null) : null;
+  // A label with `set` or `stmt` means the tables and the statements are not
+  // one to one (a trigger's result set, or a statement with no table), so the
+  // table's place says nothing about which part of the split made it.
+  const stLab = (result && Array.isArray(result.statements)) ? result.statements.find(s => s && s.n === stN) : null;
+  const stSql = !(stLab && (stLab.set || stLab.stmt)) && stParts.length === stCount ? (stParts[stN - 1] || null) : null;
   const multi = stCount > 1;
   // The position lives ON the Results tab (CODE brief 2026-08-24). In the action
   // row it sat at the opposite end from the tabs, at 11.5px, beside Export: a
@@ -2019,7 +2023,10 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
                         The label is the server's snippet, captured at execution,
                         never the editor's current text: that would be wrong the
                         moment the SQL is edited after running. */}
-                    <div className="qh-res-stlist-h">{stCount} statements executed — one table each</div>
+                    {/* A label with `set` or `stmt` means the tables and the
+                        statements are not one to one: a SQL Server statement
+                        sent several result sets, or a statement made no table. */}
+                    <div className="qh-res-stlist-h">{stAll.some(s => s && (s.set || s.stmt)) ? stCount + ' tables' : stCount + ' statements executed — one table each'}</div>
                     {stRows.map(s => {
                       // The snippet already opens with the keyword, so the kind
                       // chip only appears when it says something the snippet
@@ -2033,6 +2040,7 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
                         <span className="qh-res-stlist-n">{s.n}</span>
                         <span className="qh-res-stlist-t">
                           {kind && <span className="qh-res-stlist-k">{kind}</span>}
+                          {s.set && <span className="qh-res-stlist-k" title={'Result set ' + s.set + ' of this statement'}>{'RESULT ' + s.set}</span>}
                           <span className="qh-res-stlist-s" title={s.snippet || undefined}>{s.snippet || ('Result ' + s.n)}</span>
                         </span>
                         {s.n === stN && <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>}

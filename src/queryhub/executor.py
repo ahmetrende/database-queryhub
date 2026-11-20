@@ -437,6 +437,10 @@ class _StmtResult:
     pii_masked: set | None = None   # detector names that fired (email/phone/...)
     pii_exempt: bool = False        # masking skipped via pii_masking_exemptions
     col_types: dict | None = None   # column name -> SQL type, from the driver
+    # 0 is the statement's own result. 1, 2, ... number the result sets that
+    # came after it from the same statement (SQL Server: a trigger, for
+    # instance; see _more_mssql_results). Such a set is a table of its own.
+    set_no: int = 0
 
 
 def _resolve_unknown_oids(cur, oids: set) -> dict:
@@ -1517,9 +1521,11 @@ def _run_notes(stmt_results: list, replica: dict | None = None) -> dict:
     reader wants to know that nine ran and what kind they were, and the SQL is
     already on screen above the results.
     """
+    # A later result set of a statement (set_no > 0) is a table, not a
+    # statement: the count answers "did all nine of them run".
     statements = [{"i": r.index, "leading": r.leading, "rows": r.rowcount,
                    "snippet": r.snippet}
-                  for r in stmt_results]
+                  for r in stmt_results if not r.set_no]
     notices, dropped = [], False
     for r in stmt_results:
         for n in r.notices:
@@ -1863,6 +1869,7 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
                     unmasked=unmask,
                     capture_plan=False,   # no PG-style EXPLAIN plan on SQL Server
                     audit_tag=audit_tag,
+                    exemptions=s.leading.upper() not in _MSSQL_WRITES,
                 )
             except Exception:
                 if not wrapped:
@@ -1881,8 +1888,18 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
                     unmasked=unmask,
                     capture_plan=False,
                     audit_tag=audit_tag,
+                    exemptions=s.leading.upper() not in _MSSQL_WRITES,
                 )
             stmt_results.append(res)
+            # One statement can send more than one result: read them all
+            # here, before the next statement or the commit discards them.
+            stmt_results.extend(_more_mssql_results(
+                cur, res, s, request_id=request_id,
+                wants_result=request["wants_result"], max_rows=max_rows,
+                max_csv_bytes=max_csv_bytes,
+                requester_id=request["requester_slack_id"], unmasked=unmask,
+                result_format=result_format, target_id=target.id,
+                database=request["database_name"]))
         conn.commit()
         elapsed = time.monotonic() - t_start
     finally:
@@ -1915,6 +1932,7 @@ def _execute_main_statement(
     on_committed=None,
     force_extended: bool = False,
     audit_tag: str = "",
+    exemptions: bool = True,
 ) -> _StmtResult:
     """Execute one main (non-SET) statement and capture its outcome.
 
@@ -1953,6 +1971,9 @@ def _execute_main_statement(
     `audit_tag` is the comment from `sql_audit_comment`, or "". It goes in
     front of the text sent to the server and of the lineage EXPLAIN. The
     checks and the result labels use the statement without it.
+
+    `exemptions=False` masks the result with no masking exemption: see
+    `_write_result_set`.
     """
     # Ask the server how many statements it reads here, and refuse if that is
     # more than the one that was approved. On Postgres the extended protocol
@@ -2088,74 +2109,13 @@ def _execute_main_statement(
         res.col_types = _apply_resolved_types(res.col_types, _unknown_oids, None)
         return res
 
-    # PII masking: values are masked as they stream into the result
-    # file, after the query ran normally. Two layers — content scan
-    # (email/phone/tckn/vkn/iban/card by value) + column-name catalog
-    # (name/address/... by column). `pii_found` accumulates which kinds
-    # fired for the audit log + user hint. None when masking is disabled.
-    # `unmasked` is the already-decided verdict from _run (intent AND a live
-    # super-admin check), not a request field — so this cannot be reached by
-    # a row that merely asks for it.
-    pii_found: set | None = (
-        None if unmasked else (set() if pii.is_enabled() else None))
-    pii_skip: set[int] = set()
-    pii_namescan: set[int] = set()
-    # The engine's own catalog is metadata, not people. Masking it turns
-    # `pg_roles.rolname` into a redacted string for the one person whose job is
-    # to read it, and protects nothing — see pii.system_catalog_only. Checked
-    # before the exemption rows because it needs no configuration: it is true of
-    # every deployment and every engine, not a policy someone opted into.
-    if pii_found is not None and pii.system_catalog_only(stmt.rewritten,
-                                                         engine=engine):
-        pii_found = None
-        res.pii_exempt = True
-    if pii_found is not None and target_id is not None:
-        # Public-data exemptions (pii_masking_exemptions): a target/db-wide
-        # row (or an only-exempt-tables query) lifts masking entirely for
-        # this statement; column-level rows exempt individual result
-        # columns. "Soft" (keep_value_scan) column rows lift only the
-        # column-name rule and keep the value scan. Fail-closed inside.
-        try:
-            skip_all, pii_skip = pii.exemption_decision(
-                target_id, database or "", stmt.rewritten, columns,
-                engine=engine, principal_id=requester_id)
-            pii_namescan = pii.exemption_namescan(
-                target_id, database or "", stmt.rewritten, columns,
-                engine=engine, principal_id=requester_id)
-        except Exception:
-            log.exception("pii exemption check failed; keeping masking on")
-            skip_all, pii_skip, pii_namescan = False, set(), set()
-        if skip_all:
-            pii_found = None
-            res.pii_exempt = True
-        elif pii_skip or pii_namescan:
-            res.pii_exempt = True
-    pii_cols = (pii.column_pii_map(columns, stmt.rewritten, engine=engine,
-                                   lineage=pii_lineage_map)
-                if pii_found is not None else {})
-    # Column-level exemptions beat the column-name catalog. Full skips AND
-    # soft (keep_value_scan) rows both drop the name rule; soft columns are
-    # NOT added to skip_cols, so they fall through to the per-value scan.
-    for i in pii_skip:
-        pii_cols.pop(i, None)
-    for i in pii_namescan:
-        pii_cols.pop(i, None)
-    if result_format == "xlsx":
-        out_path, rows_written, t_rows, t_size = _stream_to_xlsx(
-            request_id, columns, rows, max_rows, max_csv_bytes,
-            suffix=f"_q{index}", pii_found=pii_found, pii_cols=pii_cols,
-            pii_skip=pii_skip, description=cur.description,
-        )
-    else:
-        out_path, rows_written, t_rows, t_size = _stream_to_csv(
-            request_id, columns, rows, max_rows, max_csv_bytes,
-            suffix=f"_q{index}", pii_found=pii_found, pii_cols=pii_cols,
-            pii_skip=pii_skip, description=cur.description,
-        )
-    res.rowcount = rows_written
-    res.truncated_rows = t_rows
-    res.truncated_size = t_size
-    res.pii_masked = pii_found or None
+    out_path, rows_written, t_size = _write_result_set(
+        rows, columns, cur.description, stmt, res,
+        request_id=request_id, max_rows=max_rows, max_bytes=max_csv_bytes,
+        suffix=f"_q{index}", lineage=pii_lineage_map,
+        requester_id=requester_id, unmasked=unmasked,
+        result_format=result_format, target_id=target_id,
+        database=database, engine=engine, exemptions=exemptions)
 
     # The result is written; the portal is not necessarily finished. Streaming
     # stops at the row or size cap, and breaking out of a `for` over a generator
@@ -2185,6 +2145,288 @@ def _execute_main_statement(
     else:
         res.csv_path = out_path
     return res
+
+
+def _write_result_set(rows, columns: list, description, stmt, res: _StmtResult, *,
+                      request_id: int, max_rows: int, max_bytes: int,
+                      suffix: str, lineage, requester_id: str | None,
+                      unmasked: bool, result_format: str,
+                      target_id: int | None, database: str | None,
+                      engine: str,
+                      exemptions: bool = True) -> tuple[Path, int, bool]:
+    """Mask one result set and write it to its own file.
+
+    The first result set of a statement and every later one (SQL Server, see
+    `_more_mssql_results`) take this same path, so each one gets the same
+    masking and the same row and size caps. `lineage` is the source-column map
+    for the first set. A later set has none: its columns come from something
+    the statement ran, and the planner did not describe them.
+
+    `exemptions=False` applies no masking exemption and no system-catalog
+    shortcut. Both decide from the tables NAMED in the statement. Rows that a
+    trigger returns come from tables that the statement does not name, so an
+    exemption on `UPDATE public_codes` must not unmask a trigger's
+    `SELECT email FROM users`. The caller passes False for every result set
+    of a SQL Server write (see _run_mssql). It fails closed: an OUTPUT clause
+    on an exempt table is masked too.
+
+    Sets `res.rowcount`, `truncated_rows`, `truncated_size`, `pii_masked` and
+    `pii_exempt`. Returns the file, the rows written and the size flag.
+    """
+    # PII masking: values are masked as they stream into the result
+    # file, after the query ran normally. Two layers — content scan
+    # (email/phone/tckn/vkn/iban/card by value) + column-name catalog
+    # (name/address/... by column). `pii_found` accumulates which kinds
+    # fired for the audit log + user hint. None when masking is disabled.
+    # `unmasked` is the already-decided verdict from _run (intent AND a live
+    # super-admin check), not a request field — so this cannot be reached by
+    # a row that merely asks for it.
+    pii_found: set | None = (
+        None if unmasked else (set() if pii.is_enabled() else None))
+    pii_skip: set[int] = set()
+    pii_namescan: set[int] = set()
+    # The engine's own catalog is metadata, not people. Masking it turns
+    # `pg_roles.rolname` into a redacted string for the one person whose job is
+    # to read it, and protects nothing — see pii.system_catalog_only. Checked
+    # before the exemption rows because it needs no configuration: it is true of
+    # every deployment and every engine, not a policy someone opted into.
+    if exemptions and pii_found is not None and pii.system_catalog_only(stmt.rewritten,
+                                                         engine=engine):
+        pii_found = None
+        res.pii_exempt = True
+    if exemptions and pii_found is not None and target_id is not None:
+        # Public-data exemptions (pii_masking_exemptions): a target/db-wide
+        # row (or an only-exempt-tables query) lifts masking entirely for
+        # this statement; column-level rows exempt individual result
+        # columns. "Soft" (keep_value_scan) column rows lift only the
+        # column-name rule and keep the value scan. Fail-closed inside.
+        try:
+            skip_all, pii_skip = pii.exemption_decision(
+                target_id, database or "", stmt.rewritten, columns,
+                engine=engine, principal_id=requester_id)
+            pii_namescan = pii.exemption_namescan(
+                target_id, database or "", stmt.rewritten, columns,
+                engine=engine, principal_id=requester_id)
+        except Exception:
+            log.exception("pii exemption check failed; keeping masking on")
+            skip_all, pii_skip, pii_namescan = False, set(), set()
+        if skip_all:
+            pii_found = None
+            res.pii_exempt = True
+        elif pii_skip or pii_namescan:
+            res.pii_exempt = True
+    pii_cols = (pii.column_pii_map(columns, stmt.rewritten, engine=engine,
+                                   lineage=lineage)
+                if pii_found is not None else {})
+    # Column-level exemptions beat the column-name catalog. Full skips AND
+    # soft (keep_value_scan) rows both drop the name rule; soft columns are
+    # NOT added to skip_cols, so they fall through to the per-value scan.
+    for i in pii_skip:
+        pii_cols.pop(i, None)
+    for i in pii_namescan:
+        pii_cols.pop(i, None)
+    if result_format == "xlsx":
+        out_path, rows_written, t_rows, t_size = _stream_to_xlsx(
+            request_id, columns, rows, max_rows, max_bytes,
+            suffix=suffix, pii_found=pii_found, pii_cols=pii_cols,
+            pii_skip=pii_skip, description=description,
+        )
+    else:
+        out_path, rows_written, t_rows, t_size = _stream_to_csv(
+            request_id, columns, rows, max_rows, max_bytes,
+            suffix=suffix, pii_found=pii_found, pii_cols=pii_cols,
+            pii_skip=pii_skip, description=description,
+        )
+    res.rowcount = rows_written
+    res.truncated_rows = t_rows
+    res.truncated_size = t_size
+    res.pii_masked = pii_found or None
+    return out_path, rows_written, t_size
+
+
+# How many tables one SQL Server statement may produce. A later result set past
+# this is read and dropped, and Messages says so. bot_config `max_result_sets`.
+_DEFAULT_MAX_RESULT_SETS = 20
+
+# Writes whose result sets can come from a trigger. An OUTPUT clause without
+# INTO is refused on a table with an enabled trigger (error 334), so a write
+# that sends a result set AND a later row count got that set from a trigger.
+_MSSQL_WRITES = frozenset({"INSERT", "UPDATE", "DELETE", "MERGE"})
+
+
+def _file_size(path: Path | None) -> int:
+    try:
+        return path.stat().st_size if path is not None else 0
+    except OSError:
+        return 0
+
+
+def _rows_affected_note(n: int) -> dict:
+    """The Messages line for a row count that is not the statement's own,
+    in the words SQL Server Management Studio uses."""
+    return {"severity": "INFO",
+            "text": f"({n} row{'' if n == 1 else 's'} affected)"}
+
+
+def _more_mssql_results(cur, first: _StmtResult, stmt, *, request_id: int,
+                        wants_result: bool, max_rows: int, max_csv_bytes: int,
+                        requester_id: str | None, unmasked: bool,
+                        result_format: str, target_id: int | None,
+                        database: str | None) -> list[_StmtResult]:
+    """Read every result that SQL Server sends after the first one.
+
+    One statement can send several results. A trigger without SET NOCOUNT ON
+    sends the row count of each statement it runs, and it can send rows too.
+    The trigger's results arrive BEFORE the count of the statement that fired
+    it: an UPDATE of 2 rows whose trigger inserts 6 audit rows sends 6, then 2
+    (measured on SQL Server 2022).
+
+    The executor used to read the first result only. Two defects came from
+    that, both measured:
+
+      - the request reported the trigger's count, not the statement's own;
+      - an error after the first result was never read. A trigger that threw
+        after its first insert finished as a success with a row count, and
+        the server had rolled the statement back.
+
+    Now:
+
+      - the statement's row count is the LAST count the server sends. Each
+        earlier count goes to Messages as "(N rows affected)";
+      - each result set is a table of its own, masked like the first and
+        with no masking exemption (see _write_result_set). The files of one
+        statement share one size limit;
+      - a write whose FIRST result was a set and that sent a count later got
+        that set from a trigger (SET NOCOUNT ON, then SELECT). The set moves
+        to result set 1 and the write keeps its own count. An OUTPUT clause
+        sends one set and no count (measured), so it stays the result;
+      - past `max_result_sets` tables, or past the size limit, a set is read
+        and dropped, and Messages says how many. A dropped set never fails
+        the request: the write is already done, and a request that says
+        "failed" invites someone to run it again;
+      - an error in a later result raises here. The request fails, and the
+        caller closes the connection, which rolls the transaction back.
+
+    Reads on THIS cursor, before the caller runs the next statement or
+    commits: both would discard what is still unread. Returns the extra
+    tables in order. `first` gets its row count and notices in place.
+    """
+    limit = max(1, cfg.get_int("max_result_sets", _DEFAULT_MAX_RESULT_SETS))
+    extra: list[_StmtResult] = []
+    counts: list[int] = [] if first.has_result_set else [first.rowcount]
+    sets = 1 if first.has_result_set else 0
+    dropped = 0
+    used = _file_size(first.csv_path)
+    full = first.truncated_size
+    while cur.nextset():
+        if cur.description is None:
+            rc = cur.rowcount
+            if isinstance(rc, int) and rc >= 0:
+                counts.append(rc)
+            continue
+        sets += 1
+        if sets > limit or full:
+            # nextset() skips the rows of this set. It is still read to its
+            # end, so an error behind it is not lost.
+            dropped += 1
+            continue
+        res = _StmtResult(index=first.index, leading=first.leading,
+                          snippet=first.snippet, set_no=sets)
+        res.has_result_set = True
+        columns = [d[0] for d in cur.description]
+        col_types, unknown = _column_types(cur.description)
+        res.col_types = _apply_resolved_types(col_types, unknown, None)
+        if not wants_result:
+            extra.append(res)
+            seen = 0
+            for _r in cur:
+                if seen >= max_rows:
+                    res.truncated_rows = True
+                    break
+                seen += 1
+            res.rowcount = seen
+            continue
+        path, written, t_size = _write_result_set(
+            cur, columns, cur.description, stmt, res,
+            request_id=request_id, max_rows=max_rows,
+            max_bytes=max(max_csv_bytes - used, 0),
+            suffix=f"_q{first.index}s{sets}", lineage=None,
+            requester_id=requester_id, unmasked=unmasked,
+            result_format=result_format, target_id=target_id,
+            database=database, engine="mssql", exemptions=False)
+        if t_size:
+            path.unlink(missing_ok=True)
+            dropped += 1
+            full = True
+            continue
+        if written == 0:
+            path.unlink(missing_ok=True)
+        else:
+            res.csv_path = path
+            used += _file_size(path)
+        extra.append(res)
+
+    if (first.has_result_set and counts
+            and first.leading.upper() in _MSSQL_WRITES):
+        moved = _move_to_result_set_1(first)
+        if moved.truncated_size:
+            if moved.csv_path is not None:
+                moved.csv_path.unlink(missing_ok=True)
+            dropped += 1
+            full = True
+        else:
+            extra.insert(0, moved)
+
+    if counts:
+        if first.has_result_set:
+            earlier = counts
+        else:
+            first.rowcount = counts[-1]
+            earlier = counts[:-1]
+        for n in earlier:
+            if len(first.notices) >= _MAX_NOTICES:
+                break
+            first.notices.append(_rows_affected_note(n))
+    if dropped:
+        log.info("request %s: statement %s sent %s more result sets than "
+                 "QueryHub keeps", request_id, first.index, dropped)
+        first.notices.append({
+            "severity": "NOTICE",
+            "text": (f"The statement sent {dropped} more result "
+                     f"set{'' if dropped == 1 else 's'}. QueryHub keeps "
+                     f"{limit} per statement." if not full else
+                     f"The statement sent {dropped} more result "
+                     f"set{'' if dropped == 1 else 's'} past the size "
+                     f"limit. QueryHub did not keep "
+                     f"{'it' if dropped == 1 else 'them'}."),
+        })
+    return extra
+
+
+def _move_to_result_set_1(first: _StmtResult) -> _StmtResult:
+    """Turn the first result set of a write into result set 1 of the same
+    statement, and leave `first` as the write's own row-count result.
+
+    The file is renamed to the result-set name (`_q<n>s1_`), so the web labels
+    it as a set and not as the write's own result."""
+    moved = dataclasses.replace(first, set_no=1, notices=[])
+    if first.csv_path is not None:
+        name = first.csv_path.name
+        stem = f"_q{first.index}_"
+        if stem in name:
+            target = first.csv_path.with_name(
+                name.replace(stem, f"_q{first.index}s1_", 1))
+            first.csv_path.rename(target)
+            moved.csv_path = target
+    first.has_result_set = False
+    first.csv_path = None
+    first.rowcount = 0
+    first.truncated_rows = False
+    first.truncated_size = False
+    first.pii_masked = None
+    first.pii_exempt = False
+    first.col_types = None
+    return moved
 
 
 def _description_of(cur, description):
@@ -2703,6 +2945,17 @@ def _complete_with_plan(
         ratings.maybe_prompt(client, request)
 
 
+def _run_shape(stmt_results: list) -> str:
+    """`3 statements`, or `1 statement, 3 result sets` when a statement sent
+    more than one table (SQL Server, see _more_mssql_results)."""
+    n = len({r.index for r in stmt_results})
+    text = f"{n} statement{'' if n == 1 else 's'}"
+    more = sum(1 for r in stmt_results if r.set_no)
+    if more:
+        text += f", {more} more result set{'' if more == 1 else 's'}"
+    return text
+
+
 def _complete_multi(
     client: WebClient,
     request: dict,
@@ -2719,6 +2972,8 @@ def _complete_multi(
     request_id = request["id"]
     csvs = [r for r in stmt_results if r.csv_path is not None]
     total_rows = sum(r.rowcount for r in stmt_results)
+    n_statements = len({r.index for r in stmt_results})
+    shape = _run_shape(stmt_results)
     any_truncated = any(r.truncated_rows for r in stmt_results)
 
     # Build the upload artifact: zip if 2+ csvs, plain csv if 1, none if 0.
@@ -2754,7 +3009,9 @@ def _complete_multi(
              request_id),
         )
         audit.log_in(cur, request_id, None, None, "completed", {
-            "n_statements": len(stmt_results),
+            "n_statements": n_statements,
+            # Every result, a later result set of a statement included.
+            "n_results": len(stmt_results),
             "total_rows": total_rows,
             "truncated": any_truncated,
             "csv": str(upload_path) if upload_path else None,
@@ -2763,7 +3020,8 @@ def _complete_multi(
             "per_statement": [
                 {"i": r.index, "leading": r.leading,
                  "rows": r.rowcount, "truncated": r.truncated_rows,
-                 "csv": str(r.csv_path) if r.csv_path else None}
+                 "csv": str(r.csv_path) if r.csv_path else None,
+                 **({"set": r.set_no} if r.set_no else {})}
                 for r in stmt_results
             ],
         })
@@ -2781,7 +3039,9 @@ def _complete_multi(
         if r.csv_path is not None:
             suffix_bits.append("→ csv")
         suffix = f" ({', '.join(suffix_bits)})" if suffix_bits else ""
-        summary_lines.append(f"  • Statement {r.index} ({r.leading}): {rc} {rs}{suffix}")
+        where = (f"Statement {r.index}, result set {r.set_no}" if r.set_no
+                 else f"Statement {r.index}")
+        summary_lines.append(f"  • {where} ({r.leading}): {rc} {rs}{suffix}")
     summary = "\n".join(summary_lines)
 
     if request.get("bundle_id"):
@@ -2793,7 +3053,7 @@ def _complete_multi(
     requester = request["requester_slack_id"]
     note_header = (
         f":white_check_mark: *SQL query `#{request_id}` completed* — "
-        f"{len(stmt_results)} statements{dur}.\n"
+        f"{shape}{dur}.\n"
         f"{summary}\n"
         + notifications.request_context_md(request)
         + _pii_hint(pii_masked, any(r.pii_exempt for r in stmt_results))
@@ -2829,7 +3089,7 @@ def _complete_multi(
     notifications.update_all_admin_messages(
         client, request,
         f":white_check_mark: {_approved_by(request)}{_fmt_approve_ts(request)} — "
-        f"executed {len(stmt_results)} statements ({_fmt_count(total_rows)} "
+        f"executed {shape} ({_fmt_count(total_rows)} "
         f"rows total{dur}).",
     )
     if deliver:
