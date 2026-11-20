@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from typing import Any
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -49,7 +50,7 @@ REQUEST_RETURNING = (
     "decided_by_slack_id, decided_by_name, decided_at, scheduled_for, "
     "requester_dm_channel_id, requester_dm_message_ts, "
     "bundle_id, position, risk_summary, origin, engine, required_tier, "
-    "unmasked, run_on, ai_assisted, result_to_slack"
+    "unmasked, run_on, ai_assisted, result_to_slack, default_schema"
 )
 
 
@@ -126,6 +127,10 @@ class Prepared:
     # The requester also wants the result in Slack. The web route stores it
     # only when Slack can work. See migrations/214_request_result_to_slack.sql.
     result_to_slack: bool = False
+    # Schema that unqualified names resolve to first. PostgreSQL only. It
+    # changes search_path and nothing else: no grant, tier or mask reads it.
+    # See migrations/216_request_default_schema.sql.
+    default_schema: str | None = None
 
 
 @dataclass
@@ -183,6 +188,7 @@ def validate_submission(
     replica_id: str | None = None,
     ai_assisted: bool = False,
     result_to_slack: bool = False,
+    default_schema: str | None = None,
 ) -> Prepared | Rejection:
     """Run every submit-time check in the exact order the Slack modal
     always has. Returns a Prepared on success, a Rejection on the first
@@ -251,6 +257,12 @@ def validate_submission(
             f"`{target.alias}` is a read replica. Submit to "
             f"`{primary.alias if primary else 'its primary'}` instead. Read-only "
             f"queries there run on the replica when it is healthy.")
+
+    default_schema = normalize_default_schema(default_schema)
+    if default_schema is not None:
+        bad_schema = default_schema_error(target, default_schema)
+        if bad_schema is not None:
+            return bad_schema
 
     # Whether the bulk-destructive refusals apply to this submitter.
     #
@@ -504,11 +516,15 @@ def validate_submission(
     # The pre-flight EXPLAINs carry the audit comment too. The request row
     # does not exist yet, so the comment says req_id=none.
     check_tag = sql_audit_comment.prefix(origin=origin, principal=user_id)
+    # Passed only when set, so a request without one makes the same calls
+    # as before.
+    schema_kw: dict[str, Any] = {"default_schema": default_schema} if default_schema else {}
 
     if (pre_flight.is_enabled() and required_mode == "ro"
             and pre_flight.is_explainable(query)):
         ok, err, plan = pre_flight.explain(
             target.id, database, required_mode, query, tag=check_tag,
+            **schema_kw,
         )
         if not ok:
             return Rejection(
@@ -547,7 +563,7 @@ def validate_submission(
             try:
                 ok, err, hint = pre_flight.validate_statements(
                     target.id, database, required_mode, safety.statements,
-                    tag=check_tag)
+                    tag=check_tag, **schema_kw)
             except Exception:
                 log.exception("pre-flight validation crashed; continuing without it")
                 ok, err, hint = True, None, None
@@ -560,6 +576,7 @@ def validate_submission(
             try:
                 risk_summary = pre_flight.explain_write_estimate(
                     target.id, database, required_mode, query, tag=check_tag,
+                    **schema_kw,
                 )
             except Exception:
                 log.exception("write-estimate failed; continuing without hint")
@@ -641,7 +658,30 @@ def validate_submission(
         run_on=stored_run_on,
         ai_assisted=ai_assisted,
         result_to_slack=result_to_slack,
+        default_schema=default_schema,
     )
+
+
+def normalize_default_schema(value: str | None) -> str | None:
+    """Strip the value. An empty value means no default schema."""
+    value = (value or "").strip()
+    return value or None
+
+
+def default_schema_error(target, default_schema: str) -> Rejection | None:
+    """Why this default schema cannot be used on this target, or None."""
+    if (getattr(target, "engine", None) or "postgres") != "postgres":
+        return Rejection(
+            "default_schema",
+            "A default schema works only on PostgreSQL. Remove it, or write "
+            "the schema in the statement.",
+            reason="default_schema_engine")
+    if not query_safety.valid_default_schema(default_schema):
+        return Rejection(
+            "default_schema",
+            "The default schema must be one schema name, for example app.",
+            reason="default_schema_invalid")
+    return None
 
 
 def _chosen_replica(target, required_mode: str,
@@ -919,6 +959,10 @@ def create_request(
     fp_hit: dict | None = None
     if prep.required_mode == "ro":
         query_fingerprint = ast_safety.fingerprint(prep.query, engine=prep.target.engine)
+        # The same text under another schema reads other tables, so it must
+        # not match a cached approval made for the default path.
+        if query_fingerprint and prep.default_schema:
+            query_fingerprint = query_fingerprint + "|schema=" + prep.default_schema
         if not super_auto and aa_grant is None and query_fingerprint and cache_allowed:
             fp_hit = auto_approve.fingerprint_cache_hit(
                 prep.user_id, prep.target.id, prep.database, query_fingerprint,
@@ -980,9 +1024,9 @@ def create_request(
                 f" explain_plan, risk_summary, query_fingerprint, status, "
                 f" decided_by_slack_id, decided_by_name, decided_at, decision_reason, "
                 f" origin, engine, required_tier, unmasked, query_secret, run_on, "
-                f" ai_assisted, result_to_slack) "
+                f" ai_assisted, result_to_slack, default_schema) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, "
-                f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
@@ -1009,6 +1053,7 @@ def create_request(
                     prep.run_on,
                     prep.ai_assisted,
                     prep.result_to_slack,
+                    prep.default_schema,
                 ),
             )
             row = cur.fetchone()
@@ -1069,9 +1114,9 @@ def create_request(
                 f" query, wants_result, result_format, justification, scheduled_for, "
                 f" explain_plan, risk_summary, query_fingerprint, origin, "
                 f" engine, required_tier, unmasked, query_secret, run_on, ai_assisted, "
-                f" result_to_slack) "
+                f" result_to_slack, default_schema) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, "
-                f"        %s, %s, %s, %s, %s, %s, %s) "
+                f"        %s, %s, %s, %s, %s, %s, %s, %s) "
                 f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
@@ -1094,6 +1139,7 @@ def create_request(
                     prep.run_on,
                     prep.ai_assisted,
                     prep.result_to_slack,
+                    prep.default_schema,
                 ),
             )
             row = cur.fetchone()

@@ -9,7 +9,7 @@ item is decided).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from . import config as cfg
 from . import query_safety, query_secrets
@@ -30,6 +30,9 @@ class BundleItem(TypedDict):
     # Optional (web submits set it; Slack submits leave it out → NULL). Read
     # via .get() at INSERT time so the Slack path needs no change.
     risk_summary: str | None
+    # PostgreSQL only: unqualified names resolve to this schema first. A web
+    # batch item sets it from its tab; every other path leaves it out → NULL.
+    default_schema: NotRequired[str | None]
 
 
 # ------------------------------- config -----------------------------------
@@ -106,14 +109,14 @@ def insert_bundle_with_items(
                  database_name, query, wants_result, result_format,
                  justification, scheduled_for, explain_plan,
                  bundle_id, position, origin, risk_summary, query_secret,
-                 result_to_slack)
+                 default_schema, result_to_slack)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
-                    %s, %s, %s, %s)
+                    %s, %s, %s, %s, %s)
             RETURNING id, requester_slack_id, requester_name,
                       target_server_id, database_name, query,
                       wants_result, result_format, justification, status,
                       scheduled_for, bundle_id, position, origin,
-                      result_to_slack
+                      default_schema, result_to_slack
             """,
             (
                 requester_slack_id,
@@ -139,6 +142,7 @@ def insert_bundle_with_items(
                 origin,
                 item.get("risk_summary"),
                 query_secret,
+                item.get("default_schema"),
                 result_to_slack,
             ),
         )
@@ -183,6 +187,8 @@ def list_items(cur: Any, bundle_id: int) -> list[dict]:
                r.required_tier, r.engine,
                -- the requester summary DM reads these (Slack or not)
                r.origin, r.result_to_slack,
+               -- the approver reads the default schema on each item
+               r.default_schema,
                ts.alias AS target_alias, ts.host AS target_host
           FROM requests r
           JOIN target_servers ts ON ts.id = r.target_server_id

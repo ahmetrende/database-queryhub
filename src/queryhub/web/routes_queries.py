@@ -99,6 +99,9 @@ class QueryIn(BaseModel):
     # Also send the result to the requester in Slack. Kept only when Slack is
     # on and the person has a Slack id. The default is the web channel only.
     resultToSlack: bool = False
+    # PostgreSQL only. Unqualified names resolve to this schema first. It
+    # changes search_path only, never the grant, the tier or the masking.
+    defaultSchema: str | None = Field(default=None, max_length=63)
 
 
 class BatchItemIn(BaseModel):
@@ -106,6 +109,9 @@ class BatchItemIn(BaseModel):
     databaseId: str | None = None
     sql: str = Field(min_length=1, max_length=200_000)
     name: str | None = None
+    # The default schema of the item's tab, as on a single query. A fleet run
+    # sends none: one text for many databases has no one schema.
+    defaultSchema: str | None = Field(default=None, max_length=63)
 
 
 class BatchIn(BaseModel):
@@ -371,6 +377,7 @@ def submit_query(body: QueryIn, request: Request,
         replica_id=body.replicaId if body.runOn == "replica" else None,
         ai_assisted=body.aiAssisted and ai.is_enabled_for(uid),
         result_to_slack=_result_to_slack(claims, body.resultToSlack),
+        default_schema=body.defaultSchema,
     )
     if isinstance(prep, core_submit.Rejection):
         _record_refusal(claims, "web", t.id, body.databaseId, body.sql, prep)
@@ -654,7 +661,8 @@ def submit_batch(body: BatchIn, request: Request,
             query=it.sql, justification=body.justification, wants_result=True,
             result_format="csv", schedule_date=sched_date, schedule_time=sched_time,
             origin=_origin_for(claims), client_ip=client_ip, user_agent=user_agent,
-            confirmed=body.confirmed)
+            confirmed=body.confirmed,
+            default_schema=None if fleet else it.defaultSchema)
         if isinstance(prep, core_submit.Rejection):
             _record_refusal(claims, "web-batch", t.id, it.databaseId, it.sql, prep)
             if fleet:
@@ -706,7 +714,7 @@ def submit_batch(body: BatchIn, request: Request,
         target_server_id=p.target.id, target_alias=p.target.alias,
         database_name=p.database, query=p.query, wants_result=p.wants_result,
         result_format=p.result_format, explain_plan=p.explain_plan,
-        risk_summary=p.risk_summary) for p in preps]
+        risk_summary=p.risk_summary, default_schema=p.default_schema) for p in preps]
 
     with db.transaction() as cur:
         # The origin is stamped on the bundle so its items carry it — the executor's
@@ -1278,6 +1286,8 @@ def query_status(request_id: int, claims: dict = Depends(deps.current_user)):
         "origin": row.get("origin") or "slack",
         # The SQL came from the AI assistant of the editor. A mark only.
         "aiAssisted": bool(row.get("ai_assisted")),
+        # The schema that unqualified names resolved to first, or null.
+        "defaultSchema": row.get("default_schema") or None,
         # When it was sent. A tab that a link or a reload opened has no local
         # submit time, and the waiting card counts from this one.
         "submittedAt": mapping.iso(row.get("created_at")),

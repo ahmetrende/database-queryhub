@@ -128,7 +128,11 @@ TOOLS: tuple[Tool, ...] = (
          "wait_seconds": {**_INT,
                           "description": (f"How long to wait for the result. Default "
                                           f"{WAIT_SECONDS}. Maximum {WAIT_SECONDS}."),
-                          "maximum": WAIT_SECONDS}},
+                          "maximum": WAIT_SECONDS},
+         "schema": {**_STR,
+                    "description": ("Optional. PostgreSQL only. The schema that "
+                                    "unqualified table names resolve to first. "
+                                    "Example: app.")}},
         ("connection", "sql", "database")),
     Tool(
         "query_status",

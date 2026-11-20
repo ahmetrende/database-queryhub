@@ -92,6 +92,7 @@ def test_history_entry_shape():
         "origin": "slack",
         # The SQL did not come from the AI assistant.
         "aiAssisted": False,
+        "defaultSchema": None,
         # Nobody read it after it ended yet.
         "seenAt": None,
         "approver": "alex.kim",

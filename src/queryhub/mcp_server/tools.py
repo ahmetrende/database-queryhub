@@ -206,7 +206,8 @@ def classify_sql(connection: str, sql: str) -> dict:
 
 def submit_query(connection: str, sql: str, database: str,
                  justification: str | None = None,
-                 wait_seconds: int = DEFAULT_WAIT_SECONDS) -> dict:
+                 wait_seconds: int = DEFAULT_WAIT_SECONDS,
+                 schema: str | None = None) -> dict:
     """Submit a statement. Governed exactly as a Slack or web submit is.
 
     The parameters follow the catalog: `connection`, `sql` and `database` are
@@ -259,6 +260,8 @@ def submit_query(connection: str, sql: str, database: str,
         origin=origins.MCP,
         confirmed=False,
         unmasked=False,
+        # Changes search_path only. validate_submission checks the name.
+        default_schema=schema,
     )
     if isinstance(prep, core_submit.Rejection):
         return _duplicate_or_refuse(prep, uid, t, database, sql)

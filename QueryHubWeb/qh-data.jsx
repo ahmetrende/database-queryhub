@@ -431,6 +431,19 @@ function qhEngineId(engineStr) {
   return 'postgres';
 }
 function qhEngine(conn) { return QH_ENGINES[qhEngineId(conn && conn.engine)] || QH_ENGINES.postgres; }
+// 2026-11-20 · Default schema of a tab. The server takes it for PostgreSQL
+// only, and only as one plain identifier. The test reads the engine string
+// itself: qhEngineId falls back to postgres for an engine it does not know.
+const QH_SCHEMA_NAME_RE = /^[A-Za-z_][A-Za-z0-9_$]*$/;
+function qhIsPostgresConn(conn) { return !!conn && /postgres/i.test(String(conn.engine || '')); }
+function qhIsSchemaName(s) { return typeof s === 'string' && s.length <= 63 && QH_SCHEMA_NAME_RE.test(s); }
+// The schemas the menu offers: the plain names only, because the server
+// refuses any other name.
+function qhSchemaChoices(schemas) { return (schemas || []).filter(qhIsSchemaName); }
+// The default schema that a submit sends for this tab, or null.
+function qhTabDefaultSchema(conn, schema) {
+  return qhIsPostgresConn(conn) && qhIsSchemaName(schema) ? schema : null;
+}
 // A read-only engine has no read/write or schema credential at all (engines.py
 // `read_only`: ClickHouse and Athena accept SELECT and WITH only). Asking for a
 // higher tier there asks for a thing that does not exist.
@@ -1478,6 +1491,8 @@ function qhHistoryRow(h) {
     bundleId: h.bundleId ? String(h.bundleId) : null,
     // The SQL came from the AI assistant. A mark only.
     aiAssisted: !!h.aiAssisted,
+    // The schema that unqualified names resolve to first. Null when not set.
+    defaultSchema: h.defaultSchema || null,
   };
 }
 
@@ -1947,7 +1962,10 @@ function qhWorkspaceSlim(tabs, activeId, now) {
     // reqId is persisted so a reload does not change the number a tab has been showing.
     reqId: t.reqId, qid: t.qid, touchedAt: t.touchedAt || at,
     // An auto-named tab and a tab with no target yet stay so after a reload.
-    autoName: t.autoName, unpicked: t.unpicked === true ? true : undefined })) };
+    autoName: t.autoName, unpicked: t.unpicked === true ? true : undefined,
+    // The default schema. Written only when set, so a tab without one keeps
+    // the record shape that an older page reads.
+    ...(t.schema ? { schema: t.schema } : null) })) };
 }
 
 // A parsed record, or null when the text is not a workspace.
@@ -1961,7 +1979,7 @@ function qhParseWorkspace(raw) {
 
 // The stored fields that the merge compares. touchedAt is left out: it is a
 // clock, not content, and a tab without one gets a new value on every write.
-const QH_WS_FIELDS = ['kind', 'bundleId', 'name', 'sql', 'conn', 'db', 'reqId', 'qid', 'autoName', 'unpicked'];
+const QH_WS_FIELDS = ['kind', 'bundleId', 'name', 'sql', 'conn', 'db', 'reqId', 'qid', 'autoName', 'unpicked', 'schema'];
 function qhWsTabRow(t) {
   const row = {};
   QH_WS_FIELDS.forEach(k => {
@@ -1980,7 +1998,8 @@ function qhWsHydrate(t, now) {
   return { id: t.id, kind: t.kind, bundleId: t.bundleId || undefined, name: t.name, sql: t.sql, conn: t.conn, db: t.db, reqId: t.reqId, qid: t.qid,
     touchedAt: t.touchedAt || now || Date.now(), dirty: false, result: null, status: null, runMs: null, messages: [], audit: [],
     autoName: (t.autoName === true || t.autoName === false) ? t.autoName : undefined,
-    unpicked: t.unpicked === true ? true : undefined };
+    unpicked: t.unpicked === true ? true : undefined,
+    schema: typeof t.schema === 'string' && t.schema ? t.schema : null };
 }
 
 const QH_WS_COPY_SUFFIX = ' (other browser tab)';
@@ -2024,7 +2043,7 @@ function qhMergeWorkspace(base, mine, theirs, newId) {
       // Changed only there: take their stored fields, keep the live ones (result, dirty) here.
       const h = qhWsHydrate(tt);
       out.push({ ...mt, kind: h.kind, bundleId: h.bundleId, name: h.name, sql: h.sql, conn: h.conn, db: h.db,
-        reqId: h.reqId, qid: h.qid, autoName: h.autoName, unpicked: h.unpicked, touchedAt: h.touchedAt });
+        reqId: h.reqId, qid: h.qid, autoName: h.autoName, unpicked: h.unpicked, schema: h.schema, touchedAt: h.touchedAt });
       touched = true;
     } else if (theirRow === baseRow || mt.sql === tt.sql) out.push(mt);
     else {
@@ -2066,7 +2085,7 @@ Object.assign(window, { qhHistoryRunTab, qhPollDelay, QH_POLL_FAST_MS, QH_POLL_S
   QH_SHOW_ENV_TAGS, qhEnvChipWord,
   qhThemeFor, qhApplyTheme, QH_TIER_PROSE, qhTierProse, QH_TIER_BLURB, qhTierLockWhy,
   qhAskWaiting, qhAskAt, qhAskWindowLabel, qhAskFor, qhAskWindowEnds,
-  QH_ENGINES, qhEngineId, qhEngine, qhIsReservedWord, qhEngineReadOnly, qhEngineBadge, qhEngineLogo, qhQuoteIdentFor, qhServerRoles,
+  QH_ENGINES, qhEngineId, qhEngine, QH_SCHEMA_NAME_RE, qhIsPostgresConn, qhIsSchemaName, qhSchemaChoices, qhTabDefaultSchema, qhIsReservedWord, qhEngineReadOnly, qhEngineBadge, qhEngineLogo, qhQuoteIdentFor, qhServerRoles,
   QH_PROVIDERS, QH_TAG_KEYS, QH_TAG_RESERVED, qhProviderLogo, qhProvider, qhTags, qhHosting, qhHostingFull, qhEndpointHover,
   qhCustomTags, qhParseTagQuery, qhTagMatch, qhProviderGroups, qhTagVocab, qhTokenSuggest, qhApplyToken,
   qhAutoApproveRO, qhSchemaFor, qhSchemaOf, qhQualify, qhSelectSql,

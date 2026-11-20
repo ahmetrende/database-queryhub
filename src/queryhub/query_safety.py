@@ -1017,6 +1017,22 @@ def _validate_search_path(value: str) -> tuple[bool, str]:
     return True, ""
 
 
+# A request's default schema: one plain identifier, nothing quoted. The
+# executor and pre-flight put it into search_path, so the rule is strict.
+# fullmatch, not `$`: `$` also matches before a trailing newline.
+_DEFAULT_SCHEMA = re.compile(r"[A-Za-z_][A-Za-z0-9_$]{0,62}")
+
+
+def valid_default_schema(name: str | None) -> bool:
+    """True when `name` is one plain schema name of 1-63 characters."""
+    return bool(name) and _DEFAULT_SCHEMA.fullmatch(name or "") is not None
+
+
+def quote_schema(name: str) -> str:
+    """`name` as a double-quoted identifier. Call valid_default_schema first."""
+    return '"' + name.replace('"', '""') + '"'
+
+
 def _validate_set(stmt_text: str, allowed: set[str],
                   unrestricted: bool = False) -> tuple[bool, str, str]:
     """Validate a SET statement. Returns (ok, rewritten_text, err).

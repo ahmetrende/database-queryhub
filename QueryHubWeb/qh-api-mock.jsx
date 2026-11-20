@@ -200,7 +200,8 @@ const MOCK_QUEUE = [
     connectionId: 'prod-main', databaseId: 'payments', env: 'production', tier: 'RW',
     sql: "UPDATE payouts\nSET status = 'retry'\nWHERE status = 'failed'\n  AND created_at::date = current_date;",
     statements: 1, piiCols: [], estRows: 42, estTables: ['payouts'], reason: 'Retrying today\'s failed payouts after the gateway fix.',
-    submittedAt: isoAgo(1000 * 60 * 3) },
+    // A default schema, so the queue shows its chip (2026-11-20).
+    defaultSchema: 'app', submittedAt: isoAgo(1000 * 60 * 3) },
   { id: 'q_8f0e', submitter: { name: 'Ben Donnelly', initials: 'BD', slackId: 'U07BD', trust: 74 },
     connectionId: 'prod-main', databaseId: 'users', env: 'production', tier: 'RO',
     sql: "SELECT id, email, full_name, tckn, last_seen_at\nFROM users\nWHERE kyc_status = 'pending'\nORDER BY created_at DESC\nLIMIT 200;",
@@ -1762,6 +1763,8 @@ function newRequest(body, bundleId) {
     // Per request, never per session — and it rides back out on the result, so
     // the grid can state which it is instead of the client remembering.
     unmasked: !!body.unmasked,
+    // The default schema of the tab, or null. The server keeps it as sent.
+    defaultSchema: body.defaultSchema || null,
     // Runs on (CODE 2026-09-28 §3). Auto is stored as null; a lone replica may
     // arrive without its id, and is resolved here.
     runOn: body.runOn === 'primary' || body.runOn === 'replica' ? body.runOn : null,
@@ -1801,13 +1804,16 @@ const MOCK_LIFECYCLE = [
   { id: 'q_e04', end: 'changes_requested', ageMin: 300, tier: 'RW', conn: 'prod-main', db: 'users', by: 'dba.marco',
     note: 'Add a WHERE clause on the batch id.', sql: "UPDATE users SET status = 'active' WHERE signup_batch IS NOT NULL;" },
 ];
+// MOCK (2026-11-20): one History row ran with a default schema, so the chip
+// is on screen. h2 is on a PostgreSQL connection.
+function mockHistSchema(h) { return h && h.id === 'h2' ? 'app' : null; }
 function mockSeedLifecycle() {
   if (MOCK.lifecycleSeeded) return;
   MOCK.lifecycleSeeded = true;
   MOCK_LIFECYCLE.forEach(sd => {
     MOCK.requests[sd.id] = { id: sd.id, sql: sd.sql, conn: sd.conn, db: sd.db, tier: sd.tier, auto: false, bundleId: null,
       justification: null, unmasked: false, runOn: null, replicaId: null, scheduledFor: null, rejected: false, handToDba: null,
-      t0: Date.now() - sd.ageMin * 60000, seed: sd };
+      defaultSchema: null, t0: Date.now() - sd.ageMin * 60000, seed: sd };
   });
   // The rows of the mock History are requests too, as on a server: GET
   // /queries/{id} knows them, so a click on a row opens the run with its result.
@@ -1816,7 +1822,7 @@ function mockSeedLifecycle() {
     if (MOCK.requests[h.id] || (h.status !== 'done' && h.status !== 'rejected')) return;
     MOCK.requests[h.id] = { id: h.id, sql: h.sql, conn: h.conn, db: h.db, tier: h.tier, auto: true, bundleId: null,
       justification: null, unmasked: false, runOn: null, replicaId: null, scheduledFor: null,
-      rejected: h.status === 'rejected', handToDba: null, t0: Date.now() - 3600 * 1000 };
+      rejected: h.status === 'rejected', handToDba: null, defaultSchema: mockHistSchema(h), t0: Date.now() - 3600 * 1000 };
   });
 }
 // The status of a seeded request. A pending one stays pending until it is withdrawn.
@@ -2334,6 +2340,7 @@ const qhApi = {
       // The server sends `outcome` on every row: a refusal is `denied`.
       outcome: h.status === 'rejected' ? 'denied' : null,
       connectionState: connStateFor(h.conn), awaitingDba: false,
+      defaultSchema: mockHistSchema(h),
       // One forced run in a super-admin's history, so the badge is on screen.
       ranOn: h.id === 'h1' && mockUser() && mockUser().role === 'super'
         ? { kind: 'primary', name: h.conn, forced: true, lagSeconds: null } : null,
@@ -2353,7 +2360,7 @@ const qhApi = {
         return { id: r.id, sql: r.sql, connectionId: r.conn, databaseId: r.db, tier: r.tier, status: st.status,
           rowCount: null, approver: st.status === 'pending' || st.status === 'rejected' ? null : 'dba.amara',
           createdAt: new Date(r.t0).toISOString(), outcome: st.outcome || null, awaitingDba: !!st.awaitingDba,
-          connectionState: connStateFor(r.conn), ranOn: null, durationMs: null };
+          connectionState: connStateFor(r.conn), ranOn: null, durationMs: null, defaultSchema: r.defaultSchema || null };
       });
     let all = [...rows, ...live].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
     const q = f && f.q != null ? String(f.q).trim().toLowerCase() : '';
@@ -2737,6 +2744,7 @@ const qhApi = {
       let position = null;
       if (it.bundleId) { seen[it.bundleId] = (seen[it.bundleId] || 0) + 1; position = seen[it.bundleId]; }
       return { ...it, justification: it.justification || it.reason || null, tags: connTagsOf(it.connectionId),
+        defaultSchema: it.defaultSchema || null,
         bundlePosition: position, bundleSize: it.bundleId ? size[it.bundleId] : null };
     }) };
   }, 200),

@@ -711,7 +711,7 @@ function App() {
   useEffect(() => {
     if (!conns.length) return;
     setTabs(ts => ts.map(x => conns.find(c => c.id === x.conn) ? x
-      : { ...x, conn: conns[0].id, db: (conns[0].databases[0] || {}).id || null }));
+      : { ...x, conn: conns[0].id, db: (conns[0].databases[0] || {}).id || null, schema: null }));
   }, [conns]);
 
   // 2026-11-09: an auto-named tab follows its target (qhNameTabs in qh-data.jsx).
@@ -1066,7 +1066,9 @@ function App() {
     const f = freshTab({ name: c.name, autoName: true, conn: c.id, db: db ? db.id : c.databases[0].id });
     setTabs(ts => [...ts, f]); setActiveId(f.id); focusEditor(); reserveFor(f.id);  };
 
-  const pickDb = (c, d) => patch(activeId, { conn: c.id, db: d.id, unpicked: false });
+  // A default schema belongs to one database: a new target clears it.
+  const pickDb = (c, d) => patch(activeId, { conn: c.id, db: d.id, unpicked: false,
+    ...(tab.conn !== c.id || tab.db !== d.id ? { schema: null } : null) });
 
   const loadSaved = (s) => {
     const f = freshTab({ name: s.name, autoName: false, sql: s.sql, conn: s.conn, db: s.db, connState: s.state });
@@ -1579,6 +1581,9 @@ function App() {
       pushToast('A replica runs read-only statements only — switch Runs on to Auto or Primary, or make the statement read-only.');
       return;
     }
+    // The default schema of the tab. Sent for PostgreSQL only: the server
+    // refuses it on other engines.
+    const defSchema = qhTabDefaultSchema(conns.find(c => c.id === cur.conn), cur.schema);
     setResTab('messages');
     patch(id, { status: 'pending', result: null, ranOn: null, outcome: null, expiresAt: null, submittedAt: new Date().toISOString(),
       messages: [{ kind: 'info', text: 'Submitting to QueryHub…', time: nowTime() }] });
@@ -1594,6 +1599,8 @@ function App() {
         // The SQL of this tab came from the AI assistant. A mark for the
         // approver. The server keeps it only while the assistant is on.
         ...(cur.aiAssisted ? { aiAssisted: true } : null),
+        // Unqualified names resolve to this schema first. Sent only when set.
+        ...(defSchema ? { defaultSchema: defSchema } : null),
         // The person ticked "Also send the result to Slack".
         ...(toSlackOn ? { resultToSlack: true } : null),
         // Where it runs — sent only when the tab left Auto, spread-first like
@@ -1794,7 +1801,9 @@ function App() {
     const hid = valid.map(id => tabs.find(t => t.id === id)).filter(x => redactedIn(x.sql).length);
     if (hid.length) { pushToast('“' + hid[0].name + '” still has a hidden password — type it in again before submitting the batch.'); return; }
     setBatchOpen(false); setActiveId(valid[0]); setResTab('messages');
-    const items = valid.map(id => { const x = tabs.find(t => t.id === id); return { connectionId: x.conn, databaseId: x.db, sql: x.sql, name: x.name }; });
+    // Each item keeps its tab's default schema, as a single run does.
+    const items = valid.map(id => { const x = tabs.find(t => t.id === id); const ds = qhTabDefaultSchema(conns.find(c => c.id === x.conn), x.schema);
+      return { connectionId: x.conn, databaseId: x.db, sql: x.sql, name: x.name, ...(ds ? { defaultSchema: ds } : null) }; });
     valid.forEach(id => patch(id, { status: 'pending', result: null,
       messages: [{ kind: 'info', text: 'Submitted in a batch — one approval round.', time: nowTime() }] }));
     qhApi.submitBatch({ items, justification: (bundleWhy || '').trim() || null,
@@ -2235,6 +2244,8 @@ function App() {
                 isSuper={isSuper} unmasked={!!tab.unmasked} onUnmask={(v) => patch(activeId, { unmasked: v })}
                 runOnConn={isSuper && conn && (conn.replicas || []).length ? conn : null} runOn={effRunOn(tab)}
                 onRunOn={(v) => patch(activeId, { runOn: v })}
+                schemas={qhIsPostgresConn(conn) ? qhSchemaChoices(editorSchema.schemas) : null}
+                schema={qhTabDefaultSchema(conn, tab.schema)} onSchema={(v) => patch(activeId, { schema: v })}
                 slackResult={!!(user && user.slackResultAvailable)} toSlack={toSlack} onToSlack={setToSlack}
               />
 
@@ -2836,6 +2847,42 @@ function RunOnToggle({ conn, runOn, tier, onRunOn }) {
   );
 }
 
+// 2026-11-20 · Default schema of a tab (PostgreSQL). It sits after the
+// database name in the target strip. The strip clips its overflow, so the menu
+// is fixed to the viewport, at the button. Same menu items as RunOnToggle.
+const QH_DSCHEMA_TITLE = 'Unqualified names resolve to this schema first. The approver sees it.';
+function QhSchemaPick({ schemas, schema, onSchema }) {
+  const [pos, setPos] = React.useState(null);
+  const open = !!pos;
+  const close = React.useCallback(() => setPos(null), []);
+  const wrapRef = qhUseDismiss(open, close);
+  const toggle = (e) => {
+    if (open) { close(); return; }
+    const r = e.currentTarget.getBoundingClientRect();
+    setPos({ top: r.bottom + 4, left: Math.max(8, r.left) });
+  };
+  const pick = (v) => { close(); onSchema(v); };
+  return (
+    <span className="qh-dschema" ref={wrapRef}>
+      <button type="button" className={'qh-dschema-toggle' + (schema ? ' is-set' : '')}
+        aria-haspopup="menu" aria-expanded={open} onClick={toggle}
+        title={schema ? 'Default schema: ' + schema + '. ' + QH_DSCHEMA_TITLE : QH_DSCHEMA_TITLE}>
+        <span className="qh-dschema-slash">/</span>
+        {schema ? <span className="qh-dschema-v">{schema}</span> : <span className="qh-dschema-ph">schema</span>}
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      {open && (
+        <div className="qh-dschema-pop" role="menu" aria-label="Default schema" style={{ top: pos.top, left: pos.left }}>
+          <RunOnOpt on={!schema} t="Server default" s="The server's search path decides." onClick={() => pick(null)} />
+          <div className="qh-runon-sep"><span>Schemas</span></div>
+          {(schemas || []).map(s => <RunOnOpt key={s} mono on={schema === s} t={s} onClick={() => pick(s)} />)}
+          <div className="qh-runon-foot">{QH_DSCHEMA_TITLE}</div>
+        </div>
+      )}
+    </span>
+  );
+}
+
 // ---------- Action bar (target context + security + actions) ----------
 // The bar steps down when its contents do not fit, smallest change first.
 // What fits depends on the chips the query brings (tier, risks, masking, Runs
@@ -2866,7 +2913,11 @@ function qhFitActionBar(el, overflows = qhActionBarOverflows, max = 3) {
   return level;
 }
 
-function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, isAdminUser, onOpenFleet, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn, selLines, slackResult, toSlack, onToSlack }) {
+function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, isAdminUser, onOpenFleet, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn, selLines, slackResult, toSlack, onToSlack, schemas, schema, onSchema }) {
+  // The schema control shows on a PostgreSQL database with two or more
+  // schemas. It also shows while a schema is set, so a schema that is sent is
+  // always on screen.
+  const showSchema = !!(onSchema && conn && db && schemas && (schemas.length > 1 || schema));
   const runOnConflict = !!(runOnConn && runOn && runOn.mode === 'replica' && hasSql && !classify.empty && classify.tier !== 'RO');
   const tierLabel = qhTierProse(classify.tier);
   const highRisks = (riskHints || []).filter(h => h.level !== 'low');
@@ -2995,6 +3046,7 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
         <span className={'qh-target-conn' + (!conn && connAlias ? ' is-gone' : '')}>{conn ? conn.name : (connAlias || '—')}</span>
         <span className="qh-target-slash">/</span>
         <span className={'qh-target-db' + (!db && dbAlias ? ' is-gone' : '')}>{db ? db.name : (dbAlias || '—')}</span>
+        {showSchema && <QhSchemaPick schemas={schemas} schema={schema || null} onSchema={onSchema} />}
         {/* The badge is the tier YOU are granted here (the chip further right is
             what the query you wrote classifies as). The label used to be spelled
             out next to it and read as noise, so it moved to the hover. */}

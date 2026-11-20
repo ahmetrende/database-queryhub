@@ -260,6 +260,10 @@ def request_context_md(request: dict) -> str:
     target_alias = target.alias if target else "?"
     db = request.get("database_name") or "?"
     line = f"*Server:* `{target_alias}`  •  *Database:* `{db}`"
+    # The approver must see the schema that unqualified names resolve to.
+    # The submit path allows only a plain identifier, so no escape is needed.
+    if request.get("default_schema"):
+        line += f"  •  *Schema:* `{request['default_schema']}`"
     # Where it runs, for the approver with the least context in the flow. An
     # approver saying yes to a DDL on the Huawei box is not saying yes to the
     # same thing as on AWS, and Slack is where that judgement is usually made.
@@ -303,7 +307,8 @@ def _request_blocks(
     meta_bits = [
         f"<@{request['requester_slack_id']}>",
         "→",
-        f"`{target.alias}` / `{request['database_name']}`",
+        f"`{target.alias}` / `{request['database_name']}`"
+        + (f" / `{request['default_schema']}`" if request.get("default_schema") else ""),
     ]
     meta_line = " ".join(meta_bits)
 
@@ -758,7 +763,10 @@ def _bundle_item_blocks(
          "text": {"type": "plain_text", "text": header_text[:150]}},
         {"type": "context",
          "elements": [{"type": "plain_text",
-                       "text": f"db: {item['database_name']}  ·  request #{item['id']}",
+                       "text": f"db: {item['database_name']}"
+                               + (f"  ·  schema: {item['default_schema']}"
+                                  if item.get("default_schema") else "")
+                               + f"  ·  request #{item['id']}",
                        "emoji": False}]},
     ]
     if safety.is_destructive:

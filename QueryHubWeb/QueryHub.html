@@ -681,6 +681,24 @@
   .qh-runon-busy .qh-spin { width: 9px; height: 9px; border-width: 1.5px; }
   .qh-runon-note { margin: 2px 8px 2px; font-size: 11.5px; line-height: 1.4; color: var(--fg-warning); }
   .qh-runon-foot { margin: 4px 2px 0; padding: 8px 6px 2px; border-top: 1px solid var(--stroke-light); font-size: 11px; line-height: 1.45; color: var(--fg-tertiary); text-wrap: pretty; }
+  /* 2026-11-20 · Default schema of a tab (QhSchemaPick in qh-app.jsx). It sits
+     after the database name, so it is quieter than Runs on: no ground until a
+     schema is set, then the brand tint. The target strip clips its overflow,
+     so the menu is fixed to the viewport. At fit step 2 the placeholder word
+     goes. A chosen name stays, cut with an ellipsis. */
+  .qh-dschema { position: relative; display: inline-flex; flex-shrink: 0; min-width: 0; }
+  .qh-dschema-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px 2px 4px; border: 0; border-radius: var(--r-full); white-space: nowrap;
+    font-family: inherit; font-size: 12px; font-weight: 500; cursor: pointer; color: var(--fg-tertiary); background: none; }
+  .qh-dschema-toggle:hover { background: var(--adaptive-medium); color: var(--fg-secondary); }
+  .qh-dschema-toggle:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-dschema-toggle.is-set { color: var(--fg-accent); background: var(--brand-adaptive-light); }
+  .qh-dschema-slash { color: var(--fg-tertiary); }
+  .qh-dschema-v { font-family: var(--qh-mono); font-weight: 600; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+  .qh-dschema-ph { font-style: italic; }
+  .qh-actionbar[data-fit~="2"] .qh-dschema-ph { display: none; }
+  .qh-actionbar[data-fit~="2"] .qh-dschema-v { max-width: 90px; }
+  .qh-dschema-pop { position: fixed; z-index: 70; width: 260px; max-height: 360px; overflow-y: auto; padding: 6px; background: var(--bg-white);
+    border: 1px solid var(--stroke-medium); border-radius: var(--r-md); box-shadow: var(--shadow-medium); display: flex; flex-direction: column; gap: 2px; white-space: normal; }
   /* Where a forced run ran — results header + history row. Absent for Auto. */
   .qh-ranon { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: var(--r-full); font-size: 10.5px; font-weight: 600; white-space: nowrap;
     color: var(--fg-accent); background: var(--brand-adaptive-light); flex-shrink: 0; }
@@ -3453,6 +3471,10 @@
   .qh-ai-btn.is-on { background: var(--brand-adaptive-light); color: var(--fg-accent); }
   .qh-ai-btnlabel { font-size: 11px; font-weight: 700; }
   .qh-ai-chip { font-size: 9px; font-weight: 700; letter-spacing: 0.03em; padding: 1px 6px; border-radius: var(--r-2xs); color: var(--fg-accent); background: var(--sup-purple-light); }
+  /* 2026-11-20 · Default schema chip, in History and the approval queue. The AI
+     chip's size, on a neutral ground: it is a fact about the run, not a mark. */
+  .qh-dschema-chip { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: var(--r-2xs); color: var(--fg-secondary); background: var(--adaptive-medium);
+    font-family: var(--qh-mono); white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
   .qh-ai-ready { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: var(--r-sm); color: var(--fg-secondary); background: var(--adaptive-medium); white-space: nowrap; }
   .qh-ai-ready.is-on { color: var(--fg-accent); background: var(--brand-adaptive-light); }
   .qh-ai-prov, .qh-ai-add { border-top: 1px solid var(--stroke-light); padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }

@@ -83,6 +83,7 @@ _QUEUE_COLS = (
     "id, requester_slack_id, requester_name, target_server_id, database_name, "
     "query, justification, status, scheduled_for, bundle_id, position, "
     "risk_summary, origin, created_at, engine, required_tier, ai_assisted, "
+    "default_schema, "
     # The plan stored at submit, the source of estRows / estTables (PLA-1592
     # U9). At most 64 KB a row, and NULL unless query_plan_logging is on.
     "explain_plan, "

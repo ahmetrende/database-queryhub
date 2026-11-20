@@ -278,6 +278,9 @@ function QueueCard({ it, selected, onSelect, checked, onCheck }) {
           {/* The requester wrote this SQL with the AI assistant. A mark only:
               the approval rule is the same. */}
           {it.aiAssisted && <span className="qh-ai-chip" title="The requester wrote this SQL with the AI assistant">AI</span>}
+          {/* Unqualified names in this SQL resolve to this schema first, so
+              the approver reads the SQL with it. */}
+          {it.defaultSchema && <span className="qh-dschema-chip" title="Default schema for unqualified names">schema {it.defaultSchema}</span>}
           {/* Inside a batch the chip says WHICH one — `bundlePosition` /
               `bundleSize` (GET /admin/queue, 2026-08-20). "bundle" alone told
               an approver a batch existed and nothing about where this row sat
