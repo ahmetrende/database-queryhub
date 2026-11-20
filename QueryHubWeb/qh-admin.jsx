@@ -449,6 +449,41 @@ function QhApprovalsHistory() {
   );
 }
 
+// The "Used by" value of the DDL box: what uses each object that the request
+// drops or alters, read at submit (`ddlDependents`). Null means QueryHub did
+// not check, and the box SAYS so. An empty box would read as "nothing uses it".
+function QhDdlUsedBy({ deps }) {
+  if (!deps || !Array.isArray(deps.objects)) {
+    return <span className="qh-ddlbox-miss">not checked</span>;
+  }
+  return (
+    <div className="qh-ddlbox-used">
+      {deps.objects.map((o, i) => {
+        const list = o.dependents || [];
+        return (
+          <div key={o.name + ':' + i} className="qh-ddlbox-obj">
+            <b>{o.name}</b>
+            {!o.found ? <span className="qh-ddlbox-miss">: object not found</span>
+              : (list.length === 0 && !o.more) ? <span className="qh-ddlbox-miss">: nothing found that uses it</span>
+              : (
+                <>
+                  {o.cascade && <span className="qh-ddlbox-warn">: CASCADE drops these too</span>}
+                  <ul className="qh-ddlbox-deps">
+                    {list.map((d, j) => (
+                      <li key={j}>{d.kind} <b>{d.name}</b>{d.detail ? <span className="qh-ddlbox-detail"> {d.detail}</span> : null}</li>
+                    ))}
+                    {o.more > 0 && <li className="qh-ddlbox-detail">and {o.more} more</li>}
+                  </ul>
+                </>
+              )}
+          </div>
+        );
+      })}
+      {!deps.bodiesChecked && <div className="qh-ddlbox-note">Code inside function bodies is not checked.</div>}
+    </div>
+  );
+}
+
 function ApprovalsView({ st, user, role }) {
   // Decisions are optimistic: st.decide() reloads the queue, but that round
   // trip lands AFTER this render. Without hiding the decided row the detail
@@ -748,6 +783,15 @@ function ApprovalsView({ st, user, role }) {
                     <div className="qh-ddlbox-v">{!el ? <span className="qh-ddlbox-miss">not reported</span> : el.expiresAt ? <>until <b>{qhFmt(el.expiresAt)}</b></> : el.source === 'admin' ? 'as long as they are an admin' : <span className="qh-ddlbox-warn">no end date — standing schema rights</span>}</div>
                     <div className="qh-ddlbox-k">Given by</div>
                     <div className="qh-ddlbox-v">{el && (el.grantedByName || el.grantedBy) ? <>{qhPersonName(el.grantedByName || el.grantedBy)}{el.grantedAt ? ' · ' + qhAgo(el.grantedAt) : ''}</> : <span className="qh-ddlbox-miss">not recorded</span>}</div>
+                    {/* Only a DROP or ALTER has objects to check. A CREATE gets
+                        no row, so "not checked" is not shown where nothing
+                        could be checked. */}
+                    {(cur.ddlDependents != null || /\b(DROP|ALTER)\b/i.test(cur.sql || '')) && (
+                      <>
+                        <div className="qh-ddlbox-k">Used by</div>
+                        <div className="qh-ddlbox-v"><QhDdlUsedBy deps={cur.ddlDependents} /></div>
+                      </>
+                    )}
                   </div>
                 </div>
               );

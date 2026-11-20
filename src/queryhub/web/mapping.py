@@ -462,6 +462,16 @@ def queue_estimate(row: dict) -> tuple[int | None, list[str]]:
     return pre_flight.plan_estimate(row.get("explain_plan"))
 
 
+def _ddl_dependents_of(value) -> dict | None:
+    """The stored `requests.ddl_dependents` as a dict, or None."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    return value if isinstance(value, dict) else None
+
+
 def queue_item(row: dict, alias_of: "callable", tags_of=None,
                name_of: "callable" = None, expiry=None) -> dict:
     """One pending `requests` row → the ADMIN_API GET /admin/queue item.
@@ -530,6 +540,9 @@ def queue_item(row: dict, alias_of: "callable", tags_of=None,
         "aiAssisted": bool(row.get("ai_assisted")),
         # The approver sees the schema that unqualified names resolve to.
         "defaultSchema": row.get("default_schema") or None,
+        # What uses each object that a DROP or ALTER names, read at submit.
+        # Null means not checked. Shape: ddl_dependents.read.
+        "ddlDependents": _ddl_dependents_of(row.get("ddl_dependents")),
         "expiresAt": iso(pending_expiry.expires_at(row, expiry)),
         # Null for every item, because the queue lists pending requests only.
         # The field is here so that a queue item and GET /queries/{id} carry

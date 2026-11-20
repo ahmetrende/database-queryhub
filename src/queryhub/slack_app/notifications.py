@@ -1,6 +1,7 @@
 """Send admin DMs and update them in lockstep when a decision is made."""
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -285,6 +286,31 @@ def request_context_with_query_md(request: dict, max_chars: int = 2500) -> str:
     return f"{base}\n```\n{q}\n```"
 
 
+def _slack_escape(text: str) -> str:
+    """Escape the three characters that Slack mrkdwn reads as markup."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _ddl_dependents_md(value) -> str | None:
+    """The approval-card line for `requests.ddl_dependents`, or None.
+
+    None when the value is missing: the request was not checked."""
+    from .. import ddl_dependents
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    text = ddl_dependents.summary_text(value)
+    if not text:
+        return None
+    md = "*Used by* (read at submit):\n" + _slack_escape(text)
+    if not value.get("bodiesChecked"):
+        md += "\n_Code inside function bodies is not checked._"
+    # A context block takes at most 3000 characters.
+    return md[:2900]
+
+
 def _request_blocks(
     request: dict, target: targets.TargetServer,
     *, with_actions: bool = True, own_write: bool = False,
@@ -370,6 +396,14 @@ def _request_blocks(
             "elements": [{"type": "mrkdwn",
                           "text": "_Pre-flight: no plan or estimate for this "
                                   "statement. Read the SQL with care._"}],
+        })
+    # What uses each object that this DDL drops or alters, read at submit.
+    # Nothing shows when it was not checked, so the card stays as it was.
+    deps_md = _ddl_dependents_md(request.get("ddl_dependents"))
+    if deps_md:
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": deps_md}],
         })
     if safety.is_destructive:
         kw_list = safety.keywords_found or ["WRITE"]

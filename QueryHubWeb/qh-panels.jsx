@@ -185,6 +185,28 @@ function qhMenuPoint(e) {
   return { x, y };
 }
 
+// The hover text of a tree row that has a catalog comment (P2.4): the text
+// the row shows without one, then the comment on a new line. The tip layer
+// prints it as text, never as HTML. Without a comment it returns undefined,
+// so TreeRow keeps its own label tip.
+function qhCommentTitle(base, comment) {
+  let text = comment == null ? '' : String(comment).trim();
+  if (!text) return undefined;
+  // The pill is 320px wide. A 1000-character comment would cover the editor.
+  if (text.length > 300) text = text.slice(0, 299).trimEnd() + '…';
+  return (base ? String(base) + '\n' : '') + text;
+}
+
+// The tooltip of a results grid header. The type comes from the driver first
+// (`driverType`, migration 083), then from the catalog (`meta`). The catalog
+// comment (P2.4) goes on a new line when the catalog has one.
+function qhResultColTitle(c, meta, driverType) {
+  const type = driverType || (meta && meta.type);
+  const head = type ? c + ' — ' + type + (meta && meta.notNull ? ' not null' : '') : c;
+  const comment = meta && meta.comment ? String(meta.comment).trim() : '';
+  return comment ? head + '\n' + comment : head;
+}
+
 function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, right, active, muted, strong, pii, drag, connDrag, dbDrag, onClick, onCtx, onDbl, title, nodeId }) {
   const handle = onClick || (expandable ? onToggle : undefined);
   // Keys on a focused row. Keys typed in a child (a rename box) pass through.
@@ -439,7 +461,7 @@ function SchemaTree({ onScriptCreate, bindOnClick, conns: allConns, schemaCache,
       const isView = branch === '/v';
       return (
         <div key={tid}>
-          <TreeRow depth={base + 2} expandable open={isOpen(tid)} onToggle={() => tog(tid)} icon={isView ? TICN.view() : TICN.table()} label={tsch + '.' + tb} drag={qq(tb, tsch)} nodeId={tid}
+          <TreeRow depth={base + 2} expandable open={isOpen(tid)} onToggle={() => tog(tid)} icon={isView ? TICN.view() : TICN.table()} label={tsch + '.' + tb} title={qhCommentTitle(tsch + '.' + tb, td && td.comment)} drag={qq(tb, tsch)} nodeId={tid}
             onDbl={() => onOpenTable(c, db, tb)} onCtx={(e) => openMenu(e, c, db, tb)}
             right={<>{approx != null && <span className="qh-tr-rows" title={approx.toLocaleString() + ' rows (est.)'}>{qhFmtRows(approx)}</span>}<button className="qh-tr-run" title="Open SELECT" onClick={(e) => { e.stopPropagation(); onOpenTable(c, db, tb); }}>{TICN.run()}</button></>} />
           {isOpen(tid) && (
@@ -447,7 +469,7 @@ function SchemaTree({ onScriptCreate, bindOnClick, conns: allConns, schemaCache,
               <TreeRow depth={base + 3} expandable open={isOpen(tid + '/c')} onToggle={() => tog(tid + '/c')} muted drag={qhQuoteList(cols.map(cc => cc.name))} icon={TICN.folder(isOpen(tid + '/c'))} label="Columns" right={<span className="qh-tr-count">{loaded ? cols.length : '…'}</span>} />
               {isOpen(tid + '/c') && cols.map(col => {
                 const cpii = !!col.pii;
-                return <TreeRow key={col.name} depth={base + 4} pii={cpii} muted drag={qhQuoteIdent(col.name)} nodeId={tid + '/c/' + col.name} icon={TICN.col(col, cpii)} label={col.name}
+                return <TreeRow key={col.name} depth={base + 4} pii={cpii} muted drag={qhQuoteIdent(col.name)} nodeId={tid + '/c/' + col.name} icon={TICN.col(col, cpii)} label={col.name} title={qhCommentTitle(col.name, col.comment)}
                   right={<span className="qh-col-type">{col.type}{col.nullable ? '' : ' ·nn'}</span>} />;
               })}
               {/* Dropped when there is nothing in it, rather than when the
@@ -2222,12 +2244,8 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
   // Nullability shows only when the snapshot is unambiguous about the name, so a
   // driver type can appear on its own. That is the honest rendering: the type is
   // known, the nullability is not.
-  const colTitle = (c) => {
-    const m = colMeta && colMeta[c];
-    const type = (result && result.colTypes && result.colTypes[c]) || (m && m.type);
-    if (!type) return c;
-    return c + ' — ' + type + (m && m.notNull ? ' not null' : '');
-  };
+  const colTitle = (c) => qhResultColTitle(c, colMeta && colMeta[c],
+    result && result.colTypes && result.colTypes[c]);
   const [pageSize, setPageSize] = React.useState(100);
   const [page, setPage] = React.useState(0);
   const [colW, setColW] = React.useState({});
@@ -3170,4 +3188,4 @@ function qhGripKeyWidth(key, width, startWidth) {
   return null;
 }
 
-Object.assign(window, { qhTreeKeyTarget, qhMenuPoint, qhTreeRovingFix, qhReqSentState,qhReqFailState, qhColumnKind, qhIsNumCell, qhFitColWidth, qhGripKeyWidth, qhClampColW, Sidebar, qhTreeTableId, SnippetsPanel, qhSnippetGroups, QH_SNIP_ENGINES, MessagesView, ProblemsView, QH_PROBLEM_LEVEL, StepsList, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });
+Object.assign(window, { qhCommentTitle, qhResultColTitle, qhTreeKeyTarget, qhMenuPoint, qhTreeRovingFix, qhReqSentState,qhReqFailState, qhColumnKind, qhIsNumCell, qhFitColWidth, qhGripKeyWidth, qhClampColW, Sidebar, qhTreeTableId, SnippetsPanel, qhSnippetGroups, QH_SNIP_ENGINES, MessagesView, ProblemsView, QH_PROBLEM_LEVEL, StepsList, ResultsPanel, ResultsView, PendingCard, EndedCard, TierBadge, StatusPill, DBIcons, RequestAccessModal, RequestAutoApproveModal, OriginBadge, RanOnBadge, qhRanOnLine, qhSchedRunOnLine, qhReplicaHealth, qhLagText, qhConnIdentity, QH_REQ_REASON_MIN });

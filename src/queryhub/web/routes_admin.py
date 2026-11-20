@@ -84,6 +84,9 @@ _QUEUE_COLS = (
     "query, justification, status, scheduled_for, bundle_id, position, "
     "risk_summary, origin, created_at, engine, required_tier, ai_assisted, "
     "default_schema, "
+    # What uses each object that a DDL request drops or alters, read at
+    # submit (migration 218). NULL means not checked.
+    "ddl_dependents, "
     # The plan stored at submit, the source of estRows / estTables (PLA-1592
     # U9). At most 64 KB a row, and NULL unless query_plan_logging is on.
     "explain_plan, "
