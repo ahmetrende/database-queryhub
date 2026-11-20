@@ -55,7 +55,7 @@ test('the app flags the first tab and a blank new tab as unpicked, and a pick cl
   const app = web('qh-app.jsx');
   assert.match(app, /id: 't1', name: 'Query 1'[^}]*unpicked: true/, 'the first tab');
   assert.match(app, /const newTab = \(\) => \{[\s\S]*?unpicked: true[\s\S]*?\};/, 'a blank new tab');
-  assert.match(app, /const pickDb = \(c, d\) => patch\(activeId, \{ conn: c\.id, db: d\.id, unpicked: false \}\)/, 'a pick');
+  assert.match(app, /const pickDb = \(c, d\) => patch\(activeId, \{ conn: c\.id, db: d\.id, unpicked: false,/, 'a pick');
   assert.match(app, /const bindOnClick = qhTabBindsOnClick\(tab\)/);
   assert.match(app, /bindOnClick=\{bindOnClick\}/, 'the sidebar gets the rule');
   assert.match(app, /pickHint=\{bindOnClick\}/, 'the target strip gets the rule');

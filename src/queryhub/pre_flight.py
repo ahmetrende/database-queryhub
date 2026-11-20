@@ -114,6 +114,22 @@ def _is_missing_database(exc: Exception) -> bool:
     return bool(_NO_SUCH_DATABASE_RE.search(str(exc)))
 
 
+def _set_search_path_sql(default_schema: str | None = None) -> str:
+    """The SET LOCAL search_path for a submit-time EXPLAIN.
+
+    Same order as the executor for ro/rw, so the plan the approver sees
+    resolves names like the run does. Without a default schema the text is
+    the same as it always was."""
+    if not default_schema:
+        return "SET LOCAL search_path = pg_catalog, public"
+    from . import query_safety  # local: keep this module's imports light
+    if not query_safety.valid_default_schema(default_schema):
+        # The submit path refuses such a name first. Never put it in SQL.
+        raise ValueError("default schema is not one plain schema name")
+    return ("SET LOCAL search_path = pg_catalog, "
+            + query_safety.quote_schema(default_schema) + ", public")
+
+
 def explain(
     target_id: int,
     database: str,
@@ -123,6 +139,7 @@ def explain(
     summary: bool = False,
     allow_write: bool = False,
     tag: str = "",
+    default_schema: str | None = None,
 ) -> tuple[bool, str | None, list | None]:
     """Run EXPLAIN against the target. Returns (ok, error, plan).
       ok=True,  error=None, plan=list-or-None  → query parses+plans cleanly.
@@ -224,7 +241,7 @@ def explain(
             # shadow a built-in (CVE-2018-1058 class), and, worse, submit-time
             # EXPLAIN would resolve a name differently from the run that the
             # admin then approves.
-            cur.execute("SET LOCAL search_path = pg_catalog, public")
+            cur.execute(_set_search_path_sql(default_schema))
             # prepare=True sends the text with the extended protocol, where the
             # SERVER refuses more than one statement. See the note "Why every EXPLAIN here" below.
             cur.execute(explain_sql, prepare=True)
@@ -273,6 +290,7 @@ def explain_write_estimate(
     query: str,
     *,
     tag: str = "",
+    default_schema: str | None = None,
 ) -> str | None:
     """Estimated affected-row hint for a single data-modifying statement
     (UPDATE / DELETE / INSERT / MERGE), or None when unavailable.
@@ -332,7 +350,7 @@ def explain_write_estimate(
             cur.execute("SET TRANSACTION READ ONLY")
             # Same order as the executor (pg_catalog first) — see the note on
             # the read path above.
-            cur.execute("SET LOCAL search_path = pg_catalog, public")
+            cur.execute(_set_search_path_sql(default_schema))
             cur.execute(explain_sql, prepare=True)  # see "Why every EXPLAIN here"
             row = cur.fetchone()
             plan = row[0] if row else None
@@ -444,6 +462,7 @@ def validate_statements(
     *,
     budget_s: float = _VALIDATE_BUDGET_S,
     tag: str = "",
+    default_schema: str | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Plan every statement of a request. Returns (ok, error, hint).
 
@@ -512,7 +531,7 @@ def validate_statements(
             # Nothing here may write, whatever the statement says.
             cur.execute("SET TRANSACTION READ ONLY")
             # Same order as the executor (pg_catalog first): see explain().
-            cur.execute("SET LOCAL search_path = pg_catalog, public")
+            cur.execute(_set_search_path_sql(default_schema))
             for index, (position, _leading, sql) in enumerate(plannable):
                 left_ms = int((budget_s - (time.monotonic() - started)) * 1000)
                 if left_ms < _MIN_STATEMENT_MS:

@@ -1449,6 +1449,7 @@ function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSea
                 <StatusPill status={h.status} awaitingDba={h.awaitingDba} outcome={h.outcome} />
                 <RanOnBadge ranOn={h.ranOn} />
                 {h.aiAssisted && <span className="qh-ai-chip" title="Written with the AI assistant">AI</span>}
+                {h.defaultSchema && <span className="qh-dschema-chip" title="Default schema for unqualified names">schema {h.defaultSchema}</span>}
                 <span className="qh-hist-when">{h.when}</span>
               </div>
               <div className="qh-hist-sql">{h.sql}</div>

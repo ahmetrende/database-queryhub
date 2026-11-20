@@ -700,6 +700,25 @@ def _fall_back_to_primary(request: dict, route, error: BaseException,
     return None
 
 
+def search_path_for(mode: str, default_schema: str | None = None) -> str:
+    """The search_path a PostgreSQL request runs with.
+
+    See the comment where _run sets it for the order. A default schema goes
+    after pg_catalog for ro/rw (built-ins still win, CVE-2018-1058), and
+    first for ddl, because an unqualified CREATE lands in the first schema.
+    Without a default schema the value is the same as it always was."""
+    if not default_schema:
+        path = ("public, pg_catalog" if mode == "ddl"
+                else "pg_catalog, public")
+        return path
+    if not query_safety.valid_default_schema(default_schema):
+        raise ValueError("default schema is not one plain schema name")
+    quoted = query_safety.quote_schema(default_schema)
+    if mode == "ddl":
+        return f"{quoted}, public, pg_catalog"
+    return f"pg_catalog, {quoted}, public"
+
+
 def _fail_on_chosen_replica(client: WebClient, request: dict, route,
                             error: Exception, csv_paths: list) -> None:
     """A replica a super-admin chose failed the query for a reason of its own.
@@ -1101,6 +1120,16 @@ def _run(request: dict, client: WebClient) -> None:
                 )
                 return
 
+        # Defense in depth: the submit path checked the default schema, but the
+        # value goes into SET search_path, so check the stored value again.
+        default_schema = request.get("default_schema")
+        if default_schema is not None and not query_safety.valid_default_schema(default_schema):
+            _fail(client, request,
+                  "The default schema of this request is not one plain schema "
+                  "name. QueryHub did not run it. Submit it again without the "
+                  "default schema.")
+            return
+
         # Twice at most: a replica that fails the query for a reason of its own
         # (unreachable, or it cancelled the statement to keep replaying) hands
         # it to the primary. A read has no side effects, so it can run again.
@@ -1153,8 +1182,7 @@ def _run(request: dict, client: WebClient) -> None:
                         # shadowed operator could change what it means, keep the strict
                         # order.
                         scope = "" if autocommit else "LOCAL "
-                        path = ("public, pg_catalog" if mode == "ddl"
-                                else "pg_catalog, public")
+                        path = search_path_for(mode, request.get("default_schema"))
                         cur.execute(f"SET {scope}search_path = {path}")
 
                         # Record which target backend is about to run this, so a user

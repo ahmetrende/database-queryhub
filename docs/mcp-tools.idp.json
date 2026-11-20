@@ -1,5 +1,5 @@
 {
-  "version": "ae5e72c2df33bdfa3bb350a7abb3dd8aad9c66d0c6514f032ff5a4bef6e76c5a",
+  "version": "f45f6c923fa4c8399e2d8a6f0683d2edfdc52be65f5294fae6a1cd9ba499ff87",
   "tools": [
     {
       "name": "list_connections",
@@ -112,6 +112,10 @@
             "type": "integer",
             "description": "How long to wait for the result. Default 20. Maximum 20.",
             "maximum": 20
+          },
+          "schema": {
+            "type": "string",
+            "description": "Optional. PostgreSQL only. The schema that unqualified table names resolve to first. Example: app."
           }
         },
         "required": [
