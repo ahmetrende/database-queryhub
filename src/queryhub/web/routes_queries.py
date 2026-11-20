@@ -1434,7 +1434,19 @@ def _result_file(row: dict) -> Path:
     return p
 
 
-_STMT_NO_RE = re.compile(r"_q(\d+)_")
+# `_q<n>_` names statement n's table. `_q<n>s<k>_` names result set k of
+# statement n: a SQL Server statement can send more than one (see
+# executor._more_mssql_results).
+_STMT_NO_RE = re.compile(r"_q(\d+)(?:s(\d+))?_")
+
+
+def _member_place(name: str) -> tuple[int, int] | None:
+    """(statement, result set) for a stored member name, or None. A plain
+    `_q<n>_` member is the statement's own table: set 0."""
+    m = _STMT_NO_RE.search(name)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2) or 0)
 
 
 def _statement_members(p: Path) -> list[str]:
@@ -1450,8 +1462,8 @@ def _statement_members(p: Path) -> list[str]:
     with zipfile.ZipFile(p) as zf:
         names = [n for n in zf.namelist() if n.lower().endswith(".csv")]
     def key(n: str):
-        m = _STMT_NO_RE.search(n)
-        return (0, int(m.group(1))) if m else (1, 0), n
+        place = _member_place(n)
+        return (0, *place) if place else (1, 0, 0), n
     return sorted(names, key=key)
 
 
@@ -1565,6 +1577,46 @@ def _statement_labels(row: dict, member_count: int) -> list[dict]:
     return _resplit_labels(row, member_count)
 
 
+
+def _member_labels(row: dict, members: list[str]) -> list[dict]:
+    """Labels for the tables of a stored result, one per table, in order.
+
+    The switcher asks for table `n` by its place in this list. The labels name
+    statements. The two agree only while every statement makes exactly one
+    table, so each table is matched to its statement by the name the executor
+    gave its file. `stmt` is added where the table's place and its statement's
+    place differ (a statement before it made no table). `set` is added where a
+    statement made more than one table.
+
+    A member name with no statement number (an older result) keeps the old
+    answer: one label per statement.
+    """
+    places: list[tuple[int, int]] = []
+    for m in members:
+        place = _member_place(m)
+        if place is None:
+            return _statement_labels(row, len(members))
+        places.append(place)
+    if not places:
+        return _statement_labels(row, 0)
+    top = max(st for st, _k in places)
+    by_stmt = {x.get("n"): x for x in _statement_labels(row, top)}
+    per_stmt: dict[int, int] = {}
+    for st, _k in places:
+        per_stmt[st] = per_stmt.get(st, 0) + 1
+    out = []
+    for pos, (st, k) in enumerate(places, start=1):
+        base = by_stmt.get(st) or {}
+        label = {"n": pos, "kind": base.get("kind"),
+                 "snippet": base.get("snippet") or ""}
+        if st != pos:
+            label["stmt"] = st
+        if k or per_stmt[st] > 1:
+            label["set"] = k or 1
+        out.append(label)
+    return out
+
+
 def _resplit_snippets(sql: str) -> list[str]:
     """One-line snippets for a stored query, in script order. Empty list on any
     parse trouble: a missing label is a row that says `Result N`, which is the
@@ -1664,12 +1716,13 @@ def query_result(request_id: int, statement: int = 1,
         # without these the client cannot tell it is looking at one of several.
         "statement": statement,
         "statementCount": len(members),
-        # Every statement in the run, on EVERY statement's response. The
-        # switcher's menu is open while one table is on screen and has to name
-        # the other N-1; describing only the current one would cost a request
-        # per row. `n` is the statement's own position in the script, not its
-        # index in this array — trust the field, not the order.
-        "statements": _statement_labels(row, len(members)),
+        # One label per table, on EVERY table's response. The switcher's menu
+        # is open while one table is on screen and has to name the other N-1;
+        # describing only the current one would cost a request per row. `n` is
+        # the table's position, the number `?statement=` takes. `stmt` and
+        # `set` say which statement made it when the two are not one to one
+        # (see _member_labels).
+        "statements": _member_labels(row, members),
         # Only meaningful for a single-statement result — the executor records
         # types for one table, and with several there is no single right answer.
         "colTypes": (row.get("result_column_types") or None)

@@ -226,6 +226,7 @@ restart.
 | `csv_import_enabled` | `off` | Allow CSV → table imports. |
 | `csv_size_mb` | `10` | Default result CSV size cap. |
 | `csv_size_mb_ceiling` | `100` | Hard ceiling that the size cap can scale to for large results. |
+| `max_result_sets` | `20` | Most tables that one SQL Server statement can produce. A statement sends more than one result set when, for example, a trigger returns rows. Each set is masked and capped like a normal result, and the sets of one statement share one size cap. Later sets are read and dropped, and the Messages tab says how many. Migration 220 seeds it. |
 | `result_export_max_rows` | `100000` | Most rows that a JSON, Markdown or SQL INSERT download can hold. A bigger result answers 413 and the person downloads the CSV. |
 | `import_max_mb` | `50` | Max uploaded CSV size. |
 | `import_max_rows` | `100000` | Max rows per CSV import. |

@@ -744,3 +744,102 @@ def test_a_statement_after_a_procedure_body_does_not_run(server):
         conn.close()
     server.execute(sql)
     assert server.query("SELECT COUNT(*) FROM sys.tables WHERE name = 'typed'") == [(1,)]
+
+
+# --- more than one result from one statement ---------------------------------
+#
+# A trigger without SET NOCOUNT ON sends a row count for each statement it
+# runs, and it can send rows. The server sends those results BEFORE the count
+# of the statement that fired the trigger. See executor._more_mssql_results.
+
+
+@pytest.fixture
+def trigger_tables(server):
+    """dbo.w6_orders with an AFTER UPDATE trigger that writes 3 audit rows per
+    row, returns two result sets, and throws when state is set to 99."""
+    for sql in (
+        "CREATE TABLE dbo.w6_orders (id int PRIMARY KEY, state int NOT NULL)",
+        "CREATE TABLE dbo.w6_audit (id int NOT NULL)",
+        "INSERT INTO dbo.w6_orders VALUES (1, 0), (2, 0), (3, 0)",
+        "CREATE TRIGGER dbo.w6_orders_upd ON dbo.w6_orders AFTER UPDATE AS BEGIN "
+        "INSERT INTO dbo.w6_audit SELECT i.id FROM inserted i "
+        "CROSS JOIN (VALUES (1), (2), (3)) x(n); "
+        "SELECT N'audited' AS note, COUNT(*) AS n FROM inserted; "
+        "SELECT id FROM inserted ORDER BY id; "
+        "IF EXISTS (SELECT 1 FROM inserted WHERE state = 99) "
+        "THROW 50001, N'state 99 is not allowed', 1; END",
+        # SET NOCOUNT ON, then rows: the trigger's set arrives BEFORE the
+        # UPDATE's own count.
+        "CREATE TABLE dbo.w6_quiet (id int PRIMARY KEY, state int NOT NULL)",
+        "INSERT INTO dbo.w6_quiet VALUES (1, 0), (2, 0)",
+        "CREATE TRIGGER dbo.w6_quiet_upd ON dbo.w6_quiet AFTER UPDATE AS BEGIN "
+        "SET NOCOUNT ON; SELECT N'quiet' AS note, COUNT(*) AS n FROM inserted; END",
+    ):
+        server.execute(sql)
+    yield
+    for table in ("w6_orders", "w6_audit", "w6_quiet"):
+        server.execute(f"DROP TABLE dbo.{table}")
+
+
+def test_a_trigger_does_not_replace_the_row_count_and_its_rows_are_a_table(
+        server, rw_showplan, trigger_tables, monkeypatch):
+    results = _execute(
+        server, "UPDATE dbo.w6_orders SET state = 1 WHERE id IN (1, 2)",
+        "rw", monkeypatch)
+    first, rows, ids = results
+    # Before: the request said 6, the count of the trigger's audit insert.
+    assert (first.set_no, first.rowcount, first.has_result_set) == (0, 2, False)
+    assert [n["text"] for n in first.notices] == ["(6 rows affected)"]
+    assert (rows.index, rows.set_no, rows.rowcount) == (1, 1, 1)
+    assert "_q1s1_" in rows.csv_path.name
+    assert _csv_rows(rows.csv_path) == [["note", "n"], ["audited", "2"]]
+    assert (ids.set_no, ids.rowcount) == (2, 2)
+    assert _csv_rows(ids.csv_path) == [["id"], ["1"], ["2"]]
+    assert server.query("SELECT COUNT(*) FROM dbo.w6_audit") == [(6,)]
+    assert server.locks_held("rw") == 0
+
+
+def test_an_error_after_the_first_result_fails_the_request_and_rolls_back(
+        server, rw_showplan, trigger_tables, monkeypatch):
+    """Before: the executor read the first count, committed and reported 2 rows
+    as a success. The server had rolled the statement back."""
+    import pyodbc
+    with pytest.raises(pyodbc.Error, match="state 99 is not allowed"):
+        _execute(server, "UPDATE dbo.w6_orders SET state = 99 WHERE id IN (1, 2)",
+                 "rw", monkeypatch)
+    assert server.query("SELECT COUNT(*) FROM dbo.w6_orders WITH (NOLOCK) "
+                        "WHERE state = 99") == [(0,)]
+    assert server.query("SELECT COUNT(*) FROM dbo.w6_audit WITH (NOLOCK)") == [(0,)]
+    assert server.locks_held("rw") == 0
+
+
+def test_past_the_limit_a_result_set_is_dropped_and_the_request_says_so(
+        server, rw_showplan, trigger_tables, monkeypatch, bot_config):
+    bot_config["max_result_sets"] = "1"
+    results = _execute(
+        server, "UPDATE dbo.w6_orders SET state = 2 WHERE id = 3", "rw", monkeypatch)
+    assert [(r.set_no, r.rowcount) for r in results] == [(0, 1), (1, 1)]
+    assert [n["text"] for n in results[0].notices] == [
+        "(3 rows affected)",
+        "The statement sent 1 more result set. QueryHub keeps 1 per statement."]
+    assert server.query("SELECT state FROM dbo.w6_orders WHERE id = 3") == [(2,)]
+
+
+def test_a_trigger_set_that_arrives_first_does_not_take_the_row_count(
+        server, rw_showplan, trigger_tables, monkeypatch):
+    results = _execute(server, "UPDATE dbo.w6_quiet SET state = 1 WHERE id IN (1, 2)",
+                       "rw", monkeypatch)
+    first, rows = results
+    assert (first.set_no, first.rowcount, first.has_result_set) == (0, 2, False)
+    assert first.notices == []
+    assert (rows.set_no, rows.rowcount) == (1, 1)
+    assert "_q1s1_" in rows.csv_path.name
+    assert _csv_rows(rows.csv_path) == [["note", "n"], ["quiet", "2"]]
+
+
+def test_an_output_clause_is_still_the_write_s_own_result(
+        server, rw_showplan, monkeypatch):
+    results = _execute(
+        server, "UPDATE dbo.ledger SET note = note OUTPUT inserted.id WHERE id = 21",
+        "rw", monkeypatch)
+    assert [(r.set_no, r.has_result_set) for r in results] == [(0, True)]

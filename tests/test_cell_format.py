@@ -141,8 +141,10 @@ def test_the_csv_writer_actually_applies_it():
     src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "queryhub"
            / "executor.py").read_text(encoding="utf-8")
     assert "cell_format.row_formatter(_description_of(cur, description))" in src
-    # A streamed read passes rows, not the cursor: the description goes along.
-    assert src.count("description=cur.description") == 2
+    # A streamed read passes rows, not the cursor: the description goes along,
+    # through _write_result_set to both writers.
+    assert src.count("description=description") == 2
+    assert "rows, columns, cur.description, stmt, res," in src
     assert "if fmt_row is not None:" in src
     # and it must run BEFORE the CSV row is serialized
     i_fmt = src.index("r = fmt_row(r)")

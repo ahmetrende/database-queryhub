@@ -565,6 +565,8 @@ def test_sql_server_primary_skips_the_readable_secondary(monkeypatch, force, res
                             (host, k.get("read_only"))) or Conn())
     monkeypatch.setattr(mssql_exec, "describe_columns", lambda *a: None)
     monkeypatch.setattr(executor, "_execute_main_statement", lambda *a, **k: _Result())
+    # The routing is under test, not the results: no later result to read.
+    monkeypatch.setattr(executor, "_more_mssql_results", lambda *a, **k: [])
     monkeypatch.setattr(executor, "_finalize", lambda *a, **k: None)
     target = type("T", (), {"id": 5, "alias": "legacy-sql", "engine": "mssql",
                             "host": "listener.example.test", "port": 1433})()
