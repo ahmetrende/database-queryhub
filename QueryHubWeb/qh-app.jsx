@@ -807,11 +807,38 @@ function App() {
   // A selection that Run would send alone is what the verdicts judge
   // (2026-11-10): the tier, the label, the reason rule, the blocker line, the
   // risk hints, the PII chip and Explain. The editor reports it.
+  // Run asks for parameter values (2026-11-20). The setting is a preference,
+  // like word wrap: on by default, '0' turns it off.
+  const [askParams, setAskParams] = useState(() => { try { return localStorage.getItem('qh.params.v1') !== '0'; } catch (e) { return true; } });
+  useEffect(() => { try { localStorage.setItem('qh.params.v1', askParams ? '1' : '0'); } catch (e) {} }, [askParams]);
+  // The engine id of a connection, for the parameter finder and the quoting.
+  const engineOf = (connId) => qhEngineId((conns.find(c => c.id === connId) || {}).engine);
+  // The open parameter dialog: { id, runAtISO, text, opts, names, engineId }.
+  const [paramAsk, setParamAsk] = useState(null);
+
+  // The last parameter values of each tab, keyed by tab id. Memory only.
+  // Values can be personal data, so they never go to tab state or to storage.
+  const paramVals = React.useRef({});
+  useEffect(() => {
+    const live = new Set(tabs.map(x => String(x.id)));
+    for (const k of Object.keys(paramVals.current)) if (!live.has(k)) delete paramVals.current[k];
+  }, [tabs]);
+
   const [sel, setSel] = useState(null);
   const selLines = sel ? sel.lines : 0;
   const judged = qhJudgedText(sel, tab.sql);
-  const localClassify = qhClassify(judged.text);
-  const server = useServerClassify(judged.text, tab.conn, tab.db);
+  // With parameters, the verdicts judge the text with each parameter replaced by
+  // its last value, or NULL. The server never sees a template.
+  const paramEngine = engineOf(tab.conn);
+  const paramFound = askParams && !tab.kind && judged.text ? qhFindParams(judged.text, paramEngine) : [];
+  const verdictText = paramFound.length
+    ? qhParamPreviewText(judged.text, paramVals.current[activeId] || {}, paramEngine) : judged.text;
+  const paramHint = paramFound.length
+    ? 'Parameters: ' + qhParamNames(paramFound).map(n => qhAppParamTag(paramFound.find(p => p.name === n).form, n)).join(', ')
+      + '. Run asks for their values.'
+    : null;
+  const localClassify = qhClassify(verdictText);
+  const server = useServerClassify(verdictText, tab.conn, tab.db);
   const classify = React.useMemo(() => {
     if (!server) return localClassify;
     return {
@@ -825,7 +852,7 @@ function App() {
       blockers: server.blockers,
       provisional: false,
     };
-  }, [server, judged.text]);
+  }, [server, verdictText]);
   // The words the server's pre-flight blocks, for the editor's wavy line.
   // Only an answer for exactly this text draws it.
   const serverKey = tab.conn + '|' + tab.db + '|' + judged.text;
@@ -1585,6 +1612,18 @@ function App() {
       return;
     }
     const o = opts || {};
+    // Parameters (:id, ${id}, {{id}}): ask for their values first. Nothing is
+    // sent and the tab does not change. Continue calls this again with the
+    // final SQL and paramsDone, so the server and the approver see only that.
+    if (askParams && !o.paramsDone) {
+      const pText = sqlOverride || cur.sql;
+      const pEngine = engineOf(cur.conn);
+      const pFound = qhFindParams(pText, pEngine);
+      if (pFound.length) {
+        setParamAsk({ id, runAtISO: runAtISO || null, text: pText, opts: o, names: qhParamNames(pFound), engineId: pEngine });
+        return;
+      }
+    }
     // The server refuses this too (400); saying it here spares the round trip,
     // and F5/F8 reach this without passing the disabled button.
     const ro = effRunOn(cur);
@@ -1747,7 +1786,23 @@ function App() {
   const confirmRunGo = () => {
     const c = confirmRun; if (!c) return;
     setConfirmRun(null);
-    submitToServer(c.id, c.runAtISO, c.sqlOverride, { confirmed: true });
+    // The text was final already: the parameter dialog does not open again.
+    submitToServer(c.id, c.runAtISO, c.sqlOverride, { confirmed: true, paramsDone: true });
+  };
+  // The parameter dialog. Continue keeps the values in memory for this tab and
+  // sends the final SQL. Cancel sends nothing and leaves the tab as it was.
+  const paramAskGo = (values, finalSql) => {
+    const a = paramAsk; if (!a) return;
+    paramVals.current[a.id] = values;
+    setParamAsk(null);
+    submitToServer(a.id, a.runAtISO, finalSql, { ...a.opts, paramsDone: true });
+  };
+  const paramAskCancel = () => { setParamAsk(null); };
+  // Batch and fleet send one text per item and have no dialog.
+  const paramsRefusal = (list) => {
+    if (!askParams) return null;
+    const hit = list.find(x => x && x.sql && qhFindParams(x.sql, engineOf(x.conn)).length);
+    return hit ? 'Tab "' + hit.name + '" has parameters. Run it on its own to fill them in.' : null;
   };
   const confirmRunCancel = () => {
     const c = confirmRun; if (!c) return;
@@ -1811,6 +1866,8 @@ function App() {
     if (!valid.length) return;
     const hid = valid.map(id => tabs.find(t => t.id === id)).filter(x => redactedIn(x.sql).length);
     if (hid.length) { pushToast('“' + hid[0].name + '” still has a hidden password — type it in again before submitting the batch.'); return; }
+    const pRefuse = paramsRefusal(valid.map(id => tabs.find(t => t.id === id)));
+    if (pRefuse) { pushToast(pRefuse); return; }
     setBatchOpen(false); setActiveId(valid[0]); setResTab('messages');
     // Each item keeps its tab's default schema, as a single run does.
     const items = valid.map(id => { const x = tabs.find(t => t.id === id); const ds = qhTabDefaultSchema(conns.find(c => c.id === x.conn), x.schema);
@@ -1843,6 +1900,8 @@ function App() {
       const m = 'This tab still has a hidden password. Type it in again before you submit.';
       pushToast(m); return Promise.resolve(m);
     }
+    const pRefuse = paramsRefusal([tab]);
+    if (pRefuse) { pushToast(pRefuse); return Promise.resolve(pRefuse); }
     const items = pairs.map(p => ({ connectionId: p.connectionId, databaseId: p.databaseId, sql: tab.sql }));
     const tabId = activeId;
     return qhApi.submitBatch({ items, justification: (fleetWhy || '').trim() || null, fleet: true, onFailure }).then(r => {
@@ -2218,7 +2277,8 @@ function App() {
                 : <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M16.5 9l-3 3 3 3"/></svg>}
             </button>
             <EditorTabs tabs={tabsForBar} activeId={activeId} onSelect={selectTab} onClose={(id) => requestClose('one', id)} onNew={newTab}
-              wrap={wrap} onToggleWrap={() => setWrap(w => !w)} blankStop={blankStop} onToggleBlankStop={() => setBlankStop(v => !v)} lint={lint} onToggleLint={() => setLint(v => !v)} lintCount={lintRanges.length} onFormat={() => setFmtSig(n => n + 1)} fmtEngine={editorEngine}
+              wrap={wrap} onToggleWrap={() => setWrap(w => !w)} blankStop={blankStop} onToggleBlankStop={() => setBlankStop(v => !v)}
+              askParams={askParams} onToggleAskParams={() => setAskParams(v => !v)} lint={lint} onToggleLint={() => setLint(v => !v)} lintCount={lintRanges.length} onFormat={() => setFmtSig(n => n + 1)} fmtEngine={editorEngine}
               onCloseOthers={(id) => requestClose('others', id)} onCloseRight={(id) => requestClose('right', id)} onCloseAll={() => requestClose('all', activeId)} onDuplicate={duplicateTab} onRename={renameTab} onCopySql={copyTabSql} onDownloadSql={requestDownloadSql} onReorder={reorderTabs}
               onAi={aiStatus.enabled && aiConnAllowed && !tab.kind ? () => setAiOpen(o => !o) : null} aiOpen={aiOpen} />
           </div>
@@ -2242,7 +2302,7 @@ function App() {
           ) : (
             <>
               <ActionBar
-                pickHint={bindOnClick}
+                pickHint={bindOnClick} paramHint={paramHint}
                 conn={conn} db={db} connAlias={tab.conn} dbAlias={tab.db} dbTier={dbTier} classify={classify} pii={pii}
                 autoApprove={autoApprove} tierExceedsGrant={tierExceedsGrant} busy={busy} status={tab.status} selLines={selLines}
                 hasSql={!!tab.sql.trim()} onPrimary={primary} onExplain={explain} killed={killed}
@@ -2315,6 +2375,9 @@ function App() {
       {confirmRun && <ConfirmRunModal reasons={confirmRun.reasons} target={confirmRun.target} env={confirmRun.env}
         tier={confirmRun.tier} scheduled={confirmRun.scheduled} sql={confirmRun.sql} conn={confirmRun.conn}
         onConfirm={confirmRunGo} onCancel={confirmRunCancel} />}
+      {paramAsk && <QhParamsDialog key={paramAsk.id + '|' + paramAsk.text} names={paramAsk.names}
+        initial={paramVals.current[paramAsk.id] || {}} engineId={paramAsk.engineId} sql={paramAsk.text}
+        onContinue={paramAskGo} onCancel={paramAskCancel} />}
       {batchOpen && (
         <BatchModal tabs={tabs} activeId={activeId} onClose={() => setBatchOpen(false)} onSubmit={submitBatch} recent={reasons} />
       )}
@@ -2924,7 +2987,7 @@ function qhFitActionBar(el, overflows = qhActionBarOverflows, max = 3) {
   return level;
 }
 
-function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, isAdminUser, onOpenFleet, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn, selLines, slackResult, toSlack, onToSlack, schemas, schema, onSchema }) {
+function ActionBar({ pickHint, paramHint, redacted, onRevealRedacted, why, onWhy, whyNeedSched, whyErr, conn, db, connAlias, dbAlias, dbTier, classify, pii, autoApprove, tierExceedsGrant, busy, status, hasSql, onPrimary, killed, riskHints, riskTop, onExplain, tabCount, onOpenBatch, isAdminUser, onOpenFleet, schedOpen, setSchedOpen, onSchedule, onCancelRun, isSuper, unmasked, onUnmask, runOnConn, runOn, onRunOn, selLines, slackResult, toSlack, onToSlack, schemas, schema, onSchema }) {
   // The schema control shows on a PostgreSQL database with two or more
   // schemas. It also shows while a schema is set, so a schema that is sent is
   // always on screen.
@@ -3067,6 +3130,7 @@ function ActionBar({ pickHint, redacted, onRevealRedacted, why, onWhy, whyNeedSc
           <TierBadge tier={dbTier} sm />
         </span>
         {pickHint && <span className="qh-target-hint" title={QH_PICK_HINT}>{QH_PICK_HINT}</span>}
+        {paramHint && <span className="qh-target-hint qh-params-hint" title={paramHint}>{paramHint}</span>}
       </div>
 
       <div className="qh-ab-spacer" />
@@ -3223,6 +3287,83 @@ function ConfirmRunModal({ reasons, target, env, tier, scheduled, sql, conn, onC
       <div className="qh-modal-foot">
         <button className="qh-btn qh-btn-ghost" data-autofocus onClick={onCancel}>Cancel</button>
         <button className="qh-btn qh-conf-go" onClick={onConfirm}>{scheduled ? 'Schedule it' : 'Run it'}</button>
+      </div>
+    </QhModal>
+  );
+}
+
+// ---------- Parameter values: Run asks before it sends (2026-11-20) ----------
+// A parameter as the person wrote it: `:id`, `${id}` or `{{id}}`.
+function qhAppParamTag(form, name) {
+  if (form === '${') return '${' + name + '}';
+  if (form === '{{') return '{{' + name + '}}';
+  return ':' + name;
+}
+
+// One row per parameter name: the value and a Text / SQL toggle. Text is quoted
+// for the engine. SQL goes in as typed. The type follows qhParamGuessMode until
+// the person picks one. The preview shows the SQL that Continue sends. An empty
+// SQL value keeps the parameter text in the preview and disables Continue.
+// Enter in a field continues. Escape cancels (QhModal).
+function QhParamsDialog({ names, initial, engineId, sql, onContinue, onCancel }) {
+  const text = sql || '';
+  const found = React.useMemo(() => qhFindParams(text, engineId), [text, engineId]);
+  const [vals, setVals] = React.useState(() => {
+    const init = initial || {};
+    const out = {};
+    for (const n of names) {
+      const p = init[n];
+      const v = p && p.v != null ? String(p.v) : '';
+      out[n] = p && p.picked ? { v, mode: p.mode === 'sql' ? 'sql' : 'text', picked: true } : { v, mode: null, picked: false };
+    }
+    return out;
+  });
+  const values = {};
+  for (const n of names) {
+    const x = vals[n] || { v: '', mode: null, picked: false };
+    values[n] = { v: x.v, mode: x.picked ? x.mode : qhParamGuessMode(x.v), picked: x.picked };
+  }
+  const emptySql = (n) => values[n].mode === 'sql' && !values[n].v.trim();
+  const blocked = names.some(emptySql);
+  const ready = found.filter(p => values[p.name] && !emptySql(p.name));
+  const finalSql = qhApplyParams(text, ready, values, engineId);
+  const setVal = (n, v) => setVals(s => ({ ...s, [n]: { ...(s[n] || { mode: null, picked: false }), v } }));
+  const setMode = (n, mode) => setVals(s => ({ ...s, [n]: { ...(s[n] || { v: '' }), mode, picked: true } }));
+  const go = () => { if (!blocked) onContinue(values, finalSql); };
+  const formOf = (n) => { const p = found.find(f => f.name === n); return p ? p.form : ':'; };
+  return (
+    <QhModal onClose={onCancel} panelClass="qh-params-modal">
+      <div className="qh-modal-head">
+        <div>
+          <div className="qh-modal-title">Parameter values</div>
+          <div className="qh-modal-sub">Type a value for each parameter. The approver sees the final SQL.</div>
+        </div>
+      </div>
+      <div className="qh-modal-body">
+        {names.map((n, i) => {
+          const tag = qhAppParamTag(formOf(n), n);
+          const mode = values[n].mode;
+          return (
+            <div key={n} className="qh-params-row">
+              <span className="qh-params-name">{tag}</span>
+              <input className="qh-params-input" type="text" value={values[n].v} spellCheck={false} autoComplete="off"
+                aria-label={'Value for ' + tag} {...(i === 0 ? { 'data-autofocus': true } : null)}
+                onChange={(e) => setVal(n, e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } }} />
+              <span className="qh-params-mode" role="group" aria-label={'Type of ' + tag}>
+                <button type="button" className={'qh-params-mode-btn' + (mode === 'text' ? ' on' : '')} aria-pressed={mode === 'text'}
+                  onClick={() => setMode(n, 'text')}>Text</button>
+                <button type="button" className={'qh-params-mode-btn' + (mode === 'sql' ? ' on' : '')} aria-pressed={mode === 'sql'}
+                  onClick={() => setMode(n, 'sql')}>SQL</button>
+              </span>
+            </div>
+          );
+        })}
+        <pre className="qh-params-preview" tabIndex={0} aria-label="The SQL that runs"><code>{finalSql}</code></pre>
+      </div>
+      <div className="qh-modal-foot">
+        <button className="qh-btn qh-btn-ghost" onClick={onCancel}>Cancel</button>
+        <button className="qh-btn qh-btn-primary" disabled={blocked} onClick={go}>Continue</button>
       </div>
     </QhModal>
   );
@@ -3824,7 +3965,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-Object.assign(window, { App, ErrorBoundary, FleetRunPage, DeleteConfirmModal, qhLoadResHeight, qhResHeightKey, qhSideWidthKey, QH_RES_H_DEFAULT });
+Object.assign(window, { App, ErrorBoundary, FleetRunPage, DeleteConfirmModal, QhParamsDialog, qhAppParamTag,qhLoadResHeight, qhResHeightKey, qhSideWidthKey, QH_RES_H_DEFAULT });
 ReactDOM.createRoot(document.getElementById('root')).render(
   <ErrorBoundary><App /></ErrorBoundary>
 );

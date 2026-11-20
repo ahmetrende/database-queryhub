@@ -236,6 +236,169 @@ function qhClassify(sql) {
            provisional: true };
 }
 
+// ---------- Query parameters (2026-11-20, W8) ----------
+// A tab can hold `:name`, `${name}` or `{{name}}` placeholders. Run asks for
+// their values and sends the final SQL, so the server never sees a
+// placeholder. These helpers are pure.
+//
+// qhFindParams skips strings, quoted names (`"x"`, and `[x]` on SQL Server),
+// `--` and `/* */` comments, and every `$tag$` body (not on SQL Server). A
+// `:name` counts only when the `:` does not follow a name character, `:`, `]`
+// or `)`, and the next character is not `:` or `=`. So `x::int`, `v := 1`,
+// `arr[1:n]`, ClickHouse `{x:UInt8}`, `a:b` and `t.col:x` stay as they are.
+// The answer holds at most QH_PARAM_MAX hits, in text order.
+const QH_PARAM_MAX = 200;
+const QH_PARAM_NAME_RE = /[A-Za-z_][A-Za-z0-9_]*/y;
+const QH_PARAM_BRACE_RE = /\{\{[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*\}\}/y;
+const QH_PARAM_DOLLAR_TAG_RE = /\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/y;
+
+function qhFindParams(sql, engineId) {
+  const t = String(sql == null ? '' : sql);
+  const n = t.length;
+  const out = [];
+  const mssql = engineId === 'mssql';
+  // ClickHouse strings and quoted names use backslash escapes too.
+  const backslash = engineId === 'clickhouse';
+  let i = 0;
+  while (i < n && out.length < QH_PARAM_MAX) {
+    const c = t[i];
+    if (c === '-' && t[i + 1] === '-') {
+      const e = t.indexOf('\n', i + 2);
+      if (e < 0) break;
+      i = e + 1; continue;
+    }
+    if (c === '/' && t[i + 1] === '*') {
+      const e = t.indexOf('*/', i + 2);
+      if (e < 0) break;
+      i = e + 2; continue;
+    }
+    const close = (c === "'" || c === '"' || c === '`') ? c : (c === '[' && mssql) ? ']' : null;
+    if (close) {
+      let j = i + 1, end = -1;
+      while (j < n) {
+        const d = t[j];
+        if (backslash && d === '\\') { j += 2; continue; }
+        if (d === close) {
+          // '' "" `` ]] inside are escapes, not the end.
+          if (t[j + 1] === close) { j += 2; continue; }
+          end = j; break;
+        }
+        j++;
+      }
+      if (end < 0) break;
+      i = end + 1; continue;
+    }
+    if (c === '$' && t[i + 1] === '{') {
+      QH_PARAM_NAME_RE.lastIndex = i + 2;
+      const m = QH_PARAM_NAME_RE.exec(t);
+      if (m && t[i + 2 + m[0].length] === '}') {
+        const end = i + 3 + m[0].length;
+        out.push({ name: m[0], form: '${', start: i, end });
+        i = end; continue;
+      }
+    }
+    if (c === '$' && !mssql && !(i > 0 && /[A-Za-z0-9_]/.test(t[i - 1]))) {
+      QH_PARAM_DOLLAR_TAG_RE.lastIndex = i;
+      const m = QH_PARAM_DOLLAR_TAG_RE.exec(t);
+      if (m) {
+        const e = t.indexOf(m[0], i + m[0].length);
+        if (e < 0) break;
+        i = e + m[0].length; continue;
+      }
+    }
+    if (c === '{' && t[i + 1] === '{') {
+      QH_PARAM_BRACE_RE.lastIndex = i;
+      const m = QH_PARAM_BRACE_RE.exec(t);
+      if (m) {
+        const end = i + m[0].length;
+        out.push({ name: m[1], form: '{{', start: i, end });
+        i = end; continue;
+      }
+    }
+    if (c === ':' && t[i + 1] !== ':' && t[i + 1] !== '='
+        && !(i > 0 && /[A-Za-z0-9_:\])]/.test(t[i - 1]))) {
+      QH_PARAM_NAME_RE.lastIndex = i + 1;
+      const m = QH_PARAM_NAME_RE.exec(t);
+      if (m) {
+        const end = i + 1 + m[0].length;
+        out.push({ name: m[0], form: ':', start: i, end });
+        i = end; continue;
+      }
+    }
+    i++;
+  }
+  return out;
+}
+
+// The names of the hits, each one once, in first-seen order.
+function qhParamNames(found) {
+  const seen = new Set();
+  const out = [];
+  for (const p of found || []) {
+    if (p && !seen.has(p.name)) { seen.add(p.name); out.push(p.name); }
+  }
+  return out;
+}
+
+// 'sql' for a number, NULL, TRUE or FALSE (any case). 'text' for all else.
+function qhParamGuessMode(value) {
+  const v = String(value == null ? '' : value).trim();
+  return /^-?\d+(\.\d+)?$/.test(v) || /^(null|true|false)$/i.test(v) ? 'sql' : 'text';
+}
+
+// The SQL text for one value. 'sql' puts the value in as typed. 'text' makes
+// a string literal with the quoting rules of the engine.
+function qhParamLiteral(value, mode, engineId) {
+  const v = String(value == null ? '' : value);
+  if (mode === 'sql') return v;
+  if (engineId === 'mssql') return "N'" + v.replace(/'/g, "''") + "'";
+  if (engineId === 'clickhouse') return "'" + v.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
+  return "'" + v.replace(/'/g, "''") + "'";
+}
+
+// The entry for `name` in `values`, or null. Own keys only, so a parameter
+// called `:constructor` does not find Object.prototype.constructor.
+function qhParamEntry(values, name) {
+  if (!values || !Object.prototype.hasOwnProperty.call(values, name)) return null;
+  const e = values[name];
+  return e && e.v != null ? e : null;
+}
+
+// Replace each hit with pick(hit). A null pick keeps the original text.
+// The ranges are replaced from the end, so earlier offsets stay right.
+function qhParamReplace(sql, found, pick) {
+  let out = String(sql == null ? '' : sql);
+  const list = (found || []).slice().sort((a, b) => b.start - a.start);
+  for (const p of list) {
+    const rep = pick(p);
+    if (rep == null) continue;
+    out = out.slice(0, p.start) + rep + out.slice(p.end);
+  }
+  return out;
+}
+
+// The final SQL. `values` is { [name]: { v, mode } }. A missing mode uses
+// qhParamGuessMode. A name with no value keeps its original text. `found`
+// comes from qhFindParams on the same `sql`; null finds them again.
+function qhApplyParams(sql, found, values, engineId) {
+  const f = found || qhFindParams(sql, engineId);
+  return qhParamReplace(sql, f, p => {
+    const e = qhParamEntry(values, p.name);
+    return e ? qhParamLiteral(e.v, e.mode || qhParamGuessMode(e.v), engineId) : null;
+  });
+}
+
+// The text for the live verdict: each parameter becomes its literal when
+// `values` has it, else NULL. With no parameter, `sql` comes back unchanged.
+function qhParamPreviewText(sql, values, engineId) {
+  const f = qhFindParams(sql, engineId);
+  if (!f.length) return sql;
+  return qhParamReplace(sql, f, p => {
+    const e = qhParamEntry(values, p.name);
+    return e ? qhParamLiteral(e.v, e.mode || qhParamGuessMode(e.v), engineId) : 'NULL';
+  });
+}
+
 // ---------- PII column catalog ----------
 // name -> human label + masking strategy
 const QH_PII_CATALOG = {
@@ -2078,6 +2241,7 @@ Object.assign(window, { qhHistoryRunTab, qhPollDelay, QH_POLL_FAST_MS, QH_POLL_S
   qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhSelectionLines, qhPrimaryLabel, qhJudgedText, qhShiftRanges, qhConfirmReasons, qhSplitReasons,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,
+  qhFindParams, qhParamNames, qhParamGuessMode, qhParamLiteral, qhApplyParams, qhParamPreviewText, QH_PARAM_MAX,
   qhClassify, qhDetectPII, qhMockResult, qhAffectedInfo, qhTabAfterResult, qhAutoTierState, qhMaskValue, qhStripComments, qhSplitStatements,
   qhConnState, QH_CONN_STATE,
   qhColumnsFor, qhIndexesFor, qhViewsFor, qhSplitRelations, qhAgo, qhEndState, qhPersonName, qhIsHandleName, QH_ROLE_PREFIXES,

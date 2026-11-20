@@ -151,8 +151,11 @@ test('a blocker range found in the selection moves to its place in the tab', () 
 test('the app judges the selection: classify, blockers, PII, risks and Explain', () => {
   const app = readFileSync(resolve(HERE, '..', 'src', 'qh-app.jsx'), 'utf8');
   assert.match(app, /const judged = qhJudgedText\(sel, tab\.sql\);/);
-  assert.match(app, /const localClassify = qhClassify\(judged\.text\);/);
-  assert.match(app, /useServerClassify\(judged\.text, tab\.conn, tab\.db\)/);
+  // The verdicts judge the judged text with parameter values in it
+  // (qhParamPreviewText, 2026-11-20), so `:id` does not read as a syntax error.
+  assert.match(app, /const verdictText = paramFound\.length/);
+  assert.match(app, /const localClassify = qhClassify\(verdictText\);/);
+  assert.match(app, /useServerClassify\(verdictText, tab\.conn, tab\.db\)/);
   assert.match(app, /qhShiftRanges\(qhBlockerRanges\(judged\.text, server\.blockers \|\| \[\]\), judged\.offset\)/);
   assert.match(app, /const pii = qhDetectPII\(judged\.text\);/);
   assert.match(app, /const riskHints = qhRiskHints\(judged\.text, classify\);/);
