@@ -215,8 +215,8 @@ test('qh-app wires the panel, the insert and the mark', () => {
   const app = web('qh-app.jsx');
   assert.match(app, /\.\.\.\(cur\.aiAssisted \? \{ aiAssisted: true \} : null\)/);
   assert.match(app, /patch\(activeId, \{ aiAssisted: true \}\)/);
-  assert.match(app, /onAi=\{aiStatus\.enabled && !tab\.kind \?/);
-  assert.match(app, /aiStatus\.enabled && aiOpen && !tab\.kind && \(/);
+  assert.match(app, /onAi=\{aiStatus\.enabled && aiConnAllowed && !tab\.kind \?/);
+  assert.match(app, /aiStatus\.enabled && aiConnAllowed && aiOpen && !tab\.kind && \(/);
   // The status loads on its own, never inside the eager `jobs` list.
   const jobs = app.slice(app.indexOf('const jobs = ['), app.indexOf('Promise.allSettled(jobs)'));
   assert.ok(!jobs.includes('aiStatus'));
@@ -375,7 +375,7 @@ test('a fix request sends the SQL that ran and the error once, in Fix mode', jsd
 
 test('qh-app and the results panel wire Fix with AI to failed runs only', () => {
   const app = web('qh-app.jsx');
-  assert.match(app, /aiStatus\.enabled && !tab\.kind && tab\.status === 'failed' && fixError/);
+  assert.match(app, /aiStatus\.enabled && aiConnAllowed && !tab\.kind && tab\.status === 'failed' && fixError/);
   assert.match(app, /\(!tab\.ranConn \|\| tab\.ranConn === tab\.conn\) && \(!tab\.ranDb \|\| tab\.ranDb === tab\.db\)/);
   assert.match(app, /onFixAi=\{canFixAi \? fixWithAi : null\}/);
   assert.match(app, /fix=\{aiFix && aiFix\.tabId === tab\.id \? aiFix : null\} onFixTaken=\{\(\) => setAiFix\(null\)\}/);

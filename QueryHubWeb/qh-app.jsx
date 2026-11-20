@@ -1092,7 +1092,10 @@ function App() {
   // at the server and the database that ran, because the assistant reads the
   // table names of the tab's database.
   const fixError = typeof qhAiFixError === 'function' ? qhAiFixError(tab.messages) : '';
-  const canFixAi = !!(aiStatus.enabled && !tab.kind && tab.status === 'failed' && fixError
+  // AI per connection (2026-11-20): an admin can close the assistant for one
+  // connection. A missing `aiAllowed` means allowed.
+  const aiConnAllowed = !(conn && conn.aiAllowed === false);
+  const canFixAi = !!(aiStatus.enabled && aiConnAllowed && !tab.kind && tab.status === 'failed' && fixError
     && (!tab.ranConn || tab.ranConn === tab.conn) && (!tab.ranDb || tab.ranDb === tab.db));
   const fixWithAi = () => {
     if (!canFixAi) return;
@@ -2209,7 +2212,7 @@ function App() {
             <EditorTabs tabs={tabsForBar} activeId={activeId} onSelect={selectTab} onClose={(id) => requestClose('one', id)} onNew={newTab}
               wrap={wrap} onToggleWrap={() => setWrap(w => !w)} blankStop={blankStop} onToggleBlankStop={() => setBlankStop(v => !v)} lint={lint} onToggleLint={() => setLint(v => !v)} lintCount={lintRanges.length} onFormat={() => setFmtSig(n => n + 1)} fmtEngine={editorEngine}
               onCloseOthers={(id) => requestClose('others', id)} onCloseRight={(id) => requestClose('right', id)} onCloseAll={() => requestClose('all', activeId)} onDuplicate={duplicateTab} onRename={renameTab} onCopySql={copyTabSql} onDownloadSql={requestDownloadSql} onReorder={reorderTabs}
-              onAi={aiStatus.enabled && !tab.kind ? () => setAiOpen(o => !o) : null} aiOpen={aiOpen} />
+              onAi={aiStatus.enabled && aiConnAllowed && !tab.kind ? () => setAiOpen(o => !o) : null} aiOpen={aiOpen} />
           </div>
 
           {isWelcome ? (
@@ -2283,7 +2286,7 @@ function App() {
           )}
         </div>
 
-        {aiStatus.enabled && aiOpen && !tab.kind && (
+        {aiStatus.enabled && aiConnAllowed && aiOpen && !tab.kind && (
           <QhAiPanel status={aiStatus} tabId={tab.id} conn={tab.conn} db={tab.db}
             getSql={() => curSel() || tab.sql} onInsert={aiInsert}
             fix={aiFix && aiFix.tabId === tab.id ? aiFix : null} onFixTaken={() => setAiFix(null)}

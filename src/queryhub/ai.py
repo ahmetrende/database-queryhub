@@ -950,7 +950,16 @@ def _granted(uid: str, connection: str, database: str):
         raise AIError(404, "not_found", f"Unknown connection '{connection}'.") from e
     if not t.enabled and not admins.is_admin(uid):
         raise AIError(404, "not_found", f"Unknown connection '{connection}'.")
+    # Migration 217. Refused here, before the caller reads a table name, so
+    # nothing about this connection goes to the model provider.
+    if not getattr(t, "ai_allowed", True):
+        raise AIError(403, "forbidden", AI_OFF_FOR_CONNECTION)
     return t
+
+
+#: The refusal for a connection with `ai_allowed` false (migration 217).
+AI_OFF_FOR_CONNECTION = ("The AI assistant is off for this connection. "
+                         "An admin can turn it on.")
 
 
 def _check(ask: Ask) -> None:

@@ -71,8 +71,20 @@ def _granted(uid: str, connection: str):
     Refuses it if they hold no grant. Unknown and ungranted are the same
     answer (`schema_tools.granted_target`), which is the rule the web door
     already applies.
+
+    A connection that an admin closed to MCP clients (migration 217) is
+    refused after the grant check. So a caller with no grant still gets the
+    one answer for unknown and ungranted.
     """
-    return schema_tools.granted_target(uid, connection, named=catalog.named)
+    t, grant = schema_tools.granted_target(uid, connection, named=catalog.named)
+    if not getattr(t, "mcp_allowed", True):
+        raise ToolError("mcp_closed", MCP_CLOSED)
+    return t, grant
+
+
+#: The refusal for a connection with `mcp_allowed` false (migration 217).
+MCP_CLOSED = ("This connection is closed to MCP clients. "
+              "An admin can open it.")
 
 
 def _target_or_refuse(uid: str, connection: str):
@@ -113,8 +125,10 @@ def list_connections() -> dict:
     # (engines.shown_tier); asked only if an archive row would change.
     is_super = functools.cache(lambda: admins.is_super_admin(uid))
     # A read replica is not a connection of its own (replicas.py).
+    # A connection closed to MCP clients (migration 217) is not listed.
     fleet = [t for t in targets.list_enabled()
-             if getattr(t, "replica_of", None) is None]
+             if getattr(t, "replica_of", None) is None
+             and getattr(t, "mcp_allowed", True)]
     grants = teams.effective_grants_for_user(uid, [t.id for t in fleet])
     granted = [(t, g) for t in fleet if (g := grants.get(t.id)) is not None]
     # Not `catalog`: that name is the module that names the tools.
@@ -462,12 +476,21 @@ def _own(request_id: int, uid: str) -> dict:
     row = db.fetch_one(
         "SELECT id, status, requester_slack_id, target_server_id, "
         "       database_name, query, row_count, truncated, required_tier, "
-        "       error_message, csv_file_path, created_at, completed_at "
+        "       error_message, csv_file_path, created_at, completed_at, "
+        "       (SELECT ts.mcp_allowed FROM target_servers ts "
+        "         WHERE ts.id = requests.target_server_id) AS mcp_allowed "
         "  FROM requests WHERE id = %s", (request_id,))
     # Not found and not yours are one answer, so a caller cannot count other
     # people's requests by watching which refusal comes back.
     if row is None or row["requester_slack_id"] != uid:
         raise ToolError("not_found", f"You have no request with id {request_id}.")
+    # Migration 217: a request on a connection closed to MCP clients is not
+    # read back through this door. It stays readable in the web UI. The flag
+    # comes from the request's own target_server_id. A missing target or a
+    # missing key reads as allowed, the behaviour before the migration.
+    row = dict(row)
+    if row.pop("mcp_allowed", None) is False:
+        raise ToolError("mcp_closed", MCP_CLOSED)
     return row
 
 

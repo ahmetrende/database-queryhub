@@ -787,6 +787,10 @@ function connRegistry() {
       // Super-admin-only (CODE 2026-10-06 (c), migration 141): one connection on,
       // so the chip and the switch render in both states.
       superAdminOnly: c.id === 'svc-prod-billing',
+      // AI assistant and MCP clients per connection (2026-11-20). One of each is
+      // off, so the list tags and both switch states render.
+      aiAllowed: c.id !== 'prod-replica',
+      mcpAllowed: c.id !== 'reporting-mssql',
       // Owner teams (CODE 2026-10-05 (g)): one synced, so the screen shows both kinds.
       owners: c.id === 'prod-main' ? [{ id: 't_payments', name: 'payments', displayName: 'payments', syncedFrom: 'pod-sync', leads: mockLeadsOf('t_payments') }] : [],
       credentials: {
@@ -2273,6 +2277,8 @@ const qhApi = {
     return { connections: connRegistry().filter(c => !c.replicaOf && (adminView || c.enabled !== false)).map(c => ({
     id: c.id, name: c.name, engine: c.engine, env: c.env, autoApproveRO: c.autoApproveRO,
     disabled: c.enabled === false,
+    // AI per connection (2026-11-20): false hides the AI button for this connection.
+    aiAllowed: c.aiAllowed !== false,
     host: c.host, port: c.port,
     // Registry tags, read-only: which cloud runs this machine, which service of
     // theirs, and — for an admin — the account it is billed to. Display-only, and
@@ -3190,6 +3196,18 @@ const qhApi = {
   adminUpdateConnection: (conn, b) => mockDelay(() => {
     const row = connRegistry().find(c => c.id === conn);
     if (!row) return mockFail('Unknown connection.', 404, 'not_found');
+    // A host or port change keeps the stored logins only on confirmation
+    // (2026-11-20): the server answers 409 confirmation_required with reasons
+    // when stored credentials exist, the body sends no password and no
+    // `confirmCredentials: true`. Checked first, so nothing changes on a 409.
+    const hostMoves = (b.host != null && b.host !== row.host) || (b.port != null && Number(b.port) !== Number(row.port));
+    const stored = Object.keys(row.credentials || {}).filter(t => (row.credentials[t] || {}).configured);
+    const sent = Object.keys(b.credentials || {}).some(t => (b.credentials[t] || {}).password);
+    if (hostMoves && stored.length && !sent && b.confirmCredentials !== true) {
+      const reasons = ['The address changes from ' + row.host + ':' + row.port + ' to ' + (b.host != null ? b.host : row.host) + ':' + (b.port != null ? b.port : row.port) + '.',
+        'The stored ' + stored.map(t => t.toUpperCase()).join(', ') + ' login' + (stored.length === 1 ? '' : 's') + ' will connect to the new address.'];
+      return mockFail('Confirm that the stored logins stay for the new address.', 409, 'confirmation_required', { reasons });
+    }
     if (b.alias) { row.name = b.alias; }
     ['host', 'port', 'defaultDatabase', 'notes'].forEach(k => { if (b[k] != null) row[k] = b[k]; });
     if (b.engine) { row.engineId = b.engine; row.engine = mockEngineName(b.engine); }
@@ -3270,6 +3288,26 @@ const qhApi = {
     row.superAdminOnly = !!on;
     if (changed) mockAudit(on ? 'Made connection super-admin only' : 'Opened connection to fleet grants', row.name, on ? 'reject' : 'grant');
     return { connectionId: row.id, superAdminOnly: row.superAdminOnly, changed };
+  }, 220),
+  // AI assistant and MCP clients per connection (2026-11-20). Same shape and
+  // permission as super-admin-only.
+  adminSetAiAllowed: (conn, allowed) => mockDelay(() => {
+    if (!mockUser() || mockUser().role !== 'super') return mockFail('Super-admin access required.', 403, 'forbidden');
+    const row = connRegistry().find(c => c.id === conn || c.name === conn);
+    if (!row) return mockFail('Unknown connection.', 404, 'not_found');
+    const changed = (row.aiAllowed !== false) !== !!allowed;
+    row.aiAllowed = !!allowed;
+    if (changed) mockAudit(allowed ? 'Opened connection to the AI assistant' : 'Closed connection to the AI assistant', row.name, allowed ? 'grant' : 'reject');
+    return { connectionId: row.id, aiAllowed: row.aiAllowed, changed };
+  }, 220),
+  adminSetMcpAllowed: (conn, allowed) => mockDelay(() => {
+    if (!mockUser() || mockUser().role !== 'super') return mockFail('Super-admin access required.', 403, 'forbidden');
+    const row = connRegistry().find(c => c.id === conn || c.name === conn);
+    if (!row) return mockFail('Unknown connection.', 404, 'not_found');
+    const changed = (row.mcpAllowed !== false) !== !!allowed;
+    row.mcpAllowed = !!allowed;
+    if (changed) mockAudit(allowed ? 'Opened connection to MCP clients' : 'Closed connection to MCP clients', row.name, allowed ? 'grant' : 'reject');
+    return { connectionId: row.id, mcpAllowed: row.mcpAllowed, changed };
   }, 220),
   adminConnectionOwners: (conn) => mockDelay(() => {
     const row = connRegistry().find(c => c.id === conn);
@@ -4048,7 +4086,7 @@ function qhScheduleToISO(when, now) {
   const isSuper = () => !!(mockUser() && mockUser().role === 'super');
   // routes_admin.DBA_CONNECTION_FIELDS: what a DBA who is not a super-admin reads.
   const DBA_FIELDS = ['id', 'name', 'engine', 'engineId', 'env', 'enabled', 'host', 'port', 'defaultDatabase', 'tags', 'replicaOf',
-    'deleted', 'deletedAt', 'deletedReason', 'superAdminOnly', 'databases', 'owners', 'health', 'inRotation'];
+    'deleted', 'deletedAt', 'deletedReason', 'superAdminOnly', 'aiAllowed', 'mcpAllowed', 'databases', 'owners', 'health', 'inRotation'];
   const HEALTH = {
     'svc-prod-billing': { ok: false, checkedAt: ago(3), failingSince: ago(95), error: 'connection to server failed: timeout expired after 5 s <no answer>' },
     'reporting-mssql': { ok: false, checkedAt: ago(6), failingSince: ago(60 * 26), error: null },

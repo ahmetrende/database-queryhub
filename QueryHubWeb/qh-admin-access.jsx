@@ -2770,6 +2770,28 @@ function ConnectionForm({ st, init, mode, onDone, canSuper }) {
       .then(r => { setSaoBusy(false); setSao(r && r.superAdminOnly != null ? !!r.superAdminOnly : next); })
       .catch(e => { setSaoBusy(false); setSaoErr((e && e.message) || 'QueryHub could not change this setting.'); });
   };
+  // AI assistant and MCP clients per connection (2026-11-20). Each switch has
+  // its own endpoint and saves at once, like super-admin-only. A missing field
+  // means allowed.
+  const [aiOn, setAiOn] = useAcc(!(init && init.aiAllowed === false));
+  const [mcpOn, setMcpOn] = useAcc(!(init && init.mcpAllowed === false));
+  const [flagBusy, setFlagBusy] = useAcc(null);
+  const [flagErr, setFlagErr] = useAcc({});
+  const toggleFlag = (which) => {
+    if (flagBusy || !init) return;
+    const cur = which === 'ai' ? aiOn : mcpOn;
+    const next = !cur;
+    const call = which === 'ai' ? st.setAiAllowed : st.setMcpAllowed;
+    const set = which === 'ai' ? setAiOn : setMcpOn;
+    const key = which === 'ai' ? 'aiAllowed' : 'mcpAllowed';
+    setFlagBusy(which); setFlagErr({ ...flagErr, [which]: null });
+    call(init.id, next)
+      .then(r => { setFlagBusy(null); set(r && r[key] != null ? !!r[key] : next); })
+      .catch(e => { setFlagBusy(null); setFlagErr({ ...flagErr, [which]: (e && e.message) || 'QueryHub could not change this setting.' }); });
+  };
+  // The server asks before a host or port change keeps the stored logins. The
+  // reasons are the server's words. Null when there is no question open.
+  const [credAsk, setCredAsk] = useAcc(null);
   const [f, setF] = useAcc(() => ({
     alias: init ? init.name : '',
     host: init ? (init.host || '') : '',
@@ -2833,10 +2855,10 @@ function ConnectionForm({ st, init, mode, onDone, canSuper }) {
       .finally(() => setBusy(false));
   };
 
-  const save = () => {
+  const save = (confirmCredentials) => {
     if (!valid && mode !== 'rotate') return;
-    setBusy(true);
-    const payload = mode === 'rotate'
+    setBusy(true); setCredAsk(null);
+    const base = mode === 'rotate'
       ? { credentials: changedCreds() }
       : {
         alias: f.alias.trim(), host: f.host.trim(),
@@ -2846,8 +2868,14 @@ function ConnectionForm({ st, init, mode, onDone, canSuper }) {
         // The whole bag, every save: a merge patch cannot say “this key is gone”.
         tags: f.tags,
       };
+    const payload = confirmCredentials === true ? { ...base, confirmCredentials: true } : base;
     const p = editing ? st.updateConnection(init.id, payload) : st.addConnection(payload);
-    p.then(ok => { setBusy(false); if (ok) onDone(); });
+    p.then(ok => {
+      setBusy(false);
+      // A 409 confirmation_required comes back as { confirm: reasons }.
+      if (ok && ok.confirm) { setCredAsk(ok.confirm); return; }
+      if (ok) onDone();
+    });
   };
 
   const title = mode === 'create' ? 'Add connection'
@@ -2904,6 +2932,18 @@ function ConnectionForm({ st, init, mode, onDone, canSuper }) {
               </div>
             </div>
           )}
+          {editing && canSuper && init && !init.replicaOf && [
+            ['ai', 'AI assistant', aiOn, 'Off: the assistant cannot read this connection\'s tables.'],
+            ['mcp', 'MCP clients', mcpOn, 'Off: MCP clients cannot see or query this connection.'],
+          ].map(([k, label, on, hint]) => (
+            <div key={k} className="qh-sao-row">
+              <button type="button" role="switch" aria-checked={on} aria-label={label} className={'qh-switch' + (on ? ' is-on' : '')} disabled={!!flagBusy} onClick={() => toggleFlag(k)} />
+              <div>
+                <div className="qh-sao-t">{label}</div>
+                <div className={'qh-sao-h' + (flagErr[k] ? ' is-bad' : '')}>{flagErr[k] || (hint + ' This saves at once.')}</div>
+              </div>
+            </div>
+          ))}
         </>)}
         {QH_RO_ENGINES.indexOf(f.engine) >= 0 && <div className="qh-req-note">Read-only engine — only SELECT and WITH run here.</div>}
         {QH_CRED_TIERS.filter(([t]) => t === 'ro' || QH_RO_ENGINES.indexOf(f.engine) < 0).map(([t, label, hint]) => (
@@ -2919,13 +2959,19 @@ function ConnectionForm({ st, init, mode, onDone, canSuper }) {
               : ('Could not connect — ' + (probe.error || 'unknown error'))}</span>
           </div>
         )}
+        {credAsk && (
+          <InlineConfirm
+            say={<span className="qh-credask">{credAsk.map((r, i) => <span key={i} className="qh-credask-r">{r}</span>)}</span>}
+            confirmLabel="Keep the login and save" cancelLabel="Cancel" busy={busy}
+            onConfirm={() => save(true)} onCancel={() => setCredAsk(null)} />
+        )}
       </div>
       <div className="qh-modal-foot">
         <button className="qh-btn qh-btn-ghost" onClick={onDone} disabled={busy}>Cancel</button>
         {mode !== 'rotate' && <button className="qh-btn qh-btn-ghost" onClick={test} disabled={busy || !f.host.trim() || !f.defaultDatabase.trim()}>{busy ? <span className="qh-spin" /> : 'Test connection'}</button>}
         {/* Rotate with nothing typed would post an empty patch and toast
             "updated" for a save that changed nothing. */}
-        <button className="qh-btn qh-btn-primary" onClick={save} disabled={busy || (mode === 'rotate' ? Object.keys(changedCreds()).length === 0 : !valid)}>{mode === 'create' ? 'Add connection' : 'Save'}</button>
+        <button className="qh-btn qh-btn-primary" onClick={() => save(false)} disabled={busy || (mode === 'rotate' ? Object.keys(changedCreds()).length === 0 : !valid)}>{mode === 'create' ? 'Add connection' : 'Save'}</button>
       </div>
     </QhModal>
   );
@@ -3350,7 +3396,7 @@ function ConnectionsView({ st, user, readOnly }) {
                 <React.Fragment key={c.id}>
                 <tr className={(sel.indexOf(c.id) >= 0 ? 'is-sel' : '') + (refusedNames.indexOf(c.name) >= 0 ? ' is-refused' : '') + (c.replicaOf ? ' is-replica' : '')}>
                   {!readOnly && <td className="qh-conn-selcol"><ConnCheck on={sel.indexOf(c.id) >= 0} onChange={() => toggleSel(c.id)} label={'Select ' + c.name} /></td>}
-                  <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b><span className={'qh-envtag env-' + c.env}>{c.env}</span></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}{!c.replicaOf && <div className="qh-muted qh-conn-owners" title="The lead of each owner team approves requests to this connection.">{(c.owners || []).length ? 'Owners: ' + c.owners.map(o => o.displayName + ((o.leads || []).length ? ' (' + o.leads.join(', ') + ')' : '')).join(', ') : 'No owner'}</div>}{!c.replicaOf && c.superAdminOnly && <span className="qh-sao-chip" title="Only super-admins, and grants that name this connection, reach it.">super-admin only</span>}</td>
+                  <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b><span className={'qh-envtag env-' + c.env}>{c.env}</span></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}{!c.replicaOf && <div className="qh-muted qh-conn-owners" title="The lead of each owner team approves requests to this connection.">{(c.owners || []).length ? 'Owners: ' + c.owners.map(o => o.displayName + ((o.leads || []).length ? ' (' + o.leads.join(', ') + ')' : '')).join(', ') : 'No owner'}</div>}{!c.replicaOf && c.superAdminOnly && <span className="qh-sao-chip" title="Only super-admins, and grants that name this connection, reach it.">super-admin only</span>}{!c.replicaOf && c.aiAllowed === false && <span className="qh-aimcp-off" title="The AI assistant cannot read this connection's tables.">AI off</span>}{!c.replicaOf && c.mcpAllowed === false && <span className="qh-aimcp-off" title="MCP clients cannot see or query this connection.">MCP off</span>}</td>
                   {/* Engine over hosting in ONE column, and the environment beside
                       the name: seven columns plus pinned actions were ~400px wider
                       than the panel, so Databases sat under the actions. The

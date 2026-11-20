@@ -570,10 +570,22 @@ function useAdminState(pushToast, active, isAdminViewer) {
         pushToast && pushToast('Connection "' + (c && c.name) + '" registered — disabled until you set credentials and enable it.');
         return true; })
       .catch(e => { fail(e, 'Create connection failed.'); return false; });
+  // A host or port change keeps the stored logins only when the admin says so
+  // (2026-11-20). The server asks with a 409 `confirmation_required`. That one
+  // answer is not an error here: it resolves to { confirm: reasons } so the form
+  // can ask, then send the patch again with `confirmCredentials: true`. Every
+  // other error still goes to `fail` and resolves to false, as before.
   const updateConnection = (conn, patch) =>
     qhApi.adminUpdateConnection(conn, patch)
       .then(() => { loadConnections(); loadAudit(); pushToast && pushToast('Connection "' + conn + '" updated.'); return true; })
-      .catch(e => { fail(e, 'Update connection failed.'); return false; });
+      .catch(e => {
+        if (e && e.status === 409 && e.code === 'confirmation_required') {
+          const list = (Array.isArray(e.reasons) ? e.reasons : String(e.message || '').split(/\r?\n+/))
+            .map(x => String(x == null ? '' : x).trim()).filter(Boolean);
+          return { confirm: list.length ? list : ['The host or port changes. The stored logins stay.'] };
+        }
+        fail(e, 'Update connection failed.'); return false;
+      });
   // Delete has two success outcomes: gone, or kept-but-disabled because
   // history or live grants still point at it. The server decides which and
   // explains itself in `reason`; show that rather than a generic "deleted".
@@ -608,6 +620,16 @@ function useAdminState(pushToast, active, isAdminViewer) {
   const setSuperAdminOnly = (conn, on) => qhApi.adminSetSuperAdminOnly(conn, on)
     .then(r => { loadConnections(); loadAudit();
       if (r && r.changed !== false) pushToast && pushToast(on ? 'Only super-admins and grants that name it reach this connection now.' : 'Grants on every server reach this connection again.');
+      return r; });
+  // AI assistant and MCP clients per connection (2026-11-20). These reject to
+  // the caller, like setSuperAdminOnly, so the form prints the server's words.
+  const setAiAllowed = (conn, allowed) => qhApi.adminSetAiAllowed(conn, allowed)
+    .then(r => { loadConnections(); loadAudit();
+      if (!r || r.changed !== false) pushToast && pushToast(allowed ? 'The AI assistant can read this connection again.' : 'The AI assistant cannot read this connection now.');
+      return r; });
+  const setMcpAllowed = (conn, allowed) => qhApi.adminSetMcpAllowed(conn, allowed)
+    .then(r => { loadConnections(); loadAudit();
+      if (!r || r.changed !== false) pushToast && pushToast(allowed ? 'MCP clients can see and query this connection again.' : 'MCP clients cannot see or query this connection now.');
       return r; });
   const setConnectionEnabled = (conn, on) =>
     qhApi.adminUpdateConnection(conn, { enabled: !!on })
@@ -652,7 +674,7 @@ function useAdminState(pushToast, active, isAdminViewer) {
     addTeam, updateTeam, removeTeam, setPersonTeams,
     addConnection, updateConnection, removeConnection, setConnectionEnabled, bulkConnections,
     reloadConnections: loadConnections,
-    addFleetGrant, revokeFleetGrant, setSuperAdminOnly,
+    addFleetGrant, revokeFleetGrant, setSuperAdminOnly, setAiAllowed, setMcpAllowed,
   };
 }
 

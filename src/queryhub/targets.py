@@ -65,6 +65,17 @@ class TargetServer:
     # The primary this target is a read replica of (migration 131). A replica
     # is never a connection anyone picks; see replicas.py.
     replica_of: int | None = None
+    # Migration 217: the AI assistant and the MCP door may use this target.
+    # A SELECT that does not read the columns gets True, which is the
+    # behaviour from before the migration.
+    ai_allowed: bool = True
+    mcp_allowed: bool = True
+
+
+def _flag(row: dict, key: str) -> bool:
+    """A migration 217 flag. An absent key reads as True (allowed)."""
+    value = row.get(key)
+    return True if value is None else bool(value)
 
 
 def _row_to_target(row: dict) -> TargetServer:
@@ -83,6 +94,8 @@ def _row_to_target(row: dict) -> TargetServer:
         # engine must read as the safe legacy default, never crash.
         engine=(row.get("engine") or "postgres"),
         replica_of=row.get("replica_of"),
+        ai_allowed=_flag(row, "ai_allowed"),
+        mcp_allowed=_flag(row, "mcp_allowed"),
     )
 
 
@@ -131,7 +144,8 @@ def list_enabled() -> list[TargetServer]:
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
         "       COALESCE(tags, '{}'::jsonb) AS tags, "
-        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of, "
+        "       ai_allowed, mcp_allowed "
         "FROM target_servers WHERE enabled = TRUE AND replica_of IS NULL ORDER BY alias"
     )
     return [_row_to_target(r) for r in rows]
@@ -192,7 +206,8 @@ def list_all() -> list[TargetServer]:
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
         "       COALESCE(tags, '{}'::jsonb) AS tags, "
-        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of, "
+        "       ai_allowed, mcp_allowed "
         # Disabled targets sort last. They are unusable, so alphabetical
         # placement buries a working connection between two that are not —
         # `prod-archive` sitting between `beta` and `gamma` is noise in
@@ -207,7 +222,8 @@ def search(prefix: str, limit: int = 100) -> list[TargetServer]:
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
         "       COALESCE(tags, '{}'::jsonb) AS tags, "
-        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of, "
+        "       ai_allowed, mcp_allowed "
         "FROM target_servers "
         "WHERE enabled = TRUE AND replica_of IS NULL AND alias ILIKE %s "
         "ORDER BY alias LIMIT %s",
@@ -221,7 +237,8 @@ def get(target_id: int) -> TargetServer | None:
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
         "       COALESCE(tags, '{}'::jsonb) AS tags, "
-        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of, "
+        "       ai_allowed, mcp_allowed "
         "FROM target_servers WHERE id = %s",
         (target_id,),
     )
@@ -240,7 +257,8 @@ def by_alias(alias: str) -> TargetServer | None:
         "SELECT id, alias, host, port, default_database, username, enabled, notes, "
         "       COALESCE(engine, 'postgres') AS engine, "
         "       COALESCE(tags, '{}'::jsonb) AS tags, "
-        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of "
+        "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of, "
+        "       ai_allowed, mcp_allowed "
         "FROM target_servers WHERE alias = %s",
         (alias,),
     )
@@ -511,7 +529,7 @@ _ADMIN_COLS = (
         "       COALESCE(engine_config, '{}'::jsonb) AS engine_config, replica_of, "
     "       (SELECT p.alias FROM target_servers p "
     "         WHERE p.id = target_servers.replica_of) AS replica_of_alias, "
-    "       deleted_at, deleted_reason, super_admin_only "
+    "       deleted_at, deleted_reason, super_admin_only, ai_allowed, mcp_allowed "
     "FROM target_servers"
 )
 
@@ -557,6 +575,9 @@ def _admin_row(row: dict) -> dict:
         # stays for history and can never be enabled.
         "deleted_at": row.get("deleted_at"),
         "super_admin_only": bool(row.get("super_admin_only")),
+        # Migration 217. An absent key reads as allowed.
+        "ai_allowed": _flag(row, "ai_allowed"),
+        "mcp_allowed": _flag(row, "mcp_allowed"),
         "deleted_reason": row.get("deleted_reason"),
         "credentials": {
             mode: {

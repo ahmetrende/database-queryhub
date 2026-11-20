@@ -821,6 +821,12 @@ _IDENT_RE = re.compile(r"^[^\s;'\"\\]{1,128}$")
 _PROBE_TIMEOUT_SEC = 5
 
 
+def _allowed_flag(row: dict, key: str) -> bool:
+    """A migration 217 flag of an admin row. An absent key reads as True."""
+    value = row.get(key)
+    return True if value is None else bool(value)
+
+
 def _connection_entry(row: dict, databases: list[str]) -> dict:
     """One registry row as the admin UI reads it."""
     return {
@@ -848,6 +854,9 @@ def _connection_entry(row: dict, databases: list[str]) -> dict:
         "deletedReason": row.get("deleted_reason"),
         # Migration 141: fleet-wide rights stop here, except a super-admin's.
         "superAdminOnly": bool(row.get("super_admin_only")),
+        # Migration 217: the AI assistant and MCP clients may use it.
+        "aiAllowed": _allowed_flag(row, "ai_allowed"),
+        "mcpAllowed": _allowed_flag(row, "mcp_allowed"),
         "credentials": row["credentials"],
         "databases": [{"id": d, "name": d} for d in databases],
     }
@@ -866,8 +875,8 @@ def _connection_entry(row: dict, databases: list[str]) -> dict:
 DBA_CONNECTION_FIELDS = frozenset({
     "id", "name", "engine", "engineId", "env", "enabled", "host", "port",
     "defaultDatabase", "tags", "replicaOf", "deleted", "deletedAt",
-    "deletedReason", "superAdminOnly", "databases", "owners",
-    "health", "inRotation",
+    "deletedReason", "superAdminOnly", "aiAllowed", "mcpAllowed",
+    "databases", "owners", "health", "inRotation",
 })
 
 
@@ -1155,6 +1164,9 @@ class ConnectionPatch(BaseModel):
     # moved. `None` means "not editing tags"; `{}` means "remove them all".
     tags: dict[str, str] | None = None
     credentials: dict[str, CredentialIn] = Field(default_factory=dict)
+    # A host or port change keeps the stored credentials. Without this flag
+    # such a change answers 409 `confirmation_required` (P1.3).
+    confirmCredentials: bool = False
 
 
 class ConnectionTestIn(BaseModel):
@@ -1559,6 +1571,13 @@ def _apply_connection_update(cur, row: dict, changes: dict, creds: dict,
     # the entry stays free of anything that could be a secret.
     if "enabled" in changes:
         details["enabled"] = changes["enabled"]
+    if "host" in changes or "port" in changes:
+        # Where the connection pointed and where it points now. Host and port
+        # only: the credentials that go with them are never written here.
+        details["host_before"] = row.get("host")
+        details["host_after"] = changes.get("host", row.get("host"))
+        details["port_before"] = row.get("port")
+        details["port_after"] = changes.get("port", row.get("port"))
     if "alias" in changes:
         details["renamed_to"] = changes["alias"]
         details["displaced"] = displaced
@@ -1577,6 +1596,32 @@ def _apply_connection_update(cur, row: dict, changes: dict, creds: dict,
                  details)
 
 
+CREDENTIALS_KEPT_REASON = ("The login and password stay the same. "
+                           "Confirm that they work on the new host.")
+
+
+def _require_credentials_confirmed(row: dict, changes: dict, creds: dict,
+                                   confirmed: bool) -> None:
+    """P1.3: a host or port change keeps the stored credentials. Ask the
+    admin to confirm that before the save.
+
+    The question comes only when all of these are true: the host or the port
+    changes, the target has a stored credential, the body sends no new
+    password, and the body does not say `confirmCredentials: true`. This
+    never clears or changes a credential."""
+    if confirmed or not ("host" in changes or "port" in changes):
+        return
+    if any(password for _username, password in creds.values()):
+        return
+    stored = any(c.get("configured")
+                 for c in (row.get("credentials") or {}).values())
+    if not stored:
+        return
+    raise deps._error(409, "confirmation_required",
+                      "Confirm the credentials for the new host or port.",
+                      reasons=[CREDENTIALS_KEPT_REASON])
+
+
 @router.patch("/connections/{conn}")
 def admin_update_connection(conn: str, body: ConnectionPatch,
                             claims: dict = Depends(deps.current_user)):
@@ -1587,6 +1632,7 @@ def admin_update_connection(conn: str, body: ConnectionPatch,
     uid = admin.require_admin(claims, "access")
     row = _require_target_row(conn)
     changes, creds = _plan_connection_update(row, body)
+    _require_credentials_confirmed(row, changes, creds, body.confirmCredentials)
 
     # A save that changed nothing writes nothing — no empty transaction and,
     # more to the point, no audit row. An audit trail padded with "updated"
@@ -2494,6 +2540,57 @@ def admin_set_super_admin_only(conn: str, body: SuperAdminOnlyIn,
                          {"target": row["alias"], "targetId": row["id"],
                           "superAdminOnly": body.on})
     return {"connectionId": row["alias"], "superAdminOnly": body.on, "changed": changed}
+
+
+class AllowedIn(BaseModel):
+    allowed: bool
+
+
+# Migration 217. The column names are fixed here, never taken from a request:
+# the name goes into the UPDATE text.
+_ALLOWED_FLAGS = {
+    "ai_allowed": ("connection_ai_allowed_set", "aiAllowed"),
+    "mcp_allowed": ("connection_mcp_allowed_set", "mcpAllowed"),
+}
+
+
+def _set_allowed_flag(conn: str, column: str, allowed: bool, uid: str,
+                      claims: dict) -> dict:
+    """Switch one migration 217 flag on one connection, with an audit row
+    when the value changes. The caller runs the super-admin gate first."""
+    action, key = _ALLOWED_FLAGS[column]
+    row = _require_target_row(conn)
+    old = _allowed_flag(row, column)
+    with db.transaction() as cur:
+        cur.execute(f"UPDATE target_servers SET {column} = %s, updated_at = NOW() "
+                    f" WHERE id = %s AND {column} IS DISTINCT FROM %s RETURNING id",
+                    (allowed, row["id"], allowed))
+        changed = cur.fetchone() is not None
+        if changed:
+            audit.log_in(cur, None, uid, claims.get("name"), action,
+                         {"target": row["alias"], "targetId": row["id"],
+                          "old": old, "new": allowed})
+    return {"connectionId": row["alias"], key: allowed, "changed": changed}
+
+
+@router.put("/connections/{conn}/ai-allowed")
+def admin_set_ai_allowed(conn: str, body: AllowedIn,
+                         claims: dict = Depends(deps.current_user)):
+    """Switch migration 217's `ai_allowed` on one connection. With it off,
+    the AI assistant refuses the connection before it reads a table name."""
+    uid = admin.require_admin(claims, "access")
+    _require_super(uid, "change who uses this connection")
+    return _set_allowed_flag(conn, "ai_allowed", body.allowed, uid, claims)
+
+
+@router.put("/connections/{conn}/mcp-allowed")
+def admin_set_mcp_allowed(conn: str, body: AllowedIn,
+                          claims: dict = Depends(deps.current_user)):
+    """Switch migration 217's `mcp_allowed` on one connection. With it off,
+    the MCP door does not list the connection and refuses every tool on it."""
+    uid = admin.require_admin(claims, "access")
+    _require_super(uid, "change who uses this connection")
+    return _set_allowed_flag(conn, "mcp_allowed", body.allowed, uid, claims)
 
 
 @router.delete("/grants/{gid}", status_code=204)
