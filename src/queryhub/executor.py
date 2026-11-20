@@ -1845,8 +1845,12 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
             # wrapped form and fall back to the original on any error. That retry
             # is only free because RO statements have no effects; never do this
             # for RW/DDL, where a first attempt may already have changed data.
+            #
+            # Not for an EXEC: a procedure call cannot sit inside a SELECT, so
+            # the wrap can never apply, and the describe would be a wasted
+            # round trip.
             s_run, wrapped = s, None
-            if mode == "ro":
+            if mode == "ro" and s.leading.upper() not in _MSSQL_EXEC:
                 try:
                     cols = mssql_exec.describe_columns(cur, s.rewritten)
                     wrapped = (mssql_exec.wrap_udt_projection(s.rewritten, cols)
@@ -1869,7 +1873,7 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
                     unmasked=unmask,
                     capture_plan=False,   # no PG-style EXPLAIN plan on SQL Server
                     audit_tag=audit_tag,
-                    exemptions=s.leading.upper() not in _MSSQL_WRITES,
+                    exemptions=s.leading.upper() not in _MSSQL_NO_EXEMPTION,
                 )
             except Exception:
                 if not wrapped:
@@ -1888,7 +1892,7 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
                     unmasked=unmask,
                     capture_plan=False,
                     audit_tag=audit_tag,
-                    exemptions=s.leading.upper() not in _MSSQL_WRITES,
+                    exemptions=s.leading.upper() not in _MSSQL_NO_EXEMPTION,
                 )
             stmt_results.append(res)
             # One statement can send more than one result: read them all
@@ -2167,8 +2171,8 @@ def _write_result_set(rows, columns: list, description, stmt, res: _StmtResult, 
     trigger returns come from tables that the statement does not name, so an
     exemption on `UPDATE public_codes` must not unmask a trigger's
     `SELECT email FROM users`. The caller passes False for every result set
-    of a SQL Server write (see _run_mssql). It fails closed: an OUTPUT clause
-    on an exempt table is masked too.
+    of a SQL Server write or EXEC (see _run_mssql). It fails closed: an OUTPUT
+    clause on an exempt table is masked too.
 
     Sets `res.rowcount`, `truncated_rows`, `truncated_size`, `pii_masked` and
     `pii_exempt`. Returns the file, the rows written and the size flag.
@@ -2252,6 +2256,12 @@ _DEFAULT_MAX_RESULT_SETS = 20
 # INTO is refused on a table with an enabled trigger (error 334), so a write
 # that sends a result set AND a later row count got that set from a trigger.
 _MSSQL_WRITES = frozenset({"INSERT", "UPDATE", "DELETE", "MERGE"})
+# A super-admin's stored-procedure call (query_safety._mssql_exec_blockers).
+_MSSQL_EXEC: frozenset[str] = frozenset({"EXEC", "EXECUTE"})
+# Statements whose result sets never get a masking exemption. An exemption is
+# decided from the tables that the statement names. A procedure reads tables
+# that the EXEC does not name, so its rows must not ride on such a decision.
+_MSSQL_NO_EXEMPTION: frozenset[str] = _MSSQL_WRITES | _MSSQL_EXEC
 
 
 def _file_size(path: Path | None) -> int:

@@ -77,14 +77,42 @@ _MODULE_TYPES = frozenset({
 })
 
 
+#: SHOWPLAN puts the statements of a called procedure inside the call. Measured
+#: on SQL Server 2022 for `EXEC dbo.p2`, a procedure with SELECT, UPDATE,
+#: SELECT, the plan is one document:
+#:
+#:     Batch > Statements > StmtSimple[StatementType="EXECUTE PROC"]
+#:       > StoredProc > Statements > StmtSimple SELECT, UPDATE, SELECT
+#:
+#: The submitted batch holds one statement, the call. The body is the
+#: procedure's own code, which the batch does not contain. So the EXECUTE PROC
+#: element counts as one, and nothing inside it counts. Only that statement
+#: type skips its children: any other statement is counted all the way down,
+#: as before.
+_PROC_CALL_TYPE = "EXECUTE PROC"
+
+
 def _count_statements(root) -> int:
-    """Statement elements in one plan document. The elements of a module body
-    count as one statement (see `_MODULE_TYPES`)."""
+    """Statement elements in one plan document.
+
+    The elements of a module body count as one statement (see
+    `_MODULE_TYPES`). The statements inside a called procedure do not count
+    (see `_PROC_CALL_TYPE`). The walk uses its own stack, because a plan tree
+    can be deeper than the recursion limit.
+    """
     n, module = 0, False
-    for el in root.iter():
-        if not _local(el.tag).startswith(_STMT_TAG_PREFIX):
+    stack = [root]
+    while stack:
+        el = stack.pop()
+        tag = _local(el.tag)
+        kind = (el.get("StatementType") or "").upper()
+        if tag.startswith(_STMT_TAG_PREFIX) and kind == _PROC_CALL_TYPE:
+            n += 1
             continue
-        if (el.get("StatementType") or "").upper() in _MODULE_TYPES:
+        stack.extend(el)
+        if not tag.startswith(_STMT_TAG_PREFIX):
+            continue
+        if kind in _MODULE_TYPES:
             module = True
         else:
             n += 1

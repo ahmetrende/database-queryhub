@@ -86,6 +86,13 @@ ALTER ROLE db_datareader ADD MEMBER queryhub_ddl;
 ALTER ROLE db_datawriter ADD MEMBER queryhub_ddl;
 ALTER ROLE db_ddladmin   ADD MEMBER queryhub_ddl;
 
+-- OPTIONAL: stored procedures for super-admins.
+-- A super-admin can EXEC a stored procedure. QueryHub runs a user procedure
+-- with the DDL login, and that login needs EXECUTE in each target database.
+-- System procedures such as sp_help already run on the RO login.
+-- Uncomment to allow it in this database:
+-- GRANT EXECUTE TO queryhub_ddl;
+
 -- Defense in depth: never let the RO login write, even if a future role
 -- membership is added by mistake. (App-layer safety already blocks writes
 -- on the RO tier; this is the DB-layer backstop.)

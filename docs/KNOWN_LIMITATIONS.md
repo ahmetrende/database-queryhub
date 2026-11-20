@@ -27,6 +27,10 @@ what is there and what is not there yet. The forward plan is in
   with a spec but no execution path fails closed.
 - QueryHub blocks cross-database access on purpose. A query is scoped to the
   target database that it was submitted against.
+- **Only a super-admin can EXEC a stored procedure on SQL Server.** QueryHub
+  refuses `WITH RESULT SETS`, `EXECUTE AS`, dynamic SQL, linked servers and
+  procedures in another database. A user procedure needs EXECUTE for the tier
+  login.
 - **Submit-time validation covers PostgreSQL only.** It plans each statement of
   a read or write request, scripts included, and refuses a mistake before
   approval. It does not cover DDL, batch items, SQL Server, ClickHouse or

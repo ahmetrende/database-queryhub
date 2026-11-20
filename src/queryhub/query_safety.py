@@ -197,7 +197,143 @@ BANNED_LEADING_REASONS: dict[str, str] = {
 # So only the capability half lifts. A super-admin who needs COPY TO a server
 # file or a CHECKPOINT is asking for something outside SQL, and that stays a
 # deliberate out-of-band act.
+#
+# The list is per engine: `engines.EngineSpec.super_admin_leading`, which
+# analyze() reads. This constant is the PostgreSQL list, kept for code that
+# imports it.
 SUPER_ADMIN_LEADING: frozenset[str] = frozenset({"DO", "CALL"})
+
+# ---------------------------------------------------------------------------
+# SQL Server: a super-admin's EXEC
+# ---------------------------------------------------------------------------
+_MSSQL_EXEC_LEADING: frozenset[str] = frozenset({"EXEC", "EXECUTE"})
+
+# System procedures that only read the catalog. Called bare or as `sys.<name>`,
+# they run at the `ro` tier. Measured on SQL Server 2022: the read-only login
+# (db_datareader with DENY EXECUTE, deploy/grant_mssql.sql) can run sp_help,
+# sp_helpindex and sys.sp_columns. Every other EXEC is `ddl`.
+MSSQL_READ_ONLY_PROCS: frozenset[str] = frozenset({
+    "sp_help", "sp_helpindex", "sp_helptext", "sp_helpconstraint",
+    "sp_columns", "sp_tables", "sp_pkeys", "sp_fkeys", "sp_statistics",
+    "sp_stored_procedures", "sp_sproc_columns", "sp_spaceused", "sp_depends",
+    "sp_describe_first_result_set", "sp_who", "sp_who2", "sp_lock",
+})
+
+# `EXECUTE AS ...` changes the security context of the session.
+_EXEC_AS_RE = re.compile(r"^\s*EXEC(?:UTE)?\s+AS\b", re.IGNORECASE)
+
+# A system procedure (`sp_`, `xp_`) runs only when it is on the read-only list
+# above. Several others run a string as SQL in every table or database
+# (sp_MSforeachtable, sp_MSforeachdb), add a linked server or leave SQL
+# (sp_execute_external_script). An allow-list keeps a new one out by default.
+_MSSQL_SYSTEM_PREFIXES: tuple[str, ...] = ("sp_", "xp_")
+
+_EXEC_AS_MSG = ("EXECUTE AS is not allowed. It changes the security context of "
+                "the session.")
+_EXEC_DYNAMIC_MSG = ("Dynamic SQL (EXEC of a string or sp_executesql) is not "
+                     "allowed. Submit the statement itself.")
+_EXEC_OTHER_DB_MSG = ("EXEC of a procedure in another database is not allowed. "
+                      "Choose that database when you submit.")
+_EXEC_AT_MSG = "EXEC ... AT (a linked server) is not allowed."
+_EXEC_SYSTEM_MSG = ("`{name}` is not allowed. A super-admin can EXEC only the "
+                    "read-only system procedures, such as sp_help.")
+
+
+def _exec_tokens(sql: str, dialect: str) -> list:
+    """The tokens of `sql` as SQL Server reads them: comments are dropped, and
+    a bracketed or quoted name is one IDENTIFIER token. Empty on a token
+    error, which the parse below refuses anyway."""
+    import sqlglot
+    try:
+        return list(sqlglot.Dialect.get_or_raise(dialect).tokenize(sql))
+    except Exception:
+        return []
+
+
+def _exec_has_at(tokens: list) -> bool:
+    """True when an unquoted word AT stands on its own: `EXEC p AT srv`. The
+    parser drops the AT clause, so the tokens are the only place to see it.
+    `@at` (a parameter), `x.at` (a name part) and `[at]` (a quoted name) are
+    not it. Measured on sqlglot 30.14: `@at` is PARAMETER then VAR, `[at]` is
+    IDENTIFIER, and a comment between AT and the server name is dropped."""
+    for i, t in enumerate(tokens):
+        if t.token_type.name != "VAR" or t.text.upper() != "AT":
+            continue
+        prev = tokens[i - 1].token_type.name if i else ""
+        if prev not in ("PARAMETER", "DOT"):
+            return True
+    return False
+
+
+def _exec_has_empty_part(tokens: list) -> bool:
+    """True for `db..proc`: two dots in a row name a database with the default
+    schema. The parser keeps only two name parts for it."""
+    return any(a.token_type.name == "DOT" and b.token_type.name == "DOT"
+               for a, b in zip(tokens, tokens[1:]))
+_EXEC_UNREADABLE_MSG = ("QueryHub cannot read this EXEC statement. Options such "
+                        "as WITH RESULT SETS are not allowed.")
+
+
+def _mssql_exec_blockers(stmt: Statement, spec: engines.EngineSpec,
+                         engine: str) -> tuple[list[str], str]:
+    """The refusals and the tier for a super-admin's EXEC on SQL Server.
+
+    Returns (blockers, tier). An empty blocker list means the statement may
+    run at `tier`.
+
+    The statement must be one call of a named procedure in the target
+    database. Each refusal below keeps a rule that holds for every other
+    statement: the reviewed text is the text that runs (no dynamic SQL), the
+    session keeps its own login (no EXECUTE AS), and the request stays in the
+    approved database on the approved server (no other database, no linked
+    server). The procedures on the engine's blocklist reach the server outside
+    SQL (xp_cmdshell, sp_configure, ...), so they stay refused too.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    stripped = _stripped_body(stmt)
+    if _EXEC_AS_RE.match(stripped):
+        return [_EXEC_AS_MSG], "ddl"
+
+    try:
+        parsed = [s for s in sqlglot.parse(_raw_body(stmt),
+                                           read=spec.sqlglot_dialect)
+                  if s is not None]
+    except Exception:
+        # sqlglot 30.14 raises for `WITH RESULT SETS` and for EXECUTE AS.
+        return [_EXEC_UNREADABLE_MSG], "ddl"
+
+    node = parsed[0] if len(parsed) == 1 else None
+    # ExecuteSql is checked first: it is the sp_executesql form of a call.
+    if (node is None or isinstance(node, exp.ExecuteSql)
+            or not isinstance(node, exp.Execute)
+            or not isinstance(node.this, exp.Table)):
+        return [_EXEC_DYNAMIC_MSG], "ddl"
+
+    parts = [p.name for p in node.this.parts]
+    if not parts or not parts[-1] or parts[-1].startswith("@"):
+        return [_EXEC_DYNAMIC_MSG], "ddl"     # a procedure name in a variable
+    tokens = _exec_tokens(_raw_body(stmt), spec.sqlglot_dialect)
+    if (len(parts) >= 3 or node.this.args.get("catalog") is not None
+            or _exec_has_empty_part(tokens)):
+        return [_EXEC_OTHER_DB_MSG], "ddl"
+
+    name = parts[-1].lower()
+    if (name in spec.blocked_functions
+            or name in _ast_module()._config_blocked(engine)):
+        return [f"`{name}` is not allowed. It reaches the server outside SQL."], "ddl"
+
+    if _exec_has_at(tokens):
+        return [_EXEC_AT_MSG], "ddl"
+
+    if name.startswith(_MSSQL_SYSTEM_PREFIXES):
+        if name not in MSSQL_READ_ONLY_PROCS:
+            return [_EXEC_SYSTEM_MSG.format(name=name)], "ddl"
+        if len(parts) == 1 or parts[0].lower() == "sys":
+            return [], "ro"
+    return [], "ddl"
+
 
 # Default SET allowlist if bot_config.set_allowed_params is missing.
 # Production list lives in DB; this is just a safety floor.
@@ -537,18 +673,30 @@ def analyze(sql: str, engine: str = "postgres",
             )
             return report
 
+        super_leading = spec.super_admin_leading
         if upper in banned_leading and not (unrestricted
-                                            and upper in SUPER_ADMIN_LEADING):
+                                            and upper in super_leading):
             report.blockers.append(banned_leading[upper])
             return report
 
         if upper not in allowed_leading and not (unrestricted
-                                                 and upper in SUPER_ADMIN_LEADING):
+                                                 and upper in super_leading):
             report.blockers.append(
                 f"Unrecognized SQL: the leading word '{leading}' is not allowed. "
                 f"Check for a mistyped keyword, such as UPDATE, DELETE or SELECT."
             )
             return report
+
+        # A super-admin's stored-procedure call on SQL Server. The gates above
+        # let it through for a super-admin only. These checks refuse the forms
+        # that run text nobody reviewed or that leave the target database.
+        exec_tier: str | None = None
+        if (unrestricted and spec.name == "mssql"
+                and upper in _MSSQL_EXEC_LEADING):
+            exec_blockers, exec_tier = _mssql_exec_blockers(stmt, spec, engine)
+            if exec_blockers:
+                report.blockers.extend(exec_blockers)
+                return report
 
         # CTE-DML ban.
         if upper == "WITH":
@@ -735,7 +883,7 @@ def analyze(sql: str, engine: str = "postgres",
         if ends:
             report.confirmations.append(_session_control_cost(ends))
             tier = "ddl"
-        elif upper in SUPER_ADMIN_LEADING:
+        elif upper in spec.super_admin_leading:
             # Only reachable in unrestricted mode (the gate above refuses it
             # for everyone else). The body of a DO block or a procedure is
             # OPAQUE to every guard in this module — no keyword scan, no AST
@@ -747,7 +895,14 @@ def analyze(sql: str, engine: str = "postgres",
             # a LOGIN role. Top tier means the ddl credential, the elevated
             # role, and the ddl-tier grant check — which is the honest price
             # for running something nothing can inspect.
-            tier = "ddl"
+            #
+            # A SQL Server EXEC is opaque for the same reason: the procedure
+            # body is not in the statement. The one exception is the short list
+            # of system procedures that only read the catalog
+            # (MSSQL_READ_ONLY_PROCS), which `_mssql_exec_blockers` puts at
+            # `ro`. The read-only login holds DENY EXECUTE, so the database
+            # still refuses a user procedure that reaches that login.
+            tier = exec_tier or "ddl"
         elif upper == "SELECT" and _selects_into(_stripped_body(stmt)):
             tier = "ddl"
         elif upper in ddl_keywords:

@@ -227,3 +227,38 @@ test('the grip CSS and the shortcut rows', () => {
     assert.ok(src.includes(k), k);
   }
 });
+
+// ---------- W7: routine bodies and variables in the real editor ----------
+
+test('a typed @ on SQL Server lists the declared variables, and Enter inserts one', dom, async () => {
+  const sql = 'DECLARE @total int, @n int;\nSELECT ';
+  const ed = mount(sql, 'mssql');
+  ed.caret(sql.length);
+  ed.type('@');
+  const labels = ed.opts().map(o => o.textContent);
+  assert.ok(labels.some(t => t.startsWith('@total')), labels.join('|'));
+  assert.ok(labels.some(t => t.startsWith('@n')), labels.join('|'));
+  ed.type('to');
+  ed.press('Enter');
+  assert.equal(ed.ctl.text, sql + '@total');
+});
+
+test('inside a PostgreSQL function body the list offers tables and keeps the closing tag', dom, async () => {
+  const head = 'CREATE FUNCTION f() RETURNS bigint AS $$\nBEGIN\n  RETURN (SELECT count(*) FROM ';
+  const tail = ');\nEND\n$$ LANGUAGE plpgsql;';
+  const ed = mount(head + tail);
+  ed.caret(head.length);
+  ed.type('or');
+  assert.ok(ed.opts().some(o => o.textContent.startsWith('orders')), ed.opts().map(o => o.textContent).join('|'));
+  ed.press('Enter');
+  assert.ok(ed.ctl.text.startsWith(head + 'orders'), ed.ctl.text);
+  assert.ok(ed.ctl.text.endsWith(tail), ed.ctl.text);
+});
+
+test('a plain dollar-quoted string still keeps the list shut', dom, async () => {
+  const head = 'SELECT $$ FROM ';
+  const ed = mount(head + '$$');
+  ed.caret(head.length);
+  ed.type('or');
+  assert.equal(ed.opts().length, 0);
+});
