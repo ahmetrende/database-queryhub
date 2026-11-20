@@ -604,7 +604,173 @@ function qhResCapNote(result) {
   return 'The server capped this result at ' + total.toLocaleString() + ' rows. There can be more rows than shown.';
 }
 
-Object.assign(window, { qhResIsNull, qhResCapNote, qhResJsonKind, qhResJsonCell,
+// Group the rows of a page (2026-11-20, P2.11). The panel counts the rows that
+// the grid already holds. It never runs a new query. `rows` are objects keyed
+// by column name (or arrays in column order). `groupCols` are 1 to 3 column
+// names in pick order. `numCol` is an optional column for sum, min and max.
+// `types` is optional: a column's SQL type, for the NULL rule of qhResIsNull.
+// A value groups as the text on screen, so a masked value groups as its masked
+// text. NULL groups as "(null)". The groups sort by count, largest first, and
+// the list stops at 200. `distinct` is the number of groups before that cap.
+const QH_GROUP_MAX = 200;
+const QH_GROUP_NULL = '(null)';
+function qhGroupRows(columns, rows, groupCols, numCol, types) {
+  const cols = Array.isArray(columns) ? columns.map(String) : [];
+  const src = Array.isArray(rows) ? rows : [];
+  const ty = types || {};
+  const seen = new Set();
+  const pick = (Array.isArray(groupCols) ? groupCols : [])
+    .map(String).filter(c => cols.indexOf(c) >= 0 && !seen.has(c) && seen.add(c)).slice(0, 3);
+  if (!pick.length) return { groups: [], total: src.length, distinct: 0 };
+  const cell = (row, c) => {
+    if (!row) return null;
+    return Array.isArray(row) ? row[cols.indexOf(c)] : row[c];
+  };
+  const text = (v, c) => (qhResIsNull(v, ty[c]) ? QH_GROUP_NULL : String(v));
+  const num = numCol != null && cols.indexOf(String(numCol)) >= 0 ? String(numCol) : null;
+  const map = new Map();
+  src.forEach((row, i) => {
+    const key = pick.map(c => text(cell(row, c), c));
+    const id = JSON.stringify(key);
+    let g = map.get(id);
+    if (!g) {
+      g = { key, count: 0, first: i, n: 0, sum: 0, min: null, max: null };
+      map.set(id, g);
+    }
+    g.count += 1;
+    if (num) {
+      const v = cell(row, num);
+      if (!qhResIsEmpty(v) && qhResIsNumeric(v)) {
+        const x = Number(String(v).trim());
+        g.n += 1;
+        g.sum += x;
+        if (g.min === null || x < g.min) g.min = x;
+        if (g.max === null || x > g.max) g.max = x;
+      }
+    }
+  });
+  const all = [...map.values()].sort((a, b) => (b.count - a.count) || (a.first - b.first));
+  const groups = all.slice(0, QH_GROUP_MAX).map(g => (num
+    ? { key: g.key, count: g.count, sum: g.n ? g.sum : null, min: g.min, max: g.max }
+    : { key: g.key, count: g.count }));
+  return { groups, total: src.length, distinct: all.length };
+}
+
+// Related rows through a foreign key (2026-11-20, P2.9). One SELECT on `table`
+// where `col` equals `value`. The SQL only goes into a new editor tab. Nothing
+// runs until the person runs it. `limit` adds LIMIT n, or TOP n on SQL Server.
+// A value is a bare number only when it is a JavaScript number or `type` is a
+// numeric SQL type. Any other value is a quoted string with each ' doubled
+// (N'..' on SQL Server). A quoted number still compares with a numeric column,
+// and a bare number fails against a text column, so a quote is the safe guess.
+function qhRelatedLiteral(value, engine, type) {
+  const s = String(value);
+  if (typeof value === 'number' && Number.isFinite(value)) return s;
+  if (type && qhResJsonKind(type) === 'num' && QH_RES_NUM_RE.test(s.trim())) return s.trim();
+  return (engine === 'mssql' ? 'N' : '') + "'" + s.replace(/'/g, "''") + "'";
+}
+function qhRelatedIdent(name, engine) {
+  if (typeof qhQuoteIdentFor === 'function') return qhQuoteIdentFor(name, engine);
+  return '"' + String(name).replace(/"/g, '""') + '"';
+}
+function qhRelatedSql(opts) {
+  const o = opts || {};
+  const engine = o.engine || 'postgres';
+  if (!o.table || !o.col || o.value === null || o.value === undefined) return '';
+  const table = String(o.table).split('.').filter(Boolean).map(p => qhRelatedIdent(p, engine)).join('.');
+  const where = qhRelatedIdent(o.col, engine) + ' = ' + qhRelatedLiteral(o.value, engine, o.type);
+  const n = Number(o.limit);
+  const lim = Number.isInteger(n) && n > 0 ? n : 0;
+  if (engine === 'mssql') {
+    return 'SELECT ' + (lim ? 'TOP ' + lim + ' ' : '') + '* FROM ' + table + ' WHERE ' + where + ';';
+  }
+  return 'SELECT * FROM ' + table + ' WHERE ' + where + (lim ? ' LIMIT ' + lim : '') + ';';
+}
+
+// The catalog rows of the one table in the FROM of `sql`, read the same way as
+// qhResultScriptPk. Gives { parts, meta } or null.
+function qhResultRelMeta(sql, schema) {
+  if (typeof qhResultScriptRelation !== 'function') return null;
+  const parts = qhResultScriptRelation(sql);
+  const sch = schema || {};
+  if (!parts || !parts.length) return null;
+  const pick = (map, key) => {
+    if (!map || !key) return null;
+    if (map[key]) return map[key];
+    const lc = key.toLowerCase();
+    const k = Object.keys(map).find(x => x.toLowerCase() === lc);
+    return k ? map[k] : null;
+  };
+  let meta = null;
+  if (parts.length >= 2) meta = pick(sch.tableMetaQ, parts.slice(-2).join('.'));
+  else if (!(sch.qualify && sch.qualify[parts[0]] === null)) meta = pick(sch.tableMeta, parts[0]);
+  return meta ? { parts, meta } : null;
+}
+// The result columns that are the table's own columns as they are (`*`, `id`,
+// `t.id`). It asks qhResultScriptPk with every column marked as a key.
+function qhResultPlainCols(sql, parts, meta) {
+  if (typeof qhResultScriptPk !== 'function') return new Set();
+  const m = meta.map(c => ({ name: String(c.name), pk: true }));
+  const fake = parts.length >= 2
+    ? { tableMetaQ: { [parts.slice(-2).join('.')]: m } }
+    : { tableMeta: { [parts[0]]: m }, qualify: {} };
+  return new Set(qhResultScriptPk(sql, fake).map(n => n.toLowerCase()));
+}
+// A catalog `fk` value is 'table.col' or 'schema.table.col'.
+function qhRelatedFkTarget(fk) {
+  const p = String(fk || '').split('.');
+  if (p.length < 2 || !p[p.length - 1] || !p[p.length - 2]) return null;
+  return { schema: p.length >= 3 ? p[p.length - 3] : null, table: p[p.length - 2], col: p[p.length - 1] };
+}
+// The foreign keys of the result's table: [{ col, refTable, refCol }]. A
+// column counts only when the result returns it as it is. The referenced table
+// gets its schema when the catalog knows one place for the name.
+function qhResultFks(sql, schema) {
+  const r = qhResultRelMeta(sql, schema);
+  if (!r) return [];
+  const plain = qhResultPlainCols(sql, r.parts, r.meta);
+  const qualify = (schema && schema.qualify) || {};
+  const out = [];
+  r.meta.forEach((c) => {
+    const t = c && c.fk ? qhRelatedFkTarget(c.fk) : null;
+    if (!t || !plain.has(String(c.name).toLowerCase())) return;
+    const refTable = t.schema ? t.schema + '.' + t.table
+      : (typeof qualify[t.table] === 'string' ? qualify[t.table] : t.table);
+    out.push({ col: String(c.name), refTable, refCol: t.col });
+  });
+  return out;
+}
+// The tables whose foreign keys point at the result's table:
+// [{ table, col, refCol }]. `refCol` is the column of the result's table. It
+// counts only when the result returns it as it is. At most 20, by table name.
+function qhResultRefs(sql, schema) {
+  const sch = schema || {};
+  const r = qhResultRelMeta(sql, sch);
+  if (!r) return [];
+  const plain = qhResultPlainCols(sql, r.parts, r.meta);
+  const name = r.parts[r.parts.length - 1].toLowerCase();
+  const info = sch.tableInfo && sch.tableInfo[r.parts[r.parts.length - 1]];
+  const own = r.parts.length >= 2 ? r.parts[r.parts.length - 2] : (info && info.schema) || null;
+  const qmap = sch.tableMetaQ && Object.keys(sch.tableMetaQ).length ? sch.tableMetaQ : (sch.tableMeta || {});
+  const out = [];
+  const seen = new Set();
+  Object.keys(qmap).sort().forEach((k) => {
+    (qmap[k] || []).forEach((c) => {
+      const t = c && c.fk ? qhRelatedFkTarget(c.fk) : null;
+      if (!t || t.table.toLowerCase() !== name) return;
+      if (t.schema && own && t.schema.toLowerCase() !== String(own).toLowerCase()) return;
+      if (!plain.has(t.col.toLowerCase())) return;
+      const id = k + '|' + c.name + '|' + t.col;
+      if (seen.has(id)) return;
+      seen.add(id);
+      out.push({ table: k, col: String(c.name), refCol: t.col });
+    });
+  });
+  return out.slice(0, 20);
+}
+
+Object.assign(window, { QH_GROUP_MAX, QH_GROUP_NULL, qhGroupRows, qhRelatedLiteral, qhRelatedIdent, qhRelatedSql, qhRelatedFkTarget,
+  qhResultRelMeta, qhResultPlainCols, qhResultFks, qhResultRefs, qhResIsNull, qhResCapNote, qhResJsonKind, qhResJsonCell,
   QH_RES_MAX_ROWS, qhResCompareCells, qhResSortRows, qhResFilterRows,
   qhResAggregate, qhPrettyJson, qhUseResultView,
   QH_VIEW_HEX_MAX, qhCellBytes, qhHexDump, qhImageDataUrl, qhPrettyXml, qhHtmlSrcdoc, qhViewModes, QH_VIEW_LABELS, qhPeekPlace,

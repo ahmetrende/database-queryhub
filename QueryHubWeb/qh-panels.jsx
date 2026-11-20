@@ -207,7 +207,7 @@ function qhResultColTitle(c, meta, driverType) {
   return comment ? head + '\n' + comment : head;
 }
 
-function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, right, active, muted, strong, pii, drag, connDrag, dbDrag, onClick, onCtx, onDbl, title, nodeId }) {
+function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, right, active, multi, muted, strong, pii, drag, connDrag, dbDrag, onClick, onCtx, onDbl, title, nodeId }) {
   const handle = onClick || (expandable ? onToggle : undefined);
   // Keys on a focused row. Keys typed in a child (a rename box) pass through.
   const onKeyDown = (e) => {
@@ -252,7 +252,7 @@ function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, ri
     }
     : undefined;
   return (
-    <div data-tip={rowTitle} data-node={nodeId} className={'qh-tr' + (active ? ' is-active' : '') + (muted ? ' is-muted' : '') + (strong ? ' is-strong' : '') + (pii ? ' is-pii' : '') + (drag ? ' is-drag' : '') + (connDrag ? ' is-conn-drag' : '') + (sub ? ' is-two' : '')}
+    <div data-tip={rowTitle} data-node={nodeId} className={'qh-tr' + (active ? ' is-active' : '') + (multi ? ' is-multi' : '') + (muted ? ' is-muted' : '') + (strong ? ' is-strong' : '') + (pii ? ' is-pii' : '') + (drag ? ' is-drag' : '') + (connDrag ? ' is-conn-drag' : '') + (sub ? ' is-two' : '')}
       style={{ paddingLeft: (6 + depth * 14) + 'px' }} onClick={handle} onContextMenu={onCtx} onDoubleClick={onDbl}
       role="treeitem" aria-level={(depth || 0) + 1} aria-expanded={expandable ? !!open : undefined} aria-selected={!!active}
       tabIndex={active ? 0 : -1} onKeyDown={onKeyDown} onFocus={onFocus}
@@ -274,7 +274,7 @@ function TreeRow({ depth, expandable, open, onToggle, icon, label, sub, tier, ri
   );
 }
 
-function SchemaTree({ onScriptCreate, bindOnClick, conns: allConns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, open, setOpen, onPickDb, onOpenTable, onNewQuery, isSuper, canRefresh, onRefreshSchema, onReloadCatalog, hiddenDbs, onToggleHiddenDb, reveal, narrow, tagFilters, onToast }) {
+function SchemaTree({ onScriptCreate, onOpenSql, bindOnClick, conns: allConns, schemaCache, onLoadSchema, rolesCache, onLoadRoles, active, open, setOpen, onPickDb, onOpenTable, onNewQuery, isSuper, canRefresh, onRefreshSchema, onReloadCatalog, hiddenDbs, onToggleHiddenDb, reveal, narrow, tagFilters, onToast }) {
   // A `provider:aws` token in the search box narrows the TREE, not just the
   // dropdown: the list you then browse is the answer to what you typed.
   const conns = React.useMemo(() => (
@@ -283,8 +283,52 @@ function SchemaTree({ onScriptCreate, bindOnClick, conns: allConns, schemaCache,
   const tog = (id) => setOpen(o => ({ ...o, [id]: !o[id] }));
   const isOpen = (id) => !!open[id];
   const [menu, setMenu] = React.useState(null);
-  const openMenu = (e, c, db, table) => { e.preventDefault(); hideTip(); const p = qhMenuPoint(e); setMenu({ x: Math.min(p.x, window.innerWidth - 224), y: Math.min(p.y, window.innerHeight - 220), c, db, table }); };
+  // `multiSel` is the multi-selection when the clicked row is part of it and it
+  // has 2 or more items: the menu then shows the "N tables" group.
+  const openMenu = (e, c, db, table, multiSel) => { e.preventDefault(); hideTip(); const p = qhMenuPoint(e); setMenu({ x: Math.min(p.x, window.innerWidth - 224), y: Math.min(p.y, window.innerHeight - (multiSel ? 360 : 220)), c, db, table, multi: multiSel || null }); };
   const newQ = (c, db) => { if (onNewQuery) onNewQuery(c, db); };
+
+  // ----- multi-selection of tables and views (P2.10) -----
+  // Ctrl/Cmd+click toggles a row, Shift+click selects the range from the last
+  // clicked row. Items are { conn, db, schema, name } of ONE database
+  // (qhTreeMultiPick). A plain click and Escape clear it.
+  const [multi, setMulti] = React.useState({ sel: [], anchor: null });
+  const multiKey = (x) => x.conn + '/' + x.db + '/' + (x.schema || '') + '.' + x.name;
+  const multiKeys = React.useMemo(() => new Set(multi.sel.map(multiKey)), [multi]);
+  const relClick = (e, item, order, tid) => {
+    if (e && (e.ctrlKey || e.metaKey)) { e.preventDefault(); setMulti(m => qhTreeMultiPick(m, item, 'toggle')); return; }
+    if (e && e.shiftKey) { e.preventDefault(); setMulti(m => qhTreeMultiPick(m, item, 'range', order())); return; }
+    setMulti(m => (!m.sel.length && m.anchor && multiKey(m.anchor) === multiKey(item) ? m : { sel: [], anchor: item }));
+    tog(tid);
+  };
+  const onTreeKey = (e) => {
+    if (e.key === 'Escape' && multi.sel.length) setMulti({ sel: [], anchor: null });
+  };
+  // "SELECT with JOINs" and "SELECT * for each" open in a new tab on the
+  // selection's database. Nothing runs. Without `onOpenSql` the tree opens a
+  // new query tab and puts the SQL on the clipboard.
+  const multiOpen = (kind) => {
+    const m = menu;
+    if (!m || !m.multi) return;
+    const eng = qhEngineId(m.c.engine);
+    const sql = kind === 'join'
+      ? qhJoinScript(m.multi, schemaCache ? schemaCache[m.c.id + '/' + m.db.id] : null, eng)
+      : qhEachSelectScript(m.multi, eng);
+    const name = kind === 'join' ? m.multi.map(x => x.name).join(' + ') : m.multi.length + ' tables';
+    if (onOpenSql) onOpenSql(m.c, m.db, name, sql + '\n');
+    else {
+      newQ(m.c, m.db);
+      qhCopyText(sql).then(ok => onToast && onToast(ok ? 'The SQL is on the clipboard. Paste it in the new tab.' : 'Could not copy. The browser blocked clipboard access.'));
+    }
+    setMenu(null);
+  };
+  const multiCopy = () => {
+    const m = menu;
+    if (!m || !m.multi) return;
+    const text = m.multi.map(x => qhQualify(m.c, m.db, x.name, x.schema)).join(', ');
+    qhCopyText(text).then(ok => onToast && onToast(ok ? 'Copied ' + m.multi.length + ' names.' : 'Could not copy. The browser blocked clipboard access.'));
+    setMenu(null);
+  };
 
   // ----- the tree's own hover label -----
   // One fixed-position pill for the whole tree, driven by delegation off
@@ -446,6 +490,10 @@ function SchemaTree({ onScriptCreate, bindOnClick, conns: allConns, schemaCache,
     // one rule in qh-data so the tree and fleet search cannot disagree.
     const rel = qhSplitRelations(refs, sch ? sch.views : []);
     const qq = (name, s) => qhQualify(c, db, name, s);
+    // Multi-select items of this database, and the visible ones top to bottom
+    // for a Shift+click range (a closed folder adds none).
+    const mItem = (r) => ({ conn: c.id, db: db.id, schema: r.s || (sch && sch.tables[r.n] && sch.tables[r.n].schema) || qhSchemaFor(c, db), name: r.n });
+    const mOrder = () => (isOpen(did + '/t') ? rel.tables : []).concat(isOpen(did + '/v') ? rel.views : []).map(mItem);
     // Tables and views render identically — a view has columns, opens on
     // double-click and drags into the editor exactly like a table, which it
     // already did while it sat under Tables. Moving it must not cost it that,
@@ -459,10 +507,13 @@ function SchemaTree({ onScriptCreate, bindOnClick, conns: allConns, schemaCache,
       const idxs = td ? td.indexes : [];
       const approx = td ? td.approxRows : null;
       const isView = branch === '/v';
+      const mit = { conn: c.id, db: db.id, schema: tsch, name: tb };
+      const inMulti = multiKeys.has(multiKey(mit));
       return (
         <div key={tid}>
           <TreeRow depth={base + 2} expandable open={isOpen(tid)} onToggle={() => tog(tid)} icon={isView ? TICN.view() : TICN.table()} label={tsch + '.' + tb} title={qhCommentTitle(tsch + '.' + tb, td && td.comment)} drag={qq(tb, tsch)} nodeId={tid}
-            onDbl={() => onOpenTable(c, db, tb)} onCtx={(e) => openMenu(e, c, db, tb)}
+            multi={inMulti} onClick={(e) => relClick(e, mit, mOrder, tid)}
+            onDbl={() => onOpenTable(c, db, tb)} onCtx={(e) => openMenu(e, c, db, tb, inMulti && multi.sel.length >= 2 ? multi.sel : null)}
             right={<>{approx != null && <span className="qh-tr-rows" title={approx.toLocaleString() + ' rows (est.)'}>{qhFmtRows(approx)}</span>}<button className="qh-tr-run" title="Open SELECT" onClick={(e) => { e.stopPropagation(); onOpenTable(c, db, tb); }}>{TICN.run()}</button></>} />
           {isOpen(tid) && (
             <>
@@ -623,7 +674,7 @@ function SchemaTree({ onScriptCreate, bindOnClick, conns: allConns, schemaCache,
 
   return (
     <div className={'qh-tree' + (narrow ? ' is-narrow' : '')} ref={treeRef} onMouseOver={overTip} onMouseLeave={hideTip} onDragStart={hideTip}
-      role="tree" aria-label="Connections">
+      onKeyDown={onTreeKey} role="tree" aria-label="Connections">
       <QhTreeRoving treeRef={treeRef} />
       <div className="qh-treeview" role="group" aria-label="Browse by">
         <button className={treeView === 'servers' ? 'is-on' : ''} onClick={() => setTreeView('servers')} aria-label="Server view">
@@ -725,6 +776,16 @@ function SchemaTree({ onScriptCreate, bindOnClick, conns: allConns, schemaCache,
             {menu.table ? (
               <>
                 <div className="qh-ctx-title">{menu.table}</div>
+                {/* P2.10: SQL for every selected table. Nothing runs. */}
+                {menu.multi && menu.multi.length >= 2 && (
+                  <>
+                    <div className="qh-ctx-label">{menu.multi.length} tables</div>
+                    <button onClick={() => multiOpen('join')}>{TICN.table()}SELECT with JOINs</button>
+                    <button onClick={() => multiOpen('each')}>{TICN.table()}SELECT * for each</button>
+                    <button onClick={multiCopy}>{ICN_COPY}Copy names</button>
+                    <div className="qh-ctx-sep" />
+                  </>
+                )}
                 <button onClick={() => { onOpenTable(menu.c, menu.db, menu.table, { limit: 100 }); setMenu(null); }}>{TICN.table()}Select top 100 rows</button>
                 <div className="qh-ctx-sep" />
                 <button onClick={() => { onOpenTable(menu.c, menu.db, menu.table, { mode: 'count' }); setMenu(null); }}>
@@ -1926,7 +1987,7 @@ function RequestAutoApproveModal({ conns, onClose, onSubmit, load }) {
 }
 
 // ---------- Bottom results panel ----------
-function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement, ranOn, pending, onWithdraw, outcome, endNote, onResubmit, slackEnabled, timeline, sourceSql, pkOf, problems, onProblem, lintOn, onFixAi }) {
+function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDba, runMs, onExport, plan, onToast, colMeta, reqId, unmasked, conn, onStatement, ranOn, pending, onWithdraw, outcome, endNote, onResubmit, slackEnabled, timeline, sourceSql, pkOf, fkOf, refsOf, onOpenSql, problems, onProblem, lintOn, onFixAi }) {
   const [exp, setExp] = React.useState(false);
   // The Export menu is long. The panel sits at the bottom of the window, so the
   // menu measures the room below and above the button when it opens, and goes
@@ -2142,7 +2203,7 @@ function ResultsPanel({ tab, setTab, result, messages, audit, status, awaitingDb
             here instead of "Run a query to see results here." */}
         {tab === 'results' && !result && pending && <PendingCard since={pending.since} expiresAt={pending.expiresAt} onWithdraw={onWithdraw} slackEnabled={slackEnabled} />}
         {tab === 'results' && !result && !pending && status === 'rejected' && qhOutcomeInfo(outcome) && <EndedCard outcome={outcome} note={endNote} onResubmit={onResubmit} />}
-        {tab === 'results' && !(!result && (pending || (status === 'rejected' && qhOutcomeInfo(outcome)))) && <ResultsView key={'st' + stN} result={result} status={status} onToast={onToast} colMeta={colMeta} unmasked={unmasked} engineId={qhEngineId(conn && conn.engine)} sourceSql={stSql} pkOf={pkOf} />}
+        {tab === 'results' && !(!result && (pending || (status === 'rejected' && qhOutcomeInfo(outcome)))) && <ResultsView key={'st' + stN} result={result} status={status} onToast={onToast} colMeta={colMeta} unmasked={unmasked} engineId={qhEngineId(conn && conn.engine)} sourceSql={stSql} pkOf={pkOf} fkOf={fkOf} refsOf={refsOf} onOpenSql={onOpenSql} />}
         {tab === 'plan' && <PlanView plan={plan} />}
         {tab === 'messages' && <MessagesView messages={messages} timeline={timeline} />}
         {tab === 'problems' && <ProblemsView problems={probs} onPick={onProblem} lintOn={lintOn} />}
@@ -2233,7 +2294,10 @@ const QH_PAGE_SIZES = [100, 500, 1000];
 // `sourceSql` is the statement that produced the result. It must be the SQL
 // that ran, not the editor text, which can change after the run. `pkOf(sql)`
 // gives the primary key columns that UPDATE may use, or [].
-function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, engineId, sourceSql, pkOf }) {
+// `fkOf(sql)` and `refsOf(sql)` feed the related rows of the grid menu
+// (2026-11-20, P2.9): the foreign keys of the result's table, and the tables
+// whose foreign keys point at it. `onOpenSql(sql, name)` opens a new tab.
+function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, engineId, sourceSql, pkOf, fkOf, refsOf, onOpenSql }) {
   // Sort and filter (2026-10-25). `result` below is the derived view. It is the
   // same object as `baseResult` when there is no sort and no filter, so paging,
   // selection and copy work on the sorted and filtered rows with no other change.
@@ -2416,6 +2480,12 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
   // selection for it to act on. A data grid has to bring its own — this is the
   // SSMS behaviour (Copy / Copy with Headers) people expect.
   const [gmenu, setGmenu] = React.useState(null);
+  // Group panel (2026-11-20, P2.11). The picked columns in pick order, and an
+  // optional numeric column. A new result clears both.
+  const [grpOpen, setGrpOpen] = React.useState(false);
+  const [grpCols, setGrpCols] = React.useState([]);
+  const [grpNum, setGrpNum] = React.useState('');
+  React.useEffect(() => { setGrpCols([]); setGrpNum(''); }, [baseResult]);
   const gridContextMenu = (ri, ci, e) => {
     e.preventDefault();
     // Right-clicking outside the current selection moves the selection to that
@@ -2712,7 +2782,7 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
       }
       if (e.metaKey || e.ctrlKey || e.altKey || !gridFocused()) return;
       const ae = document.activeElement;
-      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return;
       const ext = e.shiftKey;
       switch (e.key) {
         case 'ArrowDown':  e.preventDefault(); moveCursor(1, 0, ext); break;
@@ -2802,8 +2872,35 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
   // Column types for the NULL marker, built once per render, not per cell.
   const cellTypes = isTable ? colTypeMap() : {};
   const capNote = qhResCapNote(baseResult);
+  // Group panel (P2.11): the rows of this page only, as the grid shows them.
+  // The numeric picker lists the typed numeric columns, and an untyped column
+  // with a number on this page.
+  const grp = grpOpen && isTable ? qhGroupRows(cols, rows, grpCols, grpNum || null, cellTypes) : null;
+  const grpPartial = total > rows.length || !!capNote;
+  const grpNumCols = grpOpen ? cols.filter(c => (cellTypes[c]
+    ? qhResJsonKind(cellTypes[c]) === 'number'
+    : rows.some(r => /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(dispVal(r, c).trim())))) : [];
+  // Related rows (P2.9) for the cell under the grid menu. Plain code, no hook.
+  const rel = (() => {
+    if (!gmenu || gmenu.r == null || gmenu.c == null || !sourceSql || !onOpenSql) return null;
+    const row = rows[gmenu.r], c = cols[gmenu.c];
+    if (!row || c == null || qhResIsNull(row[c], cellTypes[c])) return null;
+    const lc = String(c).toLowerCase();
+    const fk = (fkOf ? fkOf(sourceSql) : []).find(f => String(f.col).toLowerCase() === lc) || null;
+    const refs = (refsOf ? refsOf(sourceSql) : []).filter(f => String(f.refCol).toLowerCase() === lc);
+    if (!fk && !refs.length) return null;
+    return { c, v: row[c], fk, refs, masked: piiSet.has(c) && !unmasked };
+  })();
+  // A new tab with the SELECT. Nothing runs until the person runs it.
+  const openRelated = (o) => {
+    setGmenu(null);
+    if (!rel || rel.masked) return;
+    const sql = qhRelatedSql({ engine: engineId || 'postgres', table: o.table, col: o.col, value: rel.v,
+      limit: o.limit, type: cellTypes[rel.c] });
+    if (sql) onOpenSql(sql, o.table);
+  };
   return (
-    <div className="qh-resultsview" tabIndex={0} ref={viewRef} role="grid"
+    <div className={'qh-resultsview' + (grpOpen ? ' is-grouping' : '')} tabIndex={0} ref={viewRef} role="grid"
          aria-label="Query result" aria-rowcount={total}>
       <div className="qh-res-tools">
         <input type="text" className="qh-res-filter" aria-label="Filter rows"
@@ -2843,6 +2940,11 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
         {/* Read from `baseResult`: a sorted or filtered view says
             truncated: false, and the cap is still true. */}
         {capNote && <span className="qh-res-tools-note is-warn qh-res-capped" role="status">{capNote}</span>}
+        <span className="qh-flex1" />
+        <button type="button" className={'qh-res-opt qh-group-toggle' + (grpOpen ? ' is-on' : '')}
+          aria-pressed={grpOpen ? 'true' : 'false'}
+          title="Count the rows of this page by the values of 1 to 3 columns."
+          onClick={() => setGrpOpen(o => !o)}>Group</button>
       </div>
       <div className="qh-table-scroll" ref={scrollRef}>
         {/* Explicit total width: `table-layout: fixed` is only honoured when
@@ -2948,6 +3050,75 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
           </tbody>
         </table>
       </div>
+      {grp && (
+        <aside className="qh-group-panel" aria-label="Group rows">
+          <div className="qh-group-head">
+            <b>Group rows</b>
+            <span className="qh-flex1" />
+            <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setGrpOpen(false)}>Close</button>
+          </div>
+          {grpPartial && <div className="qh-group-note" role="note">Groups the rows on this page only.</div>}
+          <div className="qh-group-pick" role="group" aria-label="Group by columns">
+            {cols.map((c) => {
+              const at = grpCols.indexOf(c);
+              const full = at < 0 && grpCols.length >= 3;
+              return (
+                <label key={c} className={'qh-group-col' + (full ? ' is-off' : '')} title={full ? 'Pick at most 3 columns.' : undefined}>
+                  <input type="checkbox" checked={at >= 0} disabled={full}
+                    onChange={() => setGrpCols(p => (p.indexOf(c) >= 0 ? p.filter(x => x !== c) : p.concat([c]).slice(0, 3)))} />
+                  <span className="qh-group-colname">{c}</span>
+                  {at >= 0 && <span className="qh-group-ord">{at + 1}</span>}
+                </label>
+              );
+            })}
+          </div>
+          {grpNumCols.length > 0 && (
+            <label className="qh-group-num">
+              Sum, min and max of
+              <select value={grpNum} onChange={(e) => setGrpNum(e.target.value)}>
+                <option value="">(none)</option>
+                {grpNumCols.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </label>
+          )}
+          <div className="qh-group-total" role="status">
+            {grp.total.toLocaleString() + ' rows on this page, ' + grp.distinct.toLocaleString() + (grp.distinct === 1 ? ' group' : ' groups')}
+          </div>
+          {grpCols.length === 0
+            ? <div className="qh-group-empty">Pick 1 to 3 columns.</div>
+            : (
+              <div className="qh-group-list">
+                <table className="qh-group-table">
+                  <thead>
+                    <tr>
+                      {grpCols.map(c => <th key={c}>{c}</th>)}
+                      <th className="qh-group-n">Count</th>
+                      {grpNum && <th className="qh-group-n">Sum</th>}
+                      {grpNum && <th className="qh-group-n">Min</th>}
+                      {grpNum && <th className="qh-group-n">Max</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {grp.groups.map((g, gi) => (
+                      <tr key={gi}>
+                        {g.key.map((k, ki) => (
+                          <td key={ki} className={k === QH_GROUP_NULL ? 'qh-group-null' : undefined} title={k}>{k}</td>
+                        ))}
+                        <td className="qh-group-n">{g.count.toLocaleString()}</td>
+                        {grpNum && <td className="qh-group-n">{g.sum == null ? '' : resNum(g.sum)}</td>}
+                        {grpNum && <td className="qh-group-n">{g.min == null ? '' : resNum(g.min)}</td>}
+                        {grpNum && <td className="qh-group-n">{g.max == null ? '' : resNum(g.max)}</td>}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {grp.distinct > grp.groups.length && (
+                  <div className="qh-group-more">{'Shows the top ' + grp.groups.length + ' of ' + grp.distinct.toLocaleString() + ' groups.'}</div>
+                )}
+              </div>
+            )}
+        </aside>
+      )}
       {gmenu && (
         <>
           <div className="qh-ctx-backdrop" onClick={() => setGmenu(null)} onContextMenu={(e) => { e.preventDefault(); setGmenu(null); }} />
@@ -2962,6 +3133,26 @@ function ResultsView({ result: baseResult, status, onToast, colMeta, unmasked, e
             </div>
             <button onClick={() => menuCopyNames(false)}>Copy column names</button>
             <button onClick={() => menuCopyNames(true)}>Copy column names and types</button>
+            {rel && (
+              <>
+                <div className="qh-ctx-sep" />
+                {rel.fk && (
+                  <button className="qh-ctx-related" disabled={rel.masked}
+                    title={rel.masked ? 'The value is masked.' : 'Opens a new tab with a SELECT on ' + rel.fk.refTable + '. Nothing runs until you run it.'}
+                    onClick={() => openRelated({ table: rel.fk.refTable, col: rel.fk.refCol, limit: 0 })}>Open referenced row</button>
+                )}
+                {rel.refs.length > 0 && (
+                  <>
+                    <div className="qh-ctx-head" role="presentation">Rows that reference this</div>
+                    {rel.refs.map(f => (
+                      <button key={f.table + '.' + f.col} className="qh-ctx-script qh-ctx-related" disabled={rel.masked}
+                        title={rel.masked ? 'The value is masked.' : 'Opens a new tab with the first 100 rows of ' + f.table + '. Nothing runs until you run it.'}
+                        onClick={() => openRelated({ table: f.table, col: f.col, limit: 100 })}>{f.table + '.' + f.col}</button>
+                    ))}
+                  </>
+                )}
+              </>
+            )}
             {scriptKinds.length > 0 && (
               <>
                 <div className="qh-ctx-sep" />
