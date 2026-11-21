@@ -345,11 +345,11 @@ def build_notifications(
         team_name, _members = team_info(event.get("team_id"), table)
         team_lbl = f"`{team_name}`" if team_name else f"team #{event.get('team_id')}"
         if op == "INSERT":
-            return [(user, f":busts_in_silhouette: You were added to team {team_lbl} — "
+            return [(user, f":busts_in_silhouette: {_team_joined(team_lbl, row)} — "
                            "its target grants now apply to you (see `/sql teams`).")]
         if op == "DELETE":
-            return [(user, f":busts_in_silhouette: :no_entry: You were removed from team "
-                           f"{team_lbl} — its grants no longer apply to you.")]
+            return [(user, f":busts_in_silhouette: :no_entry: {_team_left(team_lbl, row)}"
+                           " — its grants no longer apply to you.")]
         return []
 
     # ---- the nine-table model ------------------------------------------
@@ -468,12 +468,24 @@ def build_notifications(
     if table == "team_member":
         team_name, _members = team_info(row.get("team_id"), table)
         team_lbl = f"`{team_name}`" if team_name else f"team #{row.get('team_id')}"
+        added: list[tuple[str, str]] = [(
+            user, f":busts_in_silhouette: {_team_joined(team_lbl, row)} — "
+                  "its grants now apply to you.")]
+        removed: list[tuple[str, str]] = [(
+            user, f":busts_in_silhouette: :no_entry: {_team_left(team_lbl, row)} — "
+                  "its grants no longer apply to you.")]
         if op == "INSERT":
-            return [(user, f":busts_in_silhouette: You were added to team {team_lbl} — "
-                           "its grants now apply to you.")]
+            return [] if new.get("is_deleted") else added
         if op == "DELETE":
-            return [(user, f":busts_in_silhouette: :no_entry: You were removed from "
-                           f"team {team_lbl} — its grants no longer apply to you.")]
+            # A purge of a membership that already ended changes nothing.
+            return [] if old.get("is_deleted") else removed
+        # This model removes a member with a soft delete (an UPDATE of
+        # is_deleted), not with a DELETE. The admin team editor, the team
+        # delete and the company-SSO group sync all remove members this way.
+        if bool(old.get("is_deleted")) != bool(new.get("is_deleted")):
+            return removed if new.get("is_deleted") else added
+        if new.get("is_deleted"):
+            return []              # edits on an ended membership: invisible
         if old.get("is_lead") != new.get("is_lead"):
             return [(user, f":busts_in_silhouette: You are "
                            f"{'now' if new.get('is_lead') else 'no longer'} "
@@ -563,6 +575,33 @@ def _alias_of(target_id) -> str | None:
     from . import targets
     t = targets.get(int(target_id))
     return t.alias if t else None
+
+
+def _sso_group(row: dict) -> str | None:
+    """The company-SSO group behind a membership that the group sync wrote.
+
+    A person who did nothing in QueryHub and finds a team change needs the
+    reason. A row from before migration 222 has no `source` key: manual.
+    """
+    if row.get("source") != "idp":
+        return None
+    return row.get("idp_group") or None
+
+
+def _team_joined(team_lbl: str, row: dict) -> str:
+    group = _sso_group(row)
+    if group:
+        return (f"QueryHub added you to team {team_lbl} because you are in "
+                f"the company SSO group `{group}`")
+    return f"You were added to team {team_lbl}"
+
+
+def _team_left(team_lbl: str, row: dict) -> str:
+    group = _sso_group(row)
+    if group:
+        return (f"QueryHub removed you from team {team_lbl} because you are "
+                f"no longer in the company SSO group `{group}`")
+    return f"You were removed from team {team_lbl}"
 
 
 _NEW_MODEL_TABLES = {"access_grant", "role_assignment", "team_member",
