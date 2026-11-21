@@ -38,7 +38,7 @@ WORKDIR /build/QueryHubWeb/app
 RUN npm ci --no-audit --no-fund && npm run build
 
 # ---------------------------------------------------------------- runtime
-FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS runtime
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS runtime
 
 # libpq for psycopg and the unixODBC library for pyodbc. No compiler: every
 # locked package ships wheels.
