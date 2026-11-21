@@ -210,6 +210,58 @@ def test_joining_and_leaving_a_team_are_both_announced():
     assert "added to team" in joined[1] and "removed from" in left[1]
 
 
+def test_a_soft_delete_announces_the_removal():
+    """The admin team editor, the team delete and the SSO group sync remove a
+    member with UPDATE is_deleted. Before this, that UPDATE sent nothing."""
+    (who, text), = notify(ev("team_member", "UPDATE",
+                             new={"team_id": 7, "is_deleted": True},
+                             old={"team_id": 7, "is_deleted": False}))
+    assert who == "U1"
+    assert "removed from team `platform-team`" in text
+
+
+def test_an_undelete_announces_the_return():
+    (_, text), = notify(ev("team_member", "UPDATE",
+                           new={"team_id": 7, "is_deleted": False},
+                           old={"team_id": 7, "is_deleted": True}))
+    assert "added to team" in text
+
+
+@pytest.mark.parametrize("op,new,old", [
+    ("INSERT", {"team_id": 7, "is_deleted": True}, None),
+    ("DELETE", None, {"team_id": 7, "is_deleted": True}),
+    ("UPDATE", {"team_id": 7, "is_deleted": True, "is_lead": True},
+               {"team_id": 7, "is_deleted": True, "is_lead": False}),
+])
+def test_an_ended_membership_sends_nothing(op, new, old):
+    assert notify(ev("team_member", op, new=new, old=old)) == []
+
+
+def test_the_sso_group_is_named_when_the_sync_made_the_change():
+    sync = {"team_id": 7, "source": "idp", "idp_group": "eng-data"}
+    (_, joined), = notify(ev("team_member", "INSERT", sync))
+    (_, left), = notify(ev("team_member", "UPDATE",
+                           new={**sync, "is_deleted": True},
+                           old={**sync, "is_deleted": False}))
+    assert joined.startswith(":busts_in_silhouette: QueryHub added you to team")
+    assert "company SSO group `eng-data`" in joined
+    assert "QueryHub removed you from team `platform-team`" in left
+    assert "no longer in the company SSO group `eng-data`" in left
+
+
+def test_a_manual_change_names_no_sso_group():
+    (_, text), = notify(ev("team_member", "INSERT",
+                           {"team_id": 7, "source": "manual", "idp_group": None}))
+    assert "SSO" not in text
+
+
+def test_the_legacy_table_names_the_sso_group_too():
+    (_, text), = notify(ev("team_members", "DELETE",
+                           old={"team_id": 3, "source": "idp",
+                                "idp_group": "eng-data"}, team_id=3))
+    assert "removed you from team" in text and "`eng-data`" in text
+
+
 def test_becoming_the_lead_is_announced():
     (_, text), = notify(ev("team_member", "UPDATE",
                            new={"team_id": 7, "is_lead": True},
