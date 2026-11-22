@@ -33,6 +33,10 @@ class BundleItem(TypedDict):
     # PostgreSQL only: unqualified names resolve to this schema first. A web
     # batch item sets it from its tab; every other path leaves it out → NULL.
     default_schema: NotRequired[str | None]
+    # The engine and tier the submit check validated. Written to the row like
+    # the single submit writes them. Read via .get() at INSERT time.
+    engine: NotRequired[str | None]
+    required_tier: NotRequired[str | None]
 
 
 # ------------------------------- config -----------------------------------
@@ -55,6 +59,40 @@ def fleet_max_targets() -> int:
 
 
 # ---------------------------- write helpers -------------------------------
+
+
+def quota_message(open_count: int, item_count: int, max_open: int) -> str:
+    """The refusal text when a batch would pass the open-request limit."""
+    return (f"This batch ({item_count} items) would give you "
+            f"{open_count + item_count} open requests. The limit is "
+            f"{max_open}. Wait for some to finish, or remove items.")
+
+
+def check_open_quota(cur: Any, user_id: str, item_count: int) -> str | None:
+    """Check the open-request quota once for the whole batch.
+
+    Takes the same per-user advisory lock the single submit takes, so two
+    submits from one person cannot both pass. The lock lasts until the end of
+    the caller's transaction. Call this before the INSERT, in that same
+    transaction. Returns a refusal message, or None when the batch fits.
+    Admins are exempt, as in the single submit."""
+    from . import admins  # local import: avoids a module cycle
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (user_id,))
+    if admins.is_admin(user_id):
+        return None
+    max_open = cfg.get_int("max_open_requests_per_user", 5)
+    cur.execute(
+        "SELECT count(*) AS n FROM requests "
+        "WHERE requester_slack_id = %s "
+        "  AND status IN ('pending','changes_requested','approved',"
+        "                 'scheduled','executing')",
+        (user_id,),
+    )
+    row = cur.fetchone()
+    open_count = int(row["n"]) if row else 0
+    if open_count + item_count > max_open:
+        return quota_message(open_count, item_count, max_open)
+    return None
 
 
 def insert_bundle_with_items(
@@ -109,9 +147,9 @@ def insert_bundle_with_items(
                  database_name, query, wants_result, result_format,
                  justification, scheduled_for, explain_plan,
                  bundle_id, position, origin, risk_summary, query_secret,
-                 default_schema, result_to_slack)
+                 engine, required_tier, default_schema, result_to_slack)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s,
-                    %s, %s, %s, %s, %s)
+                    %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, requester_slack_id, requester_name,
                       target_server_id, database_name, query,
                       wants_result, result_format, justification, status,
@@ -142,6 +180,8 @@ def insert_bundle_with_items(
                 origin,
                 item.get("risk_summary"),
                 query_secret,
+                item.get("engine"),
+                item.get("required_tier"),
                 item.get("default_schema"),
                 result_to_slack,
             ),

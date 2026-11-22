@@ -1412,6 +1412,8 @@ function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSea
           // to put it on lines of its own. A click still opens a new tab.
           return (
           <div key={s.id} className={'qh-saved' + (onInsertSaved ? ' has-ins' : '')} onClick={() => onLoadSaved(s)}
+            role="button" tabIndex={0} aria-label={'Open saved query ' + s.name}
+            onKeyDown={(e) => { if (e.target !== e.currentTarget) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onLoadSaved(s); } }}
             title={onInsertSaved ? 'Open in a new tab. Drag it into the editor to insert the SQL at the caret.' : 'Open in a new tab'}
             draggable={!!onInsertSaved}
             onDragStart={onInsertSaved ? (e) => {
@@ -1444,7 +1446,9 @@ function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSea
           </div>
         )}
         {mode === 'sessions' && sessions.map(s => (
-          <div key={s.id} className="qh-saved" onClick={() => onRestoreSession(s)} title="Open all tabs from this workspace">
+          <div key={s.id} className="qh-saved" onClick={() => onRestoreSession(s)} title="Open all tabs from this workspace"
+            role="button" tabIndex={0} aria-label={'Open all tabs from session ' + s.name}
+            onKeyDown={(e) => { if (e.target !== e.currentTarget) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRestoreSession(s); } }}>
             <div className="qh-saved-name">{s.name}</div>
             <div className="qh-saved-meta"><OriginBadge dest={s.dest} /><span>{s.tabs.length} tab{s.tabs.length > 1 ? 's' : ''} · {qhAgo(s.savedAt)}</span></div>
             <button className="qh-row-del" onClick={(e) => { e.stopPropagation(); onDeleteSession(s.id); }} title="Delete" aria-label="Delete session">{ICN_TRASH}</button>
@@ -1459,7 +1463,9 @@ function Sidebar({ revealTable, onScriptCreate, bindOnClick, modeEntry, focusSea
           </div>
         )}
         {mode === 'scheduled' && (scheduled || []).map(s => (
-          <div key={s.id} className="qh-saved" onClick={() => onOpenScheduled(s)} title="Open this query in a new tab">
+          <div key={s.id} className="qh-saved" onClick={() => onOpenScheduled(s)} title="Open this query in a new tab"
+            role="button" tabIndex={0} aria-label={'Open scheduled query ' + s.name}
+            onKeyDown={(e) => { if (e.target !== e.currentTarget) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenScheduled(s); } }}>
             <div className="qh-saved-name">{s.name}</div>
             <div className="qh-saved-meta"><span className="qh-sched-chip"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>{s.when}</span><span>{s.conn} · {s.db}</span>{s.runOn && s.runOn !== 'auto' && <span className="qh-ranon" title={qhSchedRunOnLine(s.runOn, s.replicaName)}>{'on ' + (s.runOn === 'primary' ? 'primary' : 'replica')}</span>}</div>
             <button className="qh-row-del" onClick={(e) => { e.stopPropagation(); onCancelScheduled(s.id); }} title="Cancel schedule" aria-label="Cancel schedule">{ICN_TRASH}</button>

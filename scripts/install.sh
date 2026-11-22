@@ -181,7 +181,7 @@ elif command -v npm >/dev/null 2>&1; then
   fi
 else
   warn "npm not found — the browser UI cannot be served yet (the API still works)"
-  echo "        Install Node.js 18+, then: cd $APP_DIR && npm install && npm run build"
+  echo "        Install Node.js 20.19+ or 22.12+, then: cd $APP_DIR && npm install && npm run build"
 fi
 
 # ---- 10. TLS + how to run ---------------------------------------------------------

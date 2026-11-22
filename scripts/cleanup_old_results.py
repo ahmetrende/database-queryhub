@@ -85,11 +85,32 @@ def cleanup_local(ttl_hours: int) -> tuple[int, int]:
     # .xlsx (Excel format) — reap all three, not just .csv, or zip/xlsx
     # artifacts accumulate forever.
     for f in RESULTS_DIR.iterdir():
+        if f.is_file() and f.suffix.lower() in (".rowidx", ".nulls"):
+            # Sidecar of a CSV: the paging index (`<name>.csv.rowidx`) or the
+            # NULL cells (`<name>.csv.nulls`). It goes with its CSV. An orphan
+            # or an old one is removed here too.
+            try:
+                if (not f.with_suffix("").exists()
+                        or f.stat().st_mtime < cutoff):
+                    f.unlink()
+            except OSError:
+                pass
+            continue
+        if f.is_file() and f.name.lower().endswith(".nulls.tmp"):
+            # A NULL sidecar that a crashed writer left half done.
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except OSError:
+                pass
+            continue
         if not f.is_file() or f.suffix.lower() not in (".csv", ".zip", ".xlsx"):
             continue
         try:
             if f.stat().st_mtime < cutoff:
                 f.unlink()
+                f.with_name(f.name + ".rowidx").unlink(missing_ok=True)
+                f.with_name(f.name + ".nulls").unlink(missing_ok=True)
                 deleted += 1
             else:
                 kept += 1

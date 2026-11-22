@@ -131,8 +131,10 @@ def test_the_organizer_is_cleared_on_sign_out_but_the_view_choice_is_not():
     worked in. The servers-vs-databases toggle is a preference, not user data."""
     app = _read("qh-app.jsx")
     assert "QH_CONNORG_KEY = 'qh.connorg.v1'" in app
-    m = re.search(r"\[QH_WS_KEY,[^\]]*\]\.forEach", app, re.S)
+    # The list lives in qhUserLocalKeys(): sign-out and the owner check share it.
+    m = re.search(r"function qhUserLocalKeys\(\) \{\s*return \[QH_WS_KEY,[^\]]*\]", app, re.S)
     assert m, "the sign-out clear list moved; re-check what it covers"
+    assert "qhUserLocalKeys().forEach" in app
     assert "QH_CONNORG_KEY" in m.group(0), \
         "the connection/database organizer is not cleared on sign-out"
     assert "qh.treeview.v1" not in m.group(0), \

@@ -274,7 +274,8 @@ def test_every_refusal_passes_the_usable_list():
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                     and node.func.attr == "no_access_message"):
                 calls.append((path.name, node.lineno, len(node.args) + len(node.keywords)))
-    assert len(calls) >= 4, calls
+    # The Slack batch goes through validate_submission, so it has no call of its own.
+    assert len(calls) >= 3, calls
     assert [c for c in calls if c[2] < 3] == []
 
 

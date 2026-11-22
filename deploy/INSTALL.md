@@ -293,8 +293,8 @@ execute → deliver loop works with no Slack workspace at all.
 
 ## 12. (Optional) Schedule CSV cleanup
 
-Bot CSV results live for `results_ttl_hours` (default 48; set in
-`bot_config`) on disk (`/var/lib/queryhub/results/`) and on Slack.
+Bot CSV results live for the `results_ttl_hours` setting (default 72 hours,
+a `bot_config` key) on disk (`/var/lib/queryhub/results/`) and on Slack.
 The cleanup helper deletes both and clears `requests.slack_file_id`.
 
 Run on demand:

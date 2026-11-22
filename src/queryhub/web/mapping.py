@@ -262,7 +262,13 @@ def approver_label(decided_by_slack_id: str | None,
 
 
 def iso(dt: datetime | None) -> str | None:
-    return dt.isoformat() if dt else None
+    if not dt:
+        return None
+    # An aware value is shown in UTC, so the text does not depend on the DB
+    # session TimeZone. A naive value is left as it is.
+    if dt.tzinfo is not None and dt.utcoffset() is not None:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat()
 
 
 def connection_health(row: dict | None) -> dict | None:

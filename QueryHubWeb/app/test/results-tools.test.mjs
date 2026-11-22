@@ -395,6 +395,31 @@ test('hook: a truncated result is disabled', dom, async () => {
   h.unmount();
 });
 
+test('hook: truncated first page of a full stored result still sorts and filters', dom, async () => {
+  // The server sent a smaller page than the stored result: truncated, not capped.
+  const { result, calls } = mkResult(3, { truncated: true, capped: false });
+  const h = mountHook(result);
+  assert.equal(h.v.enabled, true);
+  assert.equal(h.v.reason, null);
+  await h.act(async () => { h.v.setFilter('alp'); });
+  await h.settle();
+  assert.deepEqual(calls, [[3, 2000]]);
+  assert.deepEqual(names(h.v.view.rows), ['Alpha', 'alpine', 'Alp2', 'alp3']);
+  h.unmount();
+});
+
+test('hook: a capped result stays disabled', dom, async () => {
+  const { result, calls } = mkResult(3, { truncated: true, capped: true });
+  const h = mountHook(result);
+  assert.equal(h.v.enabled, false);
+  assert.equal(h.v.reason, REASON);
+  await h.act(async () => { h.v.setFilter('a'); });
+  await h.settle();
+  assert.equal(h.v.view, result);
+  assert.deepEqual(calls, []);
+  h.unmount();
+});
+
 test('hook: a failed fetch sets the error and keeps the result as the view', dom, async () => {
   const { result } = mkResult(3);
   result.fetchPage = () => Promise.reject(new Error('boom'));

@@ -192,6 +192,42 @@ def test_a_user_the_own_ui_gate_refuses_is_closed_at_the_handshake(
     assert status == 403 or code == 4403, (status, code)
 
 
+def test_the_audit_read_passes_the_last_sent_id(client, monkeypatch):
+    """The second tick asks only for rows newer than the last one sent."""
+    from datetime import datetime, timezone
+
+    calls = []
+    now = datetime.now(timezone.utc)
+
+    def fake_fetch_all(sql, params=None):
+        calls.append(params)
+        if len(calls) == 1:
+            return [{"id": 5, "actor_slack_id": OWNER, "actor_name": "Me",
+                     "action": "submitted", "created_at": now}]
+        return []
+
+    state = {"n": 0}
+
+    def fake_fetch_one(sql, params=None):
+        if "requester_slack_id" in sql and "SELECT 1" in sql:
+            return {"x": 1}
+        state["n"] += 1
+        return {"status": "pending" if state["n"] < 2 else "completed",
+                "scheduled_for": None, "executed_at": None,
+                "decided_by_slack_id": None, "decided_by_name": None}
+
+    monkeypatch.setattr(routes_queries.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(routes_queries.db, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(routes_queries, "_WS_POLL_SEC", 0.0)
+    with client.websocket_connect(
+            "/api/queries/42/stream",
+            headers={"origin": "http://testserver"}) as ws:
+        types = [ws.receive_json()["type"] for _ in range(4)]
+    assert types == ["status", "audit", "status", "result_ready"]
+    assert calls[0] == (42, 0)
+    assert calls[1] == (42, 5)
+
+
 def test_origin_helper_semantics():
     """Unit-level, because both the middleware and the handshake depend on it."""
     from queryhub.web import deps

@@ -1,14 +1,22 @@
 """Slack Bolt handlers: slash command, modal submit, button actions."""
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
+import threading
+import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _MAX_UPLOAD_BYTES = 256 * 1024  # 256KB cap on uploaded SQL files
+
+# Slack drops a view submission that gets no answer within 3 seconds. The
+# slow submit checks (file download, EXPLAIN, DDL dependents) get this many
+# seconds from the start of the handler. The rest is margin for the ack.
+_ACK_BUDGET_SEC = 2.0
 
 
 def _reserve_quietly(user_id: str) -> int | None:
@@ -50,7 +58,7 @@ def _kill_switch_message() -> str:
 from slack_bolt import Ack, App
 from slack_sdk.web import WebClient
 
-from .. import access_requests, admins, audit, auto_approve, auto_approve_limits, auto_approve_requests, bundles, csv_import, db, db_scope, engines, executor, favorites, grants, idp_sync_guard, manual_runs, pre_flight, profile_sync, query_safety, ratings, requesters, schema_catalog, sql_audit_comment, targets, teams, templates
+from .. import access_requests, admins, audit, auto_approve, auto_approve_limits, auto_approve_requests, bundles, csv_import, db, engines, executor, favorites, grants, idp_sync_guard, manual_runs, pre_flight, profile_sync, query_safety, ratings, requesters, schema_catalog, sql_audit_comment, targets, teams, templates
 from .. import config as cfg
 from .. import core_submit
 from .. import core_decide
@@ -1124,11 +1132,127 @@ def _ack_logging(ack: Ack, body: dict, mode: str) -> Ack:
     user = body.get("user", {})
 
     def wrapped(payload=None):
+        result = ack(payload) if payload is not None else ack()
+        # Log after the ack. The INSERT must not use Slack's 3 seconds.
         if isinstance(payload, dict) and payload.get("response_action") == "errors":
             _log_submission_failure(body, user, mode, payload.get("errors") or {})
-        return ack(payload) if payload is not None else ack()
+        return result
 
     return wrapped
+
+
+class _Deadline:
+    """Run a function in a worker thread so that the caller can wait for it
+    with a timeout. The worker keeps the caller's context variables."""
+
+    def __init__(self, fn):
+        self._box: dict = {}
+        ctx = contextvars.copy_context()
+        self._thread = threading.Thread(
+            target=self._run, args=(ctx, fn), daemon=True,
+            name="sql-submit-checks")
+        self._thread.start()
+
+    def _run(self, ctx, fn) -> None:
+        try:
+            self._box["value"] = ctx.run(fn)
+        except BaseException as e:  # re-raised in the caller by result()
+            self._box["error"] = e
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Wait for the worker. Return True when it has finished."""
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
+
+    def result(self):
+        if "error" in self._box:
+            raise self._box["error"]
+        return self._box["value"]
+
+
+def _status_view(text: str) -> dict:
+    """A modal with one message and a Close button only."""
+    return {
+        "type": "modal",
+        "title": {"type": "plain_text", "text": "QueryHub"},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": [{"type": "section",
+                    "text": {"type": "mrkdwn", "text": text}}],
+    }
+
+
+_CHECKING_TEXT = (":hourglass_flowing_sand: *Checking your query…*\n"
+                  "This can take a few seconds. You can close this window. "
+                  "The bot sends you a DM with the result.")
+_SUBMITTED_TEXT = (":white_check_mark: *The bot submitted your request.*\n"
+                   "The bot sends you a DM with the status.")
+
+
+def _update_status_view(client: WebClient, view_id: str | None, text: str) -> bool:
+    """Replace the open modal with a status message. Return False when Slack
+    refuses, for example because the user closed the modal.
+
+    No hash is sent: the ack with response_action=update changed the hash
+    that the submission body carries."""
+    if not view_id:
+        return False
+    try:
+        client.views_update(view_id=view_id, view=_status_view(text))
+        return True
+    except Exception:
+        log.warning("status view update failed for view %s", view_id,
+                    exc_info=True)
+        return False
+
+
+def _late_refusal(client: WebClient, user_id: str, view_id: str | None,
+                  message: str) -> None:
+    """Tell the user that a submission failed after the modal was answered.
+    Show it in the modal. Send a DM when the modal is gone."""
+    text = (f":warning: *The bot did not submit your request.*\n{message}\n"
+            "Run `/sql` again to fix the query.")
+    if _update_status_view(client, view_id, text):
+        return
+    try:
+        notifications.dm_requester(client, user_id, text)
+    except Exception:
+        log.exception("late refusal DM failed for %s", user_id)
+
+
+def _check_submission(client: WebClient, user: dict, parsed: dict):
+    """The slow part of a modal submit: the file download and the core
+    checks, which can reach a target. Return a core_submit.Prepared, or a
+    dict of modal errors (block id -> message)."""
+    if parsed.get("query_file_id"):
+        try:
+            file_query = _download_uploaded_query(client, parsed["query_file_id"])
+        except Exception as e:
+            log.exception("failed to download uploaded SQL file")
+            return {modal.B_QUERY_FILE:
+                    f"The bot could not read the uploaded file: {e}"}
+        if not file_query.strip():
+            return {modal.B_QUERY_FILE: "The uploaded file is empty."}
+        parsed["query"] = file_query.strip()
+
+    if not parsed["query"]:
+        return {modal.B_QUERY: "Paste your SQL here, or upload a .sql file below."}
+
+    prep = core_submit.validate_submission(
+        user["id"],
+        user.get("name") or user.get("username"),
+        target_server_id=parsed["target_server_id"],
+        database_name=parsed["database_name"],
+        query=parsed["query"],
+        justification=parsed["justification"],
+        wants_result=parsed["wants_result"],
+        result_format=parsed.get("result_format", "csv"),
+        schedule_date=parsed["schedule_date"],
+        schedule_time=parsed["schedule_time"],
+        origin="slack",
+    )
+    if isinstance(prep, core_submit.Rejection):
+        return {_FIELD_TO_BLOCK.get(prep.field, modal.B_QUERY): prep.message}
+    return prep
 
 
 def _finish_supersede(client: WebClient, user_id: str, old_id: int,
@@ -1168,6 +1292,7 @@ def handle_view_submission(ack: Ack, body: dict, client: WebClient) -> None:
     safety, grants, pre-flight, schedule, duplicate guard, auto-approve
     resolution, INSERT + audit, admin fan-out, dispatch) is the shared
     core_submit pipeline — the web API runs the exact same code."""
+    started = time.monotonic()
     ack = _ack_logging(ack, body, "single")
     user = body["user"]
 
@@ -1177,55 +1302,36 @@ def handle_view_submission(ack: Ack, body: dict, client: WebClient) -> None:
         return
 
     parsed = modal.parse_submission(body["view"])
+    view_id = (body.get("view") or {}).get("id")
 
-    # Resolve the SQL: file_input takes precedence; fall back to the text box.
-    if parsed.get("query_file_id"):
+    # The checks can download a file and reach the target (EXPLAIN, DDL
+    # dependents). Run them with a deadline. When they finish in time, the
+    # modal shows errors inline, as before. When they do not, the modal
+    # changes to a "Checking" view and the result comes later.
+    checks = _Deadline(lambda: _check_submission(client, user, parsed))
+    budget = max(0.0, _ACK_BUDGET_SEC - (time.monotonic() - started))
+    late = not checks.wait(budget)
+    if not late:
+        checked = checks.result()
+        if isinstance(checked, dict):
+            ack({"response_action": "errors", "errors": checked})
+            return
+        ack()
+    else:
+        ack({"response_action": "update", "view": _status_view(_CHECKING_TEXT)})
+        checks.wait()
         try:
-            file_query = _download_uploaded_query(client, parsed["query_file_id"])
-        except Exception as e:
-            log.exception("failed to download uploaded SQL file")
-            ack({
-                "response_action": "errors",
-                "errors": {modal.B_QUERY_FILE: f"The bot could not read the uploaded file: {e}"},
-            })
+            checked = checks.result()
+        except Exception:
+            log.exception("submit checks failed after the ack for %s", user.get("id"))
+            _late_refusal(client, user["id"], view_id,
+                          "The bot could not check your query. Try again later.")
             return
-        if not file_query.strip():
-            ack({
-                "response_action": "errors",
-                "errors": {modal.B_QUERY_FILE: "The uploaded file is empty."},
-            })
+        if isinstance(checked, dict):
+            _log_submission_failure(body, user, "single", checked)
+            _late_refusal(client, user["id"], view_id, " ".join(checked.values()))
             return
-        parsed["query"] = file_query.strip()
-
-    if not parsed["query"]:
-        ack({
-            "response_action": "errors",
-            "errors": {modal.B_QUERY:
-                       "Paste your SQL here, or upload a .sql file below."},
-        })
-        return
-
-    prep = core_submit.validate_submission(
-        user["id"],
-        user.get("name") or user.get("username"),
-        target_server_id=parsed["target_server_id"],
-        database_name=parsed["database_name"],
-        query=parsed["query"],
-        justification=parsed["justification"],
-        wants_result=parsed["wants_result"],
-        result_format=parsed.get("result_format", "csv"),
-        schedule_date=parsed["schedule_date"],
-        schedule_time=parsed["schedule_time"],
-        origin="slack",
-    )
-    if isinstance(prep, core_submit.Rejection):
-        ack({
-            "response_action": "errors",
-            "errors": {_FIELD_TO_BLOCK.get(prep.field, modal.B_QUERY): prep.message},
-        })
-        return
-
-    ack()
+    prep = checked
 
     # Edited resubmission of a still-pending request (marker set by
     # handle_resubmit): the original is withdrawn in the SAME transaction
@@ -1247,9 +1353,15 @@ def handle_view_submission(ack: Ack, body: dict, client: WebClient) -> None:
         # A concurrent submission raced the rate-limit / duplicate guard and
         # lost at INSERT time. The modal is already closed
         # (we ack'd above), so surface it by DM instead of a modal error.
-        notifications.dm_requester(client, user["id"], f":warning: {outcome.message}")
+        # After a late check the modal still shows "Checking", so tell it there.
+        if late:
+            _late_refusal(client, user["id"], view_id, outcome.message)
+        else:
+            notifications.dm_requester(client, user["id"], f":warning: {outcome.message}")
         return
     row = outcome.row
+    if late:
+        _update_status_view(client, view_id, _SUBMITTED_TEXT)
 
     if supersedes_id is not None and supersedes_id != row["id"]:
         _finish_supersede(client, user["id"], supersedes_id,
@@ -1460,92 +1572,55 @@ def _validate_batch_item(
         errors[b_query] = f"Query must be at least {min_len} characters."
         return None, errors
 
-    # Resolve the target first so the safety pass uses its engine (T-SQL
-    # dialect + blocklist for a SQL Server target, read-only short-circuit
-    # for a read-only engine).
-    target = targets.get(target_id)
-    if target is None:
-        errors[b_server] = "The selected server is no longer available."
-        return None, errors
-
-    safety = query_safety.analyze(query, engine=target.engine)
-    if safety.blocked:
-        errors[b_query] = " ".join(safety.blockers)[:3000]
-        return None, errors
-
-    required_mode = query_safety.required_mode(query, engine=target.engine)
-
-    grant = teams.effective_grant_for_user(user_id, target_id)
-    if grant is None:
-        errors[b_server] = ("You have no grant on this server. "
-                            "Ask the DBA team for access.")
-        return None, errors
-
-    database = raw_item.get("database_name") or target.default_database
-
-    allowed_dbs = grant["allowed_databases"]
-    if allowed_dbs is not None and database not in allowed_dbs:
-        errors[b_database] = db_scope.no_access_message(
-            target.alias, database, db_scope.usable_databases(target, grant))
-        return None, errors
-
-    # Tier for THIS database, not the target-wide max (see the cross-product note in
-    # core_submit) — fail closed if nothing covers it.
-    rank = {"ro": 0, "rw": 1, "ddl": 2}
-    granted_mode = teams.effective_mode_for_database(user_id, target_id, database)
-    if granted_mode is None or rank[required_mode] > rank[granted_mode]:
-        if required_mode == "rw":
-            errors[b_query] = (
-                f"You don't have *write* access on `{target.alias}`. "
-                "This is a read-only grant."
-            )
-        else:
-            errors[b_query] = (
-                f"You don't have *DDL* access on `{target.alias}` "
-                "(CREATE/ALTER/DROP/TRUNCATE/VACUUM/...)."
-            )
-        return None, errors
-
-    # Justification rule for write/DDL items: bundle-level justification
-    # must be set. We flag the bundle field if it's empty.
-    if required_mode != "ro" and not bundle_justification:
-        errors[modal.BATCH_B_JUSTIFICATION] = (
-            f"Item #{idx} is a {required_mode.upper()} query, so the "
-            f"batch needs a justification."
-        )
-        return None, errors
-
-    # Duplicate guard — same per-item rule as single-shot.
-    dup = db.fetch_one(
-        "SELECT id, status FROM requests "
-        "WHERE requester_slack_id = %s "
-        "  AND target_server_id   = %s "
-        "  AND database_name      = %s "
-        "  AND query              = %s "
-        "  AND status IN ('pending','changes_requested','approved',"
-        "                 'scheduled','executing') "
-        "ORDER BY id DESC LIMIT 1",
-        (user_id, target_id, database, query),
+    # The same pipeline the single submit and the web batch run: safety, grant,
+    # database scope, tier, credential, justification and duplicate guard.
+    # Only the checks that connect to the target are left out (preflight=False).
+    prep = core_submit.validate_submission(
+        user_id,
+        None,
+        target_server_id=target_id,
+        database_name=raw_item.get("database_name"),
+        query=query,
+        justification=bundle_justification,
+        wants_result=bool(raw_item.get("wants_result")),
+        result_format=raw_item.get("result_format") or "csv",
+        schedule_date=raw_item.get("_schedule_date"),
+        schedule_time=raw_item.get("_schedule_time"),
+        origin="slack",
+        preflight=False,
     )
-    if dup is not None:
-        errors[b_query] = (
-            f"You already have an active request (#{dup['id']}, "
-            f"status={dup['status']}) with the same query on this "
-            "target+database."
-        )
+    if isinstance(prep, core_submit.Rejection):
+        # Fields with no row of their own (kill switch, rate limit, draining)
+        # show on the bundle justification field, as the other batch errors do.
+        block = {
+            "query": b_query,
+            "server": b_server,
+            "database": b_database,
+            "justification": modal.BATCH_B_JUSTIFICATION,
+            "schedule_date": modal.BATCH_B_SCHEDULE_DATE,
+            "schedule_time": modal.BATCH_B_SCHEDULE_TIME,
+        }.get(prep.field, modal.BATCH_B_JUSTIFICATION)
+        message = prep.message
+        if block in (b_query, b_server, b_database):
+            message = f"Item #{idx}: {message}"
+        errors[block] = message
         return None, errors
 
     return (
         {
-            "target_server_id": target_id,
-            "target_alias": target.alias,
-            "database_name": database,
-            "query": query,
-            "wants_result": bool(raw_item.get("wants_result")),
-            "result_format": raw_item.get("result_format") or "csv",
-            "required_mode": required_mode,
-            # Pre-flight intentionally skipped on the batch path; see the
-            # docstring of _validate_batch_item.
+            "target_server_id": prep.target.id,
+            "target_alias": prep.target.alias,
+            "database_name": prep.database,
+            "query": prep.query,
+            "wants_result": prep.wants_result,
+            "result_format": prep.result_format,
+            "required_mode": prep.required_mode,
+            # The engine and tier that were just validated. The INSERT stores
+            # them, as the single submit does.
+            "engine": prep.target.engine,
+            "required_tier": prep.required_mode,
+            # The EXPLAIN is skipped here to stay under Slack's 3-second ack
+            # deadline. handle_batch_submission adds risk hints after the ack.
             "explain_plan": None,
         },
         errors,
@@ -1597,11 +1672,8 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
         open_count = requesters.open_request_count(user["id"])
         if open_count + len(raw_items) > max_open:
             ack({"response_action": "errors",
-                 "errors": {modal.BATCH_B_JUSTIFICATION:
-                            f"This batch ({len(raw_items)} items) would give you "
-                            f"{open_count + len(raw_items)} open requests. The "
-                            f"limit is {max_open}. Wait for some to finish, or "
-                            f"remove items."}})
+                 "errors": {modal.BATCH_B_JUSTIFICATION: bundles.quota_message(
+                     open_count, len(raw_items), max_open)}})
             return
 
     # Per-item validation. Tag each raw item with its 1-based index so
@@ -1611,6 +1683,8 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
     for i, raw in enumerate(raw_items, start=1):
         raw_with_idx = dict(raw)
         raw_with_idx["_index"] = i
+        raw_with_idx["_schedule_date"] = parsed["schedule_date"]
+        raw_with_idx["_schedule_time"] = parsed["schedule_time"]
         validated, errs = _validate_batch_item(
             user_id=user["id"],
             raw_item=raw_with_idx,
@@ -1660,6 +1734,14 @@ def handle_batch_submission(ack: Ack, body: dict, client: WebClient) -> None:
     # Single transaction: bundle + N items + per-item audit rows +
     # per-item auto-approve transitions where applicable.
     with db.transaction() as cur:
+        # Authoritative quota check for the whole batch, under the per-user
+        # advisory lock the single submit takes. The check before the ack is
+        # only a fast first answer. The modal is closed now, so a loser of a
+        # race hears about it by DM, as the single submit does.
+        quota_error = bundles.check_open_quota(cur, user["id"], len(validated_items))
+        if quota_error is not None:
+            notifications.dm_requester(client, user["id"], f":warning: {quota_error}")
+            return
         result = bundles.insert_bundle_with_items(
             cur,
             requester_slack_id=user["id"],

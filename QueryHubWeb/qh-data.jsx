@@ -2323,6 +2323,46 @@ function qhWsServerBase(raw) {
   } catch (e) { return null; }
 }
 
+// The person who owns the local copy of the open tabs (qh.workspace.v1). A
+// session that expires does not clear storage. Without an owner, the next person
+// on a shared browser would see the open tabs and SQL of the last person.
+const QH_WS_OWNER_KEY = 'qh.workspace.owner.v1';
+
+// The owner id of a signed-in user, or '' when there is no user. The server
+// sync keys on the same id.
+function qhWsOwnerOf(user) {
+  return user ? String(user.slackId || user.id || user.email || 'me') : '';
+}
+
+// What a sign-in by `userKey` does to the local workspace. storedOwner is the
+// text in QH_WS_OWNER_KEY.
+//   none   no user: change nothing.
+//   stamp  the stored copy has no owner (saved before this check): keep it and write the owner.
+//   keep   the same person: keep it, so a session expiry loses no draft.
+//   drop   another person: clear it and the other per-user keys.
+function qhWsOwnerPlan(storedOwner, userKey) {
+  if (!userKey) return 'none';
+  if (typeof storedOwner !== 'string' || !storedOwner) return 'stamp';
+  return storedOwner === userKey ? 'keep' : 'drop';
+}
+
+// Apply qhWsOwnerPlan to storage and return the plan. On drop, remove userKeys
+// (the list that sign-out clears) and the last server copy, which holds SQL too.
+// On stamp and on drop, write the new owner. On keep, change nothing.
+function qhWsClaimStorage(storage, userKey, userKeys) {
+  let owner = null;
+  try { owner = storage.getItem(QH_WS_OWNER_KEY); } catch (e) { return 'none'; }
+  const plan = qhWsOwnerPlan(owner, userKey);
+  if (plan === 'none' || plan === 'keep') return plan;
+  if (plan === 'drop') {
+    (userKeys || []).concat([QH_WS_SERVER_KEY]).forEach((k) => {
+      try { storage.removeItem(k); } catch (e) { /* storage off */ }
+    });
+  }
+  try { storage.setItem(QH_WS_OWNER_KEY, userKey); } catch (e) { /* storage off */ }
+  return plan;
+}
+
 // What the first GET means for the open tabs. local = { tabs, activeId } live.
 // server = the GET answer. base = the last server copy that this browser kept
 // ({ tabs, activeId } or null). newId gives a free tab id for a conflict copy.
@@ -2421,7 +2461,7 @@ Object.assign(window, { qhHistoryRunTab, qhPollDelay, QH_POLL_FAST_MS, QH_POLL_S
   qhWorkspaceSlim, qhParseWorkspace, qhWsTabRow, qhWsHydrate, qhMergeWorkspace, QH_WS_COPY_SUFFIX,
   QH_WS_SYNC_DEBOUNCE_MS, QH_PREFS_POLL_MS, QH_WS_SERVER_KEY, QH_PREFS_SYNC_KEYS, QH_PREFS_MAX_CHARS,
   qhPrefsSnapshot, qhPrefsApply, qhPrefsTweaks, qhWsSyncKey, qhWsIsBlank, qhWsServerBase, qhWsSyncStart, qhWsConflictOf, qhWsSyncStops,
-  qhWsContentKey, qhWsAgreedBase, qhWs409Plan, qhWsKeepLive,
+  qhWsContentKey, qhWsAgreedBase, qhWs409Plan, qhWsKeepLive, QH_WS_OWNER_KEY, qhWsOwnerOf, qhWsOwnerPlan, qhWsClaimStorage,
   qhCopyText, qhFleetPrefixes, qhSplitName, qhRunTarget, qhSelectionLines, qhPrimaryLabel, qhJudgedText, qhShiftRanges, qhConfirmReasons, qhSplitReasons,
   QH_VERSION, QH_BUILD, qhCommitUrl, QH_NOTIFICATIONS,
   QH_CONNECTIONS, QH_SAVED, QH_HISTORY, QH_PII_CATALOG,

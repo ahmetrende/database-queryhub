@@ -170,6 +170,8 @@ test('cap: only the first page sent (more pages to fetch) is not a cap, unless t
   assert.equal(T.qhResCapNote({ kind: 'table', rows, total: 50, truncated: true }), '');
   assert.ok(T.qhResCapNote({ kind: 'table', rows, total: 50, truncated: true, capped: true }).includes('at 50 rows'));
   assert.equal(T.qhResCapNote({ kind: 'table', rows, total: 1, truncated: true, capped: false }), '');
+  // A capped stored result keeps the note even when the page is not truncated.
+  assert.ok(T.qhResCapNote({ kind: 'table', rows, total: 2, truncated: false, capped: true }).includes('at 2 rows'));
 });
 
 test('grid: the cell renders NULL and the toolbar reads the cap from baseResult', () => {

@@ -232,6 +232,27 @@ Sometimes the check cannot know. Then it logs nothing above debug, and
   ([section 28](#28-splitting-the-metadata-database-roles)). Run
   `apply_migrations.py --dry-run` as the migrator to see what is pending.
 
+### Scheduler heartbeat in `/readyz`
+
+The scheduler loop runs in the Slack bot process, not in the web process. It
+upserts the `bot_config` row `scheduler_heartbeat_at` once on each pass. The
+database clock sets `updated_at`, so no clock sync is needed. `/readyz` reads
+the age of that row and adds a field to the body:
+
+```json
+{"status": "ready", "scheduler": {"status": "ok", "age_sec": 12}}
+```
+
+- `scheduler.status` is `ok` when the age is at most 180 seconds (3 passes at
+  the default 60 second interval).
+- `scheduler.status` is `stale` when the age is above the limit, when the row
+  does not exist, or when the read fails. `age_sec` is `null` if there is no
+  age.
+- The HTTP status does not change. A stale scheduler never makes `/readyz`
+  answer 503, because a 503 takes a healthy web pod out of service. Alert on
+  `scheduler.status` instead.
+- An install that runs no scheduler at all reports `stale` too.
+
 ---
 
 ## 5. Targets — add / disable / rotate

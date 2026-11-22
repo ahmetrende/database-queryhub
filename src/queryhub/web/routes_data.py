@@ -285,11 +285,18 @@ def connections(claims: dict = Depends(deps.current_user)):
     for t, grant, dbs in plan:
         db_entries = []
         auto_ro_any = False
-        # Except super-admins, nobody is shown more than RO on an Athena
-        # archive, where no write runs for anybody (engines.shown_tier).
-        tier = engines.shown_tier(getattr(t, "engine", None), grant["mode"],
-                                  is_super).upper()
+        # The tier on each database, not the top tier of the target. Submit
+        # authorizes per database (teams.effective_mode_for_database), so RW on
+        # one database and RO on another must not both show RW. Computed from
+        # the grant rows already read above: no query per database.
+        db_modes = teams.database_modes(uid, t.id, grant, dbs)
         for d in dbs:
+            # Except super-admins, nobody is shown more than RO on an Athena
+            # archive, where no write runs for anybody (engines.shown_tier).
+            # A database no row covers keeps the target tier, as before.
+            tier = engines.shown_tier(getattr(t, "engine", None),
+                                      db_modes.get(d) or grant["mode"],
+                                      is_super).upper()
             # Promised only where create_request will auto-approve, asked the
             # same question (auto_approve.decision): on an Athena archive, a
             # read by an admin, the owning team's lead or a waiver holder.

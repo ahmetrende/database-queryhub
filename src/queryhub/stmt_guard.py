@@ -31,12 +31,18 @@ Two deliberate asymmetries in how failure is treated:
 - **A disagreement is fail-CLOSED.** If the server found more statements than
   were approved, the reviewer did not see what would run. That is the whole
   bug class; it stops here.
-- **An unavailable check is fail-OPEN**, with a warning. SHOWPLAN needs a
-  permission the login may not hold on every database, and losing the check
-  puts us exactly where we were before this module existed — still behind the
-  `\\'` gate and the sqlparse/sqlglot count agreement. A hardening layer that
-  can take a working gateway offline when a permission is missing would get
-  switched off, and then it protects nothing.
+- **An unavailable check is fail-OPEN for a read**, with a warning. SHOWPLAN
+  needs a permission the login may not hold on every database, and losing the
+  check puts us exactly where we were before this module existed — still
+  behind the `\\'` gate and the sqlparse/sqlglot count agreement. A hardening
+  layer that can take a working gateway offline when a permission is missing
+  would get switched off, and then it protects nothing.
+- **An unavailable check is fail-CLOSED for a SQL Server write**
+  (`require_count=True`). SQL Server can roll back the open transaction when
+  it refuses the SHOWPLAN compile. A write script then lost the statements
+  before the refused one and committed the rest. So the executor asks for a
+  count on every RW and DDL statement, and stops the run without one. The
+  error names the cause and the way out.
 
 Cost is one extra compile per statement on SQL Server. Adding an engine means
 adding one resolver to `_RESOLVERS`; an engine with a wire-level guarantee (or
@@ -57,6 +63,21 @@ _STMT_TAG_PREFIX = "Stmt"
 
 class TooManyStatements(RuntimeError):
     """The server found more statements in the batch than were approved."""
+
+
+class CountUnavailable(RuntimeError):
+    """The server gave no statement count, and the caller requires one."""
+
+
+#: What the requester reads when a SQL Server write stops for want of a count.
+#: The executor rolls the whole transaction back before it reports this.
+COUNT_UNAVAILABLE_MESSAGE = (
+    "QueryHub could not get a statement count from SQL Server, so it stopped "
+    "the write and rolled it back. Nothing was changed. The usual cause is "
+    "that the login of this tier has no SHOWPLAN permission. Ask a DBA to "
+    "grant SHOWPLAN to that login, or submit each statement as its own "
+    "request."
+)
 
 
 def _local(tag: str) -> str:
@@ -175,10 +196,12 @@ def supported(engine: str) -> bool:
     return engine in _RESOLVERS
 
 
-def check(cur, sql: str, *, engine: str, request_id: int | None = None) -> None:
+def check(cur, sql: str, *, engine: str, request_id: int | None = None,
+          require_count: bool = False) -> None:
     """Raise TooManyStatements if the server reads `sql` as more than one
-    statement. Silent when the engine has no resolver or the server would not
-    answer.
+    statement. Silent when the engine has no resolver. Silent when the server
+    would not answer, unless `require_count` is set: then raise
+    CountUnavailable.
 
     Call this BEFORE anything opens a portal or a result set on `cur`: it
     issues its own statements on the same cursor, and interleaving that with a
@@ -188,7 +211,13 @@ def check(cur, sql: str, *, engine: str, request_id: int | None = None) -> None:
     if resolver is None:
         return
     n = resolver(cur, sql)
-    if n is None or n <= 1:
+    if n is None:
+        if not require_count:
+            return
+        log.error("Request %s: the server gave no statement count for a write "
+                  "- refusing to execute.", request_id)
+        raise CountUnavailable(COUNT_UNAVAILABLE_MESSAGE)
+    if n <= 1:
         return
     log.error("Request %s: server reads the approved statement as %d "
               "statements — refusing to execute.", request_id, n)

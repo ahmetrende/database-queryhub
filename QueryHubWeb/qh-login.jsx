@@ -137,7 +137,7 @@ function LoginScreen({ onSignedIn, brand }) {
         </div>
 
         <h1 className="qh-login-title">Sign in to QueryHub</h1>
-        <p className="qh-login-sub">Write SQL, submit it, track approvals and get the results. A read-only query with a matching grant runs at once. Every other query goes to a DBA.</p>
+        <p className="qh-login-sub">Write SQL, submit it, track approvals and get the results. A query runs at once only when an auto-approve rule covers it. Every other query waits for an approver.</p>
 
         {portalOnly && (
           <div className="qh-login-error" role="alert">

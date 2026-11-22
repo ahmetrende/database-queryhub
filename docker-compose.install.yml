@@ -80,6 +80,33 @@ services:
     # entrypoint already waits for BOT_DB_HOST to accept connections before
     # applying migrations.
 
+  # Result retention. The app does not purge result files by itself. This
+  # service runs scripts/cleanup_old_results.py once an hour, in the same image.
+  # It deletes result files and Slack uploads older than the results_ttl_hours
+  # setting (default 72), and trims old session and outbox rows. It shares the
+  # key and result volumes with the app. A failed run is logged and retried on
+  # the next hour.
+  cleanup:
+    image: ${QH_IMAGE:-queryhub:local}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MASTER_KEY_PATH: /etc/queryhub/master.key
+      QH_RESULTS_DIR: /var/lib/queryhub/results
+      QH_DEMO: ""
+      # The app container applies migrations and creates the first admin.
+      QH_SKIP_MIGRATIONS: "1"
+      QH_ADMIN_USER: ""
+    command:
+      - sh
+      - -c
+      - 'while true; do python scripts/cleanup_old_results.py || echo "cleanup failed, retrying in one hour"; sleep 3600; done'
+    volumes:
+      - keys:/etc/queryhub
+      - results:/var/lib/queryhub
+    depends_on:
+      - app
+
   # Evaluation only, off unless COMPOSE_PROFILES=bundled-db. Then set
   # BOT_DB_HOST=metadata-db and BOT_DB_PASSWORD to whatever you put here.
   metadata-db:

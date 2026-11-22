@@ -1066,7 +1066,8 @@ def _run(request: dict, client: WebClient) -> None:
             _run_mssql(client, request, target, mode, report,
                        db_user, password, timeout_sec, max_rows, max_csv_bytes,
                        unmask=unmask, force_primary=run_on.kind == "primary",
-                       app_name=app_name)
+                       app_name=app_name,
+                       is_cancelled=lambda: _cancel_requested(request_id))
             return
 
         if target.engine == "clickhouse":
@@ -1401,8 +1402,9 @@ def _run(request: dict, client: WebClient) -> None:
             except OSError:
                 pass
         # pg_terminate_backend after a Stop breaks the connection. That is the
-        # stop, not a database error.
-        stopper = _cancel_stopper(request_id) if isinstance(e, psycopg.Error) else None
+        # stop, not a database error. On SQL Server the stop is MssqlStopped.
+        stopper = (_cancel_stopper(request_id)
+                   if isinstance(e, (psycopg.Error, MssqlStopped)) else None)
         if stopper is not None:
             _fail_stopped(client, request, stopper)
             return
@@ -1801,7 +1803,7 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
                db_user: str, password: str, timeout_sec: int,
                max_rows: int, max_csv_bytes: int,
                unmask: bool = False, force_primary: bool = False,
-               app_name: str = "QueryHub") -> None:
+               app_name: str = "QueryHub", is_cancelled=None) -> None:
     """SQL Server execution path (pyodbc). Reached only for a WIRED mssql
     target (fail-closed until then), called inside _run's try so the outer
     handler surfaces any error via _fail (the ordering guard applies). Reuses the
@@ -1818,7 +1820,18 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
     listener like a write does, and the readable secondary is not looked up.
 
     `app_name` is the session's program_name: `_run` passes the same
-    `queryhub req=<id> by=<email>` name that a PostgreSQL session gets."""
+    `queryhub req=<id> by=<email>` name that a PostgreSQL session gets.
+
+    `is_cancelled` reads whether somebody pressed Stop. With it, a watch
+    thread cancels the cursor when Stop is pressed in another process. Stop in
+    this process reaches the cursor through `mssql_exec.cancel_running`.
+
+    An RW or DDL run is one transaction, and it commits whole or not at all:
+    - each statement needs a statement count from the server
+      (`stmt_guard.CountUnavailable` otherwise), and
+    - when the session had an open transaction after a statement, it must
+      still have one before the next statement runs (`MssqlTransactionLost`).
+    Any failure rolls the transaction back before the error goes up."""
     from . import mssql_exec
     request_id = request["id"]
     main_stmts = [s for s in report.statements if s.kind != "set"]
@@ -1843,85 +1856,25 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
         conn = mssql_exec.connect(target.host, target.port, db_name, db_user,
                                   password, timeout_sec=timeout_sec, read_only=False,
                                   app_name=app_name)
+    write_run = mode in ("rw", "ddl")
     try:
         t_start = time.monotonic()
         cur = conn.cursor()
         stmt_results: list[_StmtResult] = []
-        for i, s in enumerate(main_stmts, start=1):
-            # geography / geometry / hierarchyid come back as SQL Server's own
-            # serialisation, which pyodbc hands over as opaque bytes and we render
-            # as hex. Only the server can turn that into `POINT (28.9784
-            # 41.0082)` or `/1/2/3/`, so ask it to: describe the result shape
-            # without running anything, and if a UDT column is in there, run a
-            # re-projection that calls .ToString() on exactly those columns.
-            #
-            # RO only, and the server is the judge of whether the wrap is legal.
-            # A top-level ORDER BY makes the query unwrappable ("The ORDER BY
-            # clause is invalid in views, inline functions…" — measured), and
-            # deciding that ourselves would mean parsing T-SQL. So we try the
-            # wrapped form and fall back to the original on any error. That retry
-            # is only free because RO statements have no effects; never do this
-            # for RW/DDL, where a first attempt may already have changed data.
-            #
-            # Not for an EXEC: a procedure call cannot sit inside a SELECT, so
-            # the wrap can never apply, and the describe would be a wasted
-            # round trip.
-            s_run, wrapped = s, None
-            if mode == "ro" and s.leading.upper() not in _MSSQL_EXEC:
-                try:
-                    cols = mssql_exec.describe_columns(cur, s.rewritten)
-                    wrapped = (mssql_exec.wrap_udt_projection(s.rewritten, cols)
-                               if cols else None)
-                except Exception:
-                    log.info("Request %s: UDT describe failed — running the "
-                             "statement unchanged", request_id, exc_info=True)
-                    wrapped = None
-            if wrapped:
-                s_run = dataclasses.replace(s, rewritten=wrapped)
+        with mssql_exec.RunningRequest(request_id, cur,
+                                       is_cancelled=is_cancelled) as run:
             try:
-                res = _execute_main_statement(
-                    cur, s_run, i, request_id,
-                    request["wants_result"], max_rows, max_csv_bytes,
-                    result_format=result_format,
-                    target_id=target.id,
-                    database=request["database_name"],
-                    engine=target.engine,
-                    requester_id=request["requester_slack_id"],
-                    unmasked=unmask,
-                    capture_plan=False,   # no PG-style EXPLAIN plan on SQL Server
-                    audit_tag=audit_tag,
-                    exemptions=s.leading.upper() not in _MSSQL_NO_EXEMPTION,
-                )
-            except Exception:
-                if not wrapped:
-                    raise
-                log.info("Request %s: the server refused the UDT re-projection "
-                         "— running the original; those columns stay hex.",
-                         request_id, exc_info=True)
-                res = _execute_main_statement(
-                    cur, s, i, request_id,
-                    request["wants_result"], max_rows, max_csv_bytes,
-                    result_format=result_format,
-                    target_id=target.id,
-                    database=request["database_name"],
-                    engine=target.engine,
-                    requester_id=request["requester_slack_id"],
-                    unmasked=unmask,
-                    capture_plan=False,
-                    audit_tag=audit_tag,
-                    exemptions=s.leading.upper() not in _MSSQL_NO_EXEMPTION,
-                )
-            stmt_results.append(res)
-            # One statement can send more than one result: read them all
-            # here, before the next statement or the commit discards them.
-            stmt_results.extend(_more_mssql_results(
-                cur, res, s, request_id=request_id,
-                wants_result=request["wants_result"], max_rows=max_rows,
-                max_csv_bytes=max_csv_bytes,
-                requester_id=request["requester_slack_id"], unmasked=unmask,
-                result_format=result_format, target_id=target.id,
-                database=request["database_name"]))
-        conn.commit()
+                _mssql_statements(cur, run, main_stmts, request, target, mode,
+                                  write_run, stmt_results, result_format,
+                                  audit_tag, max_rows, max_csv_bytes, unmask)
+                if not run.begin_commit():
+                    raise MssqlStopped(_MSSQL_STOPPED_MESSAGE)
+            except Exception as e:
+                _mssql_rollback(conn, request_id)
+                if run.cancelled and not isinstance(e, MssqlStopped):
+                    raise MssqlStopped(_MSSQL_STOPPED_MESSAGE) from e
+                raise
+            conn.commit()
         elapsed = time.monotonic() - t_start
     finally:
         conn.close()
@@ -1932,6 +1885,143 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
     _finalize(client, request, stmt_results, csv_paths,
               max_csv_bytes=max_csv_bytes, target=target, elapsed=elapsed,
               committed_mutation=mode in ("rw", "ddl"))
+
+
+class MssqlStopped(RuntimeError):
+    """Stop reached a running SQL Server request. The transaction was rolled
+    back, and nothing was committed."""
+
+
+class MssqlTransactionLost(RuntimeError):
+    """SQL Server ended the open transaction of a write run between two
+    statements. The run was rolled back, and nothing was committed."""
+
+
+_MSSQL_STOPPED_MESSAGE = ("The query was stopped while it ran. QueryHub rolled "
+                          "back its transaction, so nothing was changed.")
+
+
+def _mssql_rollback(conn, request_id: int) -> None:
+    """Roll back, and never raise: the caller is already handling an error.
+    The close that follows rolls back too, so this is the first of two."""
+    try:
+        conn.rollback()
+    except Exception:
+        log.warning("Request %s: rollback after a SQL Server error failed; "
+                    "the close rolls the transaction back", request_id,
+                    exc_info=True)
+
+
+def _mssql_statements(cur, run, main_stmts, request: dict, target, mode: str,
+                      write_run: bool, stmt_results: list, result_format: str,
+                      audit_tag: str, max_rows: int, max_csv_bytes: int,
+                      unmask: bool) -> None:
+    """Run the statements of a SQL Server request on `cur`, in order, and
+    append their results to `stmt_results`. The caller commits or rolls back."""
+    from . import mssql_exec
+    request_id = request["id"]
+    # Whether the session had an open transaction after the last statement.
+    tran_open = False
+    for i, s in enumerate(main_stmts, start=1):
+        if run.cancelled:
+            raise MssqlStopped(_MSSQL_STOPPED_MESSAGE)
+
+        def before_run(i=i, expect_open=tran_open):
+            # A refused SHOWPLAN compile can roll back the open transaction,
+            # and then the work of the statements before this one is gone.
+            # Committing the rest would apply part of the script.
+            if expect_open and mssql_exec.open_transactions(cur) == 0:
+                log.error("Request %s: SQL Server ended the open transaction "
+                          "before statement %d - rolling back.", request_id, i)
+                raise MssqlTransactionLost(
+                    f"SQL Server ended the open transaction before statement "
+                    f"{i}, so the statements before it were rolled back. "
+                    f"QueryHub rolled back the rest and did not commit. "
+                    f"Nothing was changed. Ask a DBA to check the SHOWPLAN "
+                    f"permission of the login of this tier.")
+
+        guard_kw = ({"require_count": True, "before_run": before_run}
+                    if write_run else {})
+        # geography / geometry / hierarchyid come back as SQL Server's own
+        # serialisation, which pyodbc hands over as opaque bytes and we render
+        # as hex. Only the server can turn that into `POINT (28.9784
+        # 41.0082)` or `/1/2/3/`, so ask it to: describe the result shape
+        # without running anything, and if a UDT column is in there, run a
+        # re-projection that calls .ToString() on exactly those columns.
+        #
+        # RO only, and the server is the judge of whether the wrap is legal.
+        # A top-level ORDER BY makes the query unwrappable ("The ORDER BY
+        # clause is invalid in views, inline functions…" — measured), and
+        # deciding that ourselves would mean parsing T-SQL. So we try the
+        # wrapped form and fall back to the original on any error. That retry
+        # is only free because RO statements have no effects; never do this
+        # for RW/DDL, where a first attempt may already have changed data.
+        #
+        # Not for an EXEC: a procedure call cannot sit inside a SELECT, so
+        # the wrap can never apply, and the describe would be a wasted
+        # round trip.
+        s_run, wrapped = s, None
+        if mode == "ro" and s.leading.upper() not in _MSSQL_EXEC:
+            try:
+                cols = mssql_exec.describe_columns(cur, s.rewritten)
+                wrapped = (mssql_exec.wrap_udt_projection(s.rewritten, cols)
+                           if cols else None)
+            except Exception:
+                log.info("Request %s: UDT describe failed — running the "
+                         "statement unchanged", request_id, exc_info=True)
+                wrapped = None
+        if wrapped:
+            s_run = dataclasses.replace(s, rewritten=wrapped)
+        try:
+            res = _execute_main_statement(
+                cur, s_run, i, request_id,
+                request["wants_result"], max_rows, max_csv_bytes,
+                result_format=result_format,
+                target_id=target.id,
+                database=request["database_name"],
+                engine=target.engine,
+                requester_id=request["requester_slack_id"],
+                unmasked=unmask,
+                capture_plan=False,   # no PG-style EXPLAIN plan on SQL Server
+                audit_tag=audit_tag,
+                exemptions=s.leading.upper() not in _MSSQL_NO_EXEMPTION,
+                **guard_kw,
+            )
+        except Exception:
+            # A stop also fails the statement. Do not run it a second time.
+            if not wrapped or run.cancelled:
+                raise
+            log.info("Request %s: the server refused the UDT re-projection "
+                     "— running the original; those columns stay hex.",
+                     request_id, exc_info=True)
+            res = _execute_main_statement(
+                cur, s, i, request_id,
+                request["wants_result"], max_rows, max_csv_bytes,
+                result_format=result_format,
+                target_id=target.id,
+                database=request["database_name"],
+                engine=target.engine,
+                requester_id=request["requester_slack_id"],
+                unmasked=unmask,
+                capture_plan=False,
+                audit_tag=audit_tag,
+                exemptions=s.leading.upper() not in _MSSQL_NO_EXEMPTION,
+                **guard_kw,
+            )
+        stmt_results.append(res)
+        # One statement can send more than one result: read them all
+        # here, before the next statement or the commit discards them.
+        stmt_results.extend(_more_mssql_results(
+            cur, res, s, request_id=request_id,
+            wants_result=request["wants_result"], max_rows=max_rows,
+            max_csv_bytes=max_csv_bytes,
+            requester_id=request["requester_slack_id"], unmasked=unmask,
+            result_format=result_format, target_id=target.id,
+            database=request["database_name"]))
+        if write_run:
+            tran_open = mssql_exec.open_transactions(cur) > 0
+    if run.cancelled:
+        raise MssqlStopped(_MSSQL_STOPPED_MESSAGE)
 
 
 def _execute_main_statement(
@@ -1957,6 +2047,8 @@ def _execute_main_statement(
     force_extended: bool = False,
     audit_tag: str = "",
     exemptions: bool = True,
+    require_count: bool = False,
+    before_run=None,
 ) -> _StmtResult:
     """Execute one main (non-SET) statement and capture its outcome.
 
@@ -2006,7 +2098,11 @@ def _execute_main_statement(
     # two-command batch runs unchallenged, parameterized or not), so the guard
     # compiles the batch with SHOWPLAN and counts. Before the portal, same
     # reason as the lineage lookup below.
-    stmt_guard.check(cur, stmt.rewritten, engine=engine, request_id=request_id)
+    #
+    # `require_count` (a SQL Server write) turns a missing count into a stop:
+    # the refused SHOWPLAN compile can roll back the open transaction.
+    stmt_guard.check(cur, stmt.rewritten, engine=engine, request_id=request_id,
+                     require_count=require_count)
 
     # Ask the database where the result columns come from, BEFORE anything opens
     # a portal on this cursor. Two reasons it has to be here and not later:
@@ -2025,6 +2121,11 @@ def _execute_main_statement(
     if wants_result and pii.is_enabled():
         pii_lineage_map = pii_lineage.source_columns(
             cur, stmt.rewritten, engine=engine, tag=audit_tag)
+
+    # The last check before the statement runs. `_run_mssql` uses it to see
+    # that the checks above did not end the open transaction.
+    if before_run is not None:
+        before_run()
 
     # On SQL Server a comment in front of CREATE PROCEDURE (or a function, a
     # view, a trigger) becomes part of the module's stored text. Send it as
@@ -2448,6 +2549,12 @@ def _move_to_result_set_1(first: _StmtResult) -> _StmtResult:
                 name.replace(stem, f"_q{first.index}s1_", 1))
             first.csv_path.rename(target)
             moved.csv_path = target
+            # The NULL sidecar goes with its CSV. Without it the exports
+            # fall back to the old behaviour, so a failed rename is harmless.
+            try:
+                _nulls_path(first.csv_path).rename(_nulls_path(target))
+            except OSError:
+                pass
     first.has_result_set = False
     first.csv_path = None
     first.rowcount = 0
@@ -2465,6 +2572,96 @@ def _description_of(cur, description):
     if description is not None:
         return description
     return getattr(cur, "description", None)
+
+
+# The CSV cannot tell NULL from an empty string. So when a result has NULLs,
+# the writer also keeps `<name>.csv.nulls`: the line `v1 <ncols>`, then one
+# line `<row> <col>,<col>,...` per data row with NULLs (both 0-based). Only the
+# JSON and SQL exports read it (result_export.null_mask). A missing sidecar
+# means the old behaviour. The cleanup job deletes it with its CSV.
+NULLS_SUFFIX = ".nulls"
+_NULLS_CAP_BYTES = 20 * 1024 * 1024
+
+
+def _nulls_path(path: Path) -> Path:
+    return path.with_name(path.name + NULLS_SUFFIX)
+
+
+class _NullSidecar:
+    """Record the NULL cells of one CSV and write them next to it.
+
+    The lines go to a temp file as the rows stream. `commit()` moves the temp
+    file into place. Past `cap` bytes the sidecar is dropped, and the exports
+    then use the old behaviour."""
+
+    def __init__(self, csv_path: Path, ncols: int, cap: int):
+        self.final = _nulls_path(csv_path)
+        self.tmp = csv_path.with_name(csv_path.name + NULLS_SUFFIX + ".tmp")
+        self.ncols = ncols
+        self.cap = cap
+        self.fh = None
+        self.size = 0
+        self.dead = cap <= 0
+        # A sidecar from an older file of the same name must not apply here.
+        try:
+            self.final.unlink(missing_ok=True)
+        except OSError:
+            self.dead = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            self.discard()
+        return False
+
+    def add(self, row_index: int, row) -> None:
+        if self.dead:
+            return
+        cols = [i for i, v in enumerate(row) if v is None]
+        if not cols:
+            return
+        line = f"{row_index} {','.join(map(str, cols))}\n"
+        try:
+            if self.fh is None:
+                head = f"v1 {self.ncols}\n"
+                self.fh = self.tmp.open("w", encoding="ascii", newline="")
+                _own_only(self.tmp)
+                self.fh.write(head)
+                self.size = len(head)
+            self.size += len(line)
+            if self.size > self.cap:
+                self.discard()
+                return
+            self.fh.write(line)
+        except OSError:
+            log.warning("could not write NULL sidecar %s", self.tmp, exc_info=True)
+            self.discard()
+
+    def commit(self) -> None:
+        if self.dead or self.fh is None:
+            return
+        try:
+            self.fh.close()
+            self.fh = None
+            os.replace(self.tmp, self.final)
+        except OSError:
+            log.warning("could not keep NULL sidecar %s", self.final, exc_info=True)
+            self.discard()
+
+    def discard(self) -> None:
+        self.dead = True
+        if self.fh is not None:
+            try:
+                self.fh.close()
+            except OSError:
+                pass
+            self.fh = None
+        try:
+            self.tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _stream_to_csv(
@@ -2511,7 +2708,9 @@ def _stream_to_csv(
     # format: measured 2026-11-14, a bytea still arrived as `b'...'` text.
     fmt_row = cell_format.row_formatter(_description_of(cur, description))
 
-    with path.open("w", newline="", encoding="utf-8") as fh:
+    nulls_cap = min(max_csv_bytes // 4, _NULLS_CAP_BYTES)
+    with path.open("w", newline="", encoding="utf-8") as fh, \
+            _NullSidecar(path, len(columns), nulls_cap) as nulls:
         _own_only(path)
 
         header_buf = io.StringIO()
@@ -2546,8 +2745,14 @@ def _stream_to_csv(
                 break
             fh.write(row_text)
             bytes_written += row_bytes
+            nulls.add(rows_written, r)
             rows_written += 1
 
+    # The caller deletes a size-truncated CSV, so it gets no sidecar.
+    if truncated_size:
+        nulls.discard()
+    else:
+        nulls.commit()
     return path, rows_written, truncated_rows, truncated_size
 
 
@@ -3722,7 +3927,10 @@ def _import_fail(client: WebClient, imp: dict, reason: str) -> None:
 def scheduler_loop(client: WebClient, stop_event, interval_sec: int = 60) -> None:
     """Run dispatch_due forever. Designed to run in a daemon thread; exits
     when `stop_event` is set."""
+    from . import scheduler_heartbeat
     while not stop_event.is_set():
+        # One write per pass. The web /readyz reads its age.
+        scheduler_heartbeat.beat()
         try:
             n = dispatch_due(client)
             if n:

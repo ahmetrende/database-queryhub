@@ -195,10 +195,15 @@ def validate_submission(
     ai_assisted: bool = False,
     result_to_slack: bool = False,
     default_schema: str | None = None,
+    preflight: bool = True,
 ) -> Prepared | Rejection:
     """Run every submit-time check in the exact order the Slack modal
     always has. Returns a Prepared on success, a Rejection on the first
     failure.
+
+    `preflight=False` skips the checks that connect to the target: the EXPLAIN,
+    the statement validation and the DDL dependents read. The Slack batch uses
+    it to stay inside Slack's ack deadline. Every other check still runs.
 
     `run_on` is auto | primary | replica; `replica_id` (a target id, as text)
     names the replica, and may be left out when the target has exactly one.
@@ -526,7 +531,7 @@ def validate_submission(
     # as before.
     schema_kw: dict[str, Any] = {"default_schema": default_schema} if default_schema else {}
 
-    if (pre_flight.is_enabled() and required_mode == "ro"
+    if (preflight and pre_flight.is_enabled() and required_mode == "ro"
             and pre_flight.is_explainable(query)):
         ok, err, plan = pre_flight.explain(
             target.id, database, required_mode, query, tag=check_tag,
@@ -563,7 +568,7 @@ def validate_submission(
     # off at runtime with bot_config pre_flight_validate_scripts = off. RW then
     # goes back to the affected-rows hint alone.
     main_count = sum(1 for s in safety.statements if s.kind != "set")
-    if (pre_flight.is_enabled() and required_mode in ("ro", "rw")
+    if (preflight and pre_flight.is_enabled() and required_mode in ("ro", "rw")
             and (required_mode == "rw" or main_count > 1)):
         if pre_flight.script_validation_enabled():
             try:
@@ -590,8 +595,8 @@ def validate_submission(
     # A DDL request that drops or alters an object: read what uses it, so the
     # approver sees what can break. The read never refuses a submit. Any
     # failure gives None, which the approver sees as "not checked".
-    ddl_deps = _ddl_dependents_for(target, database, required_mode, query,
-                                   default_schema)
+    ddl_deps = (_ddl_dependents_for(target, database, required_mode, query,
+                                    default_schema) if preflight else None)
 
     # Optional scheduling: both date and time must be supplied together.
     # Picker values are wall-clock in the user's local timezone (from the

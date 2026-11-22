@@ -141,7 +141,9 @@ function HomeScreen({ user, loading, openTabs, slackEnabled, onFocusTab, onNewQu
             {wait(sessions) ? <HomePlaceholder /> : sessions.length === 0 ? <HomeEmpty text="No saved sessions. Save your open tabs as one named workspace to restore later — here or on another device." /> : (
               <div className="qh-home-list">
                 {sessions.map(s => (
-                  <div key={s.id} className="qh-home-row is-linky" onClick={() => onRestoreSession(s)} title="Open all tabs from this workspace">
+                  <div key={s.id} className="qh-home-row is-linky" onClick={() => onRestoreSession(s)} title="Open all tabs from this workspace"
+                    role="button" tabIndex={0} aria-label={'Open all tabs from session ' + s.name}
+                    onKeyDown={(e) => { if (e.target !== e.currentTarget) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRestoreSession(s); } }}>
                     <span className="qh-home-row-name">{s.name}</span>
                     <span className="qh-home-row-meta"><OriginBadge dest={s.dest} /><span>{s.tabs.length} tab{s.tabs.length > 1 ? 's' : ''} · {qhAgo(s.savedAt)}</span></span>
                     <button className="qh-row-del" onClick={(e) => { e.stopPropagation(); onDeleteSession(s.id); }} title="Delete" aria-label="Delete session">{QH_HOME_ICN.trash}</button>
@@ -169,7 +171,9 @@ function HomeScreen({ user, loading, openTabs, slackEnabled, onFocusTab, onNewQu
             {wait(saved) ? <HomePlaceholder /> : saved.length === 0 ? <HomeEmpty text="Save queries from a tab's right-click menu to build a personal library." /> : (
               <div className="qh-home-list">
                 {saved.map(s => (
-                  <div key={s.id} className="qh-home-row is-linky" onClick={() => onLoadSaved(s)} title="Open in a new tab">
+                  <div key={s.id} className="qh-home-row is-linky" onClick={() => onLoadSaved(s)} title="Open in a new tab"
+                    role="button" tabIndex={0} aria-label={'Open saved query ' + s.name}
+                    onKeyDown={(e) => { if (e.target !== e.currentTarget) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onLoadSaved(s); } }}>
                     <span className="qh-home-row-name">{s.name}</span>
                     <span className="qh-home-row-meta"><OriginBadge dest={s.dest} /><span>{s.conn} · {s.db}</span></span>
                     <button className="qh-row-del" onClick={(e) => { e.stopPropagation(); onDeleteSaved(s.id); }} title="Delete" aria-label="Delete saved query">{QH_HOME_ICN.trash}</button>
@@ -183,7 +187,9 @@ function HomeScreen({ user, loading, openTabs, slackEnabled, onFocusTab, onNewQu
             {wait(scheduled || []) ? <HomePlaceholder /> : (scheduled || []).length === 0 ? <HomeEmpty text="Queries that you schedule show here until they run." /> : (
               <div className="qh-home-list">
                 {scheduled.map(s => (
-                  <div key={s.id} className="qh-home-row is-linky" onClick={() => onOpenScheduled(s)} title="Open this query in a new tab">
+                  <div key={s.id} className="qh-home-row is-linky" onClick={() => onOpenScheduled(s)} title="Open this query in a new tab"
+                    role="button" tabIndex={0} aria-label={'Open scheduled query ' + s.name}
+                    onKeyDown={(e) => { if (e.target !== e.currentTarget) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenScheduled(s); } }}>
                     <span className="qh-home-row-name">{s.name}</span>
                     <span className="qh-home-row-meta"><span className="qh-sched-chip"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>{s.when}</span><span>{s.conn} · {s.db}</span></span>
                     <button className="qh-row-del" onClick={(e) => { e.stopPropagation(); onCancelScheduled(s.id); }} title="Cancel schedule" aria-label="Cancel schedule">{QH_HOME_ICN.trash}</button>
