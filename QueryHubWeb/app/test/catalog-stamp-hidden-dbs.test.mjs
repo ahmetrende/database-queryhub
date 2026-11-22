@@ -94,7 +94,11 @@ test('Reload catalog reads QueryHub only, and the sidebar gets it with the hidde
 test('sign-out forgets the hidden list, like the folders and favorites', () => {
   const out = APP.match(/const signOut = \(\) => \{[\s\S]*?\n  \};/);
   assert.ok(out, 'signOut is not where this test expects it');
-  assert.match(out[0], /QH_CONNORG_KEY, QH_REASON_KEY,\s*QH_DBHIDE_KEY\]\.forEach\(\s*\(k\) => localStorage\.removeItem\(k\)\)/);
+  // The key list lives in qhUserLocalKeys, so a sign-in by another person clears the same keys.
+  assert.match(out[0], /qhUserLocalKeys\(\)\.forEach\(\(k\) => localStorage\.removeItem\(k\)\)/);
+  const keys = APP.match(/function qhUserLocalKeys\(\) \{[\s\S]*?\n\}/);
+  assert.ok(keys, 'qhUserLocalKeys is not where this test expects it');
+  assert.match(keys[0], /QH_CONNORG_KEY, QH_REASON_KEY,\s*QH_DBHIDE_KEY\]/);
   assert.match(out[0], /setHiddenDbs\(\[\]\);/);
 });
 

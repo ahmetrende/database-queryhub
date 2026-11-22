@@ -19,12 +19,138 @@ from __future__ import annotations
 
 import logging
 import struct
+import threading
 from datetime import datetime, timedelta, timezone
 
 from . import config as cfg
 from . import db
 
 log = logging.getLogger(__name__)
+
+
+# --- Stop: reach the cursor of a running request ---------------------------
+#
+# SQL Server gives QueryHub no backend pid to signal, so Stop reaches the
+# running statement through its pyodbc cursor. `Cursor.cancel()` sends an ODBC
+# SQLCancel, and pyodbc documents it as safe to call from another thread. The
+# blocked execute then fails with HY008 ("Operation canceled").
+#
+# Two ways in:
+#  - Same process: `cancel_running()` finds the cursor in `_RUNNING`.
+#  - Other process: the watch thread reads `cancel_requested_at` every
+#    `_STOP_POLL_SEC` seconds and cancels the cursor itself.
+
+#: How often the watch thread asks the bot DB whether somebody pressed Stop.
+_STOP_POLL_SEC = 2.0
+
+_RUNNING: dict[int, "RunningRequest"] = {}
+_RUNNING_LOCK = threading.Lock()
+
+
+class RunningRequest:
+    """The cursor of one running SQL Server request, so that Stop can reach it.
+
+    Use it as a context manager around the statements and the commit. It
+    registers the cursor on entry and removes it on exit. With `is_cancelled`,
+    it also runs the watch thread.
+
+    The state moves from "running" to "cancelled" or to "committing", never
+    back. A stop that arrives after `begin_commit()` does nothing, and a
+    commit after a stop does not start. So a write is never both stopped and
+    committed.
+    """
+
+    def __init__(self, request_id: int, cur, *, is_cancelled=None,
+                 poll_sec: float = _STOP_POLL_SEC):
+        self.request_id = request_id
+        self._cur = cur
+        self._is_cancelled = is_cancelled
+        self._poll_sec = poll_sec
+        self._lock = threading.Lock()
+        self._state = "running"
+        self._done = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def cancelled(self) -> bool:
+        return self._state == "cancelled"
+
+    def cancel(self) -> str:
+        """Cancel the running statement. Returns "cancelled", or "too_late"
+        when the commit has already started."""
+        with self._lock:
+            if self._state == "committing":
+                return "too_late"
+            already = self._state == "cancelled"
+            self._state = "cancelled"
+        if not already:
+            try:
+                self._cur.cancel()
+            except Exception:
+                # The state is set, so the executor stops before the next
+                # statement and before the commit.
+                log.warning("mssql: cursor cancel failed for request %s",
+                            self.request_id, exc_info=True)
+        return "cancelled"
+
+    def begin_commit(self) -> bool:
+        """Close the door on Stop. False when a stop got in first."""
+        with self._lock:
+            if self._state == "cancelled":
+                return False
+            self._state = "committing"
+            return True
+
+    def __enter__(self) -> "RunningRequest":
+        with _RUNNING_LOCK:
+            _RUNNING[self.request_id] = self
+        if self._is_cancelled is not None:
+            self._thread = threading.Thread(
+                target=self._watch, daemon=True,
+                name=f"mssql-stop-{self.request_id}")
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._done.set()
+        with _RUNNING_LOCK:
+            if _RUNNING.get(self.request_id) is self:
+                del _RUNNING[self.request_id]
+        t, self._thread = self._thread, None
+        if t is not None and t is not threading.current_thread():
+            t.join(timeout=2)
+
+    def _watch(self) -> None:
+        while not self._done.wait(self._poll_sec):
+            try:
+                asked = self._is_cancelled()
+            except Exception:
+                log.debug("mssql: stop poll failed for request %s",
+                          self.request_id, exc_info=True)
+                continue
+            if asked:
+                self.cancel()
+                return
+
+
+def cancel_running(request_id: int) -> str:
+    """Cancel the request if it runs in this process.
+
+    Returns "cancelled", "too_late" (the commit has started) or "absent"
+    (the request does not run in this process)."""
+    with _RUNNING_LOCK:
+        run = _RUNNING.get(request_id)
+    if run is None:
+        return "absent"
+    return run.cancel()
+
+
+def open_transactions(cur) -> int:
+    """@@TRANCOUNT of the session. A SELECT without a table does not start an
+    implicit transaction, so the read does not change the answer."""
+    cur.execute("SELECT @@TRANCOUNT")
+    row = cur.fetchone()
+    return int(row[0]) if row else 0
 
 # SQL_SS_TIMESTAMPOFFSET. pyodbc ships no mapping for it, so *any* query touching
 # a `datetimeoffset` column died outright:

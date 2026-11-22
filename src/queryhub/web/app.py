@@ -14,7 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import db, migration_state
 from .. import config as cfg
-from . import (build_info, compression, deps, request_id, routes_auth,
+from . import (body_limit, build_info, compression, deps, request_id, routes_auth,
                routes_avatar, startup_checks)
 # base_url and the cookie helpers live with the auth routes now; the startup
 # log and /api/me still read base_url, so it is imported rather than copied.
@@ -131,6 +131,10 @@ def create_app() -> FastAPI:
                 "max-age=31536000; includeSubDomains")
         return resp
 
+    # Added after the http middlewares above, so it wraps them: it refuses an
+    # oversized body before the assertion middleware or any route reads it.
+    # The gzip packer below still wraps it, because it only touches responses.
+    app.add_middleware(body_limit.BodyLimitMiddleware)
     # Added after the two middlewares above, so it is the outermost one and
     # packs the final response. The first screen loads `/api/connections`, which
     # was 2 MB of JSON, and the JS bundle: text types only, see
@@ -346,7 +350,11 @@ def create_app() -> FastAPI:
         if names:
             return JSONResponse(status_code=503, content={
                 "status": "unready", "detail": f"{len(names)} migrations pending"})
-        return {"status": "ready"}
+        # The scheduler runs in the bot process. A stale heartbeat is reported
+        # in the body only. It never changes the HTTP status, because a 503
+        # would pull a healthy web pod out of service.
+        from .. import scheduler_heartbeat
+        return {"status": "ready", "scheduler": scheduler_heartbeat.check()}
 
     # ---- operational metrics -------------------------------------------
     #

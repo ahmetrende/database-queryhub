@@ -809,6 +809,9 @@ def test_a_web_batch_decides_its_archive_item_by_the_same_rule(batch_common, mon
                         st["audit"].append((rid, action, details)))
     monkeypatch.setattr(rq, "_bot_client", lambda: None)
     monkeypatch.setattr(rq.admins, "list_active", lambda: [])
+    # The whole-batch quota check reads the database: this test is about the decision.
+    from queryhub import bundles
+    monkeypatch.setattr(bundles, "check_open_quota", lambda cur, uid, n: None)
 
     body = rq.BatchIn(items=[rq.BatchItemIn(connectionId=LEDGER.alias, sql=READ),
                              rq.BatchItemIn(connectionId=ARCHIVE.alias, sql=READ)])

@@ -87,6 +87,18 @@ Each API key is one row in `ai_providers`. `kind` sets the protocol:
 
 An Anthropic provider needs the optional extra: `pip install '.[ai]'`.
 
+The standard Docker image leaves the AI extra out. The `anthropic` SDK is not
+in it. An Anthropic provider on that image fails with a 503 that names the
+missing SDK. OpenAI-compatible providers work, because they use httpx.
+
+To build an image with the extra:
+
+1. In `scripts/lock_image_deps.sh`, add `--extra ai` to the `uv pip compile` line.
+2. Run `scripts/lock_image_deps.sh`. It needs network access and rewrites
+   `docker/requirements.lock` with hashes.
+3. Commit the new lock file.
+4. Rebuild the image.
+
 The base URL must use `https://`. QueryHub accepts plain `http://` only for
 a loopback host, for example a local Ollama.
 

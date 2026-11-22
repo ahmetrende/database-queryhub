@@ -33,9 +33,14 @@ what is there and what is not there yet. The forward plan is in
   login.
 - **Submit-time validation covers PostgreSQL only.** It plans each statement of
   a read or write request, scripts included, and refuses a mistake before
-  approval. It does not cover DDL, batch items, SQL Server, ClickHouse or
-  Athena. Errors in those show when the request runs. It cannot see a data
-  error either, such as a value that does not fit its column.
+  approval. It does not cover DDL, SQL Server, ClickHouse or Athena. Errors in
+  those show when the request runs. It cannot see a data error either, such as
+  a value that does not fit its column.
+- **A Slack batch skips the plan check.** Each item gets the same grant, tier,
+  credential, justification and duplicate checks as a single request. The
+  EXPLAIN waits until after the Slack ack, so it only adds a risk hint for the
+  approver. It never refuses an item. A web batch runs the full check. A batch
+  counts all its items against the open-request limit, under one lock.
 - **Read replicas are PostgreSQL only, and off by default**
   (`replica_routing`). A replica read can be up to `replica_max_lag_seconds`
   behind. Read-your-writes covers writes made through QueryHub only, not
@@ -43,17 +48,20 @@ what is there and what is not there yet. The forward plan is in
   primary (`pg_stat_*`, `pg_locks`, WAL functions ...) examines the SQL text.
   Because of this, it does not detect a view that wraps one of them. QueryHub
   does not route reads to SQL Server readable secondaries.
-- **Stop does not stop a running SQL Server query.** QueryHub records no
-  server session for it, so Stop reports that it could not reach the
-  database. The query runs until `query_timeout_sec` ends it.
-- **The SQL Server statement count needs `SHOWPLAN`.** Before each statement,
-  QueryHub asks the server how many statements the text holds. The logins
-  of `deploy/grant_mssql.sql` do not have the `SHOWPLAN` permission. So for
-  a statement that reads a table, the server refuses, and the statement
-  runs without the count. SQL Server also rolls back the open transaction on
-  that refusal. A write script of two or more statements then commits only
-  its last statement. When the login has `SHOWPLAN`, the count runs and the
-  script stays one transaction. The `mssql` CI job measures both cases.
+- **Stop on SQL Server cancels the statement through the driver.** It uses
+  the pyodbc cursor, because SQL Server gives no backend pid. When the query
+  runs in another QueryHub process, Stop takes up to about two seconds. That
+  process then rolls back and fails the request. A Stop that arrives after
+  the commit starts does nothing.
+- **A SQL Server write needs `SHOWPLAN`.** Before each statement, QueryHub
+  asks the server how many statements the text holds. The logins of
+  `deploy/grant_mssql.sql` do not have the `SHOWPLAN` permission. For a read,
+  a refused count lets the statement run without it. For an RW or DDL
+  request, a refused count stops the request and rolls it back. Nothing is
+  changed, and the error says to grant `SHOWPLAN` or to submit each
+  statement alone. QueryHub also stops and rolls back a write when SQL Server
+  ends its open transaction between two statements. The `mssql` CI job
+  measures both cases.
 
 ## Testing & typing
 

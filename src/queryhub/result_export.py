@@ -7,15 +7,18 @@ Each converter is a generator. It yields small UTF-8 chunks, about one row per
 chunk. A 100 MB result must never sit in memory, so no code here builds a list
 from the incoming rows.
 
-The stored CSV cannot tell NULL from an empty string. So JSON keeps every value
-as a string. SQL writes an empty cell as NULL. The SQL output says so in its
-first comment line.
+The stored CSV cannot tell NULL from an empty string. The executor can keep a
+NULL sidecar next to the CSV (`<name>.csv.nulls`). With it, JSON and SQL write
+NULL only for real NULLs and keep an empty string as ''. Without it, SQL writes
+an empty cell as NULL and says so in its first comment line.
 """
 from __future__ import annotations
 
+import csv
 import json
 import re
 from collections.abc import Iterable, Iterator, Sequence
+from pathlib import Path
 
 _TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
 
@@ -24,6 +27,55 @@ _SQL_HEADER = (
     "the stored result cannot tell NULL from an empty string.\n"
     "-- Replace table_name with the real table.\n"
 )
+_SQL_HEADER_EXACT = (
+    "-- Exported from QueryHub. NULL and empty strings are kept apart.\n"
+    "-- Replace table_name with the real table.\n"
+)
+
+# Same name and cap as the executor's writer (executor.NULLS_SUFFIX).
+NULLS_SUFFIX = ".nulls"
+_NULLS_MAX_READ = 20 * 1024 * 1024
+
+NullMask = dict[int, set[int]]
+
+
+def null_mask(csv_path: Path) -> NullMask | None:
+    """The NULL cells of a stored CSV, from its sidecar: {row: {col, ...}}.
+
+    Rows and columns are 0-based data positions. None means "do not know":
+    there is no sidecar, it is too big, it does not parse, or its column
+    count does not match the CSV header. The caller then keeps the old
+    behaviour."""
+    side = csv_path.with_name(csv_path.name + NULLS_SUFFIX)
+    try:
+        if not side.is_file() or side.stat().st_size > _NULLS_MAX_READ:
+            return None
+        with csv_path.open(newline="", encoding="utf-8") as fh:
+            header = next(csv.reader(fh), None)
+        lines = side.read_text(encoding="ascii").splitlines()
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return None
+    if header is None or not lines:
+        return None
+    head = lines[0].split(" ")
+    if len(head) != 2 or head[0] != "v1" or not head[1].isdigit():
+        return None
+    ncols = int(head[1])
+    if ncols != len(header):
+        return None
+    mask: NullMask = {}
+    for line in lines[1:]:
+        parts = line.split(" ")
+        if len(parts) != 2 or not parts[0].isdigit():
+            return None
+        cols = parts[1].split(",")
+        if not all(c.isdigit() for c in cols):
+            return None
+        idx = {int(c) for c in cols}
+        if max(idx) >= ncols:
+            return None
+        mask.setdefault(int(parts[0]), set()).update(idx)
+    return mask
 
 
 def _check_columns(columns: list[str]) -> None:
@@ -100,20 +152,37 @@ def json_cell(value: str, kind: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _json_exact(value: str, kind: str, is_null: bool) -> str:
+    """One cell when the NULL mask is known: null only for a real NULL."""
+    if is_null:
+        return "null"
+    if value == "":
+        return '""'
+    return json_cell(value, kind)
+
+
 def stream_json(columns: list[str], rows: Iterable[Sequence[str]],
-                types: dict | None = None) -> Iterator[bytes]:
+                types: dict | None = None,
+                nulls: NullMask | None = None) -> Iterator[bytes]:
     """Yield a JSON document: the column list and one object per row.
 
     `types` maps a column name to its SQL type. Without it, every value is a
-    string, as before."""
+    string, as before. `nulls` is the NULL mask (null_mask). With it, a real
+    NULL is null and an empty string is "". Without it, nothing changes."""
     _check_columns(columns)
     names = [json.dumps(c, ensure_ascii=False) for c in columns]
     kinds = [json_kind((types or {}).get(c)) for c in columns]
     head = json.dumps(columns, ensure_ascii=False, separators=(",", ":"))
     yield ('{"columns":' + head + ',"rows":[\n').encode("utf-8")
     first = True
-    for cells in _fit(rows, len(columns)):
-        pairs = [n + ":" + json_cell(v, k) for n, v, k in zip(names, cells, kinds)]
+    for row_no, cells in enumerate(_fit(rows, len(columns))):
+        if nulls is None:
+            pairs = [n + ":" + json_cell(v, k)
+                     for n, v, k in zip(names, cells, kinds)]
+        else:
+            row_nulls = nulls.get(row_no, ())
+            pairs = [n + ":" + _json_exact(v, k, i in row_nulls)
+                     for i, (n, v, k) in enumerate(zip(names, cells, kinds))]
         piece = "{" + ",".join(pairs) + "}"
         if not first:
             piece = ",\n" + piece
@@ -151,20 +220,37 @@ def _sql_value(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _sql_exact(value: str, is_null: bool) -> str:
+    """One value when the NULL mask is known: NULL only for a real NULL."""
+    if is_null:
+        return "NULL"
+    return "'" + value.replace("\x00", "").replace("'", "''") + "'"
+
+
 def stream_sql_insert(
     columns: list[str],
     rows: Iterable[Sequence[str]],
     table: str = "table_name",
+    nulls: NullMask | None = None,
 ) -> Iterator[bytes]:
-    """Yield two comment lines, then one INSERT statement per row."""
+    """Yield two comment lines, then one INSERT statement per row.
+
+    `nulls` is the NULL mask (null_mask). With it, only a real NULL is NULL
+    and an empty string is ''. Without it, every empty cell is NULL."""
     _check_columns(columns)
     if not _TABLE_RE.fullmatch(table):
         raise ValueError("invalid table name")
     target = ".".join(_sql_ident(part) for part in table.split("."))
     col_list = ", ".join(_sql_ident(c) for c in columns)
     prefix = "INSERT INTO " + target + " (" + col_list + ") VALUES ("
-    for line in _SQL_HEADER.splitlines(keepends=True):
+    header = _SQL_HEADER if nulls is None else _SQL_HEADER_EXACT
+    for line in header.splitlines(keepends=True):
         yield line.encode("utf-8")
-    for cells in _fit(rows, len(columns)):
-        values = ", ".join(_sql_value(v) for v in cells)
+    for row_no, cells in enumerate(_fit(rows, len(columns))):
+        if nulls is None:
+            values = ", ".join(_sql_value(v) for v in cells)
+        else:
+            row_nulls = nulls.get(row_no, ())
+            values = ", ".join(_sql_exact(v, i in row_nulls)
+                               for i, v in enumerate(cells))
         yield (prefix + values + ");\n").encode("utf-8")

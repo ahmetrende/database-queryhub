@@ -22,7 +22,7 @@ SQL = "SELECT count(*) FROM ledgers"
 
 
 def _target(i):
-    return SimpleNamespace(id=i, alias=f"example-{i}", enabled=True)
+    return SimpleNamespace(id=i, alias=f"example-{i}", enabled=True, engine="postgres")
 
 
 TARGETS = {f"example-{i}": _target(i) for i in range(1, 8)}

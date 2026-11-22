@@ -47,6 +47,33 @@ class CancelOutcome:
     CANCELLED = "cancelled"            # pg_cancel_backend was enough
     TERMINATED = "terminated"          # needed pg_terminate_backend
     FAILED = "failed"                  # could not reach the target / no pid
+    # SQL Server, query in another process: that process's watch thread reads
+    # the ask and cancels the query. That process also fails the row.
+    SIGNALLED = "signalled"
+
+
+def _stop_mssql(request_id: int) -> str:
+    """Stop a SQL Server query through its pyodbc cursor.
+
+    SQL Server gives no backend pid, so the cursor is the handle. When the
+    query runs in this process, `cancel_running` cancels it now. When it runs
+    in another process, `cancel()` has already set `cancel_requested_at`, and
+    the watch thread of that process cancels the query within a few seconds.
+    The row is not failed here in that case: that process fails it, after
+    the rollback. So a write is never reported stopped and then committed.
+    """
+    from . import mssql_exec
+    result = mssql_exec.cancel_running(request_id)
+    if result == "cancelled":
+        log.info("cancel: cancelled the SQL Server cursor of request %s",
+                 request_id)
+        return CancelOutcome.CANCELLED
+    if result == "too_late":
+        # The commit had started. The query finishes as it would have.
+        return CancelOutcome.NOT_RUNNING
+    log.info("cancel: request %s runs in another process; its watch thread "
+             "stops it", request_id)
+    return CancelOutcome.SIGNALLED
 
 
 def request_cancel(request_id: int, by_id: str | None,
@@ -227,6 +254,8 @@ def stop_backend(request_id: int) -> str:
         return _stop_athena(request_id, target, row.get("engine_execution_id"))
     if (getattr(target, "engine", None) or "postgres") == "clickhouse":
         return _stop_clickhouse(request_id, target, row.get("engine_execution_id"))
+    if (getattr(target, "engine", None) or "postgres") == "mssql":
+        return _stop_mssql(request_id)
 
     pid = row.get("backend_pid")
     if not pid:
@@ -393,7 +422,8 @@ def cancel_running_reads(by_id: str | None, by_name: str | None) -> int | None:
         log.exception("kill switch: the cancels did not run")
         return None
     stopped = sum(1 for o in outcomes
-                  if o in (CancelOutcome.CANCELLED, CancelOutcome.TERMINATED))
+                  if o in (CancelOutcome.CANCELLED, CancelOutcome.TERMINATED,
+                           CancelOutcome.SIGNALLED))
     log.warning("kill switch: stopped %s of %s running read-only requests",
                 stopped, len(ids))
     return stopped

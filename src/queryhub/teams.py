@@ -543,6 +543,51 @@ def grant_end_for(grant_rows, database_name: str, now=None):
     return max(ends, key=lambda e: e if e.tzinfo else e.replace(tzinfo=timezone.utc))
 
 
+def database_modes(principal_id: str, target_id: int, grant: dict | None,
+                   database_names, now=None) -> dict[str, str | None]:
+    """The tier on each named database of one target, from a grant already read.
+
+    `grant` is the entry of `effective_grants_for_user` for this target. Its
+    `grant_rows` are the live grants that decide access, in both access models.
+    The tier on one database is the top tier among the rows that cover it.
+    That is the rule `effective_mode_for_database` applies, so the tree shows
+    the tier that submit enforces. It reads nothing from the database.
+
+    A grant without rows has two cases:
+    - an admin or bypass answer reaches every database at its own tier;
+    - a target resolved one by one (a super-admin-only target) asks
+      `effective_mode_for_database` per database. Such targets are few.
+    Any other grant without rows keeps its target tier, as before.
+
+    None means no row covers the database.
+    """
+    names = list(dict.fromkeys(database_names))
+    if grant is None:
+        return {d: None for d in names}
+    rows = grant.get("grant_rows")
+    if rows is None:
+        if grant.get("source") in ("user", "team"):
+            return {d: effective_mode_for_database(principal_id, target_id, d)
+                    for d in names}
+        return {d: grant["mode"] for d in names}
+    now = now or datetime.now(timezone.utc)
+    live = []
+    for g in rows:
+        end = g.get("ends_at")
+        if end is not None:
+            cmp_end = end if end.tzinfo else end.replace(tzinfo=timezone.utc)
+            if cmp_end <= now:
+                continue
+        live.append(g)
+    out: dict[str, str | None] = {}
+    for d in names:
+        covering = [g["mode"] for g in live
+                    if not g.get("allowed_databases")
+                    or d in g["allowed_databases"]]
+        out[d] = _max_mode(covering) if covering else None
+    return out
+
+
 def effective_mode_for_database(
     principal_id: str, target_id: int, database_name: str
 ) -> str | None:

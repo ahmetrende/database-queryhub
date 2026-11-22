@@ -24,7 +24,8 @@ import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import (APIRouter, Depends, HTTPException, Request, WebSocket,
@@ -718,9 +719,16 @@ def submit_batch(body: BatchIn, request: Request,
         target_server_id=p.target.id, target_alias=p.target.alias,
         database_name=p.database, query=p.query, wants_result=p.wants_result,
         result_format=p.result_format, explain_plan=p.explain_plan,
-        risk_summary=p.risk_summary, default_schema=p.default_schema) for p in preps]
+        risk_summary=p.risk_summary, default_schema=p.default_schema,
+        engine=p.target.engine, required_tier=p.required_mode) for p in preps]
 
     with db.transaction() as cur:
+        # One quota check for the whole batch, under the per-user advisory lock
+        # the single submit takes. Each item above saw the same open count, so
+        # only this check counts the items together.
+        quota_error = bundles.check_open_quota(cur, uid, len(items))
+        if quota_error is not None:
+            raise deps._error(409, "conflict", quota_error)
         # The origin is stamped on the bundle so its items carry it — the executor's
         # result-routing gate then honors "answer on the channel it came
         # from" for batch results too, instead of leaking the CSV
@@ -1194,6 +1202,9 @@ def query_cancel(request_id: int, claims: dict = Depends(deps.current_user)):
                 "its database connection. The query is stopped.",
             cancellation.CancelOutcome.NOT_RUNNING:
                 "The query finished before the cancel reached it.",
+            cancellation.CancelOutcome.SIGNALLED:
+                "Stop was sent. The query stops within a few seconds, and "
+                "its changes are rolled back. Reload to see the status.",
             cancellation.CancelOutcome.FAILED:
                 "QueryHub could not reach the database to stop the query. "
                 "Ask a DBA.",
@@ -1469,6 +1480,29 @@ def _statement_members(p: Path) -> list[str]:
 
 
 @contextmanager
+def _xlsx_as_csv(p: Path):
+    """CSV text stream of the first sheet of a stored `.xlsx` result.
+
+    Read-only mode streams the sheet. The text goes to a temp file that spills
+    to disk past 8 MB, so a large result is never held fully in memory.
+    """
+    from openpyxl import load_workbook
+    wb = load_workbook(p, read_only=True, data_only=True)
+    try:
+        ws = wb.worksheets[0]
+        with tempfile.SpooledTemporaryFile(
+                max_size=8 * 1024 * 1024, mode="w+", newline="",
+                encoding="utf-8") as buf:
+            w = csv.writer(buf)
+            for rec in ws.iter_rows(values_only=True):
+                w.writerow(["" if v is None else v for v in rec])
+            buf.seek(0)
+            yield buf
+    finally:
+        wb.close()
+
+
+@contextmanager
 def _open_statement(p: Path, index: int):
     """Text stream over the 1-based statement `index` of a stored result.
 
@@ -1484,12 +1518,127 @@ def _open_statement(p: Path, index: int):
         raise deps._error(404, "not_found",
                           f"Statement {index} does not exist. This result has "
                           f"{len(members)} statement(s).")
+    if p.suffix.lower() == ".xlsx":
+        # An Excel result (asked for in Slack) is not UTF-8 text. Read it as
+        # CSV text so the grid, paging and exports all work on it.
+        with _xlsx_as_csv(p) as fh:
+            yield fh
+        return
     if p.suffix.lower() != ".zip":
         with p.open(newline="", encoding="utf-8") as fh:
             yield fh
         return
     with zipfile.ZipFile(p) as zf, zf.open(members[index - 1]) as raw:
         yield io.TextIOWrapper(raw, encoding="utf-8", newline="")
+
+
+# ---- byte-offset sidecar for deep pages -----------------------------------------
+# A deep page used to parse every row before the offset. For a plain stored
+# .csv we keep a sidecar `<name>.csv.rowidx` with the byte offset of every
+# 1,000th data row. A page then seeks to the nearest offset and parses from
+# there. The cleanup job deletes the sidecar with its CSV.
+
+_ROW_INDEX_EVERY = 1000
+_ROW_INDEX_MIN_OFFSET = 2000
+ROW_INDEX_SUFFIX = ".rowidx"
+
+
+def _row_index_path(p: Path) -> Path:
+    return p.with_name(p.name + ROW_INDEX_SUFFIX)
+
+
+def _build_row_offsets(p: Path) -> list[int] | None:
+    """Byte offsets of data rows 0, N, 2N, ... of a CSV, or None if the file
+    cannot be indexed safely (the caller then scans from the start).
+
+    The csv reader pulls whole physical lines and a record always ends at a
+    line end. So the bytes pulled so far are the exact start of the next
+    record, even when a quoted field holds newlines."""
+    pos = 0
+    offsets: list[int] = []
+    try:
+        with p.open("rb") as fb:
+            def lines():
+                nonlocal pos
+                for line in fb:
+                    pos += len(line)
+                    yield line.decode("utf-8")
+            reader = csv.reader(lines())
+            rec_no = 0              # 0 is the header, data row k is rec_no k+1
+            while True:
+                start = pos
+                try:
+                    next(reader)
+                except StopIteration:
+                    break
+                data_idx = rec_no - 1
+                if data_idx >= 0 and data_idx % _ROW_INDEX_EVERY == 0:
+                    offsets.append(start)
+                rec_no += 1
+    except (csv.Error, UnicodeDecodeError, OSError):
+        return None
+    return offsets
+
+
+def _load_row_offsets(p: Path) -> list[int] | None:
+    """Offsets from the sidecar, building it first when it is missing or
+    stale. The first line holds the CSV size and mtime to detect a stale file."""
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    side = _row_index_path(p)
+    stamp = f"v1 {_ROW_INDEX_EVERY} {st.st_size} {st.st_mtime_ns}"
+    try:
+        lines = side.read_text(encoding="ascii").split("\n")
+        if lines and lines[0] == stamp:
+            return [int(x) for x in lines[1:] if x]
+    except (OSError, ValueError):
+        pass
+    offsets = _build_row_offsets(p)
+    if offsets is None:
+        return None
+    tmp = side.with_name(side.name + f".{os.getpid()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="ascii") as out:
+            out.write(stamp + "\n" + "\n".join(str(o) for o in offsets) + "\n")
+        os.replace(tmp, side)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    return offsets
+
+
+def _page_from_index(p: Path, offset: int, limit: int):
+    """(cols, rows) for a page of a plain CSV via the sidecar, or None when
+    the index is not usable. Same shape as the full scan."""
+    offsets = _load_row_offsets(p)
+    slot = offset // _ROW_INDEX_EVERY
+    if not offsets or slot >= len(offsets):
+        return None     # offset is past the end: let the full scan answer
+    try:
+        with p.open("rb") as fb:
+            head = io.TextIOWrapper(fb, encoding="utf-8", newline="")
+            cols = _dedup_cols(next(csv.reader(head), []))
+            head.detach()
+            fb.seek(offsets[slot])
+            body = io.TextIOWrapper(fb, encoding="utf-8", newline="")
+            reader = csv.reader(body)
+            skip = offset - slot * _ROW_INDEX_EVERY
+            out: list[dict] = []
+            for i, rec in enumerate(reader):
+                if i < skip:
+                    continue
+                if len(out) >= limit:
+                    break
+                out.append(dict(zip(cols, rec)))
+            body.detach()
+    except (csv.Error, UnicodeDecodeError, OSError):
+        return None
+    return cols, out
 
 
 def _dedup_cols(cols: list[str]) -> list[str]:
@@ -1690,6 +1839,11 @@ def query_result(request_id: int, statement: int = 1,
     cols: list[str] = []
     rows: list[dict] = []
     truncated = False
+    # The recorded count is the SUM across statements, so it is the stored
+    # count of THIS table only for a single-statement result. Otherwise the
+    # stored rows of the chosen table are counted in the same pass.
+    recorded = row.get("row_count") if len(members) == 1 else None
+    stored_rows = 0
     with _open_statement(p, statement) as fh:
         reader = csv.reader(fh)
         for i, rec in enumerate(reader):
@@ -1697,10 +1851,14 @@ def query_result(request_id: int, statement: int = 1,
                 raw_cols = rec
                 cols = _dedup_cols(rec)
                 continue
+            stored_rows += 1
             if len(rows) >= max_rows:
                 truncated = True
-                break
+                if recorded is not None:
+                    break
+                continue    # keep counting: the client pages the rest
             rows.append(dict(zip(cols, rec)))
+    total = recorded if recorded is not None else stored_rows
 
     return {
         "kind": "table",
@@ -1745,9 +1903,12 @@ def query_result(request_id: int, statement: int = 1,
         # Full row count so the grid can page the whole result via /rows,
         # not just the first page returned inline here. `row_count` is the SUM
         # across statements, so it is only the right total when there is one.
-        "total": (row.get("row_count") if row.get("row_count") is not None
-                  else len(rows)) if len(members) == 1 else len(rows),
+        "total": total,
+        # `truncated`: this page is smaller than the stored result, or the
+        # stored result was cut. `capped`: the stored result itself hit the
+        # row or size cap (the executor records that in `requests.truncated`).
         "truncated": truncated or bool(row.get("truncated")),
+        "capped": bool(row.get("truncated")),
     }
 
 
@@ -1769,6 +1930,14 @@ def query_rows(request_id: int, offset: int = 0, limit: int = 100,
     csv.field_size_limit(cfg.get_int("csv_size_mb_ceiling", 100) * 1024 * 1024)
     cols: list[str] = []
     out: list[dict] = []
+    if (offset >= _ROW_INDEX_MIN_OFFSET and statement == 1
+            and p.suffix.lower() == ".csv"):
+        fast = _page_from_index(p, offset, limit)
+        if fast is not None:
+            cols, out = fast
+            return {"cols": cols, "rows": out, "offset": offset,
+                    "limit": limit, "statement": statement,
+                    "statementCount": 1}
     with _open_statement(p, statement) as fh:
         reader = csv.reader(fh)
         for i, rec in enumerate(reader):
@@ -1928,6 +2097,12 @@ def _export_response(request_id: int, statement: int | None, claims: dict,
                 types = None
         if isinstance(types, dict) and types:
             make = functools.partial(result_export.stream_json, types=types)
+    if fmt in ("json", "sql") and p.suffix.lower() == ".csv":
+        # One table with a NULL sidecar: a real NULL and an empty string stay
+        # apart. No sidecar (or a bad one) keeps the old output.
+        nulls = result_export.null_mask(p)
+        if nulls is not None:
+            make = functools.partial(cast("Callable[..., Any]", make), nulls=nulls)
     audit_mod.log(request_id, claims["sub"], claims.get("name"),
                   "web_result_downloaded",
                   {"format": fmt, "file": p.name,
@@ -2171,7 +2346,7 @@ async def query_stream(websocket: WebSocket, request_id: int):
         return
     await websocket.accept()
     last_status: str | None = None
-    last_audit_n = 0
+    last_audit_id = 0
     # Claims were verified at the handshake. Read them again for the re-check.
     ws_claims = sessions.verify_access(websocket.cookies.get(deps.SESSION_COOKIE) or "")
     try:
@@ -2199,16 +2374,17 @@ async def query_stream(websocket: WebSocket, request_id: int):
                         people.display_name, uid),
                 })
 
+            # Read only the rows newer than the last one sent.
             arows = await asyncio.to_thread(
                 db.fetch_all,
-                "SELECT actor_slack_id, actor_name, action, created_at "
-                "FROM audit_log WHERE request_id = %s ORDER BY id",
-                (request_id,))
-            entries = mapping.audit_entries(arows, uid)
-            for e in entries[last_audit_n:]:
+                "SELECT id, actor_slack_id, actor_name, action, created_at "
+                "FROM audit_log WHERE request_id = %s AND id > %s ORDER BY id",
+                (request_id, last_audit_id))
+            if arows:
+                last_audit_id = max(last_audit_id, *(r["id"] for r in arows))
+            for e in mapping.audit_entries(arows, uid):
                 await websocket.send_json({
                     "type": "audit", "id": str(request_id), "entry": e})
-            last_audit_n = len(entries)
 
             # A scheduled query runs much later — don't hold the socket open.
             if (r.get("scheduled_for") and not r.get("executed_at")

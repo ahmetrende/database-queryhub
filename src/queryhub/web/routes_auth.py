@@ -14,6 +14,7 @@ static mount.
 """
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import os
@@ -141,7 +142,9 @@ async def auth_local_login(request: Request):
                           "Too many failed sign-in attempts. "
                           f"Try again in about {max(1, wait // 60)} minute(s).")
     try:
-        ident = p.verify(username, password)
+        # A DB read and a slow key derivation. Run it in a worker thread so
+        # it does not block the event loop.
+        ident = await asyncio.to_thread(p.verify, username, password)
     except auth_providers.AuthError:
         login_throttle.record_failure(_ukey, _ipkey)
         # One opaque failure — never reveal whether the username exists.
@@ -340,12 +343,18 @@ async def auth_local_change_password(
     # One transaction: the new password, the revoked sessions and the audit
     # row commit together, or none of them does. They were three commits, so a
     # failure between them left a changed password with no audit row.
-    with db.transaction() as cur:
-        err = local_users.change_password_in(cur, username, current, new)
-        if not err:
-            n = sessions.revoke_user_in(cur, claims["sub"], "local password changed")
-            audit.log_in(cur, None, claims["sub"], claims.get("name"),
-                         "local_password_changed", {"sessions_revoked": n})
+    def _change() -> str | None:
+        with db.transaction() as cur:
+            err = local_users.change_password_in(cur, username, current, new)
+            if not err:
+                n = sessions.revoke_user_in(
+                    cur, claims["sub"], "local password changed")
+                audit.log_in(cur, None, claims["sub"], claims.get("name"),
+                             "local_password_changed", {"sessions_revoked": n})
+        return err
+
+    # The key derivation is slow, so run the transaction off the event loop.
+    err = await asyncio.to_thread(_change)
     if err == "bad_credentials":
         login_throttle.record_failure(tkey)
         raise deps._error(401, "bad_credentials",

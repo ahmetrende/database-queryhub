@@ -8,6 +8,7 @@
 #   target  a throwaway "production" database with a seeded shop schema —
 #           this is what you query THROUGH QueryHub
 #   app     the web app (vanilla profile: no Slack, local accounts)
+# Plus a small `cleanup` container that purges old result files every hour.
 #
 # Why this file exists: the install path assumes a pre-provisioned Postgres, a
 # separate target with per-tier roles, an encrypted credential row and a first
@@ -95,6 +96,30 @@ services:
       # The master key survives a restart; delete the volume and every stored
       # target credential becomes unreadable, which is the real lesson about
       # key custody (see docs/OPERATIONS.md).
+      - keys:/etc/queryhub
+      - results:/var/lib/queryhub
+
+  # Result retention: runs scripts/cleanup_old_results.py once an hour in the
+  # same image. The app does not purge result files by itself.
+  cleanup:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - app
+    environment:
+      BOT_DB_HOST: db
+      BOT_DB_PORT: "5432"
+      BOT_DB_NAME: queryhub
+      BOT_DB_USER: queryhub
+      BOT_DB_PASSWORD: queryhub-demo
+      # The app container applies migrations and seeds the demo data.
+      QH_SKIP_MIGRATIONS: "1"
+    command:
+      - sh
+      - -c
+      - 'while true; do python scripts/cleanup_old_results.py || echo "cleanup failed, retrying in one hour"; sleep 3600; done'
+    volumes:
       - keys:/etc/queryhub
       - results:/var/lib/queryhub
 

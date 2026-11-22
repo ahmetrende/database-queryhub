@@ -455,7 +455,14 @@ function qhUseResultView(result) {
   const isTable = !!result && result.kind === 'table';
   const rowsIn = isTable && Array.isArray(result.rows) ? result.rows : [];
   const baseTotal = isTable && Number.isFinite(result.total) ? result.total : rowsIn.length;
-  const enabled = isTable && !result.truncated && baseTotal <= QH_RES_MAX_ROWS;
+  // Off when the stored result itself was cut by the server cap: sorting part
+  // of a result would mislead. A page smaller than the stored result is fine,
+  // because the hook below pages in the rest. An older server sends no
+  // `capped`: then `truncated` with no rows left to fetch means a cap.
+  const serverCapped = isTable && (result.capped != null
+    ? !!result.capped
+    : !!result.truncated && baseTotal <= rowsIn.length);
+  const enabled = isTable && !serverCapped && baseTotal <= QH_RES_MAX_ROWS;
 
   // Sort and filter belong to one result object. A new object starts fresh.
   const [st, setSt] = React.useState({ res: result, sort: null, filter: '' });
@@ -596,10 +603,11 @@ function qhResIsNull(v, type) {
 // from /rows. So the warning shows only when the grid has no more pages to
 // fetch (`total` <= the rows sent), or when the server sends `capped`.
 function qhResCapNote(result) {
-  if (!result || result.kind !== 'table' || !result.truncated) return '';
+  if (!result || result.kind !== 'table') return '';
   const sent = Array.isArray(result.rows) ? result.rows.length : 0;
   const total = Number.isFinite(result.total) ? result.total : sent;
-  const capped = result.capped != null ? !!result.capped : total <= sent;
+  const capped = result.capped != null ? !!result.capped
+    : (!!result.truncated && total <= sent);
   if (!capped) return '';
   return 'The server capped this result at ' + total.toLocaleString() + ' rows. There can be more rows than shown.';
 }

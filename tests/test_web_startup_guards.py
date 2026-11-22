@@ -68,7 +68,55 @@ def test_readyz_is_ready_when_nothing_is_pending_or_the_answer_is_unknown(
     with boot() as c:
         r = c.get("/readyz")
     assert r.status_code == 200
-    assert r.json() == {"status": "ready"}
+    assert r.json()["status"] == "ready"
+
+
+def _heartbeat_row(monkeypatch, age):
+    def fake(sql, params=None):
+        if "bot_config" in sql:
+            return None if age is None else {"age_sec": age}
+        return {"ok": 1}
+    monkeypatch.setattr(db, "fetch_one", fake)
+
+
+@pytest.mark.parametrize("age,expected", [(10, "ok"), (900, "stale"), (None, "stale")])
+def test_readyz_reports_the_scheduler_heartbeat(
+        boot, monkeypatch, pending_calls, age, expected):
+    pending_calls([])
+    _heartbeat_row(monkeypatch, age)
+    monkeypatch.setattr("queryhub.config.get_int", lambda k, d: d)
+    with boot() as c:
+        r = c.get("/readyz")
+    assert r.status_code == 200          # a stale scheduler never fails readiness
+    assert r.json()["scheduler"] == {"status": expected, "age_sec": age}
+
+
+def test_one_scheduler_pass_writes_one_heartbeat(monkeypatch):
+    import threading
+
+    from queryhub import executor, scheduler_heartbeat
+    beats = []
+    monkeypatch.setattr(scheduler_heartbeat, "beat", lambda: beats.append(1))
+    monkeypatch.setattr(executor, "dispatch_due", lambda client: 0)
+    monkeypatch.setattr(executor, "reconcile_orphaned_executing", lambda: 0)
+    monkeypatch.setattr(executor.cancellation, "sweep_runaways", lambda: 0)
+    from queryhub import core_submit, grant_expiry
+    monkeypatch.setattr(core_submit, "reap_stale_drafts", lambda: 0)
+    monkeypatch.setattr(grant_expiry, "sweep", lambda client: 0)
+    stop = threading.Event()
+    stop.wait = lambda interval: stop.set()      # stop after the first pass
+    executor.scheduler_loop(object(), stop)
+    assert beats == [1]
+
+
+def test_heartbeat_write_never_raises(monkeypatch):
+    from queryhub import scheduler_heartbeat
+
+    def boom(sql, params=None):
+        raise RuntimeError("control DB unreachable")
+
+    monkeypatch.setattr(db, "execute", boom)
+    scheduler_heartbeat.beat()
 
 
 def test_readyz_reads_the_ledger_once_in_30_seconds(boot, db_up, pending_calls):

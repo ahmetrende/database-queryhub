@@ -261,6 +261,19 @@ function qhDbHideLoad() {
   } catch (e) { return []; }
 }
 
+// The per-user keys of this browser: cached user data and UI state that holds
+// user data. Sign-out clears them. A sign-in by another person clears them too
+// (qhWsOwnerPlan). Deliberately NOT here: qh.treeview.v1 and qh.sidewidth.v1.
+// They are chrome preferences, not user data. QH_WS_OWNER_KEY stays too: a
+// stale page of the person who signed out can still write its tabs, and the
+// owner then tells the next person to drop them. It is a function, so it reads
+// the names when it runs.
+function qhUserLocalKeys() {
+  return [QH_WS_KEY, QH_SAVED_KEY, QH_SESSIONS_KEY, QH_SCHEDULED_KEY,
+    QH_CLOSED_KEY, QH_SESSION_KEY, QH_NEWS_KEY, QH_CONNORG_KEY, QH_REASON_KEY,
+    QH_DBHIDE_KEY];
+}
+
 function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
@@ -269,7 +282,7 @@ function App() {
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const isSuper = !!(user && user.role === 'super');   // UI hint only; the server enforces access
-  const signIn = (u) => setUser(u);   // legacy prop; real sign-in is a redirect
+  const signIn = (u) => { wsClaim(u); setUser(u); };   // legacy prop; real sign-in is a redirect
   const signOut = () => {
     // The server revokes the session and deletes the httpOnly cookies. Wait for it. If the request does not
     // arrive, the session stays valid and a reload signs the user back in, so the screen must not say
@@ -278,15 +291,9 @@ function App() {
       // Storage isolation (SEC-12): the per-user cache/UI-state keys are
       // browser-global, so on a shared machine the next person would see the
       // previous user's saved queries, sessions, scheduled list and open tabs.
-      // Clear them on sign-out.
-      // Deliberately NOT cleared: qh.treeview.v1 and qh.sidewidth.v1 — chrome
-      // preferences, not user data, and resetting them on every sign-out would
-      // just be a papercut on a shared machine.
+      // Clear them on sign-out. qhUserLocalKeys names them.
       try {
-        [QH_WS_KEY, QH_SAVED_KEY, QH_SESSIONS_KEY, QH_SCHEDULED_KEY,
-         QH_CLOSED_KEY, QH_SESSION_KEY, QH_NEWS_KEY, QH_CONNORG_KEY, QH_REASON_KEY,
-         QH_DBHIDE_KEY].forEach(
-          (k) => localStorage.removeItem(k));
+        qhUserLocalKeys().forEach((k) => localStorage.removeItem(k));
       } catch (e) { /* private mode / storage disabled — nothing to clear */ }
       // The last server copy of the open tabs holds SQL too. The server copy
       // itself stays: the next sign-in on any device restores it.
@@ -315,6 +322,13 @@ function App() {
   // text and the parsed record. It is the base of the three-way merge with
   // what another browser tab wrote (qhMergeWorkspace).
   const wsBaseRef = useRef(null);
+  // The tabs of a browser with no stored workspace.
+  const wsBlank = () => ({
+    tabs: [
+      welcomeTab(),
+      { id: 't1', name: 'Query 1', sql: '', conn: null, db: null, unpicked: true, autoName: true, dirty: false, result: null, status: null, runMs: null, messages: [], audit: [], touchedAt: Date.now() },
+    ], activeId: 'welcome',
+  });
   if (!wsInit.current) {
     try {
       const raw = localStorage.getItem(QH_WS_KEY);
@@ -325,12 +339,7 @@ function App() {
       const tabs = loaded.tabs.some(x => x.kind === 'welcome') ? loaded.tabs : [welcomeTab(), ...loaded.tabs];
       wsInit.current = { tabs, activeId: loaded.activeId };
     } else {
-      wsInit.current = {
-        tabs: [
-          welcomeTab(),
-          { id: 't1', name: 'Query 1', sql: '', conn: null, db: null, unpicked: true, autoName: true, dirty: false, result: null, status: null, runMs: null, messages: [], audit: [], touchedAt: Date.now() },
-        ], activeId: 'welcome',
-      };
+      wsInit.current = wsBlank();
     }
   }
   const [tabs, setTabs] = useState(wsInit.current.tabs);
@@ -540,6 +549,16 @@ function App() {
   // Two browser tabs share qh.workspace.v1. Before a write, read what is there:
   // when another browser tab wrote since our last write or read, merge with it
   // (qhMergeWorkspace) and write the merged tabs, so neither side loses SQL.
+  // This page reads and writes qh.workspace.v1 only while its stored owner is
+  // nobody or the person signed in here. A stale page of another person must not
+  // write its tabs back after a sign-in by someone else dropped them (wsClaim).
+  const wsOwnerRef = useRef('');
+  wsOwnerRef.current = qhWsOwnerOf(user);
+  const wsMine = () => {
+    let owner = null;
+    try { owner = localStorage.getItem(QH_WS_OWNER_KEY); } catch (e) { return true; }
+    return !owner || owner === wsOwnerRef.current;
+  };
   const wsTabsRef = useRef(tabs);
   const wsActiveRef = useRef(activeId);
   wsTabsRef.current = tabs;
@@ -565,6 +584,7 @@ function App() {
     const stored = wsStoredRef.current;
     wsStoredRef.current = null;
     if (stored && stored.tabs === tabs && stored.activeId === activeId) return;
+    if (!wsMine()) return;
     try {
       let list = tabs, active = activeId;
       const raw = localStorage.getItem(QH_WS_KEY);
@@ -589,6 +609,7 @@ function App() {
   useEffect(() => {
     const onStorage = (e) => {
       if (e.key !== QH_WS_KEY && e.key !== null) return;
+      if (!wsMine()) return;
       try {
         const raw = localStorage.getItem(QH_WS_KEY);
         const base = wsBaseRef.current;
@@ -626,8 +647,35 @@ function App() {
   // Nothing from the server is applied on a timer, in the storage listener or
   // while the person types (PR 389: an echo drops keystrokes). The payload is
   // exactly qhWorkspaceSlim, the record that localStorage already holds.
-  const wsUserKey = user ? String(user.slackId || user.id || user.email || 'me') : '';
+  const wsUserKey = qhWsOwnerOf(user);
   const wsSync = useRef({ state: 'idle', version: 0, base: null, sentKey: null, timer: null, inFlight: false, again: false, conflicts: 0 });
+  // A person signs in: bind the local workspace to its owner (QH_WS_OWNER_KEY).
+  // Call it right before setUser, in the same batch. The editor then never shows
+  // the tabs of another person, and the first GET for the new person sees a
+  // blank workspace and takes the server copy. The same person keeps the tabs,
+  // so a session expiry loses no unsaved draft. A stored copy with no owner
+  // predates this check: it stays, and the first person who signs in owns it.
+  const wsClaim = (u) => {
+    let plan = 'none';
+    try { plan = qhWsClaimStorage(localStorage, qhWsOwnerOf(u), qhUserLocalKeys()); } catch (e) { return; }
+    if (plan !== 'drop') return;
+    // The page loaded the other person's data at mount. Drop it from memory too.
+    const blank = wsBlank();
+    wsBaseRef.current = { raw: null, rec: { activeId: '', tabs: [] } };
+    wsStoredRef.current = null;
+    wsTabsRef.current = blank.tabs;
+    wsActiveRef.current = blank.activeId;
+    setTabs(blank.tabs);
+    setActiveId(blank.activeId);
+    setSavedList([]);
+    setSessions([]);
+    setScheduled([]);
+    closedStack.current = [];
+    setReasons(qhLoadReasons());
+    setHiddenDbs([]);
+    qhUndoForget();
+    liveCols.current.clear();
+  };
   const [wsSyncOn, setWsSyncOn] = useState(false);
   const wsSyncOff = (why) => {
     const s = wsSync.current;
@@ -676,6 +724,9 @@ function App() {
   const wsPush = (keepalive) => {
     const s = wsSync.current;
     if (s.state !== 'on') return;
+    // Another person signed in on this browser since this page loaded. The
+    // session cookie is theirs now: never send these tabs as their copy.
+    if (!wsMine()) { wsSyncOff('another person signed in'); return; }
     if (s.timer) { clearTimeout(s.timer); s.timer = null; }
     const list = wsTabsRef.current, active = wsActiveRef.current;
     const key = qhWsSyncKey(list, active);
@@ -922,7 +973,7 @@ function App() {
     qhApi.me()
       // `isDba` sits in the `admin` block of /me, not in `user` (PR 260). It is
       // false when the field is absent, so an older server never widens the nav.
-      .then(m => { if (alive) { window.QH_TZ = (m && m.displayTz) || 'Europe/Istanbul'; setSlackEnabled(!m || m.slackEnabled !== false); setUser(m.user ? { ...m.user, isDba: !!(m.admin && m.admin.isDba === true) } : null); } })
+      .then(m => { if (alive) { window.QH_TZ = (m && m.displayTz) || 'Europe/Istanbul'; setSlackEnabled(!m || m.slackEnabled !== false); wsClaim(m && m.user); setUser(m.user ? { ...m.user, isDba: !!(m.admin && m.admin.isDba === true) } : null); } })
       .catch(() => { if (alive) setUser(null); })
       .finally(() => { if (alive) setAuthChecked(true); });
     const onSignedOut = () => setUser(null);

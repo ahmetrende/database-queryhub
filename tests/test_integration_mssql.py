@@ -229,8 +229,8 @@ def rw_showplan(server):
     """The RW login with the SHOWPLAN permission, for this test only.
 
     `stmt_guard` needs SHOWPLAN to count the statements of a batch. Without
-    it, SQL Server refuses the count and rolls back the open transaction (see
-    test_without_showplan_each_statement_drops_the_work_before_it).
+    it, a write stops and rolls back (see
+    test_without_showplan_a_write_script_stops_and_changes_nothing).
     """
     login = LOGIN_PREFIX + "rw"
     server.execute(f"GRANT SHOWPLAN TO [{login}]")
@@ -425,24 +425,23 @@ def test_a_write_script_is_one_transaction(server, rw_showplan, monkeypatch):
     assert server.locks_held("rw") == 0
 
 
-def test_without_showplan_each_statement_drops_the_work_before_it(
+def test_without_showplan_a_write_script_stops_and_changes_nothing(
         server, monkeypatch):
-    """A defect, measured here so that a fix makes this test fail.
-
-    The logins that deploy/grant_mssql.sql creates hold no SHOWPLAN
-    permission. For each statement that reads a table, `stmt_guard` then gets
-    "SHOWPLAN permission denied". SQL Server rolls back the open transaction
-    on that error, and the guard lets the statement through. So the script
-    commits only its last statement, and the result still shows a row count
-    for each statement.
-    """
-    results = _execute(
-        server,
-        "INSERT INTO dbo.ledger (id, note) VALUES (61, N'first'); "
-        "UPDATE dbo.ledger SET note = N'second' WHERE id = 61",
-        "rw", monkeypatch)
-    assert [r.rowcount for r in results] == [1, 0]
-    assert server.query("SELECT COUNT(*) FROM dbo.ledger WHERE id = 61") == [(0,)]
+    """The logins that deploy/grant_mssql.sql creates hold no SHOWPLAN
+    permission. For a statement that reads a table, the server then refuses
+    the statement count, and it can roll back the open transaction too. A
+    write needs the count, so the run stops, rolls back and commits nothing.
+    Before the fix, the script committed only its last statement."""
+    with pytest.raises(stmt_guard.CountUnavailable) as caught:
+        _execute(
+            server,
+            "INSERT INTO dbo.ledger (id, note) VALUES (61, N'first'); "
+            "UPDATE dbo.ledger SET note = N'second' WHERE id = 61",
+            "rw", monkeypatch)
+    assert "SHOWPLAN" in str(caught.value)
+    assert server.query(
+        "SELECT COUNT(*) FROM dbo.ledger WITH (NOLOCK) WHERE id = 61") == [(0,)]
+    assert server.locks_held("rw") == 0
 
 
 # --- time limit and Stop ------------------------------------------------------
@@ -469,12 +468,10 @@ def test_the_statement_timeout_ends_a_long_write_and_rolls_it_back(
     assert server.locks_held("rw") == 0
 
 
-def test_stop_cannot_reach_a_running_query_and_the_timeout_ends_it(
-        server, monkeypatch):
-    """Stop on SQL Server: the executor records no backend for the run, so
-    `stop_backend` has nothing to signal and reports FAILED. The query keeps
-    running on the server, and only the statement timeout ends it."""
-    import pyodbc
+def test_stop_cancels_a_running_query_through_the_cursor(server, monkeypatch):
+    """Stop on SQL Server: `stop_backend` finds the running cursor in this
+    process and cancels it. The query ends long before the statement timeout,
+    and the executor reports the stop, not a database error."""
     report = query_safety.analyze(SLOW_READ, engine="mssql")
     assert not report.blocked and report.main_tier == "ro"
     user, password = server.login("ro")
@@ -486,8 +483,8 @@ def test_stop_cannot_reach_a_running_query_and_the_timeout_ends_it(
         started = time.monotonic()
         try:
             executor._run_mssql(None, request, target, "ro", report, user,
-                                password, 6, 1000, 1024 * 1024)
-        except Exception as exc:        # the timeout, which the test expects
+                                password, 60, 1000, 1024 * 1024)
+        except Exception as exc:        # the stop, which the test expects
             outcome["error"] = exc
         outcome["took"] = time.monotonic() - started
 
@@ -516,15 +513,16 @@ def test_stop_cannot_reach_a_running_query_and_the_timeout_ends_it(
 
     monkeypatch.setattr(db, "fetch_one", requests_row)
     monkeypatch.setattr(targets, "get", lambda target_id: target)
-    assert cancellation.stop_backend(request["id"]) == cancellation.CancelOutcome.FAILED
-    assert server.query("SELECT COUNT(*) FROM sys.dm_exec_requests "
-                        "WHERE session_id = ?", session_id) == [(1,)]
+    assert (cancellation.stop_backend(request["id"])
+            == cancellation.CancelOutcome.CANCELLED)
 
-    worker.join(60)
+    worker.join(30)
     assert not worker.is_alive()
-    assert isinstance(outcome.get("error"), pyodbc.OperationalError), outcome
-    assert outcome["error"].args[0] == "HYT00"
-    assert outcome["took"] >= 5.5, outcome
+    assert isinstance(outcome.get("error"), executor.MssqlStopped), outcome
+    assert outcome["took"] < 30, outcome
+    assert server.query("SELECT COUNT(*) FROM sys.dm_exec_requests "
+                        "WHERE session_id = ?", session_id) == [(0,)]
+    assert mssql_exec.cancel_running(request["id"]) == "absent"
 
 
 # --- the server's own statement count ---------------------------------------
@@ -593,7 +591,7 @@ def test_sql_server_types_reach_the_result_file_and_pii_is_masked(server, monkey
 
 
 def test_a_server_error_reaches_the_requester_scrubbed_and_the_value_hidden(
-        server, monkeypatch):
+        server, rw_showplan, monkeypatch):
     """A unique-key error quotes the duplicate value. `errors.scrub` drops the
     driver prefix and hides the value, because the server read it from a row."""
     import pyodbc

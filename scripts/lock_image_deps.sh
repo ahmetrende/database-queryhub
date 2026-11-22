@@ -19,6 +19,8 @@ py=$(sed -n 's/^FROM python:\([0-9.]*\)-slim.* AS runtime$/\1/p' Dockerfile)
 # The image carries the extras that a full install uses (Slack, SQL Server,
 # AWS Secrets Manager, ClickHouse), so one image serves every profile: the
 # profile is chosen at run time by the environment, not at build time.
+# The `ai` extra (anthropic SDK) is left out on purpose. Add `--extra ai` below
+# and rebuild to enable Anthropic providers (docs/AI.md, "Providers").
 uv pip compile pyproject.toml docker/build-backend.in \
   --extra slack --extra mssql --extra aws --extra clickhouse \
   --generate-hashes --universal --python-version "$py" \
