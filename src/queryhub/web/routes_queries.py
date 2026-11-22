@@ -24,7 +24,8 @@ import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import (APIRouter, Depends, HTTPException, Request, WebSocket,
@@ -2101,7 +2102,7 @@ def _export_response(request_id: int, statement: int | None, claims: dict,
         # apart. No sidecar (or a bad one) keeps the old output.
         nulls = result_export.null_mask(p)
         if nulls is not None:
-            make = functools.partial(make, nulls=nulls)
+            make = functools.partial(cast("Callable[..., Any]", make), nulls=nulls)
     audit_mod.log(request_id, claims["sub"], claims.get("name"),
                   "web_result_downloaded",
                   {"format": fmt, "file": p.name,

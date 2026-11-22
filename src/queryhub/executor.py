@@ -21,7 +21,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, Any
 
 import psycopg
 from psycopg import sql as pgsql
@@ -1940,8 +1940,9 @@ def _mssql_statements(cur, run, main_stmts, request: dict, target, mode: str,
                     f"Nothing was changed. Ask a DBA to check the SHOWPLAN "
                     f"permission of the login of this tier.")
 
-        guard_kw = ({"require_count": True, "before_run": before_run}
-                    if write_run else {})
+        guard_kw: dict[str, Any] = (
+            {"require_count": True, "before_run": before_run}
+            if write_run else {})
         # geography / geometry / hierarchyid come back as SQL Server's own
         # serialisation, which pyodbc hands over as opaque bytes and we render
         # as hex. Only the server can turn that into `POINT (28.9784
@@ -2599,7 +2600,7 @@ class _NullSidecar:
         self.tmp = csv_path.with_name(csv_path.name + NULLS_SUFFIX + ".tmp")
         self.ncols = ncols
         self.cap = cap
-        self.fh = None
+        self.fh: IO[str] | None = None
         self.size = 0
         self.dead = cap <= 0
         # A sidecar from an older file of the same name must not apply here.

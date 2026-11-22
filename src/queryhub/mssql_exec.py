@@ -111,7 +111,7 @@ class RunningRequest:
             self._thread.start()
         return self
 
-    def __exit__(self, *exc) -> bool:
+    def __exit__(self, *exc) -> None:
         self._done.set()
         with _RUNNING_LOCK:
             if _RUNNING.get(self.request_id) is self:
@@ -119,7 +119,6 @@ class RunningRequest:
         t, self._thread = self._thread, None
         if t is not None and t is not threading.current_thread():
             t.join(timeout=2)
-        return False
 
     def _watch(self) -> None:
         while not self._done.wait(self._poll_sec):
