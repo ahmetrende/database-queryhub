@@ -176,14 +176,22 @@ def test_session_alive_binds_the_row_to_the_principal(monkeypatch):
 
 
 def test_the_request_path_passes_the_principal(monkeypatch):
-    """The check is worthless if the call site omits the second argument."""
-    for f in ("deps.py", "routes_queries.py"):
-        src = (SRC / "web" / f).read_text()
-        calls = re.findall(r"session_alive[^\n]*", src)
-        assert calls, f"no session_alive call in {f}"
-        for c in calls:
-            assert "sub" in c, (
-                f"{f}: session_alive called without the principal: {c.strip()}")
+    """The check is worthless if the call site omits the second argument.
+
+    deps.py holds the one call, in check_session_claims. The status socket in
+    routes_queries.py goes through that helper, never a call of its own.
+    """
+    deps_src = (SRC / "web" / "deps.py").read_text()
+    calls = re.findall(r"session_alive[^\n]*", deps_src)
+    assert calls, "no session_alive call in deps.py"
+    for c in calls:
+        assert "sub" in c, (
+            f"deps.py: session_alive called without the principal: {c.strip()}")
+    rq = (SRC / "web" / "routes_queries.py").read_text()
+    assert "deps.check_session_claims" in rq
+    for c in re.findall(r"session_alive[^\n]*", rq):
+        assert "sub" in c, (
+            f"routes_queries.py: session_alive called without the principal: {c.strip()}")
 
 
 # ---------------------------------------------------------------------------

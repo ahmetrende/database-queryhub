@@ -1298,14 +1298,24 @@ def dispatch_and_notify(
     row = outcome.row
 
     if outcome.auto_approved:
+        # Each DM below has its own guard, so a Slack error cannot stop the
+        # executor hand-off that follows them.
         if outcome.aa_grant is not None:
-            notifications.dm_admins_auto_approved(
-                client, row, prep.target, outcome.aa_grant)
+            try:
+                notifications.dm_admins_auto_approved(
+                    client, row, prep.target, outcome.aa_grant)
+            except Exception:
+                log.warning("auto-approve admin DM failed for request %s",
+                            row["id"], exc_info=True)
             why = (f"({auto_approve.basis_label(outcome.aa_grant)}, "
                    f"max_tier={outcome.aa_grant['max_tier']})")
         elif outcome.fp_hit is not None:
-            notifications.dm_admins_auto_approved_fingerprint(
-                client, row, prep.target, outcome.fp_hit)
+            try:
+                notifications.dm_admins_auto_approved_fingerprint(
+                    client, row, prep.target, outcome.fp_hit)
+            except Exception:
+                log.warning("auto-approve admin DM failed for request %s",
+                            row["id"], exc_info=True)
             why = f"(matches your completed request #{outcome.fp_hit['id']})"
         else:
             # Super-admin self-authorized auto-approve: no grant and no
@@ -1321,18 +1331,26 @@ def dispatch_and_notify(
                     f"\n*Scheduled for:* `{row['scheduled_for']:%Y-%m-%d %H:%M UTC}` "
                     "(auto-approved)"
                 )
-            notifications.dm_requester(
-                client, prep.user_id,
-                f":zap: *SQL query request `#{row['id']}` auto-approved* {why}."
-                + sched_line + "\n"
-                + notifications.request_context_with_query_md(row),
-            )
+            try:
+                notifications.dm_requester(
+                    client, prep.user_id,
+                    f":zap: *SQL query request `#{row['id']}` auto-approved* {why}."
+                    + sched_line + "\n"
+                    + notifications.request_context_with_query_md(row),
+                )
+            except Exception:
+                log.warning("auto-approve DM to requester failed for request %s",
+                            row["id"], exc_info=True)
         if prep.sched_for is None:
             executor.submit(row, client)
             return "dispatched"
         # Scheduled auto-approved — the scheduler picks it up on time.
         if dm_requester:
-            notifications.dm_user_scheduled(client, row)
+            try:
+                notifications.dm_user_scheduled(client, row)
+            except Exception:
+                log.warning("scheduled DM to requester failed for request %s",
+                            row["id"], exc_info=True)
         return "scheduled"
 
     # Captured ONCE: `notify_admins`'s DM fan-out and the notification_outbox

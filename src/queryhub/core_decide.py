@@ -32,11 +32,14 @@ tests/test_kill_switch_approve_guard.py fails when a new path skips it.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from . import audit, auto_approve, core_submit, db, idp_outbox
+
+log = logging.getLogger(__name__)
 
 _VALID = ("approve", "reject", "changes")
 
@@ -302,22 +305,34 @@ def apply_effects(client, outcome: Outcome) -> None:
                     keep_cancel_button=True)
                 notifications.dm_user_scheduled(client, row)
             return
+        # The approval is already committed. Each notification below has its
+        # own guard, so a Slack error cannot stop the executor hand-off at the
+        # end. The hand-off stays last: the executor updates the same cards
+        # and DMs, and must not be overwritten by an "approved" update.
+        def _safe(label: str, fn, *args, **kwargs) -> None:
+            try:
+                fn(*args, **kwargs)
+            except Exception:
+                log.warning("approve notification '%s' failed for request %s",
+                            label, row["id"], exc_info=True)
+
         if is_bundle:
-            notifications.update_bundle_admin_dms(client, row["bundle_id"])
+            _safe("bundle admin DMs", notifications.update_bundle_admin_dms,
+                  client, row["bundle_id"])
         else:
-            notifications.update_all_admin_messages(
-                client, row, f":white_check_mark: Approved by <@{by}>")
-            notifications.dm_requester(
+            _safe("admin messages", notifications.update_all_admin_messages,
+                  client, row, f":white_check_mark: Approved by <@{by}>")
+            _safe("requester DM", lambda: notifications.dm_requester(
                 client, row["requester_slack_id"],
                 text=f"SQL request #{row['id']} approved — executing now.",
                 blocks=notifications.requester_card_blocks(
                     row, status_emoji=":white_check_mark:",
                     status_text=f"Approved by <@{by}> — executing now"),
                 color=notifications._status_color(
-                    {"status": "approved"}, notifications._tier_color(row)))
-            notifications.update_requester_card(
-                client, row, status_emoji=":white_check_mark:",
-                status_text=f"Approved by <@{by}>")
+                    {"status": "approved"}, notifications._tier_color(row))))
+            _safe("requester card", notifications.update_requester_card,
+                  client, row, status_emoji=":white_check_mark:",
+                  status_text=f"Approved by <@{by}>")
         executor.submit(row, client)
         return
 

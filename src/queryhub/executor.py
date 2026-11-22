@@ -1286,7 +1286,12 @@ def _run(request: dict, client: WebClient) -> None:
                   # choice gets no server line: the web client builds that
                   # sentence from `ranOn`, and a second copy would show twice.
                   replica=({"lag_s": route.lag_s}
-                           if route is not None and forced is None else None))
+                           if route is not None and forced is None else None),
+                  # Both commit paths are done here: autocommit set the flag
+                  # per statement, and the explicit commit ran above.
+                  committed_mutation=bool(
+                      committed["mutation"]
+                      or (not autocommit and mode in ("rw", "ddl"))))
 
     except psycopg.errors.QueryCanceled as e:
         # A Stop (pg_cancel_backend) raises this too, and this thread sees it
@@ -1542,17 +1547,29 @@ def _run_notes(stmt_results: list, replica: dict | None = None) -> dict:
 def _finalize(client: WebClient, request: dict, stmt_results: list,
               csv_paths_to_cleanup: list, *,
               max_csv_bytes: int, target, elapsed: float,
-              replica: dict | None = None) -> None:
+              replica: dict | None = None,
+              committed_mutation: bool = False) -> None:
     """Shared post-execution: size-cap check, PII-fired collection + audit,
     and completion dispatch (plan / no-result / csv / multi). Engine-agnostic
     — both the Postgres and SQL Server paths build a list of _StmtResult and
-    hand it here, so the completion logic lives in exactly one place."""
+    hand it here, so the completion logic lives in exactly one place.
+
+    `committed_mutation` is True when an RW/DDL statement already committed
+    before this call. A size-cap hit then completes the request with a
+    delivery warning instead of failing it, because the change is applied."""
     request_id = request["id"]
     # Size truncation -> fail the whole request, clean every CSV.
     if any(r.truncated_size for r in stmt_results):
         for p in csv_paths_to_cleanup:
             p.unlink(missing_ok=True)
         max_mb = max_csv_bytes // 1024 // 1024
+        if committed_mutation:
+            # The change is applied. Failing the row would invite a re-run.
+            _complete_with_delivery_warning(
+                client, request,
+                f"The result exceeded the {max_mb} MB result-size limit.")
+            _alert_admins_size_cap(client, request, max_mb, applied=True)
+            return
         _fail(
             client, request,
             f"The result would exceed the {max_mb} MB result-size limit. "
@@ -1910,8 +1927,11 @@ def _run_mssql(client: WebClient, request: dict, target, mode: str, report,
         conn.close()
 
     csv_paths = [r.csv_path for r in stmt_results if r.csv_path is not None]
+    # The commit above ran. An RW or DDL run changed data even when its
+    # result is too large to deliver.
     _finalize(client, request, stmt_results, csv_paths,
-              max_csv_bytes=max_csv_bytes, target=target, elapsed=elapsed)
+              max_csv_bytes=max_csv_bytes, target=target, elapsed=elapsed,
+              committed_mutation=mode in ("rw", "ddl"))
 
 
 def _execute_main_statement(
@@ -3152,7 +3172,8 @@ def _escalate_to_dba(client: WebClient, request: dict, pg_error: str) -> None:
         )
 
 
-def _alert_admins_size_cap(client: WebClient, request: dict, max_mb: int) -> None:
+def _alert_admins_size_cap(client: WebClient, request: dict, max_mb: int, *,
+                           applied: bool = False) -> None:
     """DM the admins when a result was too big for a Slack file (hit the
     size cap). The requester already got the failure DM via _fail; this is
     the operator heads-up to consider a bigger ceiling / row-size override /
@@ -3160,11 +3181,13 @@ def _alert_admins_size_cap(client: WebClient, request: dict, max_mb: int) -> Non
     try:
         t = targets.get(request["target_server_id"])
         alias = t.alias if t else str(request["target_server_id"])
+        outcome = ("the change was applied, but the result was not "
+                   "delivered" if applied else "the request failed")
         text = (
             f":warning: SQL request `#{request['id']}` from "
             f"<@{request['requester_slack_id']}> hit the *{max_mb} MB* "
             f"result-size limit on `{alias}/{request['database_name']}`. The "
-            f"result was too large for a Slack file, so the request failed. "
+            f"result was too large for a Slack file, so {outcome}. "
             f"Options: raise `bot_config.csv_size_mb_ceiling`, grant a row or "
             f"size override, or use an S3 export."
         )

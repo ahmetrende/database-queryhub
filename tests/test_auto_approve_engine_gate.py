@@ -598,6 +598,24 @@ def test_the_requester_is_told_the_basis(monkeypatch):
     assert "(archive: owner lead, max_tier=ro)" in told[0] and ran == [42]
 
 
+def test_auto_approve_dispatches_even_when_the_dms_raise(monkeypatch):
+    """A Slack error in any DM must not stop the hand-off to the executor."""
+    from queryhub.slack_app import notifications
+    ran = []
+
+    def _boom(*a, **k):
+        raise RuntimeError("slack_api_error")
+
+    monkeypatch.setattr(notifications, "dm_admins_auto_approved", _boom)
+    monkeypatch.setattr(notifications, "dm_requester", _boom)
+    monkeypatch.setattr(notifications, "request_context_with_query_md", lambda row: "")
+    monkeypatch.setattr(executor, "submit", lambda row, client: ran.append(row["id"]))
+    basis = {"id": None, "basis": "archive: owner lead", "max_tier": "ro"}
+    outcome = cs.Outcome(row={"id": 42}, auto_approved=True, aa_grant=basis)
+    assert cs.dispatch_and_notify(None, _prepared(ARCHIVE, LEAD_BARE), outcome) == "dispatched"
+    assert ran == [42]
+
+
 # ---------------------------------------------------------------------------
 # validate_submission: the justification exemption
 # ---------------------------------------------------------------------------

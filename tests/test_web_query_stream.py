@@ -147,6 +147,51 @@ def test_a_stream_for_someone_elses_request_is_refused(client, monkeypatch):
     assert err.value.code == 4404
 
 
+def test_a_session_revoked_mid_stream_closes_the_socket(client, monkeypatch):
+    """The session is re-checked during the stream, not only at the handshake."""
+    from starlette.websockets import WebSocketDisconnect
+
+    state = {"revoked": False}
+
+    def fake_fetch_one(sql, params=None):
+        if "requester_slack_id" in sql and "SELECT 1" in sql:
+            return {"x": 1}
+        state["revoked"] = True  # revoke after the first poll
+        return {"status": "pending", "scheduled_for": None,
+                "executed_at": None, "decided_by_slack_id": None,
+                "decided_by_name": None}
+
+    monkeypatch.setattr(routes_queries.db, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(sessions, "session_alive",
+                        lambda sid, principal=None: not state["revoked"])
+    monkeypatch.setattr(routes_queries, "_WS_POLL_SEC", 0.0)
+    monkeypatch.setattr(routes_queries, "_WS_RECHECK_TICKS", 1)
+    with pytest.raises(WebSocketDisconnect) as err:
+        with client.websocket_connect(
+                "/api/queries/42/stream",
+                headers={"origin": "http://testserver"}) as ws:
+            for _ in range(20):
+                ws.receive_json()
+    assert err.value.code == 1008
+
+
+def test_a_user_the_own_ui_gate_refuses_is_closed_at_the_handshake(
+        client, monkeypatch):
+    from queryhub.web import deps
+
+    monkeypatch.setattr(deps, "own_ui_allowed", lambda uid: False)
+    with pytest.raises(Exception) as err:
+        with client.websocket_connect(
+                "/api/queries/42/stream",
+                headers={"origin": "http://testserver"}) as ws:
+            ws.receive_json()
+    # Either the router dependency denies the upgrade (403) or the handler
+    # closes it (4403). Both refuse the user.
+    status = getattr(err.value, "status_code", None)
+    code = getattr(err.value, "code", None)
+    assert status == 403 or code == 4403, (status, code)
+
+
 def test_origin_helper_semantics():
     """Unit-level, because both the middleware and the handshake depend on it."""
     from queryhub.web import deps
