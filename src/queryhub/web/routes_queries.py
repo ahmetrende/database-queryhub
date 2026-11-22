@@ -27,7 +27,8 @@ from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
+from fastapi import (APIRouter, Depends, HTTPException, Request, WebSocket,
+                     WebSocketDisconnect)
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
@@ -2108,6 +2109,19 @@ _WS_TERMINAL = {"failed", "rejected", "cancelled", "expired", "changes_requested
                 "awaiting_dba_manual"}
 
 
+_WS_RECHECK_TICKS = 30       # re-check the session about every 30 seconds
+
+
+async def _ws_session_refusal(claims: dict) -> int | None:
+    """Run the shared session checks off the event loop. Returns the HTTP
+    status the check refused with, or None when the session is fine."""
+    try:
+        await asyncio.to_thread(deps.check_session_claims, claims)
+    except HTTPException as e:
+        return e.status_code
+    return None
+
+
 async def _ws_auth(websocket: WebSocket, request_id: int) -> str | None:
     """Authenticate a stream handshake from the session cookie. Returns the
     slack id on success; closes the socket and returns None otherwise."""
@@ -2131,8 +2145,9 @@ async def _ws_auth(websocket: WebSocket, request_id: int) -> str | None:
         await websocket.close(code=4401)
         return None
     uid = claims["sub"]
-    if not await asyncio.to_thread(sessions.session_alive, claims["sid"], claims.get("sub")):
-        await websocket.close(code=4401)
+    refused = await _ws_session_refusal(claims)
+    if refused is not None:
+        await websocket.close(code=4401 if refused == 401 else 4403)
         return None
     ok = await asyncio.to_thread(
         lambda: admins.is_admin(uid) or requesters.is_allowed(uid))
@@ -2157,8 +2172,14 @@ async def query_stream(websocket: WebSocket, request_id: int):
     await websocket.accept()
     last_status: str | None = None
     last_audit_n = 0
+    # Claims were verified at the handshake. Read them again for the re-check.
+    ws_claims = sessions.verify_access(websocket.cookies.get(deps.SESSION_COOKIE) or "")
     try:
-        for _ in range(_WS_MAX_TICKS):
+        for tick in range(_WS_MAX_TICKS):
+            if tick and tick % _WS_RECHECK_TICKS == 0:
+                if ws_claims is None or await _ws_session_refusal(ws_claims) is not None:
+                    await websocket.close(code=1008)
+                    return
             r = await asyncio.to_thread(
                 db.fetch_one,
                 "SELECT status, scheduled_for, executed_at, decided_by_slack_id, "

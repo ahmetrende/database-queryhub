@@ -164,6 +164,14 @@ def current_user(conn: HTTPConnection) -> dict:
     if claims is None:
         raise _error(401, "unauthenticated",
                      "Your session expired or is not valid. Sign in again.")
+    check_session_claims(claims)
+    return claims
+
+
+def check_session_claims(claims: dict) -> None:
+    """Live session checks shared by `current_user` and the status socket:
+    session alive, local account enabled, own UI allowed. Raises the same
+    HTTP errors `current_user` always raised."""
     if not sessions.session_alive(claims["sid"], claims.get("sub")):
         raise _error(401, "unauthenticated",
                      "Your session is revoked. Sign in again.")
@@ -184,7 +192,6 @@ def current_user(conn: HTTPConnection) -> dict:
     # working at once, not when it expires.
     if not own_ui_allowed(claims.get("sub") or ""):
         raise _error(403, "ui_super_admin_only", PORTAL_ONLY_MESSAGE)
-    return claims
 
 
 def _request_target(conn: HTTPConnection) -> str:

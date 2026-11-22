@@ -233,6 +233,32 @@ def test_immediate_approve_dispatches_to_the_executor(monkeypatch):
     assert submitted == [7]
 
 
+def test_approve_dispatches_even_when_the_requester_dm_raises(monkeypatch):
+    """A Slack error in a DM must not leave an approved row undispatched."""
+    from queryhub import executor
+    from queryhub.slack_app import notifications
+
+    submitted = []
+    monkeypatch.setattr(executor, "submit",
+                        lambda row, client: submitted.append(row["id"]))
+    for name in ("update_all_admin_messages", "update_requester_card",
+                 "update_bundle_admin_dms", "dm_user_scheduled"):
+        monkeypatch.setattr(notifications, name, lambda *a, **k: None)
+
+    def _boom(*a, **k):
+        raise RuntimeError("slack_api_error")
+
+    monkeypatch.setattr(notifications, "dm_requester", _boom)
+    monkeypatch.setattr(notifications, "requester_card_blocks",
+                        lambda *a, **k: [])
+    monkeypatch.setattr(notifications, "_status_color", lambda *a, **k: "#000")
+    monkeypatch.setattr(notifications, "_tier_color", lambda *a, **k: "#000")
+
+    core_decide.apply_effects(None, core_decide.Outcome(
+        row=dict(ROW), decision="approve", deferred=False))
+    assert submitted == [7]
+
+
 def test_deferred_approve_does_not_dispatch(monkeypatch):
     """A scheduled request must wait for the scheduler, not run at decide time."""
     from queryhub import executor

@@ -1938,15 +1938,52 @@ def dm_requester(client: WebClient, principal_id: str, text: str,
         return None
     opened = client.conversations_open(users=principal_id)
     channel = opened["channel"]["id"]
-    kwargs: dict = {"channel": channel, "text": text,
+    fallback = text if len(text) <= _DM_FALLBACK_MAX else text[:_DM_FALLBACK_MAX]
+    kwargs: dict = {"channel": channel, "text": fallback,
                     **_display_overrides()}
     # Always render through blocks so the trailing divider (_post) applies
     # even to plain-text DMs; `text` stays as the notification fallback.
-    kwargs["blocks"] = blocks if blocks is not None else [
-        {"type": "section", "text": {"type": "mrkdwn", "text": text}}
-    ]
-    res = _post(client,**kwargs)
+    if blocks is not None:
+        kwargs["blocks"] = blocks
+        res = _post(client, **kwargs)
+        return res["channel"]
+    # Plain text: split into sections. Slack rejects a section over 3000
+    # characters and a message over 50 blocks, so long text goes out as
+    # several messages in order.
+    sections = split_text_to_sections(text)
+    res = None
+    for i in range(0, len(sections), _DM_MAX_SECTIONS_PER_MESSAGE):
+        kwargs["blocks"] = sections[i:i + _DM_MAX_SECTIONS_PER_MESSAGE]
+        res = _post(client, **dict(kwargs))
     return res["channel"]
+
+
+_SECTION_TEXT_MAX = 3000
+_DM_MAX_SECTIONS_PER_MESSAGE = 45
+_DM_FALLBACK_MAX = 35000
+
+
+def split_text_to_sections(text: str, limit: int = _SECTION_TEXT_MAX) -> list[dict]:
+    """Split text into mrkdwn section blocks of at most `limit` characters.
+    Split on line breaks and keep the order. A line that fits is never cut.
+    A single longer line is cut at `limit`. Empty text gives one section."""
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        pieces = [line[i:i + limit] for i in range(0, len(line), limit)] or [""]
+        for piece in pieces:
+            if not current:
+                candidate = piece
+            else:
+                candidate = current + "\n" + piece
+            if len(candidate) <= limit:
+                current = candidate
+            else:
+                chunks.append(current)
+                current = piece
+    chunks.append(current)
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": c}}
+            for c in chunks]
 
 
 # ---------- requester-facing status card ----------------------------------

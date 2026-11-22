@@ -271,35 +271,43 @@ function App() {
   const isSuper = !!(user && user.role === 'super');   // UI hint only; the server enforces access
   const signIn = (u) => setUser(u);   // legacy prop; real sign-in is a redirect
   const signOut = () => {
-    qhApi.signout().catch(() => {});
-    // Storage isolation (SEC-12): the per-user cache/UI-state keys are
-    // browser-global, so on a shared machine the next person would see the
-    // previous user's saved queries, sessions, scheduled list and open tabs.
-    // Clear them on sign-out.
-    // Deliberately NOT cleared: qh.treeview.v1 and qh.sidewidth.v1 — chrome
-    // preferences, not user data, and resetting them on every sign-out would
-    // just be a papercut on a shared machine.
-    try {
-      [QH_WS_KEY, QH_SAVED_KEY, QH_SESSIONS_KEY, QH_SCHEDULED_KEY,
-       QH_CLOSED_KEY, QH_SESSION_KEY, QH_NEWS_KEY, QH_CONNORG_KEY, QH_REASON_KEY,
-       QH_DBHIDE_KEY].forEach(
-        (k) => localStorage.removeItem(k));
-    } catch (e) { /* private mode / storage disabled — nothing to clear */ }
-    // The last server copy of the open tabs holds SQL too. The server copy
-    // itself stays: the next sign-in on any device restores it.
-    try { localStorage.removeItem(QH_WS_SERVER_KEY); } catch (e) {}
-    // The hidden-database list names the previous user's databases. Called
-    // from a click, after the render that declared it.
-    setHiddenDbs([]);
-    // The editor's undo history is the same kind of data — the previous
-    // user's SQL — and sign-out does not reload the page.
-    qhUndoForget();
-    liveCols.current.clear();
-    // The server tree is the previous user's too, and sign-out does not reload.
-    setConns([]);
-    setConnsLoading(true);
-    setDevLoading(true);
-    setUser(null);
+    // The server revokes the session and deletes the httpOnly cookies. Wait for it. If the request does not
+    // arrive, the session stays valid and a reload signs the user back in, so the screen must not say
+    // "signed out". A 401 means the session is already gone: that is a sign-out too.
+    const forget = () => {
+      // Storage isolation (SEC-12): the per-user cache/UI-state keys are
+      // browser-global, so on a shared machine the next person would see the
+      // previous user's saved queries, sessions, scheduled list and open tabs.
+      // Clear them on sign-out.
+      // Deliberately NOT cleared: qh.treeview.v1 and qh.sidewidth.v1 — chrome
+      // preferences, not user data, and resetting them on every sign-out would
+      // just be a papercut on a shared machine.
+      try {
+        [QH_WS_KEY, QH_SAVED_KEY, QH_SESSIONS_KEY, QH_SCHEDULED_KEY,
+         QH_CLOSED_KEY, QH_SESSION_KEY, QH_NEWS_KEY, QH_CONNORG_KEY, QH_REASON_KEY,
+         QH_DBHIDE_KEY].forEach(
+          (k) => localStorage.removeItem(k));
+      } catch (e) { /* private mode / storage disabled — nothing to clear */ }
+      // The last server copy of the open tabs holds SQL too. The server copy
+      // itself stays: the next sign-in on any device restores it.
+      try { localStorage.removeItem(QH_WS_SERVER_KEY); } catch (e) {}
+      // The hidden-database list names the previous user's databases. Called
+      // from a click, after the render that declared it.
+      setHiddenDbs([]);
+      // The editor's undo history is the same kind of data — the previous
+      // user's SQL — and sign-out does not reload the page.
+      qhUndoForget();
+      liveCols.current.clear();
+      // The server tree is the previous user's too, and sign-out does not reload.
+      setConns([]);
+      setConnsLoading(true);
+      setDevLoading(true);
+      setUser(null);
+    };
+    qhApi.signout().then(forget, (e) => {
+      if (e && e.status === 401) { forget(); return; }
+      pushToast('Sign-out did not reach the server. You are still signed in. Try again.', 'err');
+    });
   };
 
   const wsInit = useRef();
