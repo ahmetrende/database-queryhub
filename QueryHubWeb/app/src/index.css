@@ -179,12 +179,16 @@
   .qh-wn-sum { margin: 6px 0 0; font-size: 14px; line-height: 1.65; color: var(--fg-secondary); text-wrap: pretty; }
   .qh-wn-act { margin: 12px 0 0; padding: 10px 12px; border-radius: var(--r-sm); background: var(--warning-adaptive-light); font-size: 14px; line-height: 1.6; color: var(--fg-primary); }
   .qh-wn-act-lbl { display: block; margin-bottom: 2px; font-size: 12px; font-weight: 700; color: var(--fg-primary); }
-  .qh-wn-shots { display: flex; gap: 12px; margin: 14px 0 0; }
+  /* The before and after images are one button. A click opens both in a dialog. */
+  .qh-wn-shots { display: flex; gap: 12px; margin: 14px 0 0; width: 100%; padding: 0; border: 0; border-radius: var(--r-sm); background: none; font: inherit; color: inherit; text-align: left; cursor: zoom-in; }
+  .qh-wn-shots:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
   .qh-wn-shot { flex: 1 1 0; min-width: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
   .qh-wn-shot-lbl { font-size: 12px; font-weight: 600; color: var(--fg-tertiary); }
-  .qh-wn-shot-link { display: block; overflow: hidden; border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); background: var(--bg-light); }
-  .qh-wn-shot-link:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
-  .qh-wn-shot-link img { display: block; width: 100%; height: auto; }
+  .qh-wn-shot-img { display: block; overflow: hidden; border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); background: var(--bg-light); }
+  .qh-wn-shots:hover .qh-wn-shot-img { border-color: var(--stroke-accent); }
+  .qh-wn-shot-img img { display: block; width: 100%; height: auto; }
+  .qh-modal.qh-wn-lightbox { width: min(1400px, calc(100vw - 48px)); }
+  .qh-wn-lightbox-body { display: flex; gap: 16px; padding: 4px 22px 22px; overflow: auto; min-height: 0; }
   .qh-wn-changes { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   .qh-wn-change { font-size: 14px; line-height: 1.55; color: var(--fg-primary); }
   .qh-wn-crow { display: flex; align-items: baseline; gap: 10px; }
@@ -200,7 +204,7 @@
   .qh-wn-state { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 32px 0; font-size: 13px; color: var(--fg-tertiary); text-align: center; }
   @media (max-width: 560px) {
     .qh-wn-hero { flex-wrap: wrap; }
-    .qh-wn-shots { flex-direction: column; }
+    .qh-wn-shots, .qh-wn-lightbox-body { flex-direction: column; }
     .qh-wn-crow { flex-wrap: wrap; }
     .qh-wn-cdet { margin-left: 0; }
   }
