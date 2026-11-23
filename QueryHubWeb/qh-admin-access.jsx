@@ -714,9 +714,12 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
     st.setSubjectGrants(subjectType, subject.trim(), targets, { untouched: lockedConns });
     onDone();
   };
-  // A widening edit renames the button (DESIGN.md: "Say what a widening action
-  // changes before it runs"). With nothing held before, it is a grant.
-  const verb = !diff.widens ? 'Save access' : initial.length ? 'Widen access' : 'Grant access';
+  // With nothing held before, a widening save is a grant. A widening edit of
+  // held access says "Save changes" in plain words (PLA-2103). The line beside
+  // the button says what changes, and the button turns red when the save
+  // widens or removes access, as in the portal tab.
+  const verb = !diff.widens ? 'Save access' : initial.length ? 'Save changes' : 'Grant access';
+  const saveCls = 'qh-btn qh-btn-sm ' + (diff.widens || diff.removed.length ? 'qh-btn-danger' : 'qh-btn-primary');
   const connOf = (id) => conns.find(c => c.id === id) || { id, name: id, databases: [] };
   const summary = accSummary(diff, id => connOf(id).name);
   const taken = {};
@@ -801,6 +804,15 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
     );
   };
 
+  // The same two buttons sit above the list and in the bar below it. One
+  // element, so the two sets cannot disagree on label, state or tooltip.
+  const acts = (
+    <div className="qh-acced-bar-acts">
+      <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone}>Cancel</button>
+      <span title={why || undefined}><button type="button" className={saveCls} onClick={save} disabled={blocked}>{verb}</button></span>
+    </div>
+  );
+
   return (
     <div className="qh-acced" ref={rootRef}>
       <div className="qh-acced-head">
@@ -828,26 +840,25 @@ function SubjectAccessEditor({ st, actor, subjectType0, subject0, name0, lockSub
         </div>
       ) : (
         <>
-          <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-acced-addtop" onClick={() => addRow(true)}><AIcon.plus />Add a connection</button>
+          <div className="qh-acced-top">
+            <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-acced-addtop" onClick={() => addRow(true)}><AIcon.plus />Add a connection</button>
+            {acts}
+          </div>
           <div className="qh-acced-list">{rows.map(renderRow)}</div>
           <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-acced-add" onClick={() => addRow(false)}><AIcon.plus />Add a connection</button>
         </>
       )}
 
-      {/* ONE action bar, where there were two. CODE brief 2026-08-20 §1 put a
-          second Save at the top, so that a long list did not hide it. This bar
-          sticks to the bottom of the editor instead. It stays in view at any
-          length, next to the line that says what Save writes. */}
+      {/* This bar sticks to the bottom of the editor, next to the line that
+          says what Save writes. Admins asked for the same buttons above the
+          list too, so that a long list is no search for Save (PLA-2103). */}
       <div className="qh-acced-bar">
         <div className="qh-acced-bar-say">
           {summary && <span className="qh-acced-sum">{summary}</span>}
           {why && why !== NOTHING && <span className="qh-acced-why"><AIcon.alert />{why}</span>}
           {why === NOTHING && <span>{NOTHING}</span>}
         </div>
-        <div className="qh-acced-bar-acts">
-          <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={onDone}>Cancel</button>
-          <span title={why || undefined}><button type="button" className="qh-btn qh-btn-primary qh-btn-sm" onClick={save} disabled={blocked}>{verb}</button></span>
-        </div>
+        {acts}
       </div>
     </div>
   );

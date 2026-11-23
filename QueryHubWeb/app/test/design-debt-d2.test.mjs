@@ -78,6 +78,23 @@ test('Roles: Revoke opens an inline row, Keep role closes it, Revoke role remove
   assert.equal(ui.all('.qh-revokeconfirm').length, 0);
 });
 
+// PLA-2103: a widening role edit keeps the plain label "Save N change(s)".
+// The red button and the line above it say that the edit widens the role.
+test('Roles: a widening edit keeps the Save label and turns the button red', opts, () => {
+  const ui = mount(['qh-admin-access.jsx', 'qh-admin-roles.jsx'], 'RolesView', () => ({ canWrite: true, user: { name: 'Sam Doe', role: 'super' },
+    st: { roles: [{ ...ROLE, maxTier: 'RO' }], rolesEnforced: true, people: [], teams: [], connections: [], updateRole: () => Promise.resolve({}) } }));
+  ui.click(btn(ui.doc.querySelector('.qh-rolerow'), 'Edit'));
+  const tier = [...ui.doc.querySelectorAll('.qh-rolefield')].find(l => /Tier ceiling/.test(l.textContent)).querySelector('select');
+  ui.win.React.act(() => {
+    Object.getOwnPropertyDescriptor(ui.win.HTMLSelectElement.prototype, 'value').set.call(tier, 'RW');
+    tier.dispatchEvent(new ui.win.Event('change', { bubbles: true }));
+  });
+  const save = ui.doc.querySelector('.qh-accedit-acts .qh-btn:last-child');
+  assert.equal(save.textContent, 'Save 1 change');
+  assert.ok(save.classList.contains('qh-btn-danger'), 'a widening edit is red');
+  assert.match(ui.doc.querySelector('.qh-rolediff-h').textContent, /This widens what/);
+});
+
 // ---------- 1b. Masking ----------
 
 const EXEMPT = { id: 'm1', scope: 'column', connectionId: 'c1', connectionName: 'orders-main', databaseId: 'd1', databaseName: 'orders',

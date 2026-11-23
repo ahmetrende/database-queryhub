@@ -324,7 +324,7 @@ function RoleForm({ st, onDone, init }) {
       )}
       <div className="qh-accedit-acts">
         <button className="qh-btn qh-btn-sm" onClick={onDone}>Cancel</button>
-        <button className={'qh-btn qh-btn-sm ' + (editing && widens ? 'qh-btn-danger' : 'qh-btn-primary')} disabled={bad || busy || (editing && !changes.length)} onClick={save}>{busy ? 'Saving…' : editing ? (widens ? 'Widen this role' : 'Save ' + changes.length + ' change' + (changes.length === 1 ? '' : 's')) : 'Create role'}</button>
+        <button className={'qh-btn qh-btn-sm ' + (editing && widens ? 'qh-btn-danger' : 'qh-btn-primary')} disabled={bad || busy || (editing && !changes.length)} onClick={save}>{busy ? 'Saving…' : editing ? 'Save ' + changes.length + ' change' + (changes.length === 1 ? '' : 's') : 'Create role'}</button>
       </div>
       {expBad(f) && <div className="qh-roleform-err">Pick an end date in the future — a role that is already over reads as a role that works.</div>}
     </div>

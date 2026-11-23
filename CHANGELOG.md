@@ -24,6 +24,19 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **Edit access has Cancel and Save above the list too.** In a long list the buttons
+  were far down the page. The same two buttons now sit above the list and in the bar below
+  it. Both sets share one label, one state and one reason. A widening edit of held access
+  says "Save changes" now, not "Widen access". The button turns red when the save widens or
+  removes access, and the line next to it still names what changes. The role and masking
+  forms drop "Widen this role" and "Widen this exemption" the same way: the label stays the
+  save label, the button turns red and a warning line says what widens. The portal tab gets
+  the same change.
+
+  | Before | After |
+  |---|---|
+  | ![Edit access with Cancel and Save only below the list, and the button Widen access.](docs/whatsnew/access-editor-buttons-before.png) | ![Edit access with Cancel and Save above and below the list, and a red Save changes button.](docs/whatsnew/access-editor-buttons-after.png) |
+
 - **The What's new page has a new layout.** Updates are short cards in date groups. The
   page has search, a period filter and a category filter, and a box with the updates of the
   last 7 days. A breaking update shows "What you need to do". Admins get an All / Users /

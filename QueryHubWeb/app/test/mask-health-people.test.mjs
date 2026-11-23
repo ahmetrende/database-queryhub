@@ -187,17 +187,19 @@ test('each audience shows its own chip, and an ended row reads quiet', opts, () 
   assert.equal(ui.all('.qh-mxitem').length, 1, 'the Ended filter keeps the ended row only');
 });
 
-test('a widening edit says so and renames its button. A narrowing one does not', opts, () => {
+test('a widening edit says so and turns its button red. The label stays Save changes', opts, () => {
   const rec = [];
   const ui = mount('MaskingView', maskSt(rec));
   ui.click(item(ui, 'c5').querySelector('.qh-mxitem-top'));
   ui.click(ui.button('Edit', item(ui, 'c5')));
   const radio = (label) => ui.all('.qh-mxradio', item(ui, 'c5')).find(l => l.querySelector('.qh-mxradio-l').textContent.replace('usual', '') === label).querySelector('input');
   ui.click(radio('super-admins only'));
-  ui.button('Save changes', item(ui, 'c5'));
+  assert.equal(ui.button('Save changes', item(ui, 'c5')).className.includes('qh-btn-danger'), false);
   ui.click(radio('everyone'));
   assert.match(item(ui, 'c5').textContent, /This edit widens the exemption: more people see the values\./);
-  ui.click(ui.button('Widen this exemption', item(ui, 'c5')));
+  // PLA-2103: the label stays plain. The warning line and the red button say it widens.
+  assert.equal(ui.button('Save changes', item(ui, 'c5')).className.includes('qh-btn-danger'), true);
+  ui.click(ui.button('Save changes', item(ui, 'c5')));
   assert.deepEqual(rec[0], ['patch', '5', { strength: 'soft', survivesJoin: false, audience: 'everyone', reason: 'Reason 5' }],
     'an untouched end is not sent');
 });
@@ -214,7 +216,7 @@ test('a reason fix on an ended row does not send an end, and a new end widens', 
   ui.click(ui.button('Edit', item(ui, 'c8')));
   ui.choose(item(ui, 'c8').querySelector('.qh-exppick select'), '30');
   assert.match(item(ui, 'c8').textContent, /it applies again/);
-  ui.click(ui.button('Widen this exemption', item(ui, 'c8')));
+  ui.click(ui.button('Save changes', item(ui, 'c8')));
   const sent = Date.parse(rec[1][2].expiresAt);
   assert.ok(Math.abs(sent - (Date.now() + 30 * DAY)) < 60000, 'the end is 30 days ahead');
 });
