@@ -141,57 +141,80 @@ const MOCK_NOTIFICATIONS = [
   { id: 'kill77', kind: 'kill', title: 'Kill switch released', body: 'Fleet-wide pause lifted — query traffic resumed.', createdAt: isoAgo(1000 * 60 * 60 * 30) },
 ];
 
-// MOCK: curated changelog. Prod = GET /changelog (the hand-written entries file).
+// MOCK: the curated What's-new feed, version 2. Prod = GET /changelog?lang=xx.
+// Dates are relative to today, so every branch of the page shows: today and
+// yesterday labels, the last-7-days box and the period filter. The entries
+// cover a breaking change with before and after shots, a new screen with an
+// after shot only, two admin entries, cards with and without details and
+// five categories. The screenshot files are not in docs/whatsnew, so the
+// prototype also shows how a broken image hides.
+const mockChangelogDay = (n) => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+};
+const mockChangelogEntry = (e) => ({
+  breaking: false, action: '', shots: null, version: '', sha: '', commits: [], ...e,
+});
 const MOCK_CHANGELOG = [
-  { version: 'v0.1.0', date: '2026-09-07', sha: '4d66e9b', area: 'Admin', headline: 'Someone can approve for one team without becoming an admin',
-    summary: 'Access → Roles: let a person approve, grant or import within one team, one server and a tier limit. They do not become an admin everywhere.',
+  mockChangelogEntry({ id: 'wn-layout', date: mockChangelogDay(0), category: 'web', area: 'Web UI', audience: 'user',
+    breaking: true, action: 'Update your bookmark. The page has a new address.',
+    headline: "The What's new page has a new layout",
+    summary: 'Updates are in date groups. You can search them and filter them by period and category.',
+    shots: { before: 'whats-new-before.png', beforeAlt: 'The old page with one long list of updates.',
+             after: 'whats-new-after.png', afterAlt: 'The new page with filters and date groups.' },
     changes: [
-      { type: 'new', text: 'Roles tab under Access — approver, granter, importer or admin, each row written as a sentence saying exactly how far it reaches.' },
-      { type: 'new', text: 'A role can end on a date. The sentence on the row gives that date. It is not in a separate column.' },
-      { type: 'new', text: 'Any admin can read the list — “who can approve my team’s requests?” no longer needs a super-admin to answer.' },
-      { type: 'changed', text: 'QueryHub records roles now, but does not apply them yet. The fleet still reads the admins table. Those rows show as mirrored and live. New rows show as staged.' },
-      { type: 'fixed', text: 'Disabling somebody’s account revokes nothing — their roles and grants stand. The list now says so on the row instead of leaving it to be discovered.' },
-    ],
-    commits: [{ sha: '4d66e9b', msg: 'roles: roleId on 409, distinct refusal codes, enabled honoured in roles()' }, { sha: '0aae199', msg: 'add scoped roles screen + GET/POST/DELETE /admin/roles' }] },
-  { version: 'v0.1.0', date: '2026-07-28', sha: 'bd9dc57', area: 'Editor', headline: 'Open and save .sql files, and stop a running query',
-    summary: 'The editor now round-trips with your filesystem, and a query that is still running can be stopped from the action bar.',
+      { type: 'new', text: 'Filters for period and category', detail: 'The filters work together with the search box.' },
+      { type: 'improved', text: 'Search finds text in all updates', detail: 'The search reads the title, the summary and each change.' },
+    ] }),
+  mockChangelogEntry({ id: 'all-rows', date: mockChangelogDay(1), category: 'query', area: 'Query and results', audience: 'user',
+    headline: 'Every stored result row opens',
+    summary: 'You can see all rows of a result that has more than one table.',
     changes: [
-      { type: 'new', text: 'Open .sql / Download .sql next to New query in the sidebar, plus Download from a tab’s context menu.' },
-      { type: 'new', text: 'Stop button while a query runs — the server signals the database and escalates if the cancel does not land.' },
-      { type: 'improved', text: 'Autocomplete quotes identifiers per engine and knows the active target’s schema.' },
-    ],
-    commits: [{ sha: 'bd9dc57', msg: 'add local .sql import/export' }, { sha: '7c1a904', msg: 'add cancel for running queries' }] },
-  { version: 'v0.1.0', date: '2026-07-26', sha: '4af0c1e', area: 'Sign-in', headline: 'Sign in without Slack',
-    summary: 'Deployments that do not use Slack can now use built-in local accounts, with a self-service password change.',
+      { type: 'fixed', text: 'Each stored row opens', detail: 'A result with more than one table no longer stops at 1,000 rows.' },
+      { type: 'fixed', text: 'Excel results open in the browser', detail: 'Sort and filter stay available after all rows load.' },
+      { type: 'new', text: 'SQL NULL and empty text stay different in exports', detail: 'This applies to SQL and JSON exports of new results.' },
+    ] }),
+  mockChangelogEntry({ id: 'grant-end', date: mockChangelogDay(3), category: 'access', area: 'Access and approvals', audience: 'admin',
+    headline: 'A grant can end on a date',
+    summary: 'The grant form has an end date. The access and the auto-approve end on the same day.',
     changes: [
-      { type: 'new', text: 'Username / password sign-in when local accounts are enabled.' },
-      { type: 'new', text: 'Change password from the profile menu. A handed-off account must set a password at its first sign-in.' },
-      { type: 'changed', text: 'The sign-in screen shows only the methods that your deployment enables.' },
-    ],
-    commits: [{ sha: '4af0c1e', msg: 'add local account login + change password' }] },
-  { version: 'v0.1.0', date: '2026-07-24', sha: '2b55ecc', area: 'Admin', headline: 'Connections are managed in the web panel',
-    summary: 'Registering a target server, rotating its credentials and testing it no longer needs a shell.',
+      { type: 'new', text: 'End date on the grant form', detail: '' },
+      { type: 'changed', text: 'Auto-approve ends with the access', detail: 'Before, the auto-approve stayed after the access ended.' },
+    ] }),
+  mockChangelogEntry({ id: 'column-panel', date: mockChangelogDay(5), category: 'schema', area: 'Schema and discovery', audience: 'user',
+    headline: 'A new panel shows the columns of a table',
+    summary: 'Click a table in the tree to see its columns and their types.',
+    shots: { after: 'column-panel-after.png', afterAlt: 'The column panel with three columns of the orders table.' },
     changes: [
-      { type: 'new', text: 'Add, edit, rotate, enable/disable and delete connections, with per-tier RO/RW/DDL credentials.' },
-      { type: 'new', text: 'Test connection — one probe with the stored read-only credential, before anyone depends on it.' },
-      { type: 'improved', text: 'A connection starts disabled until its credentials are set, so nothing half-registered goes live.' },
-    ],
-    commits: [{ sha: '2b55ecc', msg: 'add connection registry CRUD' }, { sha: 'e10b7d2', msg: 'add reachability probes' }] },
-  { version: 'v0.1.0', date: '2026-07-22', sha: '9d3f118', area: 'Accessibility', headline: 'Every dialog works from the keyboard',
-    summary: 'Modals announce themselves, take focus, close on Escape and keep Tab inside the panel.',
+      { type: 'new', text: 'Column panel in the schema tree', detail: 'The panel shows the type and the default value of each column.' },
+    ] }),
+  mockChangelogEntry({ id: 'mssql-stop', date: mockChangelogDay(12), category: 'query', area: 'Query and results', audience: 'user',
+    headline: 'Stop works on SQL Server queries',
+    summary: 'The Stop button ends a running SQL Server query. Before, it worked on PostgreSQL only.',
     changes: [
-      { type: 'fixed', text: 'Escape closes a dialog. Focus goes to the control that opened it.' },
-      { type: 'fixed', text: 'Tab no longer walks out of a dialog into the page behind it.' },
-      { type: 'improved', text: 'Fonts ship with the app — no third-party request on load, and the UI is intact offline.' },
-    ],
-    commits: [{ sha: '9d3f118', msg: 'add shared accessible modal shell' }, { sha: 'c0a71bb', msg: 'self-host webfonts' }] },
-  { version: 'v0.1.0', date: '2026-07-19', sha: '5e8c2a0', area: 'Approvals', audience: 'approver', headline: 'Approving access creates the grant',
-    summary: 'An approved access request now provisions the grant it asked for, instead of leaving the DBA to run it by hand.',
+      { type: 'fixed', text: 'Stop ends a running SQL Server query', detail: '' },
+    ] }),
+  mockChangelogEntry({ id: 'dm-db-name', date: mockChangelogDay(25), category: 'notif', area: 'Notifications', audience: 'user',
+    headline: 'Approval messages show the database name',
+    summary: 'A message about your request now names the server and the database.',
     changes: [
-      { type: 'new', text: 'Approving a request writes the per-user grant (requester, target, database, requested tier).' },
-      { type: 'improved', text: 'The approval queue refreshes on its own, so two admins cannot both work the same request.' },
-    ],
-    commits: [{ sha: '5e8c2a0', msg: 'auto-create grant on access-request approval' }] },
+      { type: 'improved', text: 'The database name is in each approval message', detail: '' },
+      { type: 'changed', text: 'Messages for a batch arrive as one message', detail: 'You get one message for all queries of a batch.' },
+    ] }),
+  mockChangelogEntry({ id: 'queue-order', date: mockChangelogDay(60), category: 'access', area: 'Access and approvals', audience: 'admin',
+    headline: 'The approval queue shows the oldest request first',
+    summary: 'A request that waits a long time stays at the top of the queue.',
+    changes: [
+      { type: 'changed', text: 'Oldest request at the top', detail: '' },
+    ] }),
+  mockChangelogEntry({ id: 'dark-mode', date: mockChangelogDay(200), category: 'web', area: 'Web UI', audience: 'user',
+    headline: 'Dark mode follows your system setting',
+    summary: 'The page uses the light or dark theme of your computer. You can still choose one in the profile menu.',
+    changes: [
+      { type: 'improved', text: 'The theme follows the system setting', detail: '' },
+      { type: 'fixed', text: 'Logos change colour with the theme', detail: 'A dark logo now has a light version on a dark page.' },
+    ] }),
 ];
 
 // ---------- Admin-side mock state (seeds moved here from the old mock hook) ----------
@@ -2300,7 +2323,10 @@ const qhApi = {
   workspaceGet: (kind) => mockWsGet(kind),
   workspacePut: (kind, data, baseVersion) => mockWsPut(kind, data, baseVersion),
   workspaceDelete: (kind) => mockWsDelete(kind),
-  changelog: () => mockDelay({ releases: MOCK_CHANGELOG }, 200),
+  // The full feed shape of GET /changelog. English only, as an admin.
+  changelog: (lang) => mockDelay({ lang: 'en', languages: ['en'], ui: {}, isAdmin: true, releases: MOCK_CHANGELOG }, 200),
+  // The prototype has no media route. The repo folder of the screenshots stands in.
+  changelogMediaUrl: (name) => '../docs/whatsnew/' + encodeURIComponent(name || ''),
 
   // ---- targets / schema ----
   // WHO asks decides what ships (CODE brief 2026-08-21 §3): the route branches
