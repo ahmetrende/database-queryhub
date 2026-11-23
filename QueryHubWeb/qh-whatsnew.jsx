@@ -40,6 +40,7 @@ const QH_WN_EN = {
   before: 'Before',
   after: 'After',
   openImage: 'Open the full image',
+  closeImage: 'Close',
   kindNew: 'New',
   kindImproved: 'Improved',
   kindFixed: 'Fixed',
@@ -120,15 +121,38 @@ function qhWnMatches(r, q, lang) {
   return parts.some(p => qhWnLower(p, lang).includes(q));
 }
 
-function WhatsNewShot({ name, alt, label, title, onBroken }) {
-  const src = qhApi.changelogMediaUrl(name);
+// The before and after images are one block. A click opens both side by side in
+// a dialog on the same page, so the reader sees the difference at once and
+// does not leave the page.
+function WhatsNewShots({ sides, shots, headline, t, onBroken }) {
+  const [big, setBig] = React.useState(false);
+  const pane = (k) => (
+    <span key={k} className="qh-wn-shot">
+      <span className="qh-wn-shot-lbl">{t(k)}</span>
+      <span className="qh-wn-shot-img">
+        <img src={qhApi.changelogMediaUrl(shots[k])} alt={qhWnPlain(shots[k + 'Alt']).trim() || t(k)}
+             loading="lazy" onError={() => onBroken(k)} />
+      </span>
+    </span>
+  );
   return (
-    <figure className="qh-wn-shot">
-      <figcaption className="qh-wn-shot-lbl">{label}</figcaption>
-      <a className="qh-wn-shot-link" href={src} target="_blank" rel="noopener noreferrer" title={title}>
-        <img src={src} alt={alt || label} loading="lazy" onError={onBroken} />
-      </a>
-    </figure>
+    <>
+      <button type="button" className={'qh-wn-shots' + (sides.length === 1 ? ' is-one' : '')}
+              title={t('openImage')} aria-haspopup="dialog" onClick={() => setBig(true)}>
+        {sides.map(pane)}
+      </button>
+      {big && (
+        <QhModal onClose={() => setBig(false)} panelClass="qh-wn-lightbox">
+          <div className="qh-modal-head">
+            <div className="qh-modal-title">{qhWnPlain(headline)}</div>
+            <button type="button" className="qh-icon-btn" data-autofocus onClick={() => setBig(false)} aria-label={t('closeImage')}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+          </div>
+          <div className="qh-wn-lightbox-body">{sides.map(pane)}</div>
+        </QhModal>
+      )}
+    </>
   );
 }
 
@@ -157,13 +181,8 @@ function WhatsNewCard({ rel, idx, t }) {
         </div>
       )}
       {sides.length > 0 && (
-        <div className={'qh-wn-shots' + (sides.length === 1 ? ' is-one' : '')}>
-          {sides.map(k => (
-            <WhatsNewShot key={k} name={shots[k]} alt={qhWnPlain(shots[k + 'Alt']).trim()}
-                          label={t(k)} title={t('openImage')}
-                          onBroken={() => setBroken(b => ({ ...b, [k]: true }))} />
-          ))}
-        </div>
+        <WhatsNewShots sides={sides} shots={shots} headline={rel.headline} t={t}
+                       onBroken={k => setBroken(b => ({ ...b, [k]: true }))} />
       )}
       {changes.length > 0 && (
         <ul className="qh-wn-changes" id={listId}>
