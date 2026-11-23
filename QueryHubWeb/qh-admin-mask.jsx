@@ -365,7 +365,7 @@ function MxEdit({ e, st, norms, onDone, onReplace }) {
       {err && <div className="qh-roleform-err">{err}</div>}
       <div className="qh-mxacts">
         <button className="qh-btn qh-btn-sm" onClick={onDone}>Cancel</button>
-        <MxSave label={widens.length ? 'Widen this exemption' : 'Save changes'} danger={widens.length > 0} why={why} busy={busy} onClick={save} />
+        <MxSave label="Save changes" danger={widens.length > 0} why={why} busy={busy} onClick={save} />
       </div>
     </div>
   );
@@ -652,7 +652,7 @@ function MxForm({ st, seed, norms, onDone }) {
 
   // The button says the consequence, in the words of the rung.
   const saveLabel = !readyAll ? (orig ? 'Replace' : 'Add exemption')
-    : sameReach ? (widens.length ? 'Widen ' : 'Save these settings on ') + mxRef(orig.id)
+    : sameReach ? 'Save these settings on ' + mxRef(orig.id)
     : f.scope === 'fleet' ? 'Turn masking off across the whole fleet'
       : f.scope === 'server' ? 'Turn masking off for all of ' + (conn ? conn.name : '')
         : f.scope === 'database' ? 'Turn masking off for ' + (db ? db.name : '')

@@ -98,7 +98,8 @@ function mount(View, stExtra) {
       el.dispatchEvent(new win.Event('input', { bubbles: true }));
     }),
     // The editor's own controls.
-    save: () => ed().querySelector('.qh-acced-bar-acts .qh-btn-primary'),
+    // Save is the button in the span (the span holds the tooltip). It is red when it widens.
+    save: () => ed().querySelector('.qh-acced-bar-acts span > button'),
     say: () => ed().querySelector('.qh-acced-bar-say').textContent,
     titles: () => all('.qh-acced-row .qh-acced-title', ed()).map(x => x.textContent),
     row: (name) => all('.qh-acced-row', ed()).find(r => (r.querySelector('.qh-acced-title') || {}).textContent === name),
@@ -205,13 +206,51 @@ test('a held row shows its connection as a title, never as a select', opts, () =
     'Can read and change data in cache on beta-cache. Access has no end date.');
 });
 
+// PLA-2103: a long list hid Save at the bottom. The same two buttons sit above
+// the list too, and both sets show the same label, state and reason.
+test('the same Cancel and Save sit above the list and in the bar below it', opts, () => {
+  const ui = mount('TeamsView');
+  ui.editTeam('Team Alpha');
+  const sets = () => ui.all('.qh-acced-bar-acts', ui.ed());
+  assert.equal(sets().length, 2, 'one set above the list, one in the bar');
+  assert.ok(sets()[0].closest('.qh-acced-top'), 'the first set is above the list');
+  assert.ok(sets()[1].closest('.qh-acced-bar'), 'the second set is in the bar');
+  const state = () => sets().map(x => {
+    const b = x.querySelector('span > button');
+    return [b.textContent, b.disabled, b.parentElement.getAttribute('title'), b.classList.contains('qh-btn-danger')];
+  });
+  assert.deepEqual(state(), [['Save access', true, 'Nothing to change.', false], ['Save access', true, 'Nothing to change.', false]]);
+  ui.click(ui.button('RWWrite', ui.row('prod-main')));
+  // A widening edit keeps a plain label and turns both buttons red.
+  assert.deepEqual(state(), [['Save changes', false, null, true], ['Save changes', false, null, true]]);
+  ui.click(sets()[0].querySelector('span > button'));
+  assert.equal(ui.rec.saved.length, 1, 'the Save above the list writes');
+  assert.equal(ui.ed(), null, 'and closes the editor');
+});
+
+test('Cancel above the list closes the editor and writes nothing', opts, () => {
+  const ui = mount('TeamsView');
+  ui.editTeam('Team Alpha');
+  ui.click(ui.button('RWWrite', ui.row('prod-main')));
+  ui.click(ui.button('Cancel', ui.ed().querySelector('.qh-acced-top')));
+  assert.equal(ui.ed(), null);
+  assert.deepEqual(ui.rec.saved, []);
+});
+
+test('an empty editor has only the bar below, no second set', opts, () => {
+  const ui = mount('TeamsView');
+  ui.editTeam('Team Beta');
+  assert.equal(ui.all('.qh-acced-bar-acts', ui.ed()).length, 1);
+  assert.equal(ui.ed().querySelector('.qh-acced-top'), null);
+});
+
 test('the line beside Save counts additions and changes and names removals', opts, () => {
   const ui = mount('TeamsView');
   ui.editTeam('Team Alpha');
   // Raise prod-main to Write: a widening edit renames the button.
   ui.click(ui.button('RWWrite', ui.row('prod-main')));
   assert.equal(ui.say(), 'Changes 1 connection.');
-  assert.equal(ui.save().textContent, 'Widen access');
+  assert.equal(ui.save().textContent, 'Save changes');
   assert.match(ui.row('prod-main').textContent, /changed/);
   // Remove beta-cache: the row stays, marked, and the line names it.
   ui.click(ui.row('beta-cache').querySelector('.qh-acced-x'));

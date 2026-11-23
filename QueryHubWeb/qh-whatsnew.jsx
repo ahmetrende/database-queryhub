@@ -34,6 +34,7 @@ const QH_WN_EN = {
   languageLabel: 'Language',
   recentOne: 'Last 7 days · 1 update',
   recentMany: 'Last 7 days · {n} updates',
+  recentShowAll: 'Show all {n}',
   adminBadge: 'Admin',
   actionLabel: 'What you need to do',
   before: 'Before',
@@ -56,6 +57,8 @@ const QH_WN_EN = {
 const QH_WN_KIND_KEY = { new: 'kindNew', improved: 'kindImproved', fixed: 'kindFixed', changed: 'kindChanged' };
 const QH_WN_PERIODS = [['all', 'periodAll'], ['week', 'periodWeek'], ['month', 'periodMonth'], ['quarter', 'periodQuarter']];
 const QH_WN_LANG_KEY = 'qh.whatsnew.lang.v1';
+// The box at the top shows this many recent headlines. A button opens the rest.
+const QH_WN_RECENT_MAX = 5;
 
 // Text from the file never shows a literal "**", even from an old entry.
 function qhWnPlain(s) { return String(s == null ? '' : s).replace(/\*\*/g, ''); }
@@ -198,6 +201,8 @@ function WhatsNew() {
   const [query, setQuery] = React.useState('');
   const [period, setPeriod] = React.useState('all');
   const [cat, setCat] = React.useState('');
+  const listRef = React.useRef(null);
+  const [jump, setJump] = React.useState(0);
 
   React.useEffect(() => {
     let alive = true;
@@ -209,6 +214,14 @@ function WhatsNew() {
       .catch(() => { if (alive) setFailed(true); });
     return () => { alive = false; };
   }, [lang, reload]);
+
+  // "Show all" moves the page to the list after the filters change.
+  React.useEffect(() => {
+    const el = listRef.current;
+    if (!jump || !el || !el.scrollIntoView) return;
+    const still = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    el.scrollIntoView({ block: 'start', behavior: still ? 'auto' : 'smooth' });
+  }, [jump]);
 
   const ui = (feed && feed.ui) || {};
   const t = (k, vars) => {
@@ -252,6 +265,8 @@ function WhatsNew() {
   }
   const clearFilters = () => { setAud('all'); setQuery(''); setPeriod('all'); setCat(''); };
   const pickLang = (l) => { setLang(l); qhWnStoreLang(l); };
+  // The list then holds exactly the recent updates that the box counts.
+  const showAllRecent = () => { setQuery(''); setCat(''); setPeriod('week'); setJump(n => n + 1); };
 
   return (
     <div className="qh-wn" lang={activeLang}>
@@ -316,37 +331,44 @@ function WhatsNew() {
           <section className="qh-wn-recent" aria-label={t('periodWeek')}>
             <div className="qh-wn-recent-lbl">{recent.length === 1 ? t('recentOne') : t('recentMany', { n: recent.length })}</div>
             <ul className="qh-wn-recent-list">
-              {recent.map(r => <li key={r.id || (r.date + '|' + r.headline)}>{qhWnPlain(r.headline)}</li>)}
+              {recent.slice(0, QH_WN_RECENT_MAX).map(r => <li key={r.id || (r.date + '|' + r.headline)}>{qhWnPlain(r.headline)}</li>)}
             </ul>
+            {recent.length > QH_WN_RECENT_MAX && (
+              <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-wn-recent-all" onClick={showAllRecent}>
+                {t('recentShowAll', { n: recent.length })}
+              </button>
+            )}
           </section>
         )}
 
-        {!feed ? (
-          failed ? (
-            <div className="qh-wn-state" role="alert">
-              <span>{t('loadFailed')}</span>
-              <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setReload(n => n + 1)}>{t('retry')}</button>
+        <div ref={listRef} className="qh-wn-feed">
+          {!feed ? (
+            failed ? (
+              <div className="qh-wn-state" role="alert">
+                <span>{t('loadFailed')}</span>
+                <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setReload(n => n + 1)}>{t('retry')}</button>
+              </div>
+            ) : (
+              <div className="qh-wn-state" role="status">{t('loading')}</div>
+            )
+          ) : all.length === 0 ? (
+            <div className="qh-wn-state">{t('noUpdates')}</div>
+          ) : shown.length === 0 ? (
+            <div className="qh-wn-state">
+              <span>{t('empty')}</span>
+              <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={clearFilters}>{t('clearFilters')}</button>
             </div>
           ) : (
-            <div className="qh-wn-state" role="status">{t('loading')}</div>
-          )
-        ) : all.length === 0 ? (
-          <div className="qh-wn-state">{t('noUpdates')}</div>
-        ) : shown.length === 0 ? (
-          <div className="qh-wn-state">
-            <span>{t('empty')}</span>
-            <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={clearFilters}>{t('clearFilters')}</button>
-          </div>
-        ) : (
-          groups.map((g, gi) => (
-            <section key={g.date + '-' + gi} className="qh-wn-group">
-              <h2 className="qh-wn-date">{qhWnDateLabel(g.date, activeLang, today)}</h2>
-              <ul className="qh-wn-cards">
-                {g.items.map((r, i) => <WhatsNewCard key={r.id || (r.date + '|' + r.headline)} rel={r} idx={gi + '-' + i} t={t} />)}
-              </ul>
-            </section>
-          ))
-        )}
+            groups.map((g, gi) => (
+              <section key={g.date + '-' + gi} className="qh-wn-group">
+                <h2 className="qh-wn-date">{qhWnDateLabel(g.date, activeLang, today)}</h2>
+                <ul className="qh-wn-cards">
+                  {g.items.map((r, i) => <WhatsNewCard key={r.id || (r.date + '|' + r.headline)} rel={r} idx={gi + '-' + i} t={t} />)}
+                </ul>
+              </section>
+            ))
+          )}
+        </div>
       </div>
     </div>
   );
