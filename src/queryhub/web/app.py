@@ -462,20 +462,34 @@ def create_app() -> FastAPI:
         return out
 
     @app.get("/api/changelog")
-    def changelog_feed(claims: dict = Depends(deps.current_user)):
-        # Developer-facing "What's new" feed, derived live from git history
-        # (see changelog.py) — always current, no scheduled publish job.
+    def changelog_feed(lang: str = "", claims: dict = Depends(deps.current_user)):
+        # The curated "What's new" feed (see changelog.py). Read live from the
+        # changelog file, so a new entry needs no restart and no publish step.
         deps.require_whitelisted(claims)
         from . import changelog as _changelog
-        # Approver-only items (queue ordering, admin screens) are served only to
-        # admins: a requester cannot reach an approval queue, so reading about
-        # one is noise between the entries that do concern them.
+        # Admin entries (the approval queue, admin screens, grants) go to admins
+        # only. Somebody who is not an admin never receives them.
         from .. import admins as _admins
         try:
-            is_approver = bool(_admins.is_admin(claims["sub"]))
+            is_admin = bool(_admins.is_admin(claims["sub"]))
         except Exception:
-            is_approver = False
-        return {"releases": _changelog.releases(for_approver=is_approver)}
+            is_admin = False
+        return _changelog.feed(for_admin=is_admin, requested_lang=lang)
+
+    @app.get("/api/changelog/media/{name}")
+    def changelog_media(name: str, claims: dict = Depends(deps.current_user)):
+        # Before and after screenshots of What's-new entries. Mock data only,
+        # from docs/whatsnew in this repository. A name that is not a plain
+        # file in that folder is a 404.
+        deps.require_whitelisted(claims)
+        from fastapi.responses import FileResponse
+        from . import changelog as _changelog
+        found = _changelog.media_file(name)
+        if found is None:
+            raise deps._error(404, "not_found", "No such image.")
+        path, media_type = found
+        return FileResponse(path, media_type=media_type,
+                            headers={"Cache-Control": "private, max-age=86400"})
 
     # ---- static frontend ----------------------------------------------
     # Registered LAST so /api/* always wins. The Vite build

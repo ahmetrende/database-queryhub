@@ -24,6 +24,19 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **The What's new page has a new layout.** Updates are short cards in date groups. The
+  page has search, a period filter and a category filter, and a box with the updates of the
+  last 7 days. A breaking update shows "What you need to do". Admins get an All / Users /
+  Admin switch, and other people never receive admin updates. `GET /api/changelog?lang=`
+  serves one language with an English fallback, and `GET /api/changelog/media/{name}`
+  serves the screenshots from `docs/whatsnew/`. Entries use the version 2 shape: plain
+  text, a result line and a detail per bullet, `a` = `user` or `admin`. The old shape
+  still reads. The S3 page is retired: it links to the portal tab.
+
+  | Before | After |
+  |---|---|
+  | ![The old What's new page: one long list with commit hashes.](docs/whatsnew/whats-new-before.png) | ![The new What's new page: filters, a summary box and short cards.](docs/whatsnew/whats-new-after.png) |
+
 - **`/sql grant` can give auto-approve again.** The modal has a new field, "Access ends": no
   end date, or 7, 30 or 90 days (the picks stop at `auto_approve_max_days`). The auto-approve
   box needs an end, so QueryHub refused it on every submit since the end limit came in. Now the

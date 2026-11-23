@@ -153,42 +153,55 @@
   .qh-wn-build-ver { font-size: 14px; font-weight: 700; color: var(--fg-primary); font-family: var(--qh-mono); }
   .qh-wn-build-meta { display: flex; align-items: center; gap: 6px; justify-content: flex-end; margin-top: 3px; font-size: 11px; color: var(--fg-tertiary); font-family: var(--qh-mono); }
   .qh-wn-dot { opacity: 0.5; }
-  .qh-wn-sha { display: inline-flex; align-items: center; gap: 4px; color: var(--fg-accent); text-decoration: none; padding: 1px 6px; border-radius: var(--r-2xs); background: var(--brand-adaptive-light); }
-  .qh-wn-sha:hover { text-decoration: underline; }
-  .qh-wn-feed { list-style: none; margin: 0; padding: 0; }
-  .qh-wn-rel { display: flex; gap: 16px; }
-  .qh-wn-rail { position: relative; flex-shrink: 0; width: 12px; display: flex; justify-content: center; }
-  .qh-wn-rail::before { content: ''; position: absolute; top: 6px; bottom: -8px; width: 2px; background: var(--stroke-medium); }
-  .qh-wn-rel:last-child .qh-wn-rail::before { display: none; }
-  .qh-wn-node { position: relative; z-index: 1; width: 12px; height: 12px; margin-top: 5px; border-radius: 999px; background: var(--bg-white); border: 2px solid var(--stroke-strong); }
-  .qh-wn-node.is-latest { background: var(--brand-green); border-color: var(--brand-green); box-shadow: 0 0 0 4px var(--brand-adaptive-light); }
-  .qh-wn-card { flex: 1; min-width: 0; padding-bottom: 26px; }
-  .qh-wn-relhead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .qh-wn-relver { font-size: 13px; font-weight: 700; color: var(--fg-primary); font-family: var(--qh-mono); }
-  .qh-wn-latest { font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; color: #fff; background: var(--brand-green); padding: 2px 7px; border-radius: var(--r-full); }
-  .qh-wn-relarea { font-size: 11px; font-weight: 600; color: var(--fg-secondary); background: var(--adaptive-medium); padding: 2px 8px; border-radius: var(--r-full); }
-  .qh-wn-spacer { flex: 1; }
-  .qh-wn-reldate { font-size: 11.5px; color: var(--fg-tertiary); font-family: var(--qh-mono); }
-  .qh-wn-relhl { font-size: 18px; font-weight: 700; color: var(--fg-primary); letter-spacing: -0.01em; margin: 10px 0 0; text-wrap: pretty; }
-  .qh-wn-relsum { font-size: 14px; line-height: 1.6; color: var(--fg-secondary); margin: 6px 0 0; text-wrap: pretty; }
+  /* v2 (2026-11-23): filters, a last-7-days box, date groups and one card per
+     entry. Tokens only, so the default and the Warm theme both work. A card has
+     a border and no shadow. The action callout is a tinted box, not a left
+     stripe. The kind dot is decoration only: the kind label is always text. */
+  .qh-wn-sha { color: var(--fg-tertiary); }
+  .qh-wn-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 20px; }
+  .qh-wn-seg { flex: none; gap: 4px; }
+  .qh-wn-segn { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: var(--r-full); background: var(--adaptive-strong); font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; color: inherit; }
+  .qh-input.qh-wn-search { flex: 1 1 180px; min-width: 160px; width: auto; height: 34px; font-size: 13px; background: var(--bg-white); }
+  .qh-wn-select { max-width: 220px; }
+  .qh-wn-recent { margin-bottom: 24px; padding: 12px 16px; border-radius: var(--r-md); background: var(--adaptive-strong); }
+  .qh-wn-recent-lbl { margin-bottom: 6px; font-size: 12px; font-weight: 600; color: var(--fg-secondary); }
+  .qh-wn-recent-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .qh-wn-recent-list li { font-size: 14px; line-height: 1.5; color: var(--fg-primary); text-wrap: pretty; }
+  .qh-wn-group { margin-bottom: 24px; }
+  .qh-wn-date { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--fg-tertiary); }
+  .qh-wn-cards { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+  .qh-wn-card { padding: 16px 20px; background: var(--bg-white); border: 1px solid var(--stroke-medium); border-radius: var(--r-md); }
+  .qh-wn-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--fg-tertiary); }
+  .qh-wn-admin { padding: 1px 8px; border-radius: var(--r-full); background: var(--brand-adaptive-light); font-size: 11px; font-weight: 700; color: var(--fg-accent); }
+  .qh-wn-hl { margin: 4px 0 0; font-size: 17px; font-weight: 700; line-height: 1.4; color: var(--fg-primary); text-wrap: pretty; }
+  .qh-wn-sum { margin: 6px 0 0; font-size: 14px; line-height: 1.65; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-wn-act { margin: 12px 0 0; padding: 10px 12px; border-radius: var(--r-sm); background: var(--warning-adaptive-light); font-size: 14px; line-height: 1.6; color: var(--fg-primary); }
+  .qh-wn-act-lbl { display: block; margin-bottom: 2px; font-size: 12px; font-weight: 700; color: var(--fg-primary); }
+  .qh-wn-shots { display: flex; gap: 12px; margin: 14px 0 0; }
+  .qh-wn-shot { flex: 1 1 0; min-width: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+  .qh-wn-shot-lbl { font-size: 12px; font-weight: 600; color: var(--fg-tertiary); }
+  .qh-wn-shot-link { display: block; overflow: hidden; border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); background: var(--bg-light); }
+  .qh-wn-shot-link:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-adaptive-medium); }
+  .qh-wn-shot-link img { display: block; width: 100%; height: auto; }
   .qh-wn-changes { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-  .qh-wn-change { display: flex; align-items: flex-start; gap: 10px; font-size: 13.5px; line-height: 1.5; color: var(--fg-secondary); }
-  .qh-wn-ctag { flex-shrink: 0; margin-top: 1px; min-width: 62px; text-align: center; font-size: 10px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; padding: 3px 8px; border-radius: var(--r-full); }
-  .qh-wn-ctag.t-new { color: var(--fg-accent); background: var(--brand-adaptive-light); }
-  .qh-wn-ctag.t-improved { color: #2E90C4; background: rgba(102,204,255,0.16); }
-  .qh-wn-ctag.t-fixed { color: #7A69D8; background: rgba(191,178,255,0.20); }
-  .qh-wn-ctag.t-changed { color: var(--fg-warning); background: var(--warning-adaptive-light); }
+  .qh-wn-change { font-size: 14px; line-height: 1.55; color: var(--fg-primary); }
+  .qh-wn-crow { display: flex; align-items: baseline; gap: 10px; }
+  .qh-wn-kind { flex: none; display: inline-flex; align-items: center; gap: 6px; min-width: 84px; font-size: 12px; color: var(--fg-secondary); }
+  .qh-wn-kdot { flex: none; width: 8px; height: 8px; border-radius: var(--r-full); }
+  .qh-wn-kdot.k-new { background: var(--brand-green); }
+  .qh-wn-kdot.k-improved { background: var(--sup-blue-medium); }
+  .qh-wn-kdot.k-fixed { background: var(--sup-purple-medium); }
+  .qh-wn-kdot.k-changed { background: var(--warning-solid-light); }
   .qh-wn-ctext { flex: 1; min-width: 0; text-wrap: pretty; }
-  .qh-wn-cmtoggle { display: inline-flex; align-items: center; gap: 6px; margin-top: 14px; padding: 6px 10px; background: transparent; border: 1px solid var(--stroke-medium); border-radius: var(--r-sm); cursor: pointer; font-family: inherit; font-size: 12px; font-weight: 600; color: var(--fg-secondary); }
-  .qh-wn-cmtoggle:hover { background: var(--adaptive-medium); color: var(--fg-primary); }
-  .qh-wn-caret { transition: transform var(--d-fast-02) var(--ease-standard); }
-  .qh-wn-caret.is-open { transform: rotate(90deg); }
-  .qh-wn-commits { list-style: none; margin: 10px 0 0; padding: 10px 12px; background: var(--bg-white); border: 1px solid var(--stroke-light); border-radius: var(--r-sm); display: flex; flex-direction: column; gap: 8px; }
-  .qh-wn-commit { display: flex; align-items: baseline; gap: 10px; }
-  .qh-wn-csha { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; color: var(--fg-accent); text-decoration: none; }
-  .qh-wn-csha:hover { text-decoration: underline; }
-  .qh-wn-cmsg { color: var(--fg-secondary); font-family: var(--qh-mono); font-size: 12px; min-width: 0; word-break: break-word; }
-  .qh-wn-foot { margin-top: 24px; font-size: 12px; color: var(--fg-tertiary); text-align: center; text-wrap: pretty; }
+  .qh-wn-cdet { margin: 2px 0 0 94px; font-size: 13px; line-height: 1.6; color: var(--fg-secondary); text-wrap: pretty; }
+  .qh-wn-toggle { margin-top: 12px; }
+  .qh-wn-state { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 32px 0; font-size: 13px; color: var(--fg-tertiary); text-align: center; }
+  @media (max-width: 560px) {
+    .qh-wn-hero { flex-wrap: wrap; }
+    .qh-wn-shots { flex-direction: column; }
+    .qh-wn-crow { flex-wrap: wrap; }
+    .qh-wn-cdet { margin-left: 0; }
+  }
 
   /* ---------- login screen ---------- */
   .qh-login { height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -3726,19 +3739,3 @@
   justify-content: start;
   max-width: 1100px;
 }
-
-/* ---- What's new: the approver-only opt-in -------------------------------
-   Approver entries are hidden by default (see qh-whatsnew.jsx). The checkbox
-   only renders when the server sent some, i.e. only for admins, so this never
-   appears for a requester. Kept quiet — it is a filter, not a feature. */
-.qh-wn-audtoggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--text-muted, rgba(0,0,0,.55));
-  cursor: pointer;
-  user-select: none;
-}
-.qh-wn-audtoggle input { cursor: pointer; margin: 0; }

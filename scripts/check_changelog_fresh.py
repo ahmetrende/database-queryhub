@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Warn when user-facing commits have shipped without a changelog entry.
 
-The What's-new pipeline is fully automatic — a git hook regenerates and
-uploads the public page, and the in-app page re-reads the file live — but the
-entries themselves are hand-written, and that is the step that gets skipped.
+The What's-new pages read the curated file live, so a new entry shows with no
+publish step. The entries themselves are hand-written, and that is the step
+that gets skipped.
 It has: the curated file once sat four days and forty commits behind the code
 while every published surface reported itself up to date, because "up to date"
 only ever meant "matches the file", never "matches what shipped".
@@ -147,40 +147,36 @@ def commits_since(ref: str, date: str) -> list[tuple[str, str, str]]:
 
 
 def report_publishability(path: Path) -> None:
-    """Say so, HERE, when the changelog is present but will not publish.
+    """Say so, HERE, when the changelog is present but breaks the entry rules.
 
-    The S3 page is generated from this file by a `build_whatsnew.py` that sits
-    beside it, run by the pre-push hook. That generator refuses an entry whose
-    category the page cannot render — correctly — but it was only ever called
-    from the publish script, which the hook backgrounded into a log file. So the
-    refusal was invisible: four consecutive pushes published nothing while this
-    very script printed "up to date" on the line above, because the changelog
-    WAS current. Only the generated page was stale.
+    A static page used to be generated from this file, and its refusals were
+    invisible: four pushes published nothing while this script printed "up to
+    date". That page is gone. The pages that remain read the file live, so the
+    risk now is an entry that the pages show badly: an old bullet shape, a
+    missing action line, a screenshot that is not in the repository.
 
-    So ask the generator, in the foreground, where a person is looking. Its
-    `--check` validates and writes nothing. Advisory like the rest of this
-    script: a missing or unrunnable generator is normal (an open-source clone has
-    no site directory) and must never fail a push.
+    So run the style check here, in the foreground, where a person is looking.
+    Advisory like the rest of this script: it never fails a push.
     """
-    gen = path.parent / "build_whatsnew.py"
-    if not gen.exists():
+    checker = _ROOT / "scripts" / "check_changelog_style.py"
+    if not checker.exists():
         return
     try:
-        out = subprocess.run((sys.executable, str(gen), "--check"),
-                             capture_output=True, text=True, timeout=30)
+        out = subprocess.run((sys.executable, str(checker), "--file", str(path)),
+                             capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as exc:
-        print(f"changelog: could not run {gen.name} ({exc}) — page not verified.")
+        print(f"changelog: could not run {checker.name} ({exc}). Entries not checked.")
         return
-    if out.returncode == 0:
+    lines = (out.stdout + out.stderr).strip().splitlines()
+    if not lines or lines[-1].endswith(" 0 with problems"):
         return
     bar = "!" * 72
     print(bar)
-    print("  THE PUBLISHED PAGE WILL NOT BUILD from this changelog:")
-    for line in (out.stdout + out.stderr).strip().splitlines():
+    print("  SOME CHANGELOG ENTRIES BREAK THE WRITING RULES:")
+    for line in lines[:30]:
         print(f"    {line}")
-    print("")
-    print("  The in-app What's-new reads the changelog live, so it looks fine;")
-    print("  the generated page is the one that silently stops updating.")
+    if len(lines) > 30:
+        print(f"    ... {len(lines) - 30} more lines: run {checker.name}")
     print(bar)
 
 
@@ -215,9 +211,8 @@ def main() -> int:
         print(f"changelog: git log failed ({exc}) — skipping the check.")
         return 1 if args.strict else 0
 
-    # Before the freshness verdict, because "up to date" is exactly what made
-    # the broken page invisible: the changelog WAS current, only the generated
-    # page had stopped building.
+    # Before the freshness verdict, because "up to date" once hid a broken
+    # page: the changelog WAS current, only the generated page was stale.
     report_publishability(path)
 
     if not missing:

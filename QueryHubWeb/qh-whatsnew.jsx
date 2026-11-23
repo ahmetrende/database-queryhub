@@ -1,133 +1,347 @@
-// QueryHub — "What's new" page. Opened from the profile menu (avatar → What's new)
-// or the build stamp. Renders the changelog newest-first: each entry is one
-// curated, user-facing change (headline + one-line lede + short bullet points).
-// Entries are written by hand, not derived from commits — the page used to say
-// otherwise in two places, which was worth fixing because it told readers the
-// list was exhaustive when it is deliberately a selection.
-// Real-API: the list comes from GET /changelog (qhApi.changelog); QH_BUILD +
-// qhCommitUrl come from qh-data.jsx (build-injected). Design used a mock global.
+// QueryHub — "What's new" page, version 2 (2026-11-23). Opened from the profile
+// menu (avatar -> What's new), the home page link or the bell.
+//
+// Data: GET /changelog?lang=xx (qhApi.changelog). The server sends the entries
+// newest first, the languages the changelog file has, the page strings for a
+// language that is not English, and isAdmin. Admin entries come to admins only:
+// the server decides that, not this page. Screenshots load from
+// qhApi.changelogMediaUrl(name).
+//
+// Page strings: QH_WN_EN holds the English text for each key. In another
+// language, feed.ui[key] replaces it. Those values live in the changelog file
+// (i18n.<lang>.ui), not in this repository. Dates use Intl in the active
+// language, so no month or day name is written here.
+//
+// The entries are written by hand, one for each change that a reader can see.
+// The page shows no commits and no commit links.
 
-const QH_WN_GH = <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>;
-const QH_WN_TAG = { new: 'New', improved: 'Improved', fixed: 'Fixed', changed: 'Changed' };
+const QH_WN_EN = {
+  title: "What's new",
+  subtitle: 'What changed in QueryHub, newest first.',
+  buildTime: 'Build time',
+  audienceLabel: 'Audience',
+  audAll: 'All',
+  audUser: 'Users',
+  audAdmin: 'Admin',
+  search: 'Search updates',
+  periodLabel: 'Period',
+  periodWeek: 'Last 7 days',
+  periodMonth: 'Last month',
+  periodQuarter: 'Last 3 months',
+  periodAll: 'All time',
+  categoryLabel: 'Category',
+  categoryAll: 'All categories',
+  languageLabel: 'Language',
+  recentOne: 'Last 7 days · 1 update',
+  recentMany: 'Last 7 days · {n} updates',
+  adminBadge: 'Admin',
+  actionLabel: 'What you need to do',
+  before: 'Before',
+  after: 'After',
+  openImage: 'Open the full image',
+  kindNew: 'New',
+  kindImproved: 'Improved',
+  kindFixed: 'Fixed',
+  kindChanged: 'Changed',
+  showDetails: 'Show details',
+  hideDetails: 'Hide details',
+  loading: 'Loading…',
+  loadFailed: 'The updates did not load.',
+  retry: 'Try again',
+  noUpdates: 'There are no updates yet.',
+  empty: 'No updates match your filters.',
+  clearFilters: 'Clear filters',
+};
 
-function WhatsNewRelease({ rel, latest }) {
-  const [open, setOpen] = React.useState(false);
-  const shaUrl = qhCommitUrl(rel.sha);
+const QH_WN_KIND_KEY = { new: 'kindNew', improved: 'kindImproved', fixed: 'kindFixed', changed: 'kindChanged' };
+const QH_WN_PERIODS = [['all', 'periodAll'], ['week', 'periodWeek'], ['month', 'periodMonth'], ['quarter', 'periodQuarter']];
+const QH_WN_LANG_KEY = 'qh.whatsnew.lang.v1';
+
+// Text from the file never shows a literal "**", even from an old entry.
+function qhWnPlain(s) { return String(s == null ? '' : s).replace(/\*\*/g, ''); }
+
+// The language choice survives a reload. Storage can be blocked: the page
+// still works, it only forgets the choice.
+function qhWnStoredLang() {
+  try { return (window.localStorage && window.localStorage.getItem(QH_WN_LANG_KEY)) || ''; } catch (e) { return ''; }
+}
+function qhWnStoreLang(v) {
+  try { if (window.localStorage) window.localStorage.setItem(QH_WN_LANG_KEY, v); } catch (e) { /* no storage */ }
+}
+
+// "YYYY-MM-DD" as a local date at midnight, or null.
+function qhWnDay(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ''));
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return isNaN(d.getTime()) ? null : d;
+}
+function qhWnToday() { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), n.getDate()); }
+function qhWnDaysAgo(d, today) { return Math.round((today.getTime() - d.getTime()) / 86400000); }
+
+// The first day that a period includes, or null for all time.
+function qhWnCutoff(period, today) {
+  const c = new Date(today.getTime());
+  if (period === 'week') { c.setDate(c.getDate() - 6); return c; }
+  if (period === 'month') { c.setMonth(c.getMonth() - 1); return c; }
+  if (period === 'quarter') { c.setMonth(c.getMonth() - 3); return c; }
+  return null;
+}
+
+// "23 November 2026 · today" in the active language.
+function qhWnDateLabel(s, lang, today) {
+  const d = qhWnDay(s);
+  if (!d) return qhWnPlain(s);
+  let out = String(s);
+  try { out = new Intl.DateTimeFormat(lang, { day: 'numeric', month: 'long', year: 'numeric' }).format(d); } catch (e) { /* raw date */ }
+  const ago = qhWnDaysAgo(d, today);
+  if (ago === 0 || ago === 1) {
+    try { out += ' · ' + new Intl.RelativeTimeFormat(lang, { numeric: 'auto' }).format(-ago, 'day'); } catch (e) { /* no relative label */ }
+  }
+  return out;
+}
+
+function qhWnLower(s, lang) {
+  const v = qhWnPlain(s);
+  try { return v.toLocaleLowerCase(lang); } catch (e) { return v.toLowerCase(); }
+}
+
+// Search reads the headline, the summary, and the text and detail of each change.
+function qhWnMatches(r, q, lang) {
+  if (!q) return true;
+  const parts = [r.headline, r.summary];
+  for (const c of (r.changes || [])) { if (c) parts.push(c.text, c.detail); }
+  return parts.some(p => qhWnLower(p, lang).includes(q));
+}
+
+function WhatsNewShot({ name, alt, label, title, onBroken }) {
+  const src = qhApi.changelogMediaUrl(name);
   return (
-    <li className="qh-wn-rel">
-      <div className="qh-wn-rail"><span className={'qh-wn-node' + (latest ? ' is-latest' : '')} /></div>
-      <div className="qh-wn-card">
-        <div className="qh-wn-relhead">
-          {rel.version && <span className="qh-wn-relver">{rel.version}</span>}
-          {latest && <span className="qh-wn-latest">Latest</span>}
-          {rel.area && <span className="qh-wn-relarea">{rel.area}</span>}
-          <span className="qh-wn-spacer" />
-          <span className="qh-wn-reldate">{rel.date}</span>
-          {rel.sha && (shaUrl
-            ? <a className="qh-wn-sha" href={shaUrl} target="_blank" rel="noopener noreferrer" title={'View ' + rel.sha + ' on GitHub'}>{QH_WN_GH}<span className="qh-mono">{rel.sha}</span></a>
-            : <span className="qh-wn-sha is-plain">{QH_WN_GH}<span className="qh-mono">{rel.sha}</span></span>)}
-        </div>
-        <h2 className="qh-wn-relhl">{rel.headline}</h2>
-        <p className="qh-wn-relsum">{rel.summary}</p>
-        {(rel.changes || []).length > 0 && (
-          <ul className="qh-wn-changes">
-            {rel.changes.map((c, i) => (
-              <li key={i} className="qh-wn-change">
-                <span className={'qh-wn-ctag t-' + c.type}>{QH_WN_TAG[c.type] || c.type}</span>
-                <span className="qh-wn-ctext">{c.text}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-        {rel.commits && rel.commits.length > 0 && (
-          <>
-            <button className="qh-wn-cmtoggle" onClick={() => setOpen(o => !o)} aria-expanded={open}>
-              <svg className={'qh-wn-caret' + (open ? ' is-open' : '')} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>
-              {(open ? 'Hide ' : 'Show ') + rel.commits.length + ' commit' + (rel.commits.length > 1 ? 's' : '')}
-            </button>
-            {open && (
-              <ul className="qh-wn-commits">
-                {rel.commits.map(c => {
-                  const u = qhCommitUrl(c.sha);
-                  return (
-                    <li key={c.sha} className="qh-wn-commit">
-                      {u
-                        ? <a className="qh-wn-csha" href={u} target="_blank" rel="noopener noreferrer" title="View on GitHub">{QH_WN_GH}<span className="qh-mono">{c.sha}</span></a>
-                        : <span className="qh-wn-csha is-plain">{QH_WN_GH}<span className="qh-mono">{c.sha}</span></span>}
-                      <span className="qh-wn-cmsg">{c.msg}</span>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </>
-        )}
+    <figure className="qh-wn-shot">
+      <figcaption className="qh-wn-shot-lbl">{label}</figcaption>
+      <a className="qh-wn-shot-link" href={src} target="_blank" rel="noopener noreferrer" title={title}>
+        <img src={src} alt={alt || label} loading="lazy" onError={onBroken} />
+      </a>
+    </figure>
+  );
+}
+
+function WhatsNewCard({ rel, idx, t }) {
+  const [open, setOpen] = React.useState(false);
+  const [broken, setBroken] = React.useState({});
+  const changes = (rel.changes || []).filter(c => c && qhWnPlain(c.text).trim());
+  const hasDetail = changes.some(c => qhWnPlain(c.detail).trim());
+  const shots = rel.shots || {};
+  // A new screen has only "after". An image that fails to load is removed.
+  const sides = ['before', 'after'].filter(k => shots[k] && !broken[k]);
+  const action = rel.breaking ? qhWnPlain(rel.action).trim() : '';
+  const listId = 'qh-wn-ch-' + String(rel.id || idx).replace(/[^A-Za-z0-9_-]/g, '-');
+  return (
+    <li className="qh-wn-card">
+      <div className="qh-wn-meta">
+        {rel.area && <span className="qh-wn-area">{qhWnPlain(rel.area)}</span>}
+        {rel.audience === 'admin' && <span className="qh-wn-admin">{t('adminBadge')}</span>}
       </div>
+      <h3 className="qh-wn-hl">{qhWnPlain(rel.headline)}</h3>
+      {rel.summary && <p className="qh-wn-sum">{qhWnPlain(rel.summary)}</p>}
+      {action && (
+        <div className="qh-wn-act" role="note">
+          <span className="qh-wn-act-lbl">{t('actionLabel')}</span>
+          {action}
+        </div>
+      )}
+      {sides.length > 0 && (
+        <div className={'qh-wn-shots' + (sides.length === 1 ? ' is-one' : '')}>
+          {sides.map(k => (
+            <WhatsNewShot key={k} name={shots[k]} alt={qhWnPlain(shots[k + 'Alt']).trim()}
+                          label={t(k)} title={t('openImage')}
+                          onBroken={() => setBroken(b => ({ ...b, [k]: true }))} />
+          ))}
+        </div>
+      )}
+      {changes.length > 0 && (
+        <ul className="qh-wn-changes" id={listId}>
+          {changes.map((c, i) => {
+            const kind = QH_WN_KIND_KEY[c.type] ? c.type : 'changed';
+            const det = qhWnPlain(c.detail).trim();
+            return (
+              <li key={i} className="qh-wn-change">
+                <div className="qh-wn-crow">
+                  <span className="qh-wn-kind"><span className={'qh-wn-kdot k-' + kind} aria-hidden="true" />{t(QH_WN_KIND_KEY[kind])}</span>
+                  <span className="qh-wn-ctext">{qhWnPlain(c.text)}</span>
+                </div>
+                {open && det && <p className="qh-wn-cdet">{det}</p>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {hasDetail && (
+        <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm qh-wn-toggle"
+                aria-expanded={open} aria-controls={listId} onClick={() => setOpen(o => !o)}>
+          {t(open ? 'hideDetails' : 'showDetails')}
+        </button>
+      )}
     </li>
   );
 }
 
 function WhatsNew() {
-  // Real data: GET /changelog — the curated changelog file, re-read whenever it
-  // changes. Approver-only entries come back only for admins.
-  const [releases, setReleases] = React.useState(null);
+  const [lang, setLang] = React.useState(qhWnStoredLang);
+  const [feed, setFeed] = React.useState(null);
+  const [failed, setFailed] = React.useState(false);
+  const [reload, setReload] = React.useState(0);
+  const [aud, setAud] = React.useState('all');
+  const [query, setQuery] = React.useState('');
+  const [period, setPeriod] = React.useState('all');
+  const [cat, setCat] = React.useState('');
+
   React.useEffect(() => {
     let alive = true;
-    qhApi.changelog()
-      .then(r => { if (alive) setReleases((r && r.releases) || []); })
-      .catch(() => { if (alive) setReleases([]); });
+    setFailed(false);
+    qhApi.changelog(lang)
+      .then(r => { if (alive) setFeed(r && typeof r === 'object' ? r : { releases: [] }); })
+      .catch(() => { if (alive) setFailed(true); });
     return () => { alive = false; };
-  }, []);
+  }, [lang, reload]);
+
+  const ui = (feed && feed.ui) || {};
+  const t = (k, vars) => {
+    let s = (typeof ui[k] === 'string' && ui[k]) || QH_WN_EN[k] || k;
+    if (vars) for (const v of Object.keys(vars)) s = s.split('{' + v + '}').join(String(vars[v]));
+    return s;
+  };
+  const activeLang = (feed && feed.lang) || lang || 'en';
+  const languages = (feed && Array.isArray(feed.languages) && feed.languages.length) ? feed.languages : ['en'];
+  const isAdmin = !!(feed && feed.isAdmin);
   const build = (typeof window !== 'undefined' && window.QH_BUILD) || {};
-  const buildShaUrl = qhCommitUrl(build.sha);
-  // Approver-only entries — how the decision queue behaves, what an admin
-  // screen gained — are hidden by DEFAULT even for admins. An admin is still a
-  // reader of this page, and the queue-ordering entries were crowding out the
-  // ones that concern everybody. The server only sends them to admins at all,
-  // so for a requester this toggle never appears.
-  const [showApprover, setShowApprover] = React.useState(false);
-  const all = releases || [];
-  const approverCount = all.filter(r => r.audience === 'approver').length;
-  const list = showApprover ? all : all.filter(r => r.audience !== 'approver');
+  const today = qhWnToday();
+
+  // Newest first. The server sorts already, this keeps it true for any input.
+  const all = ((feed && feed.releases) || [])
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => (a.r.date < b.r.date ? 1 : a.r.date > b.r.date ? -1 : a.i - b.i))
+    .map(x => x.r);
+  const adminCount = all.filter(r => r.audience === 'admin').length;
+  const audNow = isAdmin ? aud : 'all';
+  const byAud = audNow === 'all' ? all : all.filter(r => (r.audience === 'admin') === (audNow === 'admin'));
+
+  const cats = [];
+  const seen = new Set();
+  for (const r of all) {
+    if (r.category && !seen.has(r.category)) { seen.add(r.category); cats.push([r.category, qhWnPlain(r.area || r.category)]); }
+  }
+
+  const recent = byAud.filter(r => { const d = qhWnDay(r.date); return d && qhWnDaysAgo(d, today) <= 6; });
+  const cutoff = qhWnCutoff(period, today);
+  const q = qhWnLower(query.trim(), activeLang);
+  const shown = byAud.filter(r => {
+    if (cat && r.category !== cat) return false;
+    if (cutoff) { const d = qhWnDay(r.date); if (!d || d < cutoff) return false; }
+    return qhWnMatches(r, q, activeLang);
+  });
+  const groups = [];
+  for (const r of shown) {
+    const last = groups[groups.length - 1];
+    if (last && last.date === r.date) last.items.push(r); else groups.push({ date: r.date, items: [r] });
+  }
+  const clearFilters = () => { setAud('all'); setQuery(''); setPeriod('all'); setCat(''); };
+  const pickLang = (l) => { setLang(l); qhWnStoreLang(l); };
+
   return (
-    <div className="qh-wn">
+    <div className="qh-wn" lang={activeLang}>
       <div className="qh-wn-inner">
         <header className="qh-wn-hero">
           <span className="qh-wn-hero-icn" aria-hidden="true">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 3.9 4.3.6-3.1 3 .7 4.3-3.8-2-3.8 2 .7-4.3-3.1-3 4.3-.6z"/></svg>
           </span>
           <div className="qh-wn-hero-text">
-            <h1 className="qh-wn-title">What's new</h1>
-            <p className="qh-wn-sub">What changed in QueryHub, newest first.</p>
-            {approverCount > 0 && (
-              <label className="qh-wn-audtoggle">
-                <input type="checkbox" checked={showApprover}
-                       onChange={(e) => setShowApprover(e.target.checked)} />
-                <span>Also show {approverCount} approver-only update{approverCount === 1 ? '' : 's'}</span>
-              </label>
-            )}
+            <h1 className="qh-wn-title">{t('title')}</h1>
+            <p className="qh-wn-sub">{t('subtitle')}</p>
           </div>
-          <div className="qh-wn-build">
+          <div className="qh-wn-build" lang="en">
             <div className="qh-wn-build-ver">{build.version || ''}</div>
             <div className="qh-wn-build-meta">
-              {build.date && <span title="Build time">{build.date}</span>}
-              {build.date && build.sha && <span className="qh-wn-dot">·</span>}
-              {build.sha && (buildShaUrl
-                ? <a className="qh-wn-sha" href={buildShaUrl} target="_blank" rel="noopener noreferrer" title={'Build ' + build.sha + ' on GitHub'}>{QH_WN_GH}<span className="qh-mono">{build.sha}</span></a>
-                : <span className="qh-wn-sha is-plain">{QH_WN_GH}<span className="qh-mono">{build.sha}</span></span>)}
+              {build.date && <span title={t('buildTime')}>{build.date}</span>}
+              {build.date && build.sha && <span className="qh-wn-dot" aria-hidden="true">·</span>}
+              {build.sha && <span className="qh-wn-sha qh-mono">{build.sha}</span>}
             </div>
           </div>
         </header>
-        {releases === null ? (
-          <div className="qh-wn-foot">Loading…</div>
-        ) : list.length === 0 ? (
-          <div className="qh-wn-foot">No releases yet.</div>
-        ) : (
-          <ol className="qh-wn-feed">
-            {list.map((r, i) => <WhatsNewRelease key={r.sha + '-' + i} rel={r} latest={i === 0} />)}
-          </ol>
+
+        {feed && (
+          <div className="qh-wn-controls">
+            {isAdmin && (
+              <div className="qh-seg qh-seg-sm qh-wn-seg" role="group" aria-label={t('audienceLabel')}>
+                {[['all', 'audAll'], ['user', 'audUser'], ['admin', 'audAdmin']].map(([v, k]) => (
+                  <button key={v} type="button" className={'qh-seg-opt' + (aud === v ? ' is-active' : '')}
+                          aria-pressed={aud === v} onClick={() => setAud(v)}>
+                    {t(k)}{v === 'admin' && <span className="qh-wn-segn">{adminCount}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+            <input type="search" className="qh-input qh-wn-search" placeholder={t('search')} aria-label={t('search')}
+                   value={query} onChange={(e) => setQuery(e.target.value)} />
+            <select className="qh-select qh-wn-select" aria-label={t('periodLabel')} value={period}
+                    onChange={(e) => setPeriod(e.target.value)}>
+              {QH_WN_PERIODS.map(([v, k]) => <option key={v} value={v}>{t(k)}</option>)}
+            </select>
+            {cats.length > 0 && (
+              <select className="qh-select qh-wn-select" aria-label={t('categoryLabel')} value={cat}
+                      onChange={(e) => setCat(e.target.value)}>
+                <option value="">{t('categoryAll')}</option>
+                {cats.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+              </select>
+            )}
+            {languages.length > 1 && (
+              <div className="qh-seg qh-seg-sm qh-wn-seg" role="group" aria-label={t('languageLabel')}>
+                {languages.map(l => (
+                  <button key={l} type="button" lang={l} className={'qh-seg-opt' + (activeLang === l ? ' is-active' : '')}
+                          aria-pressed={activeLang === l} onClick={() => pickLang(l)}>
+                    {String(l).toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
-        <p className="qh-wn-foot">One entry per user-facing change, written by hand.{build.repo ? <> Commit hashes link to <span className="qh-mono">github.com/{build.repo}</span>.</> : null}</p>
+
+        {feed && recent.length > 0 && (
+          <section className="qh-wn-recent" aria-label={t('periodWeek')}>
+            <div className="qh-wn-recent-lbl">{recent.length === 1 ? t('recentOne') : t('recentMany', { n: recent.length })}</div>
+            <ul className="qh-wn-recent-list">
+              {recent.map((r, i) => <li key={(r.id || '') + '-' + i}>{qhWnPlain(r.headline)}</li>)}
+            </ul>
+          </section>
+        )}
+
+        {!feed ? (
+          failed ? (
+            <div className="qh-wn-state" role="alert">
+              <span>{t('loadFailed')}</span>
+              <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={() => setReload(n => n + 1)}>{t('retry')}</button>
+            </div>
+          ) : (
+            <div className="qh-wn-state" role="status">{t('loading')}</div>
+          )
+        ) : all.length === 0 ? (
+          <div className="qh-wn-state">{t('noUpdates')}</div>
+        ) : shown.length === 0 ? (
+          <div className="qh-wn-state">
+            <span>{t('empty')}</span>
+            <button type="button" className="qh-btn qh-btn-ghost qh-btn-sm" onClick={clearFilters}>{t('clearFilters')}</button>
+          </div>
+        ) : (
+          groups.map((g, gi) => (
+            <section key={g.date + '-' + gi} className="qh-wn-group">
+              <h2 className="qh-wn-date">{qhWnDateLabel(g.date, activeLang, today)}</h2>
+              <ul className="qh-wn-cards">
+                {g.items.map((r, i) => <WhatsNewCard key={(r.id || '') + '-' + i} rel={r} idx={gi + '-' + i} t={t} />)}
+              </ul>
+            </section>
+          ))
+        )}
       </div>
     </div>
   );

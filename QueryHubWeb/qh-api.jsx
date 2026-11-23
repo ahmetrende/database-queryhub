@@ -116,8 +116,11 @@ const qhApi = {
                qhFetch('/auth/local/change-password',
                        { method: 'POST',
                          body: JSON.stringify({ currentPassword, newPassword }) }),
-  // Developer-facing changelog (release list derived live from git history).
-  changelog:   ()      => qhFetch('/changelog'),
+  // The curated What's-new feed. `lang` is optional ("en", "tr"). The server
+  // falls back to English for a language that the file does not have.
+  changelog:   (lang)  => qhFetch('/changelog' + (lang ? '?lang=' + encodeURIComponent(lang) : '')),
+  // The URL of one What's-new screenshot. Same origin, so the session cookie goes with it.
+  changelogMediaUrl: (name) => API_BASE + '/changelog/media/' + encodeURIComponent(name || ''),
   signout:     ()      => qhFetch('/auth/signout', { method: 'POST' }),
   // Open tabs and preferences on the server (2026-11-20). kind is 'workspace'
   // or 'prefs'. GET answers { enabled, data, version, updatedAt }. A PUT sends
