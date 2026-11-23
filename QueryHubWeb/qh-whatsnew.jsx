@@ -81,10 +81,13 @@ function qhWnDaysAgo(d, today) { return Math.round((today.getTime() - d.getTime(
 
 // The first day that a period includes, or null for all time.
 function qhWnCutoff(period, today) {
-  const c = new Date(today.getTime());
-  if (period === 'week') { c.setDate(c.getDate() - 6); return c; }
-  if (period === 'month') { c.setMonth(c.getMonth() - 1); return c; }
-  if (period === 'quarter') { c.setMonth(c.getMonth() - 3); return c; }
+  const y = today.getFullYear(), m = today.getMonth(), d = today.getDate();
+  if (period === 'week') return new Date(y, m, d - 6);
+  // The same day n months back. A day the target month does not have becomes
+  // its last day: 31 March minus one month is the end of February, not 3 March.
+  const back = (n) => new Date(y, m - n, Math.min(d, new Date(y, m - n + 1, 0).getDate()));
+  if (period === 'month') return back(1);
+  if (period === 'quarter') return back(3);
   return null;
 }
 
@@ -199,6 +202,8 @@ function WhatsNew() {
   React.useEffect(() => {
     let alive = true;
     setFailed(false);
+    // A list in the other language does not stay on screen while the new one loads.
+    setFeed(prev => (prev && lang && prev.lang !== lang ? null : prev));
     qhApi.changelog(lang)
       .then(r => { if (alive) setFeed(r && typeof r === 'object' ? r : { releases: [] }); })
       .catch(() => { if (alive) setFailed(true); });
@@ -228,7 +233,7 @@ function WhatsNew() {
 
   const cats = [];
   const seen = new Set();
-  for (const r of all) {
+  for (const r of byAud) {
     if (r.category && !seen.has(r.category)) { seen.add(r.category); cats.push([r.category, qhWnPlain(r.area || r.category)]); }
   }
 
@@ -311,7 +316,7 @@ function WhatsNew() {
           <section className="qh-wn-recent" aria-label={t('periodWeek')}>
             <div className="qh-wn-recent-lbl">{recent.length === 1 ? t('recentOne') : t('recentMany', { n: recent.length })}</div>
             <ul className="qh-wn-recent-list">
-              {recent.map((r, i) => <li key={(r.id || '') + '-' + i}>{qhWnPlain(r.headline)}</li>)}
+              {recent.map(r => <li key={r.id || (r.date + '|' + r.headline)}>{qhWnPlain(r.headline)}</li>)}
             </ul>
           </section>
         )}
@@ -337,7 +342,7 @@ function WhatsNew() {
             <section key={g.date + '-' + gi} className="qh-wn-group">
               <h2 className="qh-wn-date">{qhWnDateLabel(g.date, activeLang, today)}</h2>
               <ul className="qh-wn-cards">
-                {g.items.map((r, i) => <WhatsNewCard key={(r.id || '') + '-' + i} rel={r} idx={gi + '-' + i} t={t} />)}
+                {g.items.map((r, i) => <WhatsNewCard key={r.id || (r.date + '|' + r.headline)} rel={r} idx={gi + '-' + i} t={t} />)}
               </ul>
             </section>
           ))
