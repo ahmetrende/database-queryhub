@@ -491,24 +491,58 @@ def fingerprint_cache_enabled() -> bool:
     return val in {"on", "true", "yes", "1"}
 
 
+def canonical_cache_enabled() -> bool:
+    """Layer 1 (canonical form). On by default."""
+    val = (cfg.get_setting("approval_cache_canonical", "on") or "").strip().lower()
+    return val in {"on", "true", "yes", "1"}
+
+
+def footprint_cache_mode() -> str:
+    """Layer 2 (column footprint): `off`, `shadow` or `on`. `shadow` (the
+    default) only records which requests it would have approved. Any other
+    value counts as `off`."""
+    val = (cfg.get_setting("approval_cache_footprint", "shadow") or "").strip().lower()
+    return val if val in {"off", "shadow", "on"} else "off"
+
+
+# The footprint layer reads at most this many earlier requests.
+FOOTPRINT_POOL_LIMIT = 200
+
+
 def fingerprint_cache_hit(
     principal_id: str,
     target_server_id: int,
     database_name: str,
     fingerprint: str,
+    *,
+    canonical: str | None = None,
+    footprint: dict | None = None,
+    default_schema: str | None = None,
+    risk_summary: str | None = None,
 ) -> dict | None:
-    """Return the most recent prior request that lets this RO query skip
-    admin approval, or None. A hit requires: same requester + target +
-    database + query_fingerprint, a `completed` status, and completion
-    within fingerprint_cache_ttl_days. CALLER must have already
-    confirmed required_mode == 'ro' — this never gates writes.
+    """Return the prior request(s) that let this RO query skip admin approval,
+    or None. CALLER must have already confirmed required_mode == 'ro': this
+    never gates writes.
 
-    Returns a dict with the matched request id + completed_at so the
-    caller can cite it in the audit log + admin FYI DM."""
+    Every layer needs the same requester + target + database, a `completed`
+    status, and completion within fingerprint_cache_ttl_days. The layers, in
+    order:
+
+      exact      the same `query_fingerprint` (only literal values differ)
+      canonical  the same `query_canonical_fp` (ast_safety.canonical_fingerprint)
+      footprint  earlier requests in the same schema together read every
+                 column of this one (ast_safety.footprint_covered), and the
+                 pre-flight hint has no warning
+
+    The result has `id` and `completed_at` of the newest matched request, plus
+    `layer`. A footprint result also has `matched` (all request ids it used).
+    In `shadow` mode a footprint match comes back with `shadow: True`: the
+    caller must NOT approve on it, only record it."""
     if not fingerprint or not fingerprint_cache_enabled():
         return None
     ttl_days = cfg.get_int("fingerprint_cache_ttl_days", 30)
-    return db.fetch_one(
+    scope = (principal_id, target_server_id, database_name)
+    hit = db.fetch_one(
         "SELECT id, completed_at FROM requests "
         " WHERE requester_slack_id = %s "
         "   AND target_server_id   = %s "
@@ -517,11 +551,65 @@ def fingerprint_cache_hit(
         "   AND status = 'completed' "
         "   AND completed_at >= NOW() - make_interval(days => %s) "
         " ORDER BY completed_at DESC LIMIT 1",
-        (principal_id, target_server_id, database_name, fingerprint, ttl_days),
+        scope + (fingerprint, ttl_days),
     )
+    if hit is not None:
+        return {**hit, "layer": "exact"}
+    if canonical and canonical_cache_enabled():
+        hit = db.fetch_one(
+            "SELECT id, completed_at FROM requests "
+            " WHERE requester_slack_id = %s "
+            "   AND target_server_id   = %s "
+            "   AND database_name      = %s "
+            "   AND query_canonical_fp = %s "
+            "   AND status = 'completed' "
+            "   AND completed_at >= NOW() - make_interval(days => %s) "
+            " ORDER BY completed_at DESC LIMIT 1",
+            scope + (canonical, ttl_days),
+        )
+        if hit is not None:
+            return {**hit, "layer": "canonical"}
+    mode = footprint_cache_mode()
+    if (mode == "off" or not footprint or not footprint.get("complete")
+            or (risk_summary or "").startswith(":warning:")):
+        return None
+    # `query_fingerprint IS NOT NULL` lets the partial cache index serve this.
+    rows = db.fetch_all(
+        "SELECT id, completed_at, query_footprint FROM requests "
+        " WHERE requester_slack_id = %s "
+        "   AND target_server_id   = %s "
+        "   AND database_name      = %s "
+        "   AND query_fingerprint IS NOT NULL "
+        "   AND query_footprint IS NOT NULL "
+        "   AND coalesce(default_schema, '') = %s "
+        "   AND status = 'completed' "
+        "   AND completed_at >= NOW() - make_interval(days => %s) "
+        " ORDER BY completed_at DESC LIMIT %s",
+        scope + (default_schema or "", ttl_days, FOOTPRINT_POOL_LIMIT),
+    )
+    if not rows:
+        return None
+    from . import ast_safety
+    matched = ast_safety.footprint_covered(
+        footprint, [(r["id"], r["query_footprint"]) for r in rows])
+    if not matched:
+        return None
+    newest = max((r for r in rows if r["id"] in matched), key=lambda r: r["completed_at"])
+    return {"id": newest["id"], "completed_at": newest["completed_at"],
+            "layer": "footprint", "matched": matched, "shadow": mode == "shadow"}
 
 
-def decided_by_name_for_fingerprint(prior_request_id: int) -> str:
-    """Label for requests.decided_by_name when the fingerprint cache
-    short-circuits the admin gate."""
+def decided_by_name_for_fingerprint(prior_request_id: int, layer: str = "exact",
+                                    matched: list[int] | None = None) -> str:
+    """Label for requests.decided_by_name when the approval cache
+    short-circuits the admin gate. It names the layer that matched."""
+    if layer == "canonical":
+        return (f"auto-approved (same query in another form as completed "
+                f"request #{prior_request_id})")
+    if layer == "footprint":
+        ids_all = matched or [prior_request_id]
+        ids = ", ".join(f"#{n}" for n in ids_all[:5])
+        if len(ids_all) > 5:
+            ids += f" and {len(ids_all) - 5} more"
+        return f"auto-approved (columns covered by completed requests {ids})"
     return f"auto-approved (fingerprint match of completed request #{prior_request_id})"

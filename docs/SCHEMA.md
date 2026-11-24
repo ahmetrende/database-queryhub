@@ -651,6 +651,9 @@ Every `/sql` submission, regardless of outcome. The audit trail.
 | `explain_plan` | `jsonb` — captured EXPLAIN (FORMAT JSON) plan when `query_plan_logging` is on. Capped at 64 KB (migration 016). `GET /api/admin/queue` reads `estRows` and `estTables` from it. |
 | `risk_summary` | A one-line risk hint for the admin DM, derived from the pre-flight plan (size band + seq-scan flag). NULL for non-explainable / fail-open (migration 040). |
 | `query_fingerprint` | Literal-normalized sqlglot fingerprint of the query, set for RO submissions. The auto-approve cache for repeated RO queries uses it. A partial index serves the lookup (migration 044). |
+| `query_canonical_fp` | Canonical-form fingerprint of a RO query (`ast_safety.canonical_fingerprint`), with the `\|schema=` suffix when a default schema is set. Layer 1 of the approval cache. A partial index serves the lookup (migration 223). |
+| `query_footprint` | `jsonb` column footprint of a RO query (`ast_safety.footprint`): tables, and each column with its use (raw, agg, filter). Layer 2 of the approval cache (migration 223). |
+| `approval_shadow` | `jsonb`, set when the footprint layer runs in `shadow` mode and would have approved the request: `{"layer": "footprint", "matched": [ids]}`. The request still went to an admin (migration 223). |
 | `created_at` | Submission time. |
 
 When `decided_by_slack_id = 'AUTO'`, the request skipped the admin button. An

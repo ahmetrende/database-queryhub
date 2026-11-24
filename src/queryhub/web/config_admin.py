@@ -30,6 +30,7 @@ _TYPES = {
     "batch_enabled": "bool", "connection_health_enabled": "bool",
     "csv_import_enabled": "bool",
     "fingerprint_cache_enabled": "bool", "grant_reaper_enabled": "bool",
+    "approval_cache_canonical": "bool",
     "kill_switch": "bool", "mssql_trust_server_cert": "bool",
     "pending_expiry_enabled": "bool", "pii_masking_enabled": "bool",
     "pre_flight_explain": "bool", "query_plan_logging": "bool",
@@ -60,6 +61,8 @@ _TYPES = {
     # str
     "auto_approve_feed_channel": "str", "bot_display_icon": "str",
     "bot_display_name": "str", "kill_switch_message": "str", "log_level": "str",
+    # `off`, `shadow` (default) or `on`: the column-footprint approval cache.
+    "approval_cache_footprint": "str",
     # A comma list of engine ids. Empty is a real value (check every engine),
     # so it must stay free text and never be guessed as anything else.
     "connection_health_exclude_engines": "str",
@@ -97,7 +100,8 @@ _GROUPS = [
         "ro_burst_threshold", "ro_burst_window_min", "ro_window_minutes",
         "auto_approve_rw_requests", "auto_approve_max_days",
         "access_grant_default_days",
-        "fingerprint_cache_enabled", "fingerprint_cache_ttl_days"]),
+        "fingerprint_cache_enabled", "fingerprint_cache_ttl_days",
+        "approval_cache_canonical", "approval_cache_footprint"]),
     ("execution", "Query execution", [
         "query_timeout_sec", "execution_lease_sec", "max_rows",
         "batch_enabled", "batch_max_items", "sql_audit_comment"]),
@@ -249,6 +253,9 @@ def _coerce(raw, kind: str, current: str | None, key: str | None = None) -> str 
     if key == "target_ssl_mode":
         # libpq refuses any other word, and this one reaches every connection.
         return s if s in _SSLMODES else None
+    if key == "approval_cache_footprint":
+        s = s.lower()
+        return s if s in {"off", "shadow", "on"} else None
     return s
 
 

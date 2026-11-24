@@ -8075,9 +8075,15 @@ def _audit_via(r: dict, names: dict) -> str | None:
 
     None means the row is not a machine action at all.
     """
-    d = r.get("details") if isinstance(r.get("details"), dict) else {}
+    raw = r.get("details")
+    d: dict = raw if isinstance(raw, dict) else {}
     fp = d.get("fingerprint_match_request_id")
     if fp:
+        if d.get("cache_layer") == "footprint":
+            ids = d.get("cache_matched_request_ids") or [fp]
+            return "column footprint covered by " + ", ".join(f"#{i}" for i in ids[:5])
+        if d.get("cache_layer") == "canonical":
+            return f"canonical query form matched request #{fp}"
         return f"query fingerprint matched request #{fp}"
     if isinstance(d, dict) and d.get("basis") and not d.get("grant_id"):
         return f"auto-approve rule · {d['basis']}"
