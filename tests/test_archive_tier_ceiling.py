@@ -205,6 +205,7 @@ def connections(monkeypatch, people):
     monkeypatch.setattr(rd.teams, "effective_grants_for_user",
                         lambda uid, ids: {i: dict(DDL_EVERYWHERE) for i in ids})
     monkeypatch.setattr(rd, "_catalog_databases_map", lambda ids: {i: ["ledger"] for i in ids})
+    monkeypatch.setattr(rd, "_catalog_database_stats", lambda tids: {})
     monkeypatch.setattr(rd, "_catalog_table_refs_map", lambda pairs: {})
     monkeypatch.setattr(rd, "_catalog_functions_map", lambda pairs: {})
 
@@ -277,6 +278,7 @@ def person(monkeypatch, people):
     monkeypatch.setattr(teams, "effective_grants_for_user", lambda pid, ids: st["grants"])
     monkeypatch.setattr(routes_data, "_catalog_databases_map",
                         lambda ids: {i: ["ledger", "audit"] for i in ids})
+    monkeypatch.setattr(routes_data, "_catalog_database_stats", lambda tids: {})
     monkeypatch.setattr(access, "resolve_databases",
                         lambda pid, pairs: {p: st["decided"].get(p, (None, None)) for p in pairs})
     monkeypatch.setattr(ra.db, "fetch_all", lambda sql, params=None: [])

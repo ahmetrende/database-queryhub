@@ -2660,7 +2660,23 @@
   .qh-conntable { table-layout: fixed; width: 100%; min-width: 980px; }
   /* Connection owners (qh-admin-access.jsx ConnOwnersForm, CODE 2026-10-05 (g)):
      the line under each connection name, and the rows in the owners dialog. */
-  .qh-conn-owners { font-size: 11.5px; }
+  .qh-conn-ownertd { min-width: 120px; max-width: 200px; }
+  .qh-conn-owner { font-size: 12.5px; line-height: 1.35; }
+  .qh-conn-owner + .qh-conn-owner { margin-top: 4px; }
+  .qh-conn-owner-lead { font-size: 11.5px; }
+  .qh-conn-dbtoggle { white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; padding: 0; font: inherit; font-size: 12.5px; font-weight: 500; color: var(--fg-primary); cursor: pointer; }
+  .qh-conn-dbtoggle:hover { text-decoration: underline; }
+  .qh-conn-dbcaret { width: 10px; color: var(--fg-tertiary); }
+  .qh-conn-dbpeek { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .qh-conntable tr.qh-conn-dbrow > td { padding: 0 12px 12px 48px; background: var(--bg-light); }
+  .qh-conn-dbgridwrap { display: inline-block; max-width: 100%; overflow-x: auto; vertical-align: top; }
+  .qh-conntable .qh-conn-dbgrid { width: auto; min-width: 520px; table-layout: auto; border-collapse: collapse; font-size: 12px; background: var(--bg-white); }
+  .qh-conntable .qh-conn-dbgrid td { overflow: visible; }
+  .qh-conn-dbgrid th { text-transform: none; letter-spacing: 0; color: var(--fg-secondary); background: var(--bg-light); }
+  .qh-conn-dbgrid td .qh-tier { margin-left: 6px; }
+  .qh-conn-dbgrid th { position: sticky; top: 0; text-align: left; font-weight: 500; font-size: 11.5px; padding: 4px 10px; border: 1px solid var(--stroke-light); cursor: pointer; white-space: nowrap; user-select: none; }
+  .qh-conn-dbgrid td { padding: 3px 10px; border: 1px solid var(--stroke-light); white-space: nowrap; }
+  .qh-conn-dbgrid th.qh-tright, .qh-conn-dbgrid td.qh-tright { text-align: right; font-variant-numeric: tabular-nums; }
   .qh-owner-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 12px; }
   .qh-owner-row { display: flex; align-items: center; gap: 8px; min-height: 28px; }
   .qh-owner-row b { font-weight: 600; }
@@ -2696,9 +2712,13 @@
   .qh-credask-r { display: block; }
   .qh-owner-row .qh-btn { margin-left: auto; }
   .qh-conntable th.qh-conn-selcol, .qh-conntable td.qh-conn-selcol { width: 36px; }
-  .qh-conntable th:nth-child(2) { width: 27%; }
-  .qh-conntable th:nth-child(3) { width: 15%; }
-  .qh-conntable th:nth-child(4) { width: 14%; }
+  /* Column widths by class, not by position: the select column is absent in
+     read-only mode, and the Owner column (2026-11-25) moved every later one. */
+  .qh-conntable th.qh-cw-name { width: 21%; }
+  .qh-conntable th.qh-cw-owner { width: 11%; }
+  .qh-conntable th.qh-cw-engine { width: 10%; }
+  .qh-conntable th.qh-cw-prov { width: 10%; }
+  .qh-conntable th.qh-cw-status { width: 9%; }
   .qh-conntable td { overflow: hidden; }
   .qh-conntable td.qh-conn-name-td { max-width: none; }
   .qh-conn-namecell { min-width: 0; }

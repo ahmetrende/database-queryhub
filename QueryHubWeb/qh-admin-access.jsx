@@ -3235,6 +3235,64 @@ function connBannerSay(failing) {
 }
 // The chip, and the error behind a disclosure. The server scrubs the error.
 // It renders as text, never as HTML.
+// The Databases cell keeps the row short: a count and the first names. The
+// toggle opens a grid under the row, one line per database, with the catalog's
+// numbers. `rows` and `bytes` are planner estimates from the last catalog sync.
+const CONN_DB_PEEK = 3;
+function connDbBytes(b) {
+  if (b == null) return '—';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']; let n = b, i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i && n < 10 ? n.toFixed(1) : Math.round(n)) + ' ' + u[i];
+}
+function connDbCount(n) {
+  if (n == null) return '—';
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
+function ConnDbCell({ c, open, onToggle }) {
+  const dbs = c.databases || [];
+  if (!dbs.length) return <span className="qh-muted">—</span>;
+  if (dbs.length <= 2) {
+    return <div className="qh-conn-dbcell">{dbs.map(d => <span key={d.id} className="qh-dbchip">{d.name}{d.tier && <TierBadge tier={d.tier} sm />}</span>)}</div>;
+  }
+  const peek = dbs.slice(0, CONN_DB_PEEK).map(d => d.name).join(', ') + (dbs.length > CONN_DB_PEEK ? ', …' : '');
+  return (
+    <div className="qh-conn-dbsum">
+      <button type="button" className="qh-conn-dbtoggle" aria-expanded={open} onClick={onToggle}>
+        <span className="qh-conn-dbcaret" aria-hidden="true">{open ? '▾' : '▸'}</span>{dbs.length} databases
+      </button>
+      <div className="qh-muted qh-mono qh-conn-dbpeek" title={dbs.map(d => d.name).join(', ')}>{peek}</div>
+    </div>
+  );
+}
+const CONN_DB_COLS = [['name', 'Database'], ['tables', 'Tables'], ['rows', 'Rows (est.)'], ['bytes', 'Size (est.)'], ['syncedAt', 'Catalog synced']];
+function ConnDbGrid({ c }) {
+  const [sort, setSort] = React.useState({ key: 'name', dir: 'asc' });
+  const dbs = (c.databases || []).slice().sort((a, b) => {
+    const av = a[sort.key], bv = b[sort.key];
+    const r = av == null ? 1 : bv == null ? -1 : (typeof av === 'number' ? av - bv : String(av).localeCompare(String(bv)));
+    return sort.dir === 'asc' ? r : -r;
+  });
+  const by = k => setSort(s => ({ key: k, dir: s.key === k && s.dir === 'asc' ? 'desc' : 'asc' }));
+  return (
+    <div className="qh-conn-dbgridwrap"><table className="qh-conn-dbgrid">
+      <thead><tr>{CONN_DB_COLS.map(([k, l]) => <th key={k} className={k === 'name' || k === 'syncedAt' ? '' : 'qh-tright'} aria-sort={sort.key === k ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined} onClick={() => by(k)}>{l}{sort.key === k ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}</th>)}</tr></thead>
+      <tbody>{dbs.map(d => (
+        <tr key={d.id}>
+          <td className="qh-mono">{d.name}{d.tier && <TierBadge tier={d.tier} sm />}</td>
+          <td className="qh-tright">{d.tables == null ? '—' : d.tables}</td>
+          <td className="qh-tright">{connDbCount(d.rows)}</td>
+          <td className="qh-tright">{connDbBytes(d.bytes)}</td>
+          <td className="qh-muted" title={d.syncedAt || ''}>{d.syncedAt ? qhAgo(d.syncedAt) : 'not synced'}</td>
+        </tr>))}
+      </tbody>
+    </table></div>
+  );
+}
+
 function ConnHealth({ h }) {
   const s = connHealthState(h);
   return (
@@ -3312,6 +3370,7 @@ function ConnectionsView({ st, user, readOnly }) {
   // Disable of the selection and of one connection ask in an inline row (2026-10-24).
   const [askBulk, setAskBulk] = React.useState(false);
   const [askConn, setAskConn] = React.useState(null);   // { id, kind: 'disable' | 'delete' }
+  const [dbOpen, setDbOpen] = React.useState({});      // { [connectionId]: true } — Databases grid open
   const bulkDisable = () => { setAskConn(null); setAskBulk(b => !b); };
   const doBulkDisable = () => { setAskBulk(false); runBulk({ enabled: false }); };
   const connAskSay = (c, kind) => kind === 'delete'
@@ -3444,6 +3503,7 @@ function ConnectionsView({ st, user, readOnly }) {
         if (sort.key) rows0.sort((a, b) => {
           let av, bv;
           if (sort.key === 'dbs') { av = (a.databases || []).length; bv = (b.databases || []).length; }
+          else if (sort.key === 'owner') { const ow = x => (((x.owners || [])[0] || {}).displayName || 'zzz').toLowerCase(); av = ow(a); bv = ow(b); }
           else if (sort.key === 'hosting') { av = (qhHosting(a) || 'zzz').toLowerCase(); bv = (qhHosting(b) || 'zzz').toLowerCase(); }
           else { av = String(a[sort.key]).toLowerCase(); bv = String(b[sort.key]).toLowerCase(); }
           return av < bv ? -dir : av > bv ? dir : 0;
@@ -3472,7 +3532,7 @@ function ConnectionsView({ st, user, readOnly }) {
         const credWord = bulk ? { ro: 'read-only', rw: 'read/write', ddl: 'DDL' }[bulk.tier] : '';
         const had = bulk ? selRows.filter(c => { const k = (c.credentials || {})[bulk.tier]; return k && k.configured && !k.placeholder; }).length : 0;
         const nSel = selRows.length;
-        const nCols = readOnly ? 6 : 7;
+        const nCols = readOnly ? 7 : 8;
         return (
           <>
           {sel.length > 0 && (
@@ -3522,7 +3582,7 @@ function ConnectionsView({ st, user, readOnly }) {
           )}
           <div className="qh-tablewrap">
           <table className="qh-atable qh-conntable qh-acttable">
-            <thead><tr>{!readOnly && <th className="qh-conn-selcol"><ConnCheck on={allOn} some={someOn} label={allOn ? 'Deselect every connection shown' : 'Select all ' + vis.length + ' connections shown'} onChange={() => { setRefused(null); setSel(xs => allOn ? xs.filter(id => vis.indexOf(id) < 0) : [...new Set(xs.concat(vis))]); }} /></th>}{th('name', 'Connection')}{th('engine', 'Engine')}{th('hosting', 'Provider')}{th('enabled', 'Status')}{th('dbs', 'Databases')}<th className="qh-tright">Actions</th></tr></thead>
+            <thead><tr>{!readOnly && <th className="qh-conn-selcol"><ConnCheck on={allOn} some={someOn} label={allOn ? 'Deselect every connection shown' : 'Select all ' + vis.length + ' connections shown'} onChange={() => { setRefused(null); setSel(xs => allOn ? xs.filter(id => vis.indexOf(id) < 0) : [...new Set(xs.concat(vis))]); }} /></th>}{th('name', 'Connection', ' qh-cw-name')}{th('owner', 'Owner', ' qh-cw-owner')}{th('engine', 'Engine', ' qh-cw-engine')}{th('hosting', 'Provider', ' qh-cw-prov')}{th('enabled', 'Status', ' qh-cw-status')}{th('dbs', 'Databases', ' qh-cw-dbs')}<th className="qh-tright">Actions</th></tr></thead>
             <tbody>
               {rows.map(c => {
                 const probe = tested[c.id];
@@ -3530,7 +3590,17 @@ function ConnectionsView({ st, user, readOnly }) {
                 <React.Fragment key={c.id}>
                 <tr className={(sel.indexOf(c.id) >= 0 ? 'is-sel' : '') + (refusedNames.indexOf(c.name) >= 0 ? ' is-refused' : '') + (c.replicaOf ? ' is-replica' : '')}>
                   {!readOnly && <td className="qh-conn-selcol"><ConnCheck on={sel.indexOf(c.id) >= 0} onChange={() => toggleSel(c.id)} label={'Select ' + c.name} /></td>}
-                  <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b><span className={'qh-envtag env-' + c.env}>{c.env}</span></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}{!c.replicaOf && <div className="qh-muted qh-conn-owners" title="The lead of each owner team approves requests to this connection.">{(c.owners || []).length ? 'Owners: ' + c.owners.map(o => o.displayName + ((o.leads || []).length ? ' (' + o.leads.join(', ') + ')' : '')).join(', ') : 'No owner'}</div>}{!c.replicaOf && c.superAdminOnly && <span className="qh-sao-chip" title="Only super-admins, and grants that name this connection, reach it.">super-admin only</span>}{!c.replicaOf && c.aiAllowed === false && <span className="qh-aimcp-off" title="The AI assistant cannot read this connection's tables.">AI off</span>}{!c.replicaOf && c.mcpAllowed === false && <span className="qh-aimcp-off" title="MCP clients cannot see or query this connection.">MCP off</span>}</td>
+                  <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b><span className={'qh-envtag env-' + c.env}>{c.env}</span></div>{c.host && <div className="qh-muted qh-mono qh-conn-host" title={c.host + ':' + c.port + '/' + c.defaultDatabase} style={{ fontSize: 11.5 }}>{c.host}:{c.port}/{c.defaultDatabase}</div>}{!c.replicaOf && c.superAdminOnly && <span className="qh-sao-chip" title="Only super-admins, and grants that name this connection, reach it.">super-admin only</span>}{!c.replicaOf && c.aiAllowed === false && <span className="qh-aimcp-off" title="The AI assistant cannot read this connection's tables.">AI off</span>}{!c.replicaOf && c.mcpAllowed === false && <span className="qh-aimcp-off" title="MCP clients cannot see or query this connection.">MCP off</span>}</td>
+                  {/* Owner: the owner teams, each with its lead below. The lead of
+                      each owner team approves requests to this connection. A
+                      replica follows its primary, so it shows no owner. */}
+                  <td className="qh-conn-ownertd">
+                    {c.replicaOf
+                      ? <span className="qh-muted">—</span>
+                      : (c.owners || []).length
+                        ? c.owners.map(o => <div key={o.id} className="qh-conn-owner" title="The lead of this team approves requests to this connection."><b>{o.displayName}</b>{(o.leads || []).length > 0 && <div className="qh-muted qh-conn-owner-lead">{o.leads.join(', ')}</div>}</div>)
+                        : <span className="qh-expiry is-soon" title="Nobody owns this connection, so no team lead approves its requests.">No owner</span>}
+                  </td>
                   {/* Engine over hosting in ONE column, and the environment beside
                       the name: seven columns plus pinned actions were ~400px wider
                       than the panel, so Databases sat under the actions. The
@@ -3556,7 +3626,7 @@ function ConnectionsView({ st, user, readOnly }) {
                       : credNote(c) && <div className="qh-expiry is-soon">{credNote(c)}</div>}
                     <ConnHealth h={c.health} />
                   </td>
-                  <td><div className="qh-conn-dbcell">{(c.databases || []).map(d => <span key={d.id} className="qh-dbchip">{d.name}{d.tier && <TierBadge tier={d.tier} sm />}</span>)}</div></td>
+                  <td className="qh-conn-dbtd"><ConnDbCell c={c} open={!!dbOpen[c.id]} onToggle={() => setDbOpen(o => ({ ...o, [c.id]: !o[c.id] }))} /></td>
                   <td className="qh-tright"><div className="qh-rowacts">
                     {/* The last answer, in its colour (operator, CODE 2026-09-23 §6a):
                         green with the latency, red with the error on hover. Still a
@@ -3578,6 +3648,7 @@ function ConnectionsView({ st, user, readOnly }) {
                     ].filter(Boolean)} />}
                   </div></td>
                 </tr>
+                {dbOpen[c.id] && (c.databases || []).length > 2 && <tr className="qh-conn-dbrow"><td colSpan={nCols}><ConnDbGrid c={c} /></td></tr>}
                 {askConn && askConn.id === c.id && <tr className="qh-editrow qh-revokerow"><td colSpan={nCols}>
                   <InlineConfirm say={connAskSay(c, askConn.kind)} danger
                     cancelLabel={askConn.kind === 'delete' ? 'Keep' : 'Keep enabled'} confirmLabel={askConn.kind === 'delete' ? 'Delete connection' : 'Disable'}
@@ -3592,6 +3663,7 @@ function ConnectionsView({ st, user, readOnly }) {
                 <tr key={c.id} className="is-deleted">
                   {!readOnly && <td className="qh-conn-selcol" />}
                   <td className="qh-conn-name-td"><div className="qh-conn-namecell"><img className="qh-engine-logo" src={qhEngineLogo(c)} alt="" draggable={false} /><b title={c.name}>{c.name}</b></div></td>
+                  <td className="qh-conn-ownertd" />
                   <td className="qh-conn-engtd"><div className="qh-conn-eng">{c.engine}</div></td>
                   <td className="qh-conn-provtd">
                     {qhProvider(c) && <div className="qh-conn-namecell qh-hostcell" title={qhHostingFull(c)}><img className="qh-prov-logo" src={qhProviderLogo(qhTags(c).provider)} alt="" draggable={false} />{qhHosting(c)}</div>}
