@@ -126,6 +126,7 @@ def wire(monkeypatch):
     # every statement with the owners rows, and this one would read `d` off them.
     monkeypatch.setattr(routes_data, "_catalog_databases_map",
                         lambda tids: {tid: ["ledger"] for tid in tids})
+    monkeypatch.setattr(routes_data, "_catalog_database_stats", lambda tids: {})
     return state
 
 

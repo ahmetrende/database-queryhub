@@ -1233,6 +1233,8 @@ def admin_connections(claims: dict = Depends(deps.current_user)):
     # trip per row on the screen whose job is to show every row: 117 targets,
     # 121 statements.
     catalog_dbs = routes_data._catalog_databases_map([r["id"] for r in rows])
+    # The Databases grid under a row: tables, size and sync time per database.
+    db_stats = routes_data._catalog_database_stats([r["id"] for r in rows])
     # One read each for the whole fleet, as above.
     health = connection_health.by_target(rows)
     rotation = replicas.in_rotation(rows)
@@ -1240,6 +1242,12 @@ def admin_connections(claims: dict = Depends(deps.current_user)):
     for r in rows:
         payload = _connection_payload(r, catalog_dbs.get(r["id"], []))
         payload["owners"] = owners.get(r["id"], [])
+        stats = db_stats.get(r["id"], {})
+        for d in payload["databases"]:
+            st = stats.get(d["name"])
+            if st:
+                d.update(tables=st["tables"], rows=st["rows"], bytes=st["bytes"],
+                         syncedAt=mapping.iso(st["syncedAt"]))
         payload["health"] = mapping.connection_health(health.get(r["id"]))
         payload["inRotation"] = rotation.get(r["id"])
         out.append(payload)

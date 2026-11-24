@@ -27,6 +27,19 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **Connections show owners in their own column and fold long database lists.** The
+  owner teams moved out of the Connection cell into a sortable Owner column. Each team
+  shows with its lead below it. A server without an owner shows "No owner" in amber, and a
+  replica shows a dash. A server with three or more databases shows a count and the first
+  names, not one chip per database. The count opens a grid under the row: Database,
+  Tables, Rows (est.), Size (est.) and Catalog synced. Each header sorts.
+  `GET /admin/connections` adds `tables`, `rows`, `bytes` and `syncedAt` to each database,
+  from one grouped read of the schema catalog.
+
+  | Before | After |
+  |---|---|
+  | ![The Connections table with the owner under the host and one chip per database.](docs/whatsnew/connections-owner-databases-before.png) | ![The Connections table with an Owner column and an open database grid under the first row.](docs/whatsnew/connections-owner-databases-after.png) |
+
 - **A repeat read that differs only in form skips approval.** The approval cache had one
   layer: a RO query that differs from a completed one only in literal values. Layer 1 now
   also ignores comments, name case, IN-list length and table aliases. It ignores the order

@@ -91,6 +91,34 @@ def catalog_databases_map(target_ids: list[int]) -> dict[int, list[str]]:
     return out
 
 
+def catalog_database_stats(target_ids: list[int]) -> dict[int, dict[str, dict]]:
+    """Catalog totals per database, for many servers in one query.
+
+    {target_id: {database: {"tables", "rows", "bytes", "syncedAt"}}}. `rows`
+    and `bytes` are the planner estimates that the catalog stored, so they are
+    approximate. A server with no snapshot is absent from the map.
+    """
+    ids = list(dict.fromkeys(int(t) for t in target_ids))
+    if not ids:
+        return {}
+    out: dict[int, dict[str, dict]] = {}
+    for r in db.fetch_all(
+            "SELECT target_server_id AS t, database_name AS d, count(*) AS n, "
+            "       sum(row_estimate) AS rows, sum(total_bytes) AS bytes, "
+            "       max(snapshot_at) AS at "
+            "  FROM schema_tables WHERE target_server_id = ANY(%s) "
+            " GROUP BY target_server_id, database_name", (ids,)):
+        if r["d"] in HIDDEN_DATABASES:
+            continue
+        out.setdefault(r["t"], {})[r["d"]] = {
+            "tables": int(r["n"]),
+            "rows": int(r["rows"]) if r["rows"] is not None else None,
+            "bytes": int(r["bytes"]) if r["bytes"] is not None else None,
+            "syncedAt": r["at"],
+        }
+    return out
+
+
 def visible_databases(target, grant: dict, catalog: list[str]) -> list[str]:
     """The databases this grant shows on this server. [] means hide the server.
 

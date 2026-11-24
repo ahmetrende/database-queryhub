@@ -91,6 +91,7 @@ def _conn_state_resolver(uid: str):
 
 _catalog_databases = db_scope.catalog_databases
 _catalog_databases_map = db_scope.catalog_databases_map
+_catalog_database_stats = db_scope.catalog_database_stats
 
 
 def _catalog_functions(target_id: int, database: str) -> list[dict]:

@@ -814,7 +814,10 @@ function connRegistry() {
       host: c.id.replace(/[^a-z0-9-]/g, '-') + '.db.internal', port: DEFAULT_PORT[eid] || 5432,
       defaultDatabase: (c.databases[0] || {}).name || 'postgres', notes: '',
       // `grantEndsAt` is seeded for four states: soon, far, none and past.
-      databases: c.databases.map(d => ({ id: d.id, name: d.name, tier: d.tier, grantEndsAt: mockGrantEnd(c.id + '/' + d.id) })),
+      // Catalog totals per database (2026-11-25): the Databases grid under a row.
+      // One database stays unsynced, so the grid shows that state too.
+      databases: c.databases.map((d, i) => ({ id: d.id, name: d.name, tier: d.tier, grantEndsAt: mockGrantEnd(c.id + '/' + d.id),
+        ...(i === 3 ? {} : { tables: 4 + (d.name.length * 7) % 41, rows: (d.name.length * 152731) % 9800000, bytes: (d.name.length * 48271903) % 6400000000, syncedAt: isoAgo(1000 * 60 * (40 + i * 7)) }) })),
       autoApproveRO: !!c.autoApproveRO,
       // Super-admin-only (CODE 2026-10-06 (c), migration 141): one connection on,
       // so the chip and the switch render in both states.
