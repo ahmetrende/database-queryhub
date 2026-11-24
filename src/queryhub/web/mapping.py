@@ -1211,6 +1211,14 @@ def _auto_basis(action: str, details: dict) -> str | None:
         return "super-admin access"
     if action == "auto_approved_fingerprint":
         n = details.get("fingerprint_match_request_id")
+        layer = details.get("cache_layer")
+        if layer == "footprint":
+            ids = details.get("cache_matched_request_ids") or ([n] if n is not None else [])
+            return ("same columns as requests " + ", ".join(f"#{i}" for i in ids[:5])
+                    if ids else "same columns as earlier requests")
+        if layer == "canonical":
+            return (f"same query in another form as request #{n}" if n is not None
+                    else "same query in another form as an earlier request")
         return (f"same query as request #{n}" if n is not None
                 else "same query as an earlier request")
     basis = details.get("basis")

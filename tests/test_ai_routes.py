@@ -240,7 +240,7 @@ def test_the_mark_is_kept_only_while_the_assistant_is_on(submit, flag, on, want)
 def test_both_insert_paths_and_the_returning_list_carry_the_mark():
     src = (ROOT / "src" / "queryhub" / "core_submit.py").read_text()
     assert src.count("query_secret, run_on, ai_assisted, \"") == 1
-    assert src.count(" run_on, \"\n                f\" ai_assisted, result_to_slack, default_schema, ddl_dependents) \"") == 1
+    assert src.count(" run_on, \"\n                f\" ai_assisted, result_to_slack, default_schema, ddl_dependents, \"") == 1
     assert src.count("prep.ai_assisted,\n") == 2
     assert "ai_assisted" in [c.strip() for c in cs.REQUEST_RETURNING.split(",")]
     assert src.count('submit_details["ai_assisted"] = True') == 2

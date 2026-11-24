@@ -80,6 +80,322 @@ def fingerprint(sql: str, engine: str = "postgres") -> str | None:
     return hashlib.sha256(f"{dialect}:{canonical}".encode("utf-8")).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Approval cache, layer 1: the canonical form
+# ---------------------------------------------------------------------------
+#
+# `fingerprint` treats two queries as the same only when they differ in
+# literal values. Layer 1 also ignores differences of form that do not change
+# which data the query reads:
+#
+#   * the number of values in an IN list
+#   * comments and the case of unquoted names
+#   * table alias names, when each table appears once
+#   * the order and the aliases of the outer SELECT list
+#   * the order of AND and OR operands
+#   * the order of inner joins (an inner join is a cross join plus a filter)
+#   * the outer ORDER BY
+#
+# The outer LIMIT stays, but its number is a placeholder, as in `fingerprint`.
+# An ORDER BY or a LIMIT inside a subquery stays: there it selects rows.
+
+
+def _parse_single(sql: str, dialect: str):
+    """The one statement in `sql`, or None (empty, unparseable, or more than
+    one statement)."""
+    sql = (sql or "").strip()
+    if not sql:
+        return None
+    try:
+        trees = [t for t in sqlglot.parse(sql, read=dialect) if t is not None]
+    except Exception:
+        return None
+    return trees[0] if len(trees) == 1 else None
+
+
+def _placeholder_literals(tree):
+    return tree.transform(
+        lambda n: exp.Placeholder() if isinstance(n, (exp.Literal, exp.Boolean)) else n)
+
+
+def _has_positional_refs(select) -> bool:
+    """True when GROUP BY or ORDER BY names a SELECT-list position (`GROUP BY 1`).
+    The SELECT list must then keep its order."""
+    for key in ("group", "order"):
+        node = select.args.get(key)
+        if node is not None and any(isinstance(e, exp.Literal) or
+                                    (isinstance(e, exp.Ordered) and isinstance(e.this, exp.Literal))
+                                    for e in node.expressions):
+            return True
+    return False
+
+
+def _table_key(table) -> str:
+    return ".".join(p for p in (table.catalog, table.db, table.name) if p)
+
+
+def _drop_table_aliases(tree) -> None:
+    """Replace each table alias with the table name. Only when every table
+    appears once in the whole statement, and no alias is used twice: then the
+    rename cannot make two different columns look the same."""
+    tables = list(tree.find_all(exp.Table))
+    names = [_table_key(t) for t in tables]
+    if len(set(names)) != len(names):
+        return
+    aliases = [a.name for a in tree.find_all(exp.TableAlias) if a.name]
+    if len(set(aliases)) != len(aliases) or set(aliases) & {t.name for t in tables}:
+        return
+    if tree.find(exp.CTE) is not None:
+        return
+    rename = {}
+    for t in tables:
+        if t.alias:
+            rename[t.alias] = t.name
+            t.set("alias", None)
+    if not rename:
+        return
+    for col in tree.find_all(exp.Column):
+        if col.table in rename:
+            col.set("table", exp.to_identifier(rename[col.table]))
+
+
+def _flatten_inner_joins(select) -> None:
+    """Rewrite `FROM a JOIN b ON x JOIN c ON y` as a sorted cross join with
+    `x AND y` in WHERE. Only when every join is a plain inner join on plain
+    tables: an outer join, USING, LATERAL or a derived table keeps its form."""
+    joins = select.args.get("joins") or []
+    from_ = select.args.get("from_")
+    if not joins or from_ is None or not isinstance(from_.this, exp.Table):
+        return
+    conds = []
+    tables = [from_.this]
+    for j in joins:
+        if (j.side or (j.kind or "").upper() not in ("", "INNER") or j.args.get("using")
+                or j.args.get("method") or not isinstance(j.this, exp.Table)
+                or j.args.get("on") is None):
+            return
+        tables.append(j.this)
+        conds.append(j.args["on"])
+    tables.sort(key=lambda t: t.sql())
+    where = select.args.get("where")
+    parts = ([where.this] if where is not None else []) + conds
+    select.set("from_", exp.From(this=tables[0].copy()))
+    select.set("joins", [exp.Join(this=t.copy(), kind="CROSS") for t in tables[1:]])
+    select.set("where", exp.Where(this=exp.and_(*[p.copy() for p in parts])))
+
+
+def _flat(node, cls):
+    if isinstance(node, cls):
+        return _flat(node.left, cls) + _flat(node.right, cls)
+    if isinstance(node, exp.Paren) and isinstance(node.this, cls):
+        return _flat(node.this, cls)
+    return [node]
+
+
+def _sort_connectors(tree):
+    """Sort the operands of every AND and OR chain. Deepest chains first, so
+    an outer chain sorts on operands that are already canonical."""
+    chains = [n for n in tree.find_all(exp.And, exp.Or)
+              if not isinstance(n.parent, type(n))
+              and not (isinstance(n.parent, exp.Paren)
+                       and isinstance(n.parent.parent, type(n)))]
+    chains.sort(key=lambda n: -n.depth)
+    for node in chains:
+        cls = type(node)
+        parts = sorted((p.copy() for p in _flat(node, cls)), key=lambda e: e.sql())
+        new = parts[0]
+        for p in parts[1:]:
+            new = cls(this=new, expression=p)
+        if node is tree:
+            tree = new
+        else:
+            node.replace(new)
+    return tree
+
+
+def canonical_fingerprint(sql: str, engine: str = "postgres") -> str | None:
+    """Layer 1 of the approval cache: a fingerprint that ignores differences of
+    form (see the list above). None when the SQL does not parse to exactly one
+    statement. Like `fingerprint`, callers must match RO queries only."""
+    dialect = engines.spec(engine).sqlglot_dialect
+    tree = _parse_single(sql, dialect)
+    if tree is None:
+        return None
+    try:
+        from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
+        tree = normalize_identifiers(tree, dialect=dialect)
+        # Positions in GROUP BY / ORDER BY are literals: read them before the
+        # literals become placeholders.
+        keep_order = isinstance(tree, exp.Select) and _has_positional_refs(tree)
+        tree = _placeholder_literals(tree)
+        for node in list(tree.find_all(exp.In)):
+            values = node.args.get("expressions")
+            if values and all(isinstance(v, exp.Placeholder) for v in values):
+                node.set("expressions", [exp.Placeholder()])
+        _drop_table_aliases(tree)
+        for select in list(tree.find_all(exp.Select)):
+            _flatten_inner_joins(select)
+        if isinstance(tree, (exp.Select, exp.SetOperation)):
+            tree.set("order", None)
+        if isinstance(tree, exp.Select) and not keep_order:
+            projections = [e.this if isinstance(e, exp.Alias) else e
+                           for e in tree.expressions]
+            projections.sort(key=lambda e: e.sql())
+            tree.set("expressions", projections)
+        tree = _sort_connectors(tree)
+        canonical = tree.sql(dialect=dialect, comments=False)
+    except Exception:
+        log.debug("canonical_fingerprint failed", exc_info=True)
+        return None
+    return hashlib.sha256(f"k1:{dialect}:{canonical}".encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Approval cache, layer 2: the column footprint
+# ---------------------------------------------------------------------------
+#
+# The footprint lists each (table, column, use) that a query reads. The use is
+#   raw     the column value is in the result
+#   agg     the column is in the result only inside an aggregate
+#   filter  the column is only in WHERE, JOIN, GROUP BY, HAVING or ORDER BY
+# A query is covered when earlier approved queries together read each of its
+# columns at the same use or a higher one (raw > agg > filter).
+#
+# Only a plain SELECT gets a complete footprint: no subquery, no CTE, no set
+# operation, no table function. Any other query, and any column whose table is
+# not certain, makes the footprint incomplete. An incomplete footprint can
+# still add its known columns to the pool, but it can never be covered.
+
+FOOTPRINT_RANK = {"raw": 3, "agg": 2, "filter": 1}
+
+
+def _projection_use(col, root) -> str | None:
+    """raw / agg when `col` is inside a SELECT-list item of `root`, else None.
+    An aggregate inside a window function returns a value per row: raw."""
+    in_agg = False
+    node, parent = col, col.parent
+    while parent is not None:
+        if isinstance(node, exp.AggFunc) and not isinstance(parent, exp.Window):
+            in_agg = True
+        if isinstance(node, exp.Window):
+            in_agg = False
+        if parent is root:
+            if node in root.expressions:
+                return "agg" if in_agg else "raw"
+            return None
+        node, parent = parent, parent.parent
+    return None
+
+
+def footprint(sql: str, engine: str = "postgres") -> dict | None:
+    """The column footprint of one statement:
+
+        {"v": 1, "complete": bool, "tables": [...], "cols": [[table, column, use], ...]}
+
+    `column` is `*` for `SELECT *` or `t.*`. None when the SQL does not parse
+    to one statement or when no table can be named."""
+    dialect = engines.spec(engine).sqlglot_dialect
+    tree = _parse_single(sql, dialect)
+    if tree is None:
+        return None
+    try:
+        from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
+        tree = normalize_identifiers(tree, dialect=dialect)
+        complete = (isinstance(tree, exp.Select)
+                    and tree.find(exp.Subquery, exp.CTE, exp.SetOperation,
+                                  exp.Unnest, exp.Lateral) is None
+                    and sum(1 for _ in tree.find_all(exp.Select)) == 1)
+        tables: dict[str, str] = {}      # alias or name -> table key
+        for t in tree.find_all(exp.Table):
+            if not isinstance(t.this, exp.Identifier):
+                complete = False         # a table function
+                continue
+            key = _table_key(t)
+            ref = t.alias or t.name
+            if ref in tables and tables[ref] != key:
+                complete = False
+            tables[ref] = key
+        if not tables:
+            return None
+        single = next(iter(set(tables.values()))) if len(set(tables.values())) == 1 else None
+        # ORDER BY may name a SELECT-list alias. That is not a table column.
+        out_names = ({e.alias for e in tree.expressions if isinstance(e, exp.Alias)}
+                     if isinstance(tree, exp.Select) else set())
+        cols: set[tuple[str, str, str]] = set()
+        for col in tree.find_all(exp.Column):
+            if isinstance(col.this, exp.Star):
+                continue                 # `t.*`, handled with the stars below
+            if (not col.table and col.name in out_names
+                    and col.find_ancestor(exp.Order) is not None):
+                continue
+            table = tables.get(col.table) if col.table else single
+            if table is None:
+                complete = False
+                continue
+            use = _projection_use(col, tree) if isinstance(tree, exp.Select) else None
+            cols.add((table, col.name, use or "filter"))
+        if isinstance(tree, exp.Select):
+            for item in tree.expressions:
+                star = item if isinstance(item, exp.Star) else (
+                    item if isinstance(item, exp.Column) and isinstance(item.this, exp.Star)
+                    else None)
+                if star is None:
+                    continue
+                if isinstance(star, exp.Column) and star.table:
+                    table = tables.get(star.table)
+                    if table is None:
+                        complete = False
+                        continue
+                    cols.add((table, "*", "raw"))
+                else:
+                    for table in set(tables.values()):
+                        cols.add((table, "*", "raw"))
+    except Exception:
+        log.debug("footprint failed", exc_info=True)
+        return None
+    return {"v": 1, "complete": bool(complete),
+            "tables": sorted(set(tables.values())),
+            "cols": sorted([list(c) for c in cols])}
+
+
+def footprint_covered(new: dict, pool: list[tuple[int, dict]]) -> list[int] | None:
+    """The ids of the pool requests that together cover `new`, or None when
+    the pool does not cover it. `pool` is (request id, footprint) pairs, newest
+    first. Covered means: `new` is complete, every table of `new` is in the
+    pool, and every column of `new` is read in the pool at the same use or a
+    higher one. A `*` in the pool covers every raw column of that table."""
+    if not new or not new.get("complete") or not new.get("cols"):
+        return None
+    best: dict[tuple[str, str], tuple[int, int]] = {}   # (table, col) -> (rank, id)
+    stars: dict[str, int] = {}
+    pool_tables: set[str] = set()
+    for rid, fp in pool:
+        if not isinstance(fp, dict):
+            continue
+        pool_tables.update(fp.get("tables") or [])
+        for table, col, use in fp.get("cols") or []:
+            rank = FOOTPRINT_RANK.get(use, 0)
+            if col == "*":
+                stars.setdefault(table, rid)
+            if rank > best.get((table, col), (0, 0))[0]:
+                best[(table, col)] = (rank, rid)
+    if not set(new.get("tables") or []) <= pool_tables:
+        return None
+    used: list[int] = []
+    for table, col, use in new["cols"]:
+        need = FOOTPRINT_RANK.get(use)
+        if need is None:
+            return None
+        rank, rid = best.get((table, col), (0, 0))
+        if rank < need and col != "*" and table in stars:
+            rank, rid = FOOTPRINT_RANK["raw"], stars[table]
+        if rank < need:
+            return None
+        if rid not in used:
+            used.append(rid)
+    return used
+
+
 # Function names the bot should never let through, regardless of who
 # submitted or which tier they're at. Case-insensitive match against
 # sqlglot's resolved function name (`anonymous` Functions carry the

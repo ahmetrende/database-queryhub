@@ -994,19 +994,44 @@ def create_request(
     # everybody: the fingerprint ignores literal values, and on Athena those
     # decide how much a query scans. A member's repeat archive query is
     # reviewed again.
+    #
+    # The cache has three layers (auto_approve.fingerprint_cache_hit): the
+    # exact fingerprint, the canonical form, and the column footprint. The
+    # footprint layer starts in shadow mode: a would-be match is only stored
+    # in `approval_shadow` and logged, and the request waits for an admin.
     cache_allowed = engines.auto_approve_allowed(prep.target)
     query_fingerprint: str | None = None
+    canonical_fp: str | None = None
+    query_fp: dict | None = None
     fp_hit: dict | None = None
+    approval_shadow: dict | None = None
     if prep.required_mode == "ro":
         query_fingerprint = ast_safety.fingerprint(prep.query, engine=prep.target.engine)
+        canonical_fp = ast_safety.canonical_fingerprint(prep.query, engine=prep.target.engine)
+        query_fp = ast_safety.footprint(prep.query, engine=prep.target.engine)
         # The same text under another schema reads other tables, so it must
         # not match a cached approval made for the default path.
-        if query_fingerprint and prep.default_schema:
-            query_fingerprint = query_fingerprint + "|schema=" + prep.default_schema
+        if prep.default_schema:
+            if query_fingerprint:
+                query_fingerprint = query_fingerprint + "|schema=" + prep.default_schema
+            if canonical_fp:
+                canonical_fp = canonical_fp + "|schema=" + prep.default_schema
         if not super_auto and aa_grant is None and query_fingerprint and cache_allowed:
             fp_hit = auto_approve.fingerprint_cache_hit(
                 prep.user_id, prep.target.id, prep.database, query_fingerprint,
+                canonical=canonical_fp, footprint=query_fp,
+                default_schema=prep.default_schema, risk_summary=prep.risk_summary,
             )
+            if fp_hit is not None and fp_hit.get("shadow"):
+                approval_shadow = {"layer": fp_hit.get("layer"),
+                                   "matched": fp_hit.get("matched") or [fp_hit["id"]]}
+                log.info("approval cache (shadow): %s layer would approve %s's "
+                         "query on %s/%s, matched requests %s",
+                         approval_shadow["layer"], prep.user_id, prep.target.alias,
+                         prep.database, approval_shadow["matched"])
+                fp_hit = None
+    fp_json = json.dumps(query_fp) if query_fp is not None else None
+    shadow_json = json.dumps(approval_shadow) if approval_shadow is not None else None
 
     auto_approved = aa_grant is not None or fp_hit is not None or super_auto
     superseded_row: dict | None = None
@@ -1056,7 +1081,8 @@ def create_request(
                 decided_name = auto_approve.decided_by_name_for(aa_grant)
             elif fp_hit is not None:
                 decided_by_id = auto_approve.AUTO_DECIDED_BY
-                decided_name = auto_approve.decided_by_name_for_fingerprint(fp_hit["id"])
+                decided_name = auto_approve.decided_by_name_for_fingerprint(
+                    fp_hit["id"], fp_hit.get("layer", "exact"), fp_hit.get("matched"))
             else:
                 decided_by_id = auto_approve.AUTO_DECIDED_BY
                 decided_name = auto_approve.decided_by_name_for_super(prep.user_name, prep.user_id)
@@ -1067,10 +1093,11 @@ def create_request(
                 f" explain_plan, risk_summary, query_fingerprint, status, "
                 f" decided_by_slack_id, decided_by_name, decided_at, decision_reason, "
                 f" origin, engine, required_tier, unmasked, query_secret, run_on, "
-                f" ai_assisted, result_to_slack, default_schema, ddl_dependents) "
+                f" ai_assisted, result_to_slack, default_schema, ddl_dependents, "
+                f" query_canonical_fp, query_footprint) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, "
                 f"        %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                f"        %s::jsonb) "
+                f"        %s::jsonb, %s, %s::jsonb) "
                 f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
@@ -1099,6 +1126,8 @@ def create_request(
                     prep.result_to_slack,
                     prep.default_schema,
                     deps_json,
+                    canonical_fp,
+                    fp_json,
                 ),
             )
             row = cur.fetchone()
@@ -1131,11 +1160,16 @@ def create_request(
                 }
                 approve_action = "auto_approved"
             elif fp_hit is not None:
+                layer = fp_hit.get("layer", "exact")
                 submit_details["fingerprint_match_request_id"] = fp_hit["id"]
+                submit_details["cache_layer"] = layer
                 approve_details = {
                     "fingerprint_match_request_id": fp_hit["id"],
+                    "cache_layer": layer,
                     "scheduled_for": str(prep.sched_for) if prep.sched_for else None,
                 }
+                if fp_hit.get("matched"):
+                    approve_details["cache_matched_request_ids"] = fp_hit["matched"]
                 approve_action = "auto_approved_fingerprint"
             else:
                 # Super-admin full access, every tier. QueryHub approves under
@@ -1159,9 +1193,10 @@ def create_request(
                 f" query, wants_result, result_format, justification, scheduled_for, "
                 f" explain_plan, risk_summary, query_fingerprint, origin, "
                 f" engine, required_tier, unmasked, query_secret, run_on, ai_assisted, "
-                f" result_to_slack, default_schema, ddl_dependents) "
+                f" result_to_slack, default_schema, ddl_dependents, "
+                f" query_canonical_fp, query_footprint, approval_shadow) "
                 f"VALUES ({id_ph}%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, "
-                f"        %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) "
+                f"        %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s::jsonb) "
                 f"RETURNING {REQUEST_RETURNING}",
                 id_val + (
                     prep.user_id,
@@ -1186,6 +1221,9 @@ def create_request(
                     prep.result_to_slack,
                     prep.default_schema,
                     deps_json,
+                    canonical_fp,
+                    fp_json,
+                    shadow_json,
                 ),
             )
             row = cur.fetchone()
@@ -1243,6 +1281,18 @@ def create_request(
 
 
 # ---- Step 3: notifications + dispatch --------------------------------------
+
+def _cache_why(fp_hit: dict) -> str:
+    """The requester's reason line for an approval-cache match."""
+    layer = fp_hit.get("layer", "exact")
+    if layer == "canonical":
+        return (f"(same query as your completed request #{fp_hit['id']}, "
+                "in another form)")
+    if layer == "footprint":
+        ids = ", ".join(f"#{n}" for n in (fp_hit.get("matched") or [fp_hit["id"]])[:5])
+        return f"(your completed requests {ids} read the same columns)"
+    return f"(matches your completed request #{fp_hit['id']})"
+
 
 def _write_outbox_row(row: dict, prep, active_admins: list[dict]) -> None:
     """One `queryhub.request_pending` row for the IDP panel's poller: the same
@@ -1321,7 +1371,7 @@ def dispatch_and_notify(
             except Exception:
                 log.warning("auto-approve admin DM failed for request %s",
                             row["id"], exc_info=True)
-            why = f"(matches your completed request #{outcome.fp_hit['id']})"
+            why = _cache_why(outcome.fp_hit)
         else:
             # Super-admin self-authorized auto-approve: no grant and no
             # fingerprint match (create_request set super_auto). Full audit is

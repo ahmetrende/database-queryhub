@@ -11,6 +11,9 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Upgrading
 
+- **Apply migration 223 before you restart.** It adds `requests.query_canonical_fp`,
+  `requests.query_footprint`, `requests.approval_shadow`, one partial index and the
+  switches `approval_cache_canonical` (on) and `approval_cache_footprint` (shadow).
 - **Apply migrations 201 to 204 before you restart.** They add the MCP
   switches, the result mode, `requests.requester_seen_at` and the audit of the
   MCP switches.
@@ -24,6 +27,16 @@ frontend and the endpoints it calls are explicitly outside it.
 
 ### Changed
 
+- **A repeat read that differs only in form skips approval.** The approval cache had one
+  layer: a RO query that differs from a completed one only in literal values. Layer 1 now
+  also ignores comments, name case, IN-list length and table aliases. It ignores the order
+  and aliases of the SELECT list and the outer ORDER BY. It ignores the order of AND and OR
+  operands and of inner joins. Same person, target, database, schema and TTL as before. Layer 2 checks the column
+  footprint: earlier completed requests together read every column of the new query, at
+  the same use or a higher one. It starts in shadow mode. It records the would-be match in
+  `requests.approval_shadow`, and the request still waits for an admin. The audit row, the
+  admin note and the requester note name the layer and the matched requests. An invisible
+  change: no screenshots.
 - **Edit access has Cancel and Save above the list too.** In a long list the buttons
   were far down the page. The same two buttons now sit above the list and in the bar below
   it. Both sets share one label, one state and one reason. A widening edit of held access

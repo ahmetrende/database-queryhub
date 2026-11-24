@@ -2257,9 +2257,20 @@ def dm_admins_auto_approved_fingerprint(
     repeat RO query matching a prior completed one. Always RO by
     construction, so it always routes to the quiet feed channel."""
     requester = request["requester_slack_id"]
+    layer = fp_hit.get("layer", "exact")
+    if layer == "canonical":
+        label = "canonical form"
+        why = f"same query in another form as their completed request #{fp_hit['id']}"
+    elif layer == "footprint":
+        label = "column footprint"
+        ids = ", ".join(f"#{n}" for n in (fp_hit.get("matched") or [fp_hit["id"]])[:5])
+        why = f"their completed requests {ids} read every column it reads"
+    else:
+        label = "fingerprint"
+        why = f"same shape as their completed request #{fp_hit['id']}"
     header = (
-        f":zap: *Auto-approved (fingerprint)* — query `#{request['id']}` "
+        f":zap: *Auto-approved ({label})* — query `#{request['id']}` "
         f"from <@{requester}> on `{target.alias}/{request['database_name']}` "
-        f"(RO, same shape as their completed request #{fp_hit['id']})."
+        f"(RO, {why})."
     )
     deliver_auto_approve_fyi(client, request, header, quiet=True)

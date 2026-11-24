@@ -204,6 +204,8 @@ restart.
 |---|---|---|
 | `fingerprint_cache_enabled` | `on` | Auto-approve a re-submission that is identical to a previously approved query. This does not apply on an Athena target, unless the target allows auto-approve (see "Amazon Athena targets"). |
 | `fingerprint_cache_ttl_days` | `30` | How long a fingerprint stays eligible for auto-approve. |
+| `approval_cache_canonical` | `on` | Layer 1 of the approval cache. A RO re-submission that differs only in form also auto-approves. The form includes comments, name case, IN-list length and table aliases. It also includes the order and aliases of the SELECT list and the outer ORDER BY. The order of AND and OR operands and of inner joins is part of it too. Needs `fingerprint_cache_enabled`. |
+| `approval_cache_footprint` | `shadow` | Layer 2 of the approval cache: `off`, `shadow` or `on`. Earlier completed requests of the same person, target, database and schema can cover a RO query. They must read each of its columns at the same use or a higher one (raw > aggregate > filter). The query must be a plain SELECT, and its pre-flight hint must have no warning. `shadow` only records the match in `requests.approval_shadow`, and the request waits for an admin. `on` auto-approves it. |
 | `require_justification` | `false` | Require a justification note on every submission. |
 | `max_open_access_requests_per_user` | `5` | Cap on pending target-access requests per user. |
 | `pending_expiry_enabled` | `off` | When on, `scripts/expire_stale_pending.py --commit` cancels a request that stays pending longer than `pending_expiry_hours`. The web then shows `expiresAt` on a pending request. |
