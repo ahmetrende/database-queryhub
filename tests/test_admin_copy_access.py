@@ -21,6 +21,7 @@ class _Cur:
         self.inserted = []          # (target_id, mode, allowed_databases)
         self.whitelisted = []       # slack ids given a requesters row
         self.audit = {}
+        self.enabled = True         # the target's requesters.enabled; None: no row
 
     def execute(self, sql, params=()):
         self._last = sql
@@ -28,6 +29,8 @@ class _Cur:
             self._rows = self._user
         elif "team_target_grants" in sql and "SELECT" in sql.split("FROM")[0]:
             self._rows = self._team
+        elif "SELECT enabled FROM requesters" in sql:
+            self._rows = [] if self.enabled is None else [{"enabled": self.enabled}]
         elif "INSERT INTO requesters" in sql:
             self.whitelisted.append(params[0])
             self._rows = []
@@ -143,3 +146,24 @@ def test_the_destination_is_whitelisted_first(wired, monkeypatch):
     ra.admin_copy_access("U0NEWCOMER01", ra.CopyAccessIn(source="U0SOURCE001"),
                          claims={"sub": "UADMIN"})
     assert cur.whitelisted == ["U0NEWCOMER01"]
+
+
+def test_a_person_turned_off_after_the_preview_is_refused(wired):
+    """Another admin can turn the person off between the preview and Apply.
+    The copy writes `enabled = TRUE`, so it must not run on that person."""
+    cur = wired(user_grants=[_g(3)], team_grants=[])
+    cur.enabled = False
+    with pytest.raises(Exception) as err:
+        ra.admin_copy_access(
+            "U06NEWUSER1", ra.CopyAccessIn(source="U07SOURCE01"), {})
+    assert getattr(err.value, "status_code", None) == 409
+    assert cur.inserted == [] and cur.whitelisted == []
+
+
+def test_a_person_with_no_row_yet_still_gets_the_copy(wired):
+    cur = wired(user_grants=[_g(3)], team_grants=[])
+    cur.enabled = None
+    ra.admin_copy_access(
+        "U06NEWUSER1", ra.CopyAccessIn(source="U07SOURCE01"), {})
+    assert cur.whitelisted == ["U06NEWUSER1"]
+    assert [t for t, _, _ in cur.inserted] == [3]

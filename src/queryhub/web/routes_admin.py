@@ -4133,6 +4133,21 @@ def admin_copy_access(slack_id: str, body: CopyAccessIn,
 
     try:
         with db.transaction() as cur:
+            # The copy writes `enabled = TRUE`, so on a person that another
+            # admin turned off after the preview it would turn them on again.
+            # Read the state in the same transaction and lock the row: a
+            # concurrent disable waits for this copy, and a person who is off
+            # now is refused. A person with no row yet is a new person: the
+            # copy creates the row, which is the intent.
+            cur.execute(
+                "SELECT enabled FROM requesters WHERE slack_user_id = %s "
+                "FOR UPDATE", (slack_id,))
+            row = (cur.fetchall() or [None])[0]
+            if row is not None and not row["enabled"]:
+                raise deps._error(
+                    409, "person_disabled",
+                    "This person is turned off. Turn the person on first, "
+                    "then copy the access.")
             return _copy_access_core(cur, slack_id, body, uid, claims.get("name"))
     except _CopyPreview as preview:
         return preview.payload
